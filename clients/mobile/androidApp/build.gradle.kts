@@ -15,8 +15,9 @@ android {
         applicationId = "app.homespace.android"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 1
-        versionName = "0.1.0"
+        // The release workflow passes these from the git tag; local builds keep the defaults.
+        versionCode = providers.gradleProperty("homespace.versionCode").orNull?.toInt() ?: 1
+        versionName = providers.gradleProperty("homespace.versionName").orNull ?: "0.1.0"
     }
 
     buildFeatures {

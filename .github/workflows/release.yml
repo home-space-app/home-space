@@ -1,0 +1,252 @@
+# Builds the release packages when a version tag is pushed:
+#
+#   git tag v0.2.0 && git push origin v0.2.0
+#
+# - server: Docker image (server + web client) pushed to ghcr.io/<owner>/<repo>
+# - desktop: macOS .dmg (Apple Silicon and Intel) and Linux .tar.gz (x86_64)
+# - android: .apk
+#
+# All packages are attached to a GitHub release for the tag. A tag with a suffix (v0.2.0-rc.1)
+# makes a pre-release and does not move the image's `latest` tag.
+#
+# The APK is signed only when these repository secrets are set; otherwise the release gets an
+# unsigned APK, which Android refuses to install:
+#   ANDROID_KEYSTORE_BASE64   the keystore (.jks), base64-encoded: base64 -w0 release.jks
+#   ANDROID_KEYSTORE_PASSWORD
+#   ANDROID_KEY_ALIAS
+#   ANDROID_KEY_PASSWORD
+#
+# The macOS app is not signed or notarized, so Gatekeeper asks before the first launch
+# (right-click > Open, or xattr -dr com.apple.quarantine "/Applications/Home Space.app").
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - id: v
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$version" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  server-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # semver tags: 1.2.3, 1.2 and latest; pre-releases only get their full version.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          flavor: |
+            latest=auto
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  desktop-macos:
+    needs: version
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            arch: arm64
+          - target: x86_64-apple-darwin
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: clients
+          key: ${{ matrix.target }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-bundle
+      - name: Build Home Space.app
+        working-directory: clients/desktop
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+        run: cargo bundle --release --target ${{ matrix.target }}
+      - name: Make the .dmg
+        run: |
+          app="clients/target/${{ matrix.target }}/release/bundle/osx/Home Space.app"
+          dmg="HomeSpace-${{ needs.version.outputs.version }}-macos-${{ matrix.arch }}.dmg"
+          staging="$RUNNER_TEMP/dmg"
+          mkdir -p "$staging"
+          cp -R "$app" "$staging/"
+          ln -s /Applications "$staging/Applications"
+          hdiutil create -volname "Home Space" -srcfolder "$staging" -fs HFS+ -format UDZO -ov "$dmg"
+          echo "DMG=$dmg" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macos-${{ matrix.arch }}
+          path: ${{ env.DMG }}
+          if-no-files-found: error
+
+  desktop-linux:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libxkbcommon-dev libwayland-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: clients
+      - name: Build
+        working-directory: clients
+        run: cargo build --release --locked -p desktop
+      - name: Make the .tar.gz
+        run: |
+          name="HomeSpace-${{ needs.version.outputs.version }}-linux-x86_64"
+          dir="$RUNNER_TEMP/$name"
+          mkdir -p "$dir"
+          cp clients/target/release/HomeSpace "$dir/"
+          cp clients/desktop/packaging/home-space.desktop \
+             clients/desktop/packaging/home-space.png \
+             clients/desktop/packaging/home-space.svg \
+             LICENSE "$dir/"
+          tar -C "$RUNNER_TEMP" -czf "$name.tar.gz" "$name"
+          echo "TARBALL=$name.tar.gz" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux-x86_64
+          path: ${{ env.TARBALL }}
+          if-no-files-found: error
+
+  android:
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      NDK_VERSION: "30.0.16248370"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-37 ndk;${{ env.NDK_VERSION }}"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: clients
+          key: android
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Build the APK
+        working-directory: clients/mobile
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+        run: |
+          ./gradlew :androidApp:assembleRelease \
+            -Phomespace.versionName=${{ needs.version.outputs.version }} \
+            -Phomespace.versionCode=${{ github.run_number }}
+      - name: Sign the APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          unsigned=clients/mobile/androidApp/build/outputs/apk/release/androidApp-release-unsigned.apk
+          base="HomeSpace-${{ needs.version.outputs.version }}-android"
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::warning::ANDROID_KEYSTORE_BASE64 is not set, so the APK is unsigned and cannot be installed."
+            cp "$unsigned" "$base-unsigned.apk"
+            echo "APK=$base-unsigned.apk" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          tools="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          "$tools/zipalign" -p -f 4 "$unsigned" "$RUNNER_TEMP/aligned.apk"
+          "$tools/apksigner" sign \
+            --ks "$RUNNER_TEMP/release.jks" \
+            --ks-pass env:KEYSTORE_PASSWORD \
+            --ks-key-alias "$KEY_ALIAS" \
+            --key-pass env:KEY_PASSWORD \
+            --out "$base.apk" "$RUNNER_TEMP/aligned.apk"
+          "$tools/apksigner" verify "$base.apk"
+          rm "$RUNNER_TEMP/release.jks"
+          echo "APK=$base.apk" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: ${{ env.APK }}
+          if-no-files-found: error
+
+  release:
+    needs: [version, server-image, desktop-macos, desktop-linux, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Home Space ${{ needs.version.outputs.version }}
+          prerelease: ${{ needs.version.outputs.prerelease == 'true' }}
+          generate_release_notes: true
+          body: |
+            Server image: `docker pull ghcr.io/${{ github.repository }}:${{ needs.version.outputs.version }}`
+          files: dist/*
