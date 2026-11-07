@@ -9,10 +9,13 @@ use std::{
 use iced::{
     Alignment, Element, Length, Padding, Task,
     futures::{SinkExt, Stream, StreamExt, channel::mpsc, stream},
-    widget::{button, column, container, progress_bar, row, scrollable, space, text},
+    widget::{
+        button, column, container, progress_bar, row, scrollable, space, text, text::Wrapping,
+        tooltip,
+    },
 };
 use tokio::{fs, io::AsyncWriteExt};
-use tokio_util::io::ReaderStream;
+use tokio_util::{io::ReaderStream, sync::CancellationToken};
 
 use api_client::{ApiError, Client};
 use client_core::format::sanitize_component;
@@ -41,7 +44,6 @@ const HEADER_PADDING: Padding = Padding {
     left: 16.0,
 };
 const HEADER_GAP: f32 = 4.0;
-const CLEAR_PADDING: [f32; 2] = [5.0, 10.0];
 const ICON_BUTTON_PADDING: f32 = 6.0;
 const OVERALL_PADDING: Padding = Padding {
     top: 0.0,
@@ -53,10 +55,11 @@ const ITEM_PADDING: [f32; 2] = [10.0, 16.0];
 const ITEM_GAP: f32 = 6.0;
 const LINE_GAP: f32 = 10.0;
 const DIVIDER: f32 = 1.0;
-const SMALL_SIZE: f32 = 13.0;
 const NAME_SIZE: f32 = 14.0;
 const STATE_SIZE: f32 = 12.0;
 const BAR_HEIGHT: f32 = 6.0;
+const TIP_SIZE: f32 = 12.0;
+const TIP_PADDING: [f32; 2] = [4.0, 8.0];
 const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "heic", "bmp", "svg"];
 const DOCUMENT_EXTENSIONS: &[&str] = &["pdf", "txt", "md", "rtf", "doc", "docx", "odt", "json"];
 
@@ -75,6 +78,10 @@ enum TransferState {
     Active,
     Done,
     Failed(String),
+    /// Held by Pause; Continue queues it again and it starts over.
+    Paused,
+    /// Dropped by Stop.
+    Cancelled,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +97,11 @@ struct Transfer {
 impl Transfer {
     fn is_pending(&self) -> bool {
         matches!(self.state, TransferState::Queued | TransferState::Active)
+    }
+
+    /// Whether the transfer is over, one way or another.
+    fn is_finished(&self) -> bool {
+        matches!(self.state, TransferState::Done | TransferState::Cancelled)
     }
 
     fn fraction(&self) -> f32 {
@@ -189,6 +201,42 @@ impl Batch {
         }
     }
 
+    /// What is left of the batch once only the transfers in `ids` that `keep` accepts remain;
+    /// `None` when nothing is left. An upload keeps all its folders, which are created again
+    /// without harm.
+    fn remaining(
+        self,
+        ids: &[TransferId],
+        keep: impl Fn(TransferId) -> bool,
+    ) -> Option<(Self, Vec<TransferId>)> {
+        let had_files = !ids.is_empty();
+        match self {
+            Self::Upload { parent, plan } => {
+                let (files, kept): (Vec<UploadFile>, Vec<TransferId>) = plan
+                    .files
+                    .into_iter()
+                    .zip(ids.iter().copied())
+                    .filter(|(_, id)| keep(*id))
+                    .unzip();
+                (!files.is_empty() || !had_files).then(|| {
+                    let plan = UploadPlan {
+                        folders: plan.folders,
+                        files,
+                    };
+                    (Self::Upload { parent, plan }, kept)
+                })
+            }
+            Self::Download(files) => {
+                let (files, kept): (Vec<DownloadFile>, Vec<TransferId>) = files
+                    .into_iter()
+                    .zip(ids.iter().copied())
+                    .filter(|(_, id)| keep(*id))
+                    .unzip();
+                (!files.is_empty()).then_some((Self::Download(files), kept))
+            }
+        }
+    }
+
     fn entries(&self) -> Vec<(String, u64)> {
         match self {
             Self::Upload { plan, .. } => plan
@@ -213,6 +261,20 @@ pub enum Message {
     ToggleExpanded,
     ClearCompleted,
     Close,
+    /// Holds every unfinished transfer; the one under way starts over on Continue.
+    Pause,
+    /// Continues after Pause.
+    Resume,
+    /// Cancels every unfinished transfer.
+    Stop,
+}
+
+/// The batch under way, kept so that Pause can queue what is left of it again.
+#[derive(Debug)]
+struct Running {
+    batch: Batch,
+    ids: Vec<TransferId>,
+    token: CancellationToken,
 }
 
 /// The transfer queue: one batch runs at a time, the rest wait.
@@ -220,7 +282,8 @@ pub enum Message {
 pub struct Transfers {
     items: Vec<Transfer>,
     pending: VecDeque<(Batch, Vec<TransferId>)>,
-    running: bool,
+    current: Option<Running>,
+    paused: bool,
     next_id: TransferId,
     collapsed: bool,
 }
@@ -254,11 +317,19 @@ impl Transfers {
     pub fn update(&mut self, client: &Client, message: Message) -> Task<Message> {
         match message {
             Message::Started(id) => {
-                self.change(id, |item| item.state = TransferState::Active);
+                self.change(id, |item| {
+                    if item.state == TransferState::Queued {
+                        item.state = TransferState::Active;
+                    }
+                });
                 Task::none()
             }
             Message::Progress(id, done) => {
-                self.change(id, |item| item.done = done);
+                self.change(id, |item| {
+                    if item.state == TransferState::Active {
+                        item.done = done;
+                    }
+                });
                 Task::none()
             }
             Message::Finished(id, result) => {
@@ -272,20 +343,60 @@ impl Transfers {
                 Task::none()
             }
             Message::BatchDone(_) => {
-                self.running = false;
+                if let Some(running) = self.current.take()
+                    && running.token.is_cancelled()
+                    && self.paused
+                {
+                    let rest = running.batch.remaining(&running.ids, |id| {
+                        self.items
+                            .iter()
+                            .any(|item| item.id == id && item.state == TransferState::Paused)
+                    });
+                    if let Some(rest) = rest {
+                        self.pending.push_front(rest);
+                    }
+                }
                 self.start_next(client)
+            }
+            Message::Pause => {
+                self.cancel_current();
+                self.paused = true;
+                self.set_states(Transfer::is_pending, TransferState::Paused);
+                Task::none()
+            }
+            Message::Resume => {
+                self.paused = false;
+                for item in &mut self.items {
+                    if item.state == TransferState::Paused {
+                        item.state = TransferState::Queued;
+                        item.done = 0;
+                    }
+                }
+                self.start_next(client)
+            }
+            Message::Stop => {
+                self.cancel_current();
+                self.paused = false;
+                self.pending.clear();
+                self.set_states(
+                    |item| item.is_pending() || item.state == TransferState::Paused,
+                    TransferState::Cancelled,
+                );
+                Task::none()
             }
             Message::ToggleExpanded => {
                 self.collapsed = !self.collapsed;
                 Task::none()
             }
             Message::ClearCompleted => {
-                self.items.retain(|item| item.state != TransferState::Done);
+                self.items.retain(|item| !item.is_finished());
                 Task::none()
             }
             Message::Close => {
                 if !self.is_busy() {
                     self.items.clear();
+                    self.pending.clear();
+                    self.paused = false;
                 }
                 Task::none()
             }
@@ -298,7 +409,30 @@ impl Transfers {
     }
 
     fn is_busy(&self) -> bool {
-        self.running || self.items.iter().any(Transfer::is_pending)
+        self.current.is_some() || self.items.iter().any(Transfer::is_pending)
+    }
+
+    /// Whether Pause holds transfers that Continue would pick up again.
+    fn is_paused(&self) -> bool {
+        self.paused
+            && self
+                .items
+                .iter()
+                .any(|item| item.state == TransferState::Paused)
+    }
+
+    fn cancel_current(&self) {
+        if let Some(running) = &self.current {
+            running.token.cancel();
+        }
+    }
+
+    fn set_states(&mut self, which: impl Fn(&Transfer) -> bool, state: TransferState) {
+        for item in &mut self.items {
+            if which(item) {
+                item.state = state.clone();
+            }
+        }
     }
 
     fn change(&mut self, id: TransferId, change: impl FnOnce(&mut Transfer)) {
@@ -308,11 +442,16 @@ impl Transfers {
     }
 
     fn start_next(&mut self, client: &Client) -> Task<Message> {
-        if self.running {
+        if self.current.is_some() || self.paused {
             Task::none()
         } else if let Some((batch, ids)) = self.pending.pop_front() {
-            self.running = true;
-            Task::run(run_batch(client.clone(), batch, ids), identity)
+            let token = CancellationToken::new();
+            self.current = Some(Running {
+                batch: batch.clone(),
+                ids: ids.clone(),
+                token: token.clone(),
+            });
+            Task::run(run_batch(client.clone(), batch, ids, token), identity)
         } else {
             Task::none()
         }
@@ -320,10 +459,28 @@ impl Transfers {
 
     /// The floating progress panel.
     pub fn view(&self) -> Element<'_, Message> {
-        let has_done = self
-            .items
-            .iter()
-            .any(|item| item.state == TransferState::Done);
+        let has_done = self.items.iter().any(Transfer::is_finished);
+        let controls: Option<Element<'_, Message>> = if self.is_paused() {
+            Some(
+                row![
+                    control(Icon::Resume, "Continue", Message::Resume),
+                    control(Icon::Stop, "Cancel", Message::Stop),
+                ]
+                .spacing(HEADER_GAP)
+                .into(),
+            )
+        } else if self.items.iter().any(Transfer::is_pending) {
+            Some(
+                row![
+                    control(Icon::Pause, "Pause", Message::Pause),
+                    control(Icon::Stop, "Stop", Message::Stop),
+                ]
+                .spacing(HEADER_GAP)
+                .into(),
+            )
+        } else {
+            None
+        };
         let fold = if self.collapsed {
             Icon::ExpandLess
         } else {
@@ -337,18 +494,26 @@ impl Transfers {
         });
         let header = container(
             row![
-                text(summarize(&self.items))
-                    .font(theme::MEDIUM)
-                    .width(Length::Fill),
-                button(text("Clear completed").size(SMALL_SIZE).font(theme::MEDIUM))
-                    .padding(CLEAR_PADDING)
-                    .style(theme::tool)
-                    .on_press_maybe(has_done.then_some(Message::ClearCompleted)),
+                // One line, clipped rather than wrapped, so the header keeps its height.
+                container(
+                    text(summarize(&self.items, self.is_paused()))
+                        .font(theme::MEDIUM)
+                        .wrapping(Wrapping::None),
+                )
+                .width(Length::Fill)
+                .clip(true),
+            ]
+            .push(
+                has_done
+                    .then(|| control(Icon::ClearAll, "Clear completed", Message::ClearCompleted)),
+            )
+            .push(controls)
+            .push(
                 button(fold.view(ICON_SIZE, Tint::Muted))
                     .padding(ICON_BUTTON_PADDING)
                     .style(theme::tool)
                     .on_press(Message::ToggleExpanded),
-            ]
+            )
             .push(close)
             .spacing(HEADER_GAP)
             .align_y(Alignment::Center),
@@ -384,6 +549,21 @@ impl Transfers {
     }
 }
 
+/// An icon button of the header, named in a tooltip.
+fn control(icon: Icon, label: &'static str, message: Message) -> Element<'static, Message> {
+    tooltip(
+        button(icon.view(ICON_SIZE, Tint::Muted))
+            .padding(ICON_BUTTON_PADDING)
+            .style(theme::tool)
+            .on_press(message),
+        container(text(label).size(TIP_SIZE))
+            .padding(TIP_PADDING)
+            .style(theme::menu),
+        tooltip::Position::Top,
+    )
+    .into()
+}
+
 fn item_view(item: &Transfer) -> Element<'_, Message> {
     let (icon, tint) = match item.state {
         TransferState::Failed(_) => (Icon::Error, Tint::Danger),
@@ -406,6 +586,18 @@ fn item_view(item: &Transfer) -> Element<'_, Message> {
             text("Done")
                 .size(STATE_SIZE)
                 .style(theme::success_text)
+                .into(),
+        ),
+        TransferState::Paused => Some(
+            text("Paused")
+                .size(STATE_SIZE)
+                .style(theme::muted_text)
+                .into(),
+        ),
+        TransferState::Cancelled => Some(
+            text("Cancelled")
+                .size(STATE_SIZE)
+                .style(theme::muted_text)
                 .into(),
         ),
         TransferState::Failed(_) => None,
@@ -435,7 +627,10 @@ fn item_view(item: &Transfer) -> Element<'_, Message> {
                     .style(theme::danger_text),
             );
         }
-        TransferState::Queued | TransferState::Done => {}
+        TransferState::Queued
+        | TransferState::Done
+        | TransferState::Paused
+        | TransferState::Cancelled => {}
     }
     container(lines).padding(ITEM_PADDING).into()
 }
@@ -452,14 +647,16 @@ fn file_icon(name: &str) -> Icon {
     }
 }
 
-fn summarize(items: &[Transfer]) -> String {
+fn summarize(items: &[Transfer], paused: bool) -> String {
     let total = items.len();
+    let count =
+        |state: fn(&TransferState) -> bool| items.iter().filter(|item| state(&item.state)).count();
+    let failed = count(|state| matches!(state, TransferState::Failed(_)));
+    let cancelled = count(|state| *state == TransferState::Cancelled);
+    let held = count(|state| *state == TransferState::Paused);
     let pending: Vec<&Transfer> = items.iter().filter(|item| item.is_pending()).collect();
-    let failed = items
-        .iter()
-        .filter(|item| matches!(item.state, TransferState::Failed(_)))
-        .count();
     match pending.first() {
+        _ if paused => format!("Paused · {} of {total} left", held + pending.len()),
         Some(next) => {
             let verb = match next.direction {
                 Direction::Upload => "Uploading",
@@ -467,8 +664,18 @@ fn summarize(items: &[Transfer]) -> String {
             };
             format!("{verb} {} of {total}", total - pending.len() + 1)
         }
-        None if failed > 0 => format!("{failed} failed, {} completed", total - failed),
-        None => format!("{total} completed"),
+        None => {
+            let completed = format!("{} completed", total - failed - cancelled);
+            [
+                (failed > 0).then(|| format!("{failed} failed")),
+                Some(completed),
+                (cancelled > 0).then(|| format!("{cancelled} cancelled")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(", ")
+        }
     }
 }
 
@@ -579,16 +786,25 @@ pub async fn plan_download(
     Ok(files)
 }
 
-fn run_batch(client: Client, batch: Batch, ids: Vec<TransferId>) -> impl Stream<Item = Message> {
+/// Runs `batch` until it is done or `token` is cancelled. A transfer cut short by the token
+/// reports nothing, and the batch ends with [`Message::BatchDone`] either way.
+fn run_batch(
+    client: Client,
+    batch: Batch,
+    ids: Vec<TransferId>,
+    token: CancellationToken,
+) -> impl Stream<Item = Message> {
     iced::stream::channel(
         CHANNEL_SIZE,
         async move |mut output: mpsc::Sender<Message>| {
             let direction = batch.direction();
             match batch {
                 Batch::Upload { parent, plan } => {
-                    upload_all(&client, parent, plan, &ids, &mut output).await;
+                    upload_all(&client, parent, plan, &ids, &token, &mut output).await;
                 }
-                Batch::Download(files) => download_all(&client, files, &ids, &mut output).await,
+                Batch::Download(files) => {
+                    download_all(&client, files, &ids, &token, &mut output).await;
+                }
             }
             let _ = output.send(Message::BatchDone(direction)).await;
         },
@@ -600,6 +816,7 @@ async fn upload_all(
     parent: Option<NodeId>,
     plan: UploadPlan,
     ids: &[TransferId],
+    token: &CancellationToken,
     output: &mut mpsc::Sender<Message>,
 ) {
     let mut folders: HashMap<Vec<String>, Result<Option<NodeId>, String>> =
@@ -607,10 +824,15 @@ async fn upload_all(
     for path in plan.folders {
         if let Some((name, base)) = path.split_last() {
             let created = match folders.get(base) {
-                Some(Ok(base_id)) => ensure_folder(client, *base_id, name)
-                    .await
-                    .map(Some)
-                    .map_err(|err| err.to_string()),
+                Some(Ok(base_id)) => {
+                    let Some(created) = token
+                        .run_until_cancelled(ensure_folder(client, *base_id, name))
+                        .await
+                    else {
+                        return;
+                    };
+                    created.map(Some).map_err(|err| err.to_string())
+                }
                 Some(Err(err)) => Err(err.clone()),
                 None => Err(MISSING_FOLDER.to_owned()),
             };
@@ -618,9 +840,18 @@ async fn upload_all(
         }
     }
     for (file, id) in plan.files.iter().zip(ids) {
+        if token.is_cancelled() {
+            return;
+        }
         let _ = output.send(Message::Started(*id)).await;
         let result = match folders.get(&file.folder) {
-            Some(Ok(target)) => upload_file(client, *target, file, *id, output).await,
+            Some(Ok(target)) => {
+                let upload = upload_file(client, *target, file, *id, output);
+                match token.run_until_cancelled(upload).await {
+                    Some(result) => result,
+                    None => return,
+                }
+            }
             Some(Err(err)) => Err(err.clone()),
             None => Err(MISSING_FOLDER.to_owned()),
         };
@@ -716,16 +947,21 @@ async fn download_all(
     client: &Client,
     files: Vec<DownloadFile>,
     ids: &[TransferId],
+    token: &CancellationToken,
     output: &mut mpsc::Sender<Message>,
 ) {
     for (file, id) in files.iter().zip(ids) {
+        if token.is_cancelled() {
+            return;
+        }
         let _ = output.send(Message::Started(*id)).await;
-        let result = download_file(client, file, *id, output)
-            .await
-            .and_then(|()| match file.then {
-                Then::Keep => Ok(()),
-                Then::Open => open_file(&file.target),
-            });
+        let Some(result) = download_file(client, file, *id, token, output).await else {
+            return;
+        };
+        let result = result.and_then(|()| match file.then {
+            Then::Keep => Ok(()),
+            Then::Open => open_file(&file.target),
+        });
         let _ = output.send(Message::Finished(*id, result)).await;
     }
 }
@@ -735,33 +971,42 @@ pub fn open_file(path: &Path) -> Result<(), String> {
     open::that_detached(path).map_err(|err| format!("could not open {}: {err}", path.display()))
 }
 
+/// Downloads `file` next to its target and moves it into place; `None` when `token` cut it
+/// short, in which case the partial file is removed.
 async fn download_file(
     client: &Client,
     file: &DownloadFile,
     id: TransferId,
+    token: &CancellationToken,
     output: &mut mpsc::Sender<Message>,
-) -> Result<(), String> {
-    let exists = fs::try_exists(&file.target)
-        .await
-        .map_err(|err| err.to_string())?;
+) -> Option<Result<(), String>> {
+    let exists = match fs::try_exists(&file.target).await {
+        Ok(exists) => exists,
+        Err(err) => return Some(Err(err.to_string())),
+    };
     if exists && file.existing == Existing::Fail {
-        Err(ALREADY_EXISTS.to_owned())
-    } else {
-        let response = client
-            .download(file.id)
-            .await
-            .map_err(|err| err.to_string())?;
-        let part = part_path(&file.target);
-        let result = write_part(response, &part, id, output).await;
-        let result = match result {
-            Ok(()) => fs::rename(&part, &file.target).await,
-            Err(err) => Err(err),
-        };
-        if result.is_err() {
-            let _ = fs::remove_file(&part).await;
-        }
-        result.map_err(|err| err.to_string())
+        return Some(Err(ALREADY_EXISTS.to_owned()));
     }
+    let response = match token.run_until_cancelled(client.download(file.id)).await? {
+        Ok(response) => response,
+        Err(err) => return Some(Err(err.to_string())),
+    };
+    let part = part_path(&file.target);
+    let written = token
+        .run_until_cancelled(write_part(response, &part, id, output))
+        .await;
+    let result = match written {
+        Some(Ok(())) => fs::rename(&part, &file.target).await,
+        Some(Err(err)) => Err(err),
+        None => {
+            let _ = fs::remove_file(&part).await;
+            return None;
+        }
+    };
+    if result.is_err() {
+        let _ = fs::remove_file(&part).await;
+    }
+    Some(result.map_err(|err| err.to_string()))
 }
 
 async fn write_part(
@@ -846,6 +1091,158 @@ mod tests {
         }
     }
 
+    fn numbered(id: TransferId, state: TransferState) -> Transfer {
+        Transfer {
+            id,
+            ..transfer(state, 10, 100)
+        }
+    }
+
+    fn client() -> Client {
+        Client::new("http://localhost")
+    }
+
+    /// A download of three files, the first done, the second under way and the third waiting.
+    fn running_download() -> Transfers {
+        let file = |name: &str| DownloadFile::replacing(&file_node(), PathBuf::from(name));
+        Transfers {
+            items: vec![
+                numbered(0, TransferState::Done),
+                numbered(1, TransferState::Active),
+                numbered(2, TransferState::Queued),
+            ],
+            current: Some(Running {
+                batch: Batch::Download(vec![file("/tmp/a"), file("/tmp/b"), file("/tmp/c")]),
+                ids: vec![0, 1, 2],
+                token: CancellationToken::new(),
+            }),
+            next_id: 3,
+            ..Transfers::default()
+        }
+    }
+
+    fn states(transfers: &Transfers) -> Vec<TransferState> {
+        transfers
+            .items
+            .iter()
+            .map(|item| item.state.clone())
+            .collect()
+    }
+
+    #[test]
+    fn pause_holds_every_unfinished_transfer() {
+        let mut transfers = running_download();
+        let token = transfers
+            .current
+            .as_ref()
+            .map(|running| running.token.clone());
+
+        let _ = transfers.update(&client(), Message::Pause);
+
+        assert!(token.is_some_and(|token| token.is_cancelled()));
+        assert_eq!(
+            states(&transfers),
+            [
+                TransferState::Done,
+                TransferState::Paused,
+                TransferState::Paused
+            ]
+        );
+        let mut ui = iced_test::simulator(transfers.view());
+        assert!(ui.find("Paused · 2 of 3 left").is_ok());
+    }
+
+    #[test]
+    fn a_paused_batch_queues_what_is_left_once_it_ends() {
+        let mut transfers = running_download();
+        let _ = transfers.update(&client(), Message::Pause);
+
+        let _ = transfers.update(&client(), Message::BatchDone(Direction::Download));
+
+        assert!(transfers.current.is_none());
+        let ids: Vec<Vec<TransferId>> = transfers
+            .pending
+            .iter()
+            .map(|(_, ids)| ids.clone())
+            .collect();
+        assert_eq!(ids, [vec![1, 2]]);
+    }
+
+    #[test]
+    fn continue_starts_the_held_transfers_over() {
+        let mut transfers = running_download();
+        let _ = transfers.update(&client(), Message::Pause);
+        let _ = transfers.update(&client(), Message::BatchDone(Direction::Download));
+
+        let _ = transfers.update(&client(), Message::Resume);
+
+        assert!(!transfers.paused);
+        assert_eq!(
+            transfers
+                .current
+                .as_ref()
+                .map(|running| running.ids.clone()),
+            Some(vec![1, 2])
+        );
+        assert_eq!(
+            states(&transfers),
+            [
+                TransferState::Done,
+                TransferState::Queued,
+                TransferState::Queued
+            ]
+        );
+        assert_eq!(transfers.items[1].done, 0);
+    }
+
+    #[test]
+    fn a_held_transfer_ignores_late_progress() {
+        let mut transfers = running_download();
+        let _ = transfers.update(&client(), Message::Pause);
+
+        let _ = transfers.update(&client(), Message::Progress(1, 99));
+        let _ = transfers.update(&client(), Message::Started(2));
+
+        assert_eq!(transfers.items[1].done, 10);
+        assert_eq!(transfers.items[2].state, TransferState::Paused);
+    }
+
+    #[test]
+    fn stop_cancels_everything_left() {
+        let mut transfers = running_download();
+        transfers
+            .pending
+            .push_back((Batch::Download(Vec::new()), Vec::new()));
+
+        let _ = transfers.update(&client(), Message::Stop);
+        let _ = transfers.update(&client(), Message::BatchDone(Direction::Download));
+
+        assert!(transfers.pending.is_empty());
+        assert!(transfers.current.is_none());
+        assert_eq!(
+            states(&transfers),
+            [
+                TransferState::Done,
+                TransferState::Cancelled,
+                TransferState::Cancelled
+            ]
+        );
+        assert_eq!(
+            summarize(&transfers.items, false),
+            "1 completed, 2 cancelled"
+        );
+    }
+
+    #[test]
+    fn clear_completed_drops_cancelled_rows_too() {
+        let mut transfers = running_download();
+        let _ = transfers.update(&client(), Message::Stop);
+
+        let _ = transfers.update(&client(), Message::ClearCompleted);
+
+        assert!(transfers.is_empty());
+    }
+
     #[test]
     fn an_opening_download_replaces_and_then_opens() {
         let file = DownloadFile::opening(&file_node(), PathBuf::from("/tmp/a.txt"));
@@ -906,7 +1303,7 @@ mod tests {
             transfer(TransferState::Active, 0, 1),
             transfer(TransferState::Queued, 0, 1),
         ];
-        assert_eq!(summarize(&items), "Uploading 2 of 3");
+        assert_eq!(summarize(&items, false), "Uploading 2 of 3");
     }
 
     #[test]
@@ -915,7 +1312,7 @@ mod tests {
             transfer(TransferState::Done, 1, 1),
             transfer(TransferState::Failed("boom".to_owned()), 0, 1),
         ];
-        assert_eq!(summarize(&items), "1 failed, 1 completed");
+        assert_eq!(summarize(&items, false), "1 failed, 1 completed");
     }
 
     #[test]

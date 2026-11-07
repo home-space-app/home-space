@@ -157,6 +157,17 @@ impl Folder {
     /// when it is out of view.
     pub fn step(&mut self, forward: bool) -> Option<f32> {
         let index = self.selection.step(forward, &self.listing.nodes)?;
+        self.reveal(index)
+    }
+
+    /// Grows or shrinks the selection one row (Shift+Arrow); returns the scroll offset that
+    /// brings the cursor's new row into view when it is out of view.
+    pub fn extend(&mut self, forward: bool) -> Option<f32> {
+        let index = self.selection.extend(forward, &self.listing.nodes)?;
+        self.reveal(index)
+    }
+
+    fn reveal(&self, index: usize) -> Option<f32> {
         let viewport = self.viewport?;
         reveal_offset(
             index,

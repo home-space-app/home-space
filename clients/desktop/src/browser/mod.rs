@@ -550,16 +550,14 @@ impl State {
 
     /// Moves a single selection one row, keeping it in view.
     fn step_selection(&mut self, forward: bool) -> Task<Message> {
-        match self.folder.step(forward) {
-            Some(y) => operation::scroll_to(
-                grid::ROWS,
-                AbsoluteOffset {
-                    x: None,
-                    y: Some(y),
-                },
-            ),
-            None => Task::none(),
-        }
+        let offset = self.folder.step(forward);
+        scroll_rows_to(offset)
+    }
+
+    /// Grows or shrinks the selection one row, keeping the moved end in view.
+    fn extend_selection(&mut self, forward: bool) -> Task<Message> {
+        let offset = self.folder.extend(forward);
+        scroll_rows_to(offset)
     }
 
     fn activate(&mut self, id: NodeId) -> Task<Message> {
@@ -773,7 +771,7 @@ impl State {
                 }
                 Shortcut::Delete => self.act(Action::Delete),
                 Shortcut::Rename => self.act(Action::Rename),
-                Shortcut::Activate => match self.folder.selected().as_slice() {
+                Shortcut::Activate | Shortcut::Open => match self.folder.selected().as_slice() {
                     [node] => self.activate(node.id),
                     _ => Task::none(),
                 },
@@ -788,6 +786,8 @@ impl State {
                 Shortcut::Search => Task::none(),
                 Shortcut::SelectPrevious => self.step_selection(false),
                 Shortcut::SelectNext => self.step_selection(true),
+                Shortcut::ExtendPrevious => self.extend_selection(false),
+                Shortcut::ExtendNext => self.extend_selection(true),
             }
         }
     }
@@ -837,5 +837,18 @@ impl State {
     }
 }
 
+/// Scrolls the rows to `offset`, when there is one.
+fn scroll_rows_to(offset: Option<f32>) -> Task<Message> {
+    match offset {
+        Some(y) => operation::scroll_to(
+            grid::ROWS,
+            AbsoluteOffset {
+                x: None,
+                y: Some(y),
+            },
+        ),
+        None => Task::none(),
+    }
+}
 #[cfg(test)]
 mod tests;

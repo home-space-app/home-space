@@ -79,6 +79,14 @@ pub enum Icon {
     SignOut,
     /// The user's devices.
     Devices,
+    /// Pauses the transfers.
+    Pause,
+    /// Continues paused transfers.
+    Resume,
+    /// Stops the transfers for good.
+    Stop,
+    /// Clears finished rows from a list.
+    ClearAll,
 }
 
 /// How an icon is tinted.
@@ -145,6 +153,10 @@ impl Icon {
             Self::Update => include_bytes!("../assets/icons/update.svg"),
             Self::SignOut => include_bytes!("../assets/icons/logout.svg"),
             Self::Devices => include_bytes!("../assets/icons/devices.svg"),
+            Self::Pause => include_bytes!("../assets/icons/pause.svg"),
+            Self::Resume => include_bytes!("../assets/icons/play_arrow.svg"),
+            Self::Stop => include_bytes!("../assets/icons/stop.svg"),
+            Self::ClearAll => include_bytes!("../assets/icons/clear_all.svg"),
         }
     }
 

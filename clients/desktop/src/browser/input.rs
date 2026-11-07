@@ -28,6 +28,12 @@ pub enum Shortcut {
     Search,
     SelectPrevious,
     SelectNext,
+    /// Shift+Up: grows or shrinks the selection one row upwards.
+    ExtendPrevious,
+    /// Shift+Down: grows or shrinks the selection one row downwards.
+    ExtendNext,
+    /// Space: opens the single selected folder or file.
+    Open,
 }
 
 pub fn input(event: Event, status: event::Status, _window: window::Id) -> Option<Message> {
@@ -63,6 +69,11 @@ fn shortcut(key: &Key, modifiers: Modifiers) -> Option<Shortcut> {
         Key::Named(Named::ArrowLeft) if modifiers.alt() => Some(Shortcut::Back),
         Key::Named(Named::ArrowUp) if modifiers.is_empty() => Some(Shortcut::SelectPrevious),
         Key::Named(Named::ArrowDown) if modifiers.is_empty() => Some(Shortcut::SelectNext),
+        Key::Named(Named::ArrowUp) if modifiers == Modifiers::SHIFT => {
+            Some(Shortcut::ExtendPrevious)
+        }
+        Key::Named(Named::ArrowDown) if modifiers == Modifiers::SHIFT => Some(Shortcut::ExtendNext),
+        Key::Named(Named::Space) if modifiers.is_empty() => Some(Shortcut::Open),
         Key::Character(KEY_BACK) if modifiers.command() => Some(Shortcut::Back),
         Key::Character(KEY_SELECT_ALL) if modifiers.command() => Some(Shortcut::SelectAll),
         Key::Character(KEY_NEW_FOLDER) if modifiers.command() => Some(Shortcut::NewFolder),
@@ -113,6 +124,27 @@ mod tests {
             Some(Shortcut::SelectNext)
         );
         assert_eq!(shortcut(&up, Modifiers::ALT), Some(Shortcut::Parent));
-        assert_eq!(shortcut(&down, Modifiers::SHIFT), None);
+    }
+
+    #[test]
+    fn shift_arrows_extend_the_selection() {
+        let up = Key::Named(Named::ArrowUp);
+        let down = Key::Named(Named::ArrowDown);
+        assert_eq!(
+            shortcut(&up, Modifiers::SHIFT),
+            Some(Shortcut::ExtendPrevious)
+        );
+        assert_eq!(
+            shortcut(&down, Modifiers::SHIFT),
+            Some(Shortcut::ExtendNext)
+        );
+        assert_eq!(shortcut(&down, Modifiers::SHIFT | Modifiers::COMMAND), None);
+    }
+
+    #[test]
+    fn space_opens() {
+        let space = Key::Named(Named::Space);
+        assert_eq!(shortcut(&space, Modifiers::empty()), Some(Shortcut::Open));
+        assert_eq!(shortcut(&space, Modifiers::SHIFT), None);
     }
 }

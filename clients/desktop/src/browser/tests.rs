@@ -395,6 +395,32 @@ fn arrow_keys_move_the_selection() {
 }
 
 #[test]
+fn shift_arrows_extend_and_shrink_the_selection() {
+    let mut state = state_with_listing();
+    let _ = state.update(Message::Click(id(FOLDER_ID)));
+
+    let _ = state.update(Message::Shortcut(Shortcut::ExtendNext));
+    let _ = state.update(Message::Shortcut(Shortcut::ExtendNext));
+    assert_eq!(state.folder.selected().len(), 3);
+
+    let _ = state.update(Message::Shortcut(Shortcut::ExtendPrevious));
+    let _ = state.update(Message::Shortcut(Shortcut::ExtendPrevious));
+    let _ = state.update(Message::Shortcut(Shortcut::ExtendPrevious));
+    assert_eq!(state.folder.selected().len(), 1);
+    assert!(state.folder.selection.contains(id(FOLDER_ID)));
+}
+
+#[test]
+fn space_opens_the_selected_folder() {
+    let mut state = state_with_listing();
+    let _ = state.update(Message::Click(id(FOLDER_ID)));
+
+    let _ = state.update(Message::Shortcut(Shortcut::Open));
+
+    assert_eq!(state.folder.id, Some(id(FOLDER_ID)));
+}
+
+#[test]
 fn the_open_details_panel_follows_the_arrow_keys() {
     let mut state = state_with_listing();
     let _ = state.update(Message::Click(id(OTHER_FILE_ID)));
