@@ -520,27 +520,19 @@ impl State {
         let node = self.folder.node(id).cloned();
         match node {
             Some(node) if node.kind == NodeKind::Folder => self.open_folder(Some(node.id)),
-            Some(node) => match self.local_copy(&node) {
-                Some(path) => self.open_local(&path),
-                None => files::download(&self.client, vec![node]),
-            },
+            Some(node) => self.open_file(&node),
             None => Task::none(),
         }
     }
 
-    /// Opens the file `node` with the default app: its synced copy, or else a fresh download.
-    fn open_file(&mut self, node: &Node) -> Task<Message> {
-        match self.local_copy(node) {
-            Some(path) => self.open_local(&path),
-            None => files::download_and_open(node.clone()),
-        }
-    }
-
-    fn open_local(&mut self, path: &Path) -> Task<Message> {
-        if let Err(err) = transfers::open_file(path) {
-            self.folder.error = Some(err);
-        }
-        Task::none()
+    /// Opens the file `node` with the default app, from a local copy that is the server's version
+    /// or else from a fresh download.
+    fn open_file(&self, node: &Node) -> Task<Message> {
+        let synced = self.local_copy(node).map(|path| files::SyncedCopy {
+            path,
+            base: self.syncing.status().base(node.id).cloned(),
+        });
+        files::open(&self.client, node.clone(), synced)
     }
 
     /// Where the synced file `node` is on disk, once it is there.
