@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use iced::{Task, keyboard::Modifiers};
+use iced::{Task, keyboard::Modifiers, widget::scrollable::Viewport};
 
 use api_client::{ApiError, Client};
 use client_core::listing::{
@@ -8,7 +8,7 @@ use client_core::listing::{
 };
 use protocol::{Node, NodeId};
 
-use super::{Message, selection::Selection};
+use super::{Message, grid::reveal_offset, selection::Selection};
 
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
@@ -41,6 +41,10 @@ pub struct Folder {
     pub(super) error: Option<String>,
     pub(super) selection: Selection,
     last_click: Option<(NodeId, Instant)>,
+    /// When a folder link last navigated, to tell the second click of a double click.
+    last_link: Option<Instant>,
+    /// Where the rows are scrolled; `None` while they all fit.
+    pub(super) viewport: Option<Viewport>,
 }
 
 impl Default for Folder {
@@ -57,6 +61,8 @@ impl Default for Folder {
             error: None,
             selection: Selection::default(),
             last_click: None,
+            last_link: None,
+            viewport: None,
         }
     }
 }
@@ -76,6 +82,7 @@ impl Folder {
         self.error = None;
         self.selection.clear();
         self.last_click = None;
+        self.viewport = None;
     }
 
     /// Fetches the listing of the folder shown.
@@ -131,6 +138,31 @@ impl Folder {
             self.selection.click(id, modifiers, &self.listing.nodes);
             None
         }
+    }
+
+    /// Takes in a click on a folder link; returns whether to follow it. The second click of a
+    /// double click, a habit from the rows, must not go one level deeper.
+    pub fn follow_link(&mut self) -> bool {
+        let now = Instant::now();
+        let follow = self
+            .last_link
+            .is_none_or(|at| now.duration_since(at) > DOUBLE_CLICK);
+        if follow {
+            self.last_link = Some(now);
+        }
+        follow
+    }
+
+    /// Moves a single selection one row; returns the scroll offset that brings the row into view
+    /// when it is out of view.
+    pub fn step(&mut self, forward: bool) -> Option<f32> {
+        let index = self.selection.step(forward, &self.listing.nodes)?;
+        let viewport = self.viewport?;
+        reveal_offset(
+            index,
+            viewport.absolute_offset().y,
+            viewport.bounds().height,
+        )
     }
 
     /// Applies a server event to the listing; returns whether it has to be fetched again.

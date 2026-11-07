@@ -26,6 +26,8 @@ pub enum Shortcut {
     Upload,
     Refresh,
     Search,
+    SelectPrevious,
+    SelectNext,
 }
 
 pub fn input(event: Event, status: event::Status, _window: window::Id) -> Option<Message> {
@@ -59,6 +61,8 @@ fn shortcut(key: &Key, modifiers: Modifiers) -> Option<Shortcut> {
         Key::Named(Named::Backspace) => Some(Shortcut::Back),
         Key::Named(Named::ArrowUp) if modifiers.alt() => Some(Shortcut::Parent),
         Key::Named(Named::ArrowLeft) if modifiers.alt() => Some(Shortcut::Back),
+        Key::Named(Named::ArrowUp) if modifiers.is_empty() => Some(Shortcut::SelectPrevious),
+        Key::Named(Named::ArrowDown) if modifiers.is_empty() => Some(Shortcut::SelectNext),
         Key::Character(KEY_BACK) if modifiers.command() => Some(Shortcut::Back),
         Key::Character(KEY_SELECT_ALL) if modifiers.command() => Some(Shortcut::SelectAll),
         Key::Character(KEY_NEW_FOLDER) if modifiers.command() => Some(Shortcut::NewFolder),
@@ -94,5 +98,21 @@ mod tests {
         assert_eq!(shortcut(&bracket, Modifiers::empty()), None);
         let left = Key::Named(Named::ArrowLeft);
         assert_eq!(shortcut(&left, Modifiers::ALT), Some(Shortcut::Back));
+    }
+
+    #[test]
+    fn plain_arrows_move_the_selection() {
+        let up = Key::Named(Named::ArrowUp);
+        let down = Key::Named(Named::ArrowDown);
+        assert_eq!(
+            shortcut(&up, Modifiers::empty()),
+            Some(Shortcut::SelectPrevious)
+        );
+        assert_eq!(
+            shortcut(&down, Modifiers::empty()),
+            Some(Shortcut::SelectNext)
+        );
+        assert_eq!(shortcut(&up, Modifiers::ALT), Some(Shortcut::Parent));
+        assert_eq!(shortcut(&down, Modifiers::SHIFT), None);
     }
 }

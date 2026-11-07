@@ -7,7 +7,7 @@ use client_core::{
 use iced::{
     Alignment, Element, Length,
     alignment::Horizontal,
-    widget::{button, column, container, row, scrollable, space, stack, text},
+    widget::{button, column, container, responsive, row, scrollable, space, stack, text},
 };
 use protocol::{Node, NodeId, NodeKind};
 
@@ -16,21 +16,23 @@ use super::{
     anchor::Anchor,
     context_menu::Placement,
     parts::{
-        CHECK_LIST_PADDING, COLUMN_GAP, DATE_WIDTH, HEADER_SIZE, MENU_WIDTH, ROW_HEIGHT, ROW_SIZE,
-        SECOND_LINE_SIZE, SIZE_WIDTH, divider, empty, header_bar, menu_button as row_menu,
-        muted_cell,
+        CHECK_LIST_PADDING, COLUMN_GAP, DATE_WIDTH, DIVIDER, HEADER_SIZE, MENU_WIDTH, ROW_HEIGHT,
+        ROW_SIZE, SECOND_LINE_SIZE, SIZE_WIDTH, divider, empty, header_bar,
+        menu_button as row_menu, muted_cell,
     },
     selection::{Coverage, Selection},
     syncing::{badge_icon, display_path},
 };
 use crate::{
-    ellipsis::ellipsized,
+    ellipsis::{ellipsized, text_width},
     icons::{ICON_SIZE, Icon, Tint, node_icon},
     locale::short_date,
     sync::{Badge, Item, Status},
     theme,
 };
 
+/// The scrollable holding the rows.
+pub(super) const ROWS: &str = "rows";
 pub(super) const CHECK_WIDTH: f32 = 36.0;
 const SORT_ARROW: f32 = 14.0;
 const SORT_ARROW_GAP: f32 = 4.0;
@@ -135,8 +137,24 @@ pub fn rows<'a>(
             .chain(waiting.into_iter().map(pending_row));
         // The scrollbar floats over the padding right of the menu buttons.
         scrollable(column(rows.flat_map(|row| [row, divider()])))
+            .id(ROWS)
             .height(Length::Fill)
+            .on_scroll(Message::GridScrolled)
             .into()
+    }
+}
+
+/// The offset to scroll to for row `index` to be in full view, given the current `offset` and the
+/// `height` of the viewport; `None` when it already is.
+pub(super) fn reveal_offset(index: usize, offset: f32, height: f32) -> Option<f32> {
+    let top = index as f32 * (ROW_HEIGHT + DIVIDER);
+    let bottom = top + ROW_HEIGHT;
+    if top < offset {
+        Some(top)
+    } else if bottom > offset + height {
+        Some(bottom - height)
+    } else {
+        None
     }
 }
 
@@ -180,15 +198,20 @@ fn node_row(
     } else {
         Coverage::None
     };
-    let cells = row![
-        check(coverage, Message::Toggle(node.id)),
-        row![
+    let name: Element<'_, Message> = match node.kind {
+        NodeKind::Folder => folder_link(node, icon, tint, badge, second_line),
+        NodeKind::File => row![
             badged(icon.view(ICON_SIZE, tint), badge),
             name_cell(node.name.as_str(), second_line)
         ]
         .spacing(NAME_GAP)
         .align_y(Alignment::Center)
-        .width(Length::Fill),
+        .width(Length::Fill)
+        .into(),
+    };
+    let cells = row![
+        check(coverage, Message::Toggle(node.id)),
+        name,
         muted_cell(size, SIZE_WIDTH, Alignment::End),
         muted_cell(short_date(node.updated_at), DATE_WIDTH, Alignment::End),
         menu_button(node.id),
@@ -206,6 +229,43 @@ fn node_row(
     Anchor::new(row_button)
         .on_right_press(move |cursor| Message::ContextMenu(id, Placement::cursor(cursor)))
         .into()
+}
+
+/// The icon and name of a folder as a link into it, only as wide as they are so that the rest of
+/// the row still selects.
+fn folder_link<'a>(
+    node: &'a Node,
+    icon: Icon,
+    tint: Tint,
+    badge: Option<Badge>,
+    second_line: Option<String>,
+) -> Element<'a, Message> {
+    let id = node.id;
+    let name = node.name.as_str();
+    responsive(move |bounds| {
+        let room = bounds.width - ICON_CELL - BADGE_RIGHT - NAME_GAP;
+        let second_width = second_line
+            .as_deref()
+            .map_or(0.0, |second| text_width(second, SECOND_LINE_SIZE));
+        let width = text_width(name, ROW_SIZE)
+            .max(second_width)
+            .ceil()
+            .min(room)
+            .max(0.0);
+        let content = row![
+            badged(icon.view(ICON_SIZE, tint), badge),
+            container(name_cell(name, second_line.clone())).width(width)
+        ]
+        .spacing(NAME_GAP)
+        .align_y(Alignment::Center);
+        button(content)
+            .padding(0)
+            .style(theme::name_link)
+            .on_press(Message::OpenFolderLink(id))
+            .into()
+    })
+    .height(Length::Shrink)
+    .into()
 }
 
 /// A new file or folder waiting to be uploaded: grayed out and inert, with no menu to act on
@@ -343,6 +403,28 @@ mod tests {
             updated_at: OffsetDateTime::UNIX_EPOCH,
             edited_on: None,
         }
+    }
+
+    #[test]
+    fn a_row_in_view_needs_no_scrolling() {
+        let step = ROW_HEIGHT + DIVIDER;
+        assert_eq!(reveal_offset(2, step, step * 3.0), None);
+    }
+
+    #[test]
+    fn a_row_above_the_view_scrolls_to_its_top() {
+        let step = ROW_HEIGHT + DIVIDER;
+        assert_eq!(reveal_offset(1, step * 3.0, step * 3.0), Some(step));
+    }
+
+    #[test]
+    fn a_row_below_the_view_scrolls_to_its_bottom() {
+        let step = ROW_HEIGHT + DIVIDER;
+        let height = step * 3.0;
+        assert_eq!(
+            reveal_offset(4, 0.0, height),
+            Some(step * 4.0 + ROW_HEIGHT - height)
+        );
     }
 
     #[test]

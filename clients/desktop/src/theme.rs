@@ -265,6 +265,18 @@ pub fn row(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     }
 }
 
+/// A folder's icon and name in a row, which open it.
+pub fn name_link(theme: &Theme, status: button::Status) -> button::Style {
+    let t = tokens(theme);
+    button::Style {
+        text_color: match status {
+            button::Status::Hovered | button::Status::Pressed => t.accent,
+            button::Status::Active | button::Status::Disabled => t.text,
+        },
+        ..button::Style::default()
+    }
+}
+
 /// The sticky header above the grid.
 pub fn header(theme: &Theme) -> container::Style {
     let t = tokens(theme);

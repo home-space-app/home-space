@@ -223,6 +223,192 @@ fn clicking_a_row_selects_it() {
 }
 
 #[test]
+fn clicking_a_folder_name_follows_its_link() {
+    let state = state_with_listing();
+    let mut ui = simulator(state.view());
+
+    ui.click(FOLDER_NAME).expect("folder row is shown");
+
+    let messages: Vec<_> = ui.into_messages().collect();
+    assert!(
+        matches!(messages.as_slice(), [Message::OpenFolderLink(clicked)] if *clicked == id(FOLDER_ID))
+    );
+}
+
+/// What a left click at `position` on the browser sends.
+fn click_at(state: &State, position: Point) -> Vec<Message> {
+    let mut ui = simulator(state.view());
+    ui.point_at(position);
+    let _ = ui.simulate(simulator::click());
+    ui.into_messages().collect()
+}
+
+#[test]
+fn clicking_a_folder_icon_follows_its_link() {
+    let state = state_with_listing();
+    let name = simulator(state.view())
+        .find(FOLDER_NAME)
+        .expect("folder row is shown")
+        .visible_bounds()
+        .expect("folder name is in view");
+
+    let messages = click_at(&state, Point::new(name.x - 16.0, name.center_y()));
+
+    assert!(
+        matches!(messages.as_slice(), [Message::OpenFolderLink(clicked)] if *clicked == id(FOLDER_ID))
+    );
+}
+
+#[test]
+fn clicking_right_of_a_folder_name_selects_the_row() {
+    let state = state_with_listing();
+    let name = simulator(state.view())
+        .find(FOLDER_NAME)
+        .expect("folder row is shown")
+        .visible_bounds()
+        .expect("folder name is in view");
+
+    let messages = click_at(
+        &state,
+        Point::new(name.x + name.width + 40.0, name.center_y()),
+    );
+
+    assert!(matches!(messages.as_slice(), [Message::Click(clicked)] if *clicked == id(FOLDER_ID)));
+}
+
+/// A browser listing enough files to scroll, named so that they sort in the order of their ids.
+fn state_with_long_listing() -> State {
+    let mut state = state_with_listing();
+    let nodes = (0..60)
+        .map(|raw| node(&format!("file-{raw:02}"), NodeKind::File, 100 + raw))
+        .collect();
+    let listing = Listing {
+        path: Vec::new(),
+        nodes,
+    };
+    let _ = state.update(Message::Loaded(None, Ok(listing)));
+    state
+}
+
+#[test]
+fn rows_are_as_far_apart_as_the_scrolling_assumes() {
+    let state = state_with_long_listing();
+    let mut ui = simulator(state.view());
+    let first = ui.find("file-00").expect("first row is shown");
+    let second = ui.find("file-01").expect("second row is shown");
+
+    let step =
+        second.visible_bounds().expect("in view").y - first.visible_bounds().expect("in view").y;
+
+    assert_eq!(step, parts::ROW_HEIGHT + parts::DIVIDER);
+}
+
+/// Scrolls the rows of `state` down with the wheel; returns what they report.
+fn scrolled_viewport(state: &State) -> Viewport {
+    let mut ui = simulator(state.view());
+    let row = ui
+        .find("file-00")
+        .expect("first row is shown")
+        .visible_bounds()
+        .expect("in view");
+    ui.point_at(row.center());
+    let _ = ui.simulate([iced::Event::Mouse(iced::mouse::Event::WheelScrolled {
+        delta: iced::mouse::ScrollDelta::Pixels { x: 0.0, y: -120.0 },
+    })]);
+    ui.into_messages()
+        .find_map(|message| match message {
+            Message::GridScrolled(viewport) => Some(viewport),
+            _ => None,
+        })
+        .expect("the rows report their viewport")
+}
+
+#[test]
+fn the_browser_learns_where_the_rows_are_scrolled() {
+    let viewport = scrolled_viewport(&state_with_long_listing());
+
+    assert_eq!(viewport.absolute_offset().y, 120.0);
+    assert!(viewport.bounds().height > 0.0);
+}
+
+#[test]
+fn opening_a_folder_forgets_where_the_rows_were_scrolled() {
+    let mut state = state_with_long_listing();
+    let viewport = scrolled_viewport(&state);
+    let _ = state.update(Message::GridScrolled(viewport));
+    assert!(state.folder.viewport.is_some());
+
+    let _ = state.update(Message::Jump(Some(id(FOLDER_ID))));
+
+    assert!(state.folder.viewport.is_none());
+}
+
+#[test]
+fn a_folder_link_opens_the_folder() {
+    let mut state = state_with_listing();
+
+    let _ = state.update(Message::OpenFolderLink(id(FOLDER_ID)));
+
+    assert_eq!(state.folder.id, Some(id(FOLDER_ID)));
+}
+
+#[test]
+fn a_folder_link_with_a_modifier_selects_the_folder() {
+    for modifiers in [Modifiers::COMMAND, Modifiers::SHIFT] {
+        let mut state = state_with_listing();
+        let _ = state.update(Message::Modifiers(modifiers));
+
+        let _ = state.update(Message::OpenFolderLink(id(FOLDER_ID)));
+
+        assert_eq!(state.folder.id, None);
+        assert!(state.folder.selection.contains(id(FOLDER_ID)));
+    }
+}
+
+#[test]
+fn the_second_click_of_a_double_click_stays_in_the_opened_folder() {
+    let mut state = state_with_listing();
+    let _ = state.update(Message::OpenFolderLink(id(FOLDER_ID)));
+    let inner = Listing {
+        path: vec![node(FOLDER_NAME, NodeKind::Folder, FOLDER_ID)],
+        nodes: vec![node("Inner", NodeKind::Folder, OTHER_FILE_ID)],
+    };
+    let _ = state.update(Message::Loaded(Some(id(FOLDER_ID)), Ok(inner)));
+
+    let _ = state.update(Message::OpenFolderLink(id(OTHER_FILE_ID)));
+
+    assert_eq!(state.folder.id, Some(id(FOLDER_ID)));
+}
+
+#[test]
+fn arrow_keys_move_the_selection() {
+    let mut state = state_with_listing();
+    let _ = state.update(Message::Click(id(OTHER_FILE_ID)));
+
+    let _ = state.update(Message::Shortcut(Shortcut::SelectNext));
+    assert!(state.folder.selection.contains(id(FILE_ID)));
+    assert_eq!(state.folder.selected().len(), 1);
+
+    let _ = state.update(Message::Shortcut(Shortcut::SelectPrevious));
+    assert!(state.folder.selection.contains(id(OTHER_FILE_ID)));
+    assert_eq!(state.folder.selected().len(), 1);
+}
+
+#[test]
+fn the_open_details_panel_follows_the_arrow_keys() {
+    let mut state = state_with_listing();
+    let _ = state.update(Message::Click(id(OTHER_FILE_ID)));
+    let _ = state.update(Message::Act(Action::Details));
+
+    let _ = state.update(Message::Shortcut(Shortcut::SelectNext));
+
+    assert_eq!(
+        state.details.as_ref().map(details::State::node_id),
+        Some(id(FILE_ID))
+    );
+}
+
+#[test]
 fn a_click_selects_only_that_row() {
     let mut state = state_with_listing();
 
