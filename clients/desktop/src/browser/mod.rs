@@ -21,7 +21,15 @@ mod trash;
 
 use std::path::{Path, PathBuf};
 
-use iced::{Size, Subscription, Task, event, keyboard::Modifiers, widget::operation, window};
+use iced::{
+    Size, Subscription, Task, event,
+    keyboard::Modifiers,
+    widget::{
+        operation,
+        scrollable::{AbsoluteOffset, RelativeOffset, Viewport},
+    },
+    window,
+};
 
 use api_client::{ApiError, Client};
 use client_core::{labels::HOME, listing::SortKey};
@@ -58,6 +66,10 @@ pub enum Message {
     Refresh,
     Loaded(Option<NodeId>, Result<Listing, ApiError>),
     Click(NodeId),
+    /// A click on the icon or name of a folder's row.
+    OpenFolderLink(NodeId),
+    /// Where the rows of the listing are scrolled.
+    GridScrolled(Viewport),
     Toggle(NodeId),
     ToggleAll,
     ClearSelection,
@@ -234,6 +246,11 @@ impl State {
                 Task::none()
             }
             Message::Click(id) => self.click(id),
+            Message::OpenFolderLink(id) => self.open_folder_link(id),
+            Message::GridScrolled(viewport) => {
+                self.folder.viewport = Some(viewport);
+                Task::none()
+            }
             Message::Toggle(id) => {
                 self.folder.selection.toggle(id);
                 Task::none()
@@ -424,7 +441,10 @@ impl State {
         self.search.clear();
         self.details = None;
         self.menu = None;
-        self.folder.load(&self.client)
+        Task::batch([
+            self.folder.load(&self.client),
+            operation::snap_to(grid::ROWS, RelativeOffset::START),
+        ])
     }
 
     /// Leaves another page, such as the recycle bin; in a folder, goes to the one a breadcrumb
@@ -512,6 +532,32 @@ impl State {
     fn click(&mut self, id: NodeId) -> Task<Message> {
         match self.folder.click(id, self.modifiers) {
             Some(id) => self.activate(id),
+            None => Task::none(),
+        }
+    }
+
+    /// Opens the folder, unless a modifier asks for selecting it like a click on the rest of the
+    /// row does.
+    fn open_folder_link(&mut self, id: NodeId) -> Task<Message> {
+        if self.modifiers.command() || self.modifiers.shift() {
+            self.click(id)
+        } else if self.folder.follow_link() {
+            self.activate(id)
+        } else {
+            Task::none()
+        }
+    }
+
+    /// Moves a single selection one row, keeping it in view.
+    fn step_selection(&mut self, forward: bool) -> Task<Message> {
+        match self.folder.step(forward) {
+            Some(y) => operation::scroll_to(
+                grid::ROWS,
+                AbsoluteOffset {
+                    x: None,
+                    y: Some(y),
+                },
+            ),
             None => Task::none(),
         }
     }
@@ -740,6 +786,8 @@ impl State {
                 Shortcut::Upload => self.pick_upload(),
                 Shortcut::Refresh => self.handle(Message::Refresh),
                 Shortcut::Search => Task::none(),
+                Shortcut::SelectPrevious => self.step_selection(false),
+                Shortcut::SelectNext => self.step_selection(true),
             }
         }
     }

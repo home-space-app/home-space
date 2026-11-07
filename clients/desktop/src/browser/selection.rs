@@ -48,6 +48,24 @@ impl Selection {
         }
     }
 
+    /// Moves a single selection to the next or previous row and returns that row's index. Does
+    /// nothing at either end of the listing, or unless exactly one row is selected.
+    pub fn step(&mut self, forward: bool, nodes: &[Node]) -> Option<usize> {
+        if self.ids.len() != 1 {
+            return None;
+        }
+        let index = nodes.iter().position(|node| self.ids.contains(&node.id))?;
+        let next = if forward {
+            index + 1
+        } else {
+            index.checked_sub(1)?
+        };
+        let id = nodes.get(next)?.id;
+        self.ids = HashSet::from([id]);
+        self.anchor = Some(id);
+        Some(next)
+    }
+
     /// Selects every node of the listing.
     pub fn select_all(&mut self, nodes: &[Node]) {
         self.ids = nodes.iter().map(|node| node.id).collect();
@@ -203,6 +221,55 @@ mod tests {
         selection.click(id(2), Modifiers::SHIFT, &nodes);
 
         assert_eq!(selected_ids(&selection, &nodes), [id(2)]);
+    }
+
+    #[test]
+    fn step_moves_a_single_selection() {
+        let nodes = nodes(3);
+        let mut selection = Selection::default();
+        selection.click(id(2), Modifiers::empty(), &nodes);
+
+        assert_eq!(selection.step(true, &nodes), Some(2));
+        assert_eq!(selected_ids(&selection, &nodes), [id(3)]);
+        assert_eq!(selection.step(false, &nodes), Some(1));
+        assert_eq!(selected_ids(&selection, &nodes), [id(2)]);
+    }
+
+    #[test]
+    fn step_stops_at_both_ends() {
+        let nodes = nodes(2);
+        let mut selection = Selection::default();
+        selection.click(id(1), Modifiers::empty(), &nodes);
+        assert_eq!(selection.step(false, &nodes), None);
+        assert_eq!(selected_ids(&selection, &nodes), [id(1)]);
+
+        selection.click(id(2), Modifiers::empty(), &nodes);
+        assert_eq!(selection.step(true, &nodes), None);
+        assert_eq!(selected_ids(&selection, &nodes), [id(2)]);
+    }
+
+    #[test]
+    fn step_needs_exactly_one_selected_row() {
+        let nodes = nodes(3);
+        let mut selection = Selection::default();
+        assert_eq!(selection.step(true, &nodes), None);
+
+        selection.click(id(1), Modifiers::empty(), &nodes);
+        selection.click(id(2), Modifiers::COMMAND, &nodes);
+        assert_eq!(selection.step(true, &nodes), None);
+        assert_eq!(selected_ids(&selection, &nodes), [id(1), id(2)]);
+    }
+
+    #[test]
+    fn step_extends_from_the_row_it_moved_to() {
+        let nodes = nodes(4);
+        let mut selection = Selection::default();
+        selection.click(id(1), Modifiers::empty(), &nodes);
+        selection.step(true, &nodes);
+
+        selection.click(id(4), Modifiers::SHIFT, &nodes);
+
+        assert_eq!(selected_ids(&selection, &nodes), [id(2), id(3), id(4)]);
     }
 
     #[test]
