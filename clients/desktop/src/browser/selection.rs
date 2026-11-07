@@ -6,11 +6,13 @@ pub use client_core::selection::Coverage;
 use client_core::selection::coverage;
 use protocol::{Node, NodeId};
 
-/// The selected rows of a listing, with the anchor that Shift+click extends from.
+/// The selected rows of a listing, with the anchor that Shift+click and Shift+Arrow extend
+/// from and the cursor, the end that Shift+Arrow moves.
 #[derive(Debug, Default)]
 pub struct Selection {
     ids: HashSet<NodeId>,
     anchor: Option<NodeId>,
+    cursor: Option<NodeId>,
 }
 
 impl Selection {
@@ -24,12 +26,19 @@ impl Selection {
                 self.ids.clear();
             }
             self.ids.extend(range);
+            self.cursor = Some(id);
         } else if modifiers.command() {
             self.toggle(id);
         } else {
-            self.ids = HashSet::from([id]);
-            self.anchor = Some(id);
+            self.only(id);
         }
+    }
+
+    /// Selects only `id`, which becomes both the anchor and the cursor.
+    fn only(&mut self, id: NodeId) {
+        self.ids = HashSet::from([id]);
+        self.anchor = Some(id);
+        self.cursor = Some(id);
     }
 
     /// Adds `id` if absent, removes it otherwise, and moves the anchor to it.
@@ -38,32 +47,69 @@ impl Selection {
             self.ids.insert(id);
         }
         self.anchor = Some(id);
+        self.cursor = Some(id);
     }
 
     /// Makes `id` part of the selection; selects only it when it wasn't selected.
     pub fn ensure(&mut self, id: NodeId) {
         if !self.ids.contains(&id) {
-            self.ids = HashSet::from([id]);
-            self.anchor = Some(id);
+            self.only(id);
         }
     }
 
-    /// Moves a single selection to the next or previous row and returns that row's index. Does
-    /// nothing at either end of the listing, or unless exactly one row is selected.
+    /// Moves the selection to the row after or before the cursor, selecting only that row, and
+    /// returns its index. Without a cursor, a single selected row stands in for it. Does nothing
+    /// at either end of the listing or when there is nothing to move from.
     pub fn step(&mut self, forward: bool, nodes: &[Node]) -> Option<usize> {
-        if self.ids.len() != 1 {
-            return None;
-        }
-        let index = nodes.iter().position(|node| self.ids.contains(&node.id))?;
-        let next = if forward {
-            index + 1
-        } else {
-            index.checked_sub(1)?
-        };
-        let id = nodes.get(next)?.id;
-        self.ids = HashSet::from([id]);
-        self.anchor = Some(id);
+        let index = self.cursor_index(nodes)?;
+        let next = neighbour(index, forward, nodes.len())?;
+        self.only(nodes[next].id);
         Some(next)
+    }
+
+    /// Moves the cursor one row the way Finder's Shift+Arrow does: away from the anchor the
+    /// next row is selected, towards it the row left behind is deselected, so the anchor itself
+    /// stays selected. With nothing selected it selects the first or last row. Returns the index
+    /// of the row the cursor moved to.
+    pub fn extend(&mut self, forward: bool, nodes: &[Node]) -> Option<usize> {
+        let Some(cursor) = self.cursor_index(nodes) else {
+            let index = if forward {
+                0
+            } else {
+                nodes.len().checked_sub(1)?
+            };
+            self.only(nodes.get(index)?.id);
+            return Some(index);
+        };
+        let anchor = self
+            .anchor
+            .and_then(|anchor| position(nodes, anchor))
+            .unwrap_or(cursor);
+        let next = neighbour(cursor, forward, nodes.len())?;
+        let towards_anchor = if forward {
+            cursor < anchor
+        } else {
+            cursor > anchor
+        };
+        if towards_anchor {
+            self.ids.remove(&nodes[cursor].id);
+        } else {
+            self.ids.insert(nodes[next].id);
+        }
+        self.anchor = Some(nodes[anchor].id);
+        self.cursor = Some(nodes[next].id);
+        Some(next)
+    }
+
+    /// Where the cursor is in `nodes`, or the single selected row when there is no cursor.
+    fn cursor_index(&self, nodes: &[Node]) -> Option<usize> {
+        self.cursor
+            .filter(|cursor| self.ids.contains(cursor))
+            .and_then(|cursor| position(nodes, cursor))
+            .or_else(|| match self.ids.len() {
+                1 => nodes.iter().position(|node| self.ids.contains(&node.id)),
+                _ => None,
+            })
     }
 
     /// Selects every node of the listing.
@@ -84,6 +130,7 @@ impl Selection {
     pub fn clear(&mut self) {
         self.ids.clear();
         self.anchor = None;
+        self.cursor = None;
     }
 
     /// Drops ids that are no longer listed.
@@ -95,6 +142,12 @@ impl Selection {
             .is_some_and(|anchor| !self.ids.contains(&anchor))
         {
             self.anchor = None;
+        }
+        if self
+            .cursor
+            .is_some_and(|cursor| !self.ids.contains(&cursor))
+        {
+            self.cursor = None;
         }
     }
 
@@ -116,6 +169,19 @@ impl Selection {
         coverage(nodes.iter().map(|node| node.id), |id| {
             self.ids.contains(&id)
         })
+    }
+}
+
+fn position(nodes: &[Node], id: NodeId) -> Option<usize> {
+    nodes.iter().position(|node| node.id == id)
+}
+
+/// The index one row after or before `index` in a listing of `len` rows.
+fn neighbour(index: usize, forward: bool, len: usize) -> Option<usize> {
+    if forward {
+        Some(index + 1).filter(|next| *next < len)
+    } else {
+        index.checked_sub(1)
     }
 }
 
@@ -249,15 +315,95 @@ mod tests {
     }
 
     #[test]
-    fn step_needs_exactly_one_selected_row() {
+    fn step_needs_something_to_move_from() {
         let nodes = nodes(3);
         let mut selection = Selection::default();
         assert_eq!(selection.step(true, &nodes), None);
 
-        selection.click(id(1), Modifiers::empty(), &nodes);
-        selection.click(id(2), Modifiers::COMMAND, &nodes);
+        selection.select_all(&nodes);
         assert_eq!(selection.step(true, &nodes), None);
+        assert_eq!(selection.selected(&nodes).len(), 3);
+    }
+
+    #[test]
+    fn step_collapses_a_multi_selection_from_the_cursor() {
+        let nodes = nodes(5);
+        let mut selection = Selection::default();
+        selection.click(id(2), Modifiers::empty(), &nodes);
+        selection.extend(true, &nodes);
+        selection.extend(true, &nodes);
+
+        assert_eq!(selection.step(true, &nodes), Some(4));
+        assert_eq!(selected_ids(&selection, &nodes), [id(5)]);
+    }
+
+    #[test]
+    fn shift_arrows_grow_and_shrink_without_dropping_the_anchor() {
+        let nodes = nodes(5);
+        let mut selection = Selection::default();
+        selection.click(id(2), Modifiers::empty(), &nodes);
+
+        assert_eq!(selection.extend(true, &nodes), Some(2));
+        assert_eq!(selection.extend(true, &nodes), Some(3));
+        assert_eq!(selected_ids(&selection, &nodes), [id(2), id(3), id(4)]);
+
+        selection.extend(false, &nodes);
+        assert_eq!(selected_ids(&selection, &nodes), [id(2), id(3)]);
+        selection.extend(false, &nodes);
+        assert_eq!(selected_ids(&selection, &nodes), [id(2)]);
+    }
+
+    #[test]
+    fn shift_arrows_cross_the_anchor() {
+        let nodes = nodes(5);
+        let mut selection = Selection::default();
+        selection.click(id(3), Modifiers::empty(), &nodes);
+
+        selection.extend(false, &nodes);
+        selection.extend(false, &nodes);
+        assert_eq!(selected_ids(&selection, &nodes), [id(1), id(2), id(3)]);
+
+        selection.extend(true, &nodes);
+        selection.extend(true, &nodes);
+        selection.extend(true, &nodes);
+        assert_eq!(selected_ids(&selection, &nodes), [id(3), id(4)]);
+    }
+
+    #[test]
+    fn shift_arrows_stop_at_both_ends() {
+        let nodes = nodes(2);
+        let mut selection = Selection::default();
+        selection.click(id(1), Modifiers::empty(), &nodes);
+        assert_eq!(selection.extend(false, &nodes), None);
+
+        selection.extend(true, &nodes);
+        assert_eq!(selection.extend(true, &nodes), None);
         assert_eq!(selected_ids(&selection, &nodes), [id(1), id(2)]);
+    }
+
+    #[test]
+    fn shift_arrows_without_a_selection_pick_an_end() {
+        let nodes = nodes(3);
+        let mut selection = Selection::default();
+        assert_eq!(selection.extend(true, &nodes), Some(0));
+        assert_eq!(selected_ids(&selection, &nodes), [id(1)]);
+
+        selection.clear();
+        assert_eq!(selection.extend(false, &nodes), Some(2));
+        assert_eq!(selected_ids(&selection, &nodes), [id(3)]);
+        assert_eq!(Selection::default().extend(true, &[]), None);
+    }
+
+    #[test]
+    fn shift_arrows_continue_from_a_shift_click() {
+        let nodes = nodes(5);
+        let mut selection = Selection::default();
+        selection.click(id(2), Modifiers::empty(), &nodes);
+        selection.click(id(4), Modifiers::SHIFT, &nodes);
+
+        selection.extend(false, &nodes);
+
+        assert_eq!(selected_ids(&selection, &nodes), [id(2), id(3)]);
     }
 
     #[test]

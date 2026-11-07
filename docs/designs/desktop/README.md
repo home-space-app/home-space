@@ -51,7 +51,8 @@ The web client's values, one-to-one. The only new token is `sidebar`.
 - Elevation: a faint shadow on resting boxes, a large one on dialogs, menus and the transfer panel.
 - Icons: Material Symbols Outlined at 20px, the same set already in `clients/desktop/assets/icons`.
   New ones the mockups use: `home`, `search`, `key`, `dns`, `visibility`, `cloud_off`, `laptop`,
-  `smartphone`, `tablet`, `language`, `expand_more`, `chevron_right`, `verified`, `error`.
+  `smartphone`, `tablet`, `language`, `expand_more`, `chevron_right`, `verified`, `error`,
+  `pause`, `play_arrow`, `stop`, `clear_all`.
 
 ### iced mapping
 
@@ -115,10 +116,14 @@ checkboxes) get the right colours, and a `Tokens` struct for the app's own style
   synced”, an error, syncing progress).
 - **Listing**: one bordered box with the sticky uppercase header; files show their size.
 - **Selection**: the toolbar turns into a tinted bar with the count, the actions and Clear selection
-  (Esc). The context menu has the same actions with their shortcuts; Move to bin is last, in danger.
+  (Esc). Up / Down move a single selection; Shift+Up / Shift+Down grow or shrink it from the
+  anchor row as in Finder; Space opens the single selected folder or file. The context menu has the same actions with their shortcuts; Move to bin is last, in danger.
 - **Details**: a 320px side panel with Open / Download, the facts, and previous versions.
 - **Upload**: dropping files shows the dashed accent overlay; transfers float bottom-right with
-  per-file progress, Retry and Clear completed.
+  per-file progress and Retry. The header is one line: the summary, then icon buttons for Clear
+  completed (`clear_all`, only once something finished), Pause and Stop, and fold. Paused, the
+  summary reads “Paused · 3 of 5 left”, rows say Paused, and Pause / Stop become Continue
+  (`play_arrow`) / Cancel (`stop`). Stopped rows say Cancelled and clear with the completed ones.
 
 ### Dialogs
 

@@ -30,3 +30,4 @@ server/data/
 dist
 .DS_Store
 
+node_modules/
