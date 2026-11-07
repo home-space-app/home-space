@@ -169,6 +169,8 @@ pub struct Status {
     pub locations: HashMap<Option<NodeId>, PathBuf>,
     /// Where each synced file is on disk.
     pub files: HashMap<NodeId, PathBuf>,
+    /// What was last agreed with the server about each synced node.
+    pub bases: HashMap<NodeId, Base>,
     /// Paths with work ahead.
     pub pending: usize,
     /// Paths that failed, with why.
@@ -197,6 +199,11 @@ impl Status {
     /// Where the file `node` syncs to, if it does; it may not be on disk yet.
     pub fn file_path(&self, node: NodeId) -> Option<&Path> {
         self.files.get(&node).map(PathBuf::as_path)
+    }
+
+    /// What was last agreed with the server about `node`, if anything.
+    pub fn base(&self, node: NodeId) -> Option<&Base> {
+        self.bases.get(&node)
     }
 
     /// The new files and folders waiting to be uploaded into `folder` (`None` for Home),
@@ -790,7 +797,7 @@ impl Engine {
         let outage = self.execute(output, &layout, actions).await?;
         self.activity = Activity::Idle;
         self.queue.clear();
-        self.report(output, &layout, &[], None).await;
+        self.report_now(output).await;
         Ok(Some(outage.unwrap_or(SETTLE)))
     }
 
@@ -948,7 +955,7 @@ impl Engine {
                     if due {
                         reported = Instant::now();
                         self.queue = queue::items(&unfinished, &folders);
-                        self.report(output, layout, &unfinished, None).await;
+                        self.report_current(output, &unfinished).await;
                     }
                 }
             } else {
@@ -973,7 +980,7 @@ impl Engine {
             if reported.elapsed() >= PROGRESS || phase == Phase::Delete {
                 reported = Instant::now();
                 self.queue = queue::items(&unfinished, &folders);
-                self.report(output, layout, &unfinished, None).await;
+                self.report_current(output, &unfinished).await;
             }
         }
         Ok(self.conclude(&folders, breaker))
@@ -1100,8 +1107,14 @@ impl Engine {
 
     /// Reports with the layout of what is known now, between passes.
     async fn report_now(&self, output: &mut Sender<Update>) {
+        self.report_current(output, &[]).await;
+    }
+
+    /// Reports with the layout of what is known now, so that what a running pass has finished
+    /// already counts as synced.
+    async fn report_current(&self, output: &mut Sender<Update>, pending: &[Action]) {
         let layout = Layout::new(&self.mirror.nodes, &self.mappings);
-        self.report(output, &layout, &[], None).await;
+        self.report(output, &layout, pending, None).await;
     }
 
     async fn report(
@@ -1177,6 +1190,7 @@ impl Engine {
             names,
             locations,
             files: layout.files(),
+            bases: bases.into_iter().map(|base| (base.node, base)).collect(),
             pending: pending_paths.len(),
             problems,
             error,
@@ -1283,6 +1297,96 @@ mod tests {
                     .is_ok()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn an_upload_counts_as_synced_before_the_pass_ends() {
+        let dir = std::env::temp_dir().join(format!("home-space-report-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("folder");
+        let path = dir.join("photo.jpg");
+        std::fs::write(&path, "photo").expect("file");
+        let meta = std::fs::metadata(&path).expect("meta");
+        let sha256 = hash_file(&path, &std::sync::atomic::AtomicBool::new(false)).expect("hash");
+        let id = "0193a4a0-0000-7000-8000-0000000000aa";
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path(protocol::paths::FILES))
+            .respond_with(
+                wiremock::ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                    "id": id, "parent_id": null, "kind": "file", "name": "photo.jpg",
+                    "size": meta.len(), "sha256": sha256,
+                    "mime": "image/jpeg", "version": 1,
+                    "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"
+                })),
+            )
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path(protocol::paths::LOGIN))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "access_token": "token", "refresh_token": "refresh", "expires_in": 900
+                })),
+            )
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(protocol::paths::ME))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": "00000000-0000-0000-0000-000000000001",
+                    "username": "alice",
+                    "lost_and_found_id": "00000000-0000-0000-0000-0000000000f0"
+                })),
+            )
+            .mount(&server)
+            .await;
+        let client = Client::new(server.uri());
+        client.login("alice", "pw").await.expect("login");
+        let mut engine = Engine::load(
+            client,
+            Store::in_memory().expect("store"),
+            Arc::new(Desktoplike),
+        )
+        .expect("engine");
+        engine.mappings = vec![Mapping {
+            remote: None,
+            local: Some(dir.clone()),
+        }];
+        let layout = Layout::new(&engine.mirror.nodes, &engine.mappings);
+        let action = Action::Upload {
+            node: None,
+            path: path.clone(),
+            local: LocalEntry {
+                kind: NodeKind::File,
+                size: meta.len(),
+                mtime: nanos(meta.modified().expect("mtime")),
+                sha256: Some(sha256),
+                unhashed: false,
+            },
+        };
+        let (mut output, mut updates) = futures::channel::mpsc::channel(16);
+
+        assert!(
+            engine
+                .execute(&mut output, &layout, vec![action])
+                .await
+                .is_ok()
+        );
+
+        drop(output);
+        let mut last = None;
+        while let Ok(update) = updates.try_recv() {
+            if let Update::Status(status) = update {
+                last = Some(status);
+            }
+        }
+        let status = last.expect("a status during the pass");
+        let node = NodeId(id.parse().expect("id"));
+        assert_eq!(status.file_path(node), Some(path.as_path()));
+        assert_eq!(status.badge(Some(node)), Some(Badge::Synced));
+        assert!(status.base(node).is_some());
+        std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 
     #[test]
