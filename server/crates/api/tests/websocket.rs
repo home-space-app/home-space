@@ -30,6 +30,11 @@ async fn serve(app: &TestApp) -> SocketAddr {
 }
 
 async fn sign_in_from(app: &TestApp, username: &str, device: Uuid) -> String {
+    sign_in_with_refresh(app, username, device).await.0
+}
+
+/// Signs in on `device`, returning the access and the refresh token.
+async fn sign_in_with_refresh(app: &TestApp, username: &str, device: Uuid) -> (String, String) {
     app.state.auth.create_user(username, PASSWORD).await.ok();
     let response = app
         .json(
@@ -44,10 +49,9 @@ async fn sign_in_from(app: &TestApp, username: &str, device: Uuid) -> String {
         )
         .await;
     assert_eq!(response.status, StatusCode::OK);
-    response.json()["access_token"]
-        .as_str()
-        .expect("access")
-        .to_owned()
+    let pair = response.json();
+    let token = |name: &str| pair[name].as_str().expect("token").to_owned();
+    (token("access_token"), token("refresh_token"))
 }
 
 async fn hello(socket: &mut Socket, device: Uuid) {
@@ -238,4 +242,165 @@ async fn other_sockets_of_the_user_hear_a_device_come_online(pool: PgPool) {
     hello(&mut laptop, Uuid::now_v7()).await;
 
     assert_eq!(next_text(&mut browser).await["type"], "devices_changed");
+}
+
+/// Reads `socket` until the server closes it, failing on any file event on the way: once its
+/// session has ended, the socket must not deliver the user's files.
+async fn closes_for_ended_session(socket: &mut Socket) {
+    loop {
+        let message = tokio::time::timeout(SHORT_WAIT * 10, socket.next())
+            .await
+            .expect("the socket should close");
+        match message {
+            Some(Ok(Message::Close(frame))) => {
+                let frame = frame.expect("a close frame");
+                assert_eq!(frame.reason.as_str(), "session ended");
+                return;
+            }
+            Some(Ok(Message::Text(text))) => {
+                let event: Value = serde_json::from_str(text.as_str()).expect("json");
+                assert_eq!(event["type"], "devices_changed", "leaked {event}");
+            }
+            Some(Ok(_)) => {}
+            Some(Err(_)) | None => return,
+        }
+    }
+}
+
+async fn logout(app: &TestApp, refresh: &str) {
+    let response = app
+        .json(
+            Method::POST,
+            "/api/v1/auth/logout",
+            None,
+            json!({ "refresh_token": refresh }),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::NO_CONTENT);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn logging_out_closes_the_sessions_socket_only(pool: PgPool) {
+    let app = setup(pool).await;
+    let (laptop, laptop_refresh) = sign_in_with_refresh(&app, "alice", Uuid::now_v7()).await;
+    let phone = sign_in_from(&app, "alice", Uuid::now_v7()).await;
+    let addr = serve(&app).await;
+    let mut laptop_ws = connect(addr, &laptop).await;
+    let mut phone_ws = connect(addr, &phone).await;
+
+    logout(&app, &laptop_refresh).await;
+    app.upload(&phone, "name=private.txt", "secret").await;
+
+    closes_for_ended_session(&mut laptop_ws).await;
+    loop {
+        let event = next_text(&mut phone_ws).await;
+        if event["type"] == "node_created" {
+            break;
+        }
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn signing_out_a_device_closes_its_socket(pool: PgPool) {
+    let app = setup(pool).await;
+    let laptop_device = Uuid::now_v7();
+    let laptop = sign_in_from(&app, "alice", laptop_device).await;
+    let phone = sign_in_from(&app, "alice", Uuid::now_v7()).await;
+    let addr = serve(&app).await;
+    let mut laptop_ws = connect(addr, &laptop).await;
+
+    let response = app
+        .send(
+            Method::DELETE,
+            &format!("{DEVICES}/{laptop_device}"),
+            Some(&phone),
+            axum::body::Body::empty(),
+            None,
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::NO_CONTENT);
+    app.upload(&phone, "name=private.txt", "secret").await;
+
+    closes_for_ended_session(&mut laptop_ws).await;
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn reusing_a_refresh_token_closes_the_sessions_socket(pool: PgPool) {
+    let app = setup(pool).await;
+    let (laptop, refresh) = sign_in_with_refresh(&app, "alice", Uuid::now_v7()).await;
+    let phone = sign_in_from(&app, "alice", Uuid::now_v7()).await;
+    let addr = serve(&app).await;
+    let mut laptop_ws = connect(addr, &laptop).await;
+    let refresh_with = |token: String| {
+        let app = &app;
+        async move {
+            app.json(
+                Method::POST,
+                "/api/v1/auth/refresh",
+                None,
+                json!({ "refresh_token": token }),
+            )
+            .await
+            .status
+        }
+    };
+
+    assert_eq!(refresh_with(refresh.clone()).await, StatusCode::OK);
+    assert_eq!(refresh_with(refresh).await, StatusCode::UNAUTHORIZED);
+    app.upload(&phone, "name=private.txt", "secret").await;
+
+    closes_for_ended_session(&mut laptop_ws).await;
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn changing_the_password_closes_every_socket_of_the_user(pool: PgPool) {
+    let app = setup(pool).await;
+    let device = Uuid::now_v7();
+    let token = sign_in_from(&app, "alice", device).await;
+    let addr = serve(&app).await;
+    let mut socket = connect(addr, &token).await;
+    let user = app
+        .state
+        .db
+        .find_user_by_username("alice")
+        .await
+        .expect("db")
+        .expect("alice");
+
+    app.state
+        .auth
+        .set_password(user.id, "another-password")
+        .await
+        .expect("set password");
+
+    closes_for_ended_session(&mut socket).await;
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_socket_opened_with_a_ticket_closes_when_its_session_ends(pool: PgPool) {
+    let app = setup(pool).await;
+    let (token, refresh) = sign_in_with_refresh(&app, "alice", Uuid::now_v7()).await;
+    let phone = sign_in_from(&app, "alice", Uuid::now_v7()).await;
+    let addr = serve(&app).await;
+    let ticket = app
+        .json(
+            Method::POST,
+            "/api/v1/tickets",
+            Some(&token),
+            json!({ "scope": "events" }),
+        )
+        .await
+        .json()["ticket"]
+        .as_str()
+        .expect("ticket")
+        .to_owned();
+    let request = format!("ws://{addr}/api/v1/ws?ticket={ticket}")
+        .into_client_request()
+        .expect("request");
+    let mut socket = connect_async(request).await.expect("connect").0;
+
+    logout(&app, &refresh).await;
+    app.upload(&phone, "name=private.txt", "secret").await;
+
+    closes_for_ended_session(&mut socket).await;
 }
