@@ -1,5 +1,5 @@
 //! The home-space design system (the web client's `styles/tokens.css`) for iced: the colour
-//! tokens and the style functions built on them. See `docs/designs/desktop`.
+//! tokens and the style functions built on them. The designs are in Penpot (file "Home Space Client", page "Desktop").
 
 use iced::{
     Background, Border, Color, Font, Shadow, Theme, Vector,

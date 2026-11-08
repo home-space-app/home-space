@@ -1,5 +1,22 @@
 # home-space
 
+## Designs
+
+The UI designs for every client live in Penpot, which is the single source of truth: the file
+**Home Space Client**, with one page per platform (Desktop, Web, Android, iOS). Colours, radii,
+spacing and type sizes are Penpot design tokens (token sets `core`, `mode/*`, `android/*` and
+`ios/*`); switch the **Mode** theme between Light and Dark to see every page in the other
+appearance. The designs are not kept in this repository.
+
+The product site has its own Penpot file, **Web Site**: [open](https://design.penpot.app/?screen=workspace&team-id=d3aee43a-8d21-8092-8008-e8ca87f0cb91&project-id=124ca123-b2be-80ce-8008-e8cc36166a1c&file-id=d3aee43a-8d21-8092-8008-e94f65479b3a&page-id=d3aee43a-8d21-8092-8008-e94f65479b3b).
+
+Pages:
+
+- [Desktop](https://design.penpot.app/?screen=workspace&team-id=d3aee43a-8d21-8092-8008-e8ca87f0cb91&project-id=124ca123-b2be-80ce-8008-e8cc36166a1c&file-id=124ca123-b2be-80ce-8008-e8e7873acf90&page-id=124ca123-b2be-80ce-8008-e8e7873acf91)
+- [Web](https://design.penpot.app/?screen=workspace&team-id=d3aee43a-8d21-8092-8008-e8ca87f0cb91&project-id=124ca123-b2be-80ce-8008-e8cc36166a1c&file-id=124ca123-b2be-80ce-8008-e8e7873acf90&page-id=a1e49826-f19a-8041-8008-e92a55d71661)
+- [Android](https://design.penpot.app/?screen=workspace&team-id=d3aee43a-8d21-8092-8008-e8ca87f0cb91&project-id=124ca123-b2be-80ce-8008-e8cc36166a1c&file-id=124ca123-b2be-80ce-8008-e8e7873acf90&page-id=a1e49826-f19a-8041-8008-e92a486bc5c1)
+- [iOS](https://design.penpot.app/?screen=workspace&team-id=d3aee43a-8d21-8092-8008-e8ca87f0cb91&project-id=124ca123-b2be-80ce-8008-e8cc36166a1c&file-id=124ca123-b2be-80ce-8008-e8e7873acf90&page-id=a1e49826-f19a-8041-8008-e92a50a1d5a8)
+
 ## Server
 
 Rust workspace in `server/`: `db` (sqlx/Postgres), `auth` (argon2 + JWT access/refresh tokens, optional OpenID Connect sign-in),
