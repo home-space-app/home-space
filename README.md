@@ -178,9 +178,17 @@ cd ../../server && HOMESPACE_WEB_ROOT=../clients/web/dist cargo run -p app -- se
 The desktop client (`clients/desktop`, iced) runs with `cargo run -p desktop`. It keeps the
 session in `~/.local/share/home-space/session.json`, so rebuilt dev binaries sign in again without
 a keychain prompt; build with `--features keyring` to keep it in the system keyring instead
-(macOS Keychain, Secret Service). On macOS the Dock
-icon only comes from an app bundle: `cargo install cargo-bundle`, then
-`cd clients/desktop && cargo bundle --release` builds `Home Space.app` under `target/release/bundle/osx`.
+(macOS Keychain, Secret Service).
+
+Release builds come from `clients/desktop/scripts/build-release.sh <macos|linux|windows>`, which
+builds with `--features keyring` for the current CPU and writes to `clients/target/dist/<os>/`:
+
+- `macos`: `Home Space.app` (ad-hoc signed; set `CODESIGN_IDENTITY` to use a real identity) and a
+  zip of it. Only an app bundle opens without a Terminal window and shows the Dock icon.
+  `--universal` builds for Apple Silicon and Intel together (needs both Rust targets).
+- `linux`: a tar.gz with the binary, `home-space.desktop` and the icons.
+- `windows` (run from Git Bash): `HomeSpace.exe`, plus a zip when a zip tool is available. Release
+  builds have no console window.
 The icons in `clients/desktop/packaging` are rendered from `home-space.svg`.
 
 ## Single sign-on
