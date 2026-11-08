@@ -8,6 +8,6 @@
   "devDependencies": {
     "material-symbols": "0.27.0",
     "@fontsource/roboto": "5.1.0",
-    "playwright": "1.49.1"
+    "playwright": "1.55.1"
   }
 }
