@@ -11,6 +11,9 @@ pub enum ErrorCode {
     PayloadTooLarge,
     /// What was asked for is no longer kept, such as pruned changes.
     Gone,
+    /// Too many attempts, such as wrong passwords; the `Retry-After` header says when to try
+    /// again.
+    TooManyRequests,
     Internal,
 }
 

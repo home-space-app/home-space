@@ -17,6 +17,7 @@ macro_rules! visible {
 mod changes;
 mod devices;
 mod error;
+mod login_attempts;
 mod models;
 mod nodes;
 mod oidc;

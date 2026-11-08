@@ -10,5 +10,5 @@ mod token;
 pub use error::AuthError;
 pub use oidc::{OidcConfig, OidcService};
 pub use protocol::TokenPair;
-pub use service::{Access, AuthConfig, AuthService, Grant, device_name};
+pub use service::{Access, AuthConfig, AuthService, Grant, LOGIN_ATTEMPTS_MEMORY, device_name};
 pub use token::Claims;

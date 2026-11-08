@@ -113,7 +113,7 @@ one.
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/auth/login`, `/auth/refresh`, `/auth/logout` | JWT access + rotating refresh tokens; login (and `/auth/oidc/exchange`) take an optional `device: {id, name, platform}` |
+| POST | `/auth/login`, `/auth/refresh`, `/auth/logout` | JWT access + rotating refresh tokens; login (and `/auth/oidc/exchange`) take an optional `device: {id, name, platform}`; after 3 wrong passwords for a username, login answers `429 too_many_requests` with `Retry-After` for 30 s, then 1, 2, 4 min and so on (up to a day) until the right password |
 | GET | `/auth/providers` | how users can sign in: `{password, oidc: {name}?}` |
 | GET / GET / POST | `/auth/oidc/start`, `/auth/oidc/callback`, `/auth/oidc/exchange` | single sign-on, see [Single sign-on](#single-sign-on) |
 | GET | `/me` | current user: `{id, username, lost_and_found_id}` |

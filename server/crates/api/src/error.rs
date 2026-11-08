@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    http::StatusCode,
+    http::{HeaderValue, StatusCode, header::RETRY_AFTER},
     response::{IntoResponse, Response},
 };
 
@@ -66,6 +66,9 @@ impl ApiError {
                 (StatusCode::BAD_REQUEST, ErrorCode::BadRequest)
             }
             Self::Gone => (StatusCode::GONE, ErrorCode::Gone),
+            Self::Auth(AuthError::TooManyAttempts { .. }) => {
+                (StatusCode::TOO_MANY_REQUESTS, ErrorCode::TooManyRequests)
+            }
             Self::Files(FilesError::TooLarge { .. }) => {
                 (StatusCode::PAYLOAD_TOO_LARGE, ErrorCode::PayloadTooLarge)
             }
@@ -88,14 +91,20 @@ impl IntoResponse for ApiError {
         } else {
             self.to_string()
         };
-        (
+        let mut response = (
             status,
             Json(ErrorBody {
                 error: code,
                 message,
             }),
         )
-            .into_response()
+            .into_response();
+        if let Self::Auth(AuthError::TooManyAttempts { retry_after }) = self {
+            response
+                .headers_mut()
+                .insert(RETRY_AFTER, HeaderValue::from(retry_after));
+        }
+        response
     }
 }
 
