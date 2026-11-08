@@ -1,5 +1,9 @@
 //! The events websocket. While it is open, the device on the other end counts as online; a
 //! session that names no device takes the one the client names in its hello.
+//!
+//! A socket lives only as long as its session: once the session ends (logout, signing out its
+//! device, a reused refresh token, a password change) the socket is closed rather than kept
+//! delivering the user's events.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -7,7 +11,7 @@ use axum::{
     Router,
     extract::{
         Query, State, WebSocketUpgrade,
-        ws::{Message, WebSocket},
+        ws::{CloseFrame, Message, WebSocket, close_code},
     },
     http::HeaderMap,
     response::Response,
@@ -20,6 +24,7 @@ use tokio::{
 use uuid::Uuid;
 
 use auth::Grant;
+use db::UserId;
 use notifications::{Event, Presence};
 use protocol::{ClientMessage, TicketRequest};
 
@@ -32,6 +37,8 @@ use crate::{
 const PING_INTERVAL: Duration = Duration::from_secs(15);
 /// How long a client may stay silent, pongs included, before its socket is closed.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(45);
+/// Close reason sent when the socket's session has ended.
+const SESSION_ENDED: &str = "session ended";
 
 pub fn routes() -> Router<AppState> {
     Router::new().route("/ws", get(upgrade))
@@ -43,6 +50,8 @@ async fn upgrade(
     Query(query): Query<TicketQuery>,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
+    // Listen before the session is checked, so that it cannot end unnoticed in between.
+    let ended = state.auth.ended_sessions();
     let (grant, lifetime) = match query.ticket {
         Some(ticket) => (
             state
@@ -62,7 +71,8 @@ async fn upgrade(
         }
     };
     let events = state.hub.subscribe(grant.user_id);
-    Ok(ws.on_upgrade(move |socket| session(state, grant, socket, events, lifetime)))
+    let feeds = Feeds { events, ended };
+    Ok(ws.on_upgrade(move |socket| session(state, grant, socket, feeds, lifetime)))
 }
 
 fn remaining_lifetime(token_exp: i64) -> Duration {
@@ -72,11 +82,22 @@ fn remaining_lifetime(token_exp: i64) -> Duration {
         .unwrap_or(Duration::ZERO)
 }
 
+/// What a socket listens to besides its client.
+struct Feeds {
+    /// The user's events, which the socket forwards.
+    events: Receiver<Event>,
+    /// Users whose sessions just ended.
+    ended: Receiver<UserId>,
+}
+
 async fn session(
     state: AppState,
     grant: Grant,
     mut socket: WebSocket,
-    mut events: Receiver<Event>,
+    Feeds {
+        mut events,
+        mut ended,
+    }: Feeds,
     lifetime: Duration,
 ) {
     let mut online = grant
@@ -87,10 +108,30 @@ async fn session(
     let mut ping = interval_at(Instant::now() + PING_INTERVAL, PING_INTERVAL);
     let mut heard = Instant::now();
     loop {
+        // Biased, so that a session that ended is noticed before any further event is sent.
         let outgoing = tokio::select! {
+            biased;
             () = &mut expiry => break,
+            notice = ended.recv() => {
+                let recheck = match notice {
+                    Ok(user) => user == grant.user_id,
+                    Err(RecvError::Lagged(_)) => true,
+                    Err(RecvError::Closed) => false,
+                };
+                if recheck && !still_live(&state, &grant).await {
+                    close_ended(&mut socket).await;
+                    break;
+                }
+                None
+            }
             _ = ping.tick() => {
                 if heard.elapsed() >= IDLE_TIMEOUT {
+                    break;
+                }
+                // Also catches sessions ended where no notice reaches this server, such as a
+                // password changed from the command line.
+                if !still_live(&state, &grant).await {
+                    close_ended(&mut socket).await;
                     break;
                 }
                 Some(Message::Ping(Default::default()))
@@ -124,6 +165,25 @@ async fn session(
     if let Some((device, presence)) = online {
         went_offline(&state, &grant, device, presence).await;
     }
+}
+
+/// Whether the socket's session still lives. A failed check counts as ended: the client
+/// reconnects, and is let back in only with a live session.
+async fn still_live(state: &AppState, grant: &Grant) -> bool {
+    state.auth.is_live(grant).await.unwrap_or_else(|err| {
+        tracing::warn!(error = %err, "checking the websocket's session failed");
+        false
+    })
+}
+
+/// Tells the client that its session has ended before the socket closes.
+async fn close_ended(socket: &mut WebSocket) {
+    let frame = CloseFrame {
+        code: close_code::POLICY,
+        reason: SESSION_ENDED.into(),
+    };
+    // The socket closes either way.
+    let _ = socket.send(Message::Close(Some(frame))).await;
 }
 
 /// Takes the device a client names in its hello, registering it for a session that names

@@ -65,7 +65,7 @@ async fn rename(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Ends the device's sessions and cancels the uploads it left unfinished. The device stays in
+/// Ends the device's sessions, closing their websockets, and cancels the uploads it left unfinished. The device stays in
 /// the list, signed out, until it has been gone for as long as a session lasts unrefreshed.
 async fn sign_out(
     State(state): State<AppState>,
@@ -77,6 +77,7 @@ async fn sign_out(
         .sign_out_device(user.id, id)
         .await
         .map_err(db_error)?;
+    state.auth.sessions_ended(user.id);
     state.files.cancel_device_uploads(user.id, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -1,5 +1,6 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use time::{Duration, OffsetDateTime};
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use db::{Db, DbError, LiveSession, NewDevice, OidcPending, User, UserId};
@@ -30,6 +31,9 @@ const USERNAME_ATTEMPTS: u32 = 20;
 const FALLBACK_USERNAME: &str = "user";
 const MAX_DEVICE_NAME_CHARS: usize = 100;
 const MAX_PLATFORM_CHARS: usize = 32;
+/// Room for session-end notices a slow websocket has not read yet; one that falls further
+/// behind re-checks its session anyway.
+const ENDED_CAPACITY: usize = 64;
 
 /// Token settings.
 #[derive(Clone, Debug)]
@@ -67,6 +71,8 @@ pub struct AuthService {
     dummy_hash: String,
     oidc: Option<OidcService>,
     password_login: bool,
+    /// Users some of whose sessions just ended, so open websockets re-check theirs.
+    ended: broadcast::Sender<UserId>,
 }
 
 impl AuthService {
@@ -84,6 +90,7 @@ impl AuthService {
             dummy_hash,
             oidc: None,
             password_login: true,
+            ended: broadcast::channel(ENDED_CAPACITY).0,
         })
     }
 
@@ -133,7 +140,9 @@ impl AuthService {
             ))
         } else {
             let hashed = self.hash_blocking(password).await?;
-            Ok(self.db.set_password_hash(user_id, &hashed).await?)
+            self.db.set_password_hash(user_id, &hashed).await?;
+            self.sessions_ended(user_id);
+            Ok(())
         }
     }
 
@@ -172,7 +181,7 @@ impl AuthService {
             .await?
             .ok_or(AuthError::InvalidCredentials)?;
         if stored.revoked_at.is_some() {
-            self.db.end_session(stored.family_id).await?;
+            self.end_session(stored.user_id, stored.family_id).await?;
             Err(AuthError::InvalidCredentials)
         } else if stored.expires_at <= OffsetDateTime::now_utc() {
             Err(AuthError::InvalidCredentials)
@@ -180,7 +189,7 @@ impl AuthService {
             self.continue_session(stored.user_id, stored.family_id)
                 .await
         } else {
-            self.db.end_session(stored.family_id).await?;
+            self.end_session(stored.user_id, stored.family_id).await?;
             Err(AuthError::InvalidCredentials)
         }
     }
@@ -192,9 +201,36 @@ impl AuthService {
             .find_refresh_token(&hash_refresh_token(refresh_token))
             .await?
         {
-            self.db.end_session(stored.family_id).await?;
+            self.end_session(stored.user_id, stored.family_id).await?;
         }
         Ok(())
+    }
+
+    async fn end_session(&self, user_id: UserId, session_id: Uuid) -> Result<(), AuthError> {
+        self.db.end_session(session_id).await?;
+        self.sessions_ended(user_id);
+        Ok(())
+    }
+
+    /// Tells open websockets that sessions of `user_id` ended, so each checks whether its own
+    /// still lives. Call it after ending sessions anywhere else, such as signing out a device.
+    pub fn sessions_ended(&self, user_id: UserId) {
+        // An error only means no websocket is open right now.
+        let _ = self.ended.send(user_id);
+    }
+
+    /// Notices from [`sessions_ended`](Self::sessions_ended), for every user.
+    pub fn ended_sessions(&self) -> broadcast::Receiver<UserId> {
+        self.ended.subscribe()
+    }
+
+    /// Whether `grant`'s session still lives.
+    pub async fn is_live(&self, grant: &Grant) -> Result<bool, AuthError> {
+        Ok(self
+            .db
+            .live_session(grant.session_id, grant.user_id)
+            .await?
+            .is_some())
     }
 
     /// Validates an access token: a good signature is not enough, its session must still exist.
