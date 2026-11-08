@@ -65,6 +65,7 @@ fn error_code_name(code: ErrorCode) -> &'static str {
         ErrorCode::BadRequest => "bad_request",
         ErrorCode::PayloadTooLarge => "payload_too_large",
         ErrorCode::Gone => "gone",
+        ErrorCode::TooManyRequests => "too_many_requests",
         ErrorCode::Internal => "internal",
     }
 }

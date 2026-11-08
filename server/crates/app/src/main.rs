@@ -147,7 +147,7 @@ async fn serve(db: Db, config: &Config) -> Result<()> {
 }
 
 /// Compacts the change journal, drops its entries older than `retention` when there is one,
-/// removes expired sign-in state, and forgets devices signed out for longer than
+/// removes expired sign-in state and old failed sign-ins, and forgets devices signed out for longer than
 /// `device_retention`; once at start and then daily.
 async fn prune(db: Db, retention: Option<time::Duration>, device_retention: time::Duration) {
     let mut daily = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
@@ -171,6 +171,12 @@ async fn prune(db: Db, retention: Option<time::Duration>, device_retention: time
         }
         if let Err(err) = db.prune_sessions().await {
             tracing::error!(error = %err, "pruning expired sessions failed");
+        }
+        if let Err(err) = db
+            .prune_login_attempts(time::OffsetDateTime::now_utc() - auth::LOGIN_ATTEMPTS_MEMORY)
+            .await
+        {
+            tracing::error!(error = %err, "pruning failed sign-in attempts failed");
         }
         match db
             .prune_devices(time::OffsetDateTime::now_utc() - device_retention)

@@ -135,3 +135,60 @@ async fn logout_revokes_the_refresh_token(pool: PgPool) {
     assert_eq!(logout.status, StatusCode::NO_CONTENT);
     assert_eq!(after.status, StatusCode::UNAUTHORIZED);
 }
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_fourth_wrong_password_in_a_row_is_throttled(pool: PgPool) {
+    let app = setup(pool).await;
+    app.user_token("alice").await;
+    let login = |password: &'static str| {
+        let app = &app;
+        async move {
+            app.json(
+                Method::POST,
+                "/api/v1/auth/login",
+                None,
+                json!({ "username": "alice", "password": password }),
+            )
+            .await
+        }
+    };
+    for _ in 0..3 {
+        assert_eq!(
+            login("wrong-password").await.status,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    let throttled = login(PASSWORD).await;
+
+    assert_eq!(throttled.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(throttled.json()["error"], "too_many_requests");
+    let retry_after: u64 = throttled.headers["retry-after"]
+        .to_str()
+        .expect("header")
+        .parse()
+        .expect("seconds");
+    assert!((29..=31).contains(&retry_after), "{retry_after}");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn parallel_wrong_passwords_get_three_checks_at_most(pool: PgPool) {
+    let app = setup(pool).await;
+    app.user_token("alice").await;
+    let attempts = (0..10).map(|_| {
+        app.json(
+            Method::POST,
+            "/api/v1/auth/login",
+            None,
+            json!({ "username": "alice", "password": "wrong-password" }),
+        )
+    });
+
+    let responses = futures_util::future::join_all(attempts).await;
+
+    let checked = responses
+        .iter()
+        .filter(|response| response.status == StatusCode::UNAUTHORIZED)
+        .count();
+    assert_eq!(checked, 3);
+}

@@ -31,6 +31,14 @@ const USERNAME_ATTEMPTS: u32 = 20;
 const FALLBACK_USERNAME: &str = "user";
 const MAX_DEVICE_NAME_CHARS: usize = 100;
 const MAX_PLATFORM_CHARS: usize = 32;
+/// Wrong passwords a username may get before attempts for it have to wait.
+const FREE_LOGIN_FAILURES: u32 = 3;
+/// The first wait, which doubles with every further wrong password.
+const FIRST_LOGIN_BLOCK: Duration = Duration::seconds(30);
+/// The longest wait, so that someone guessing cannot lock the owner out for good.
+const MAX_LOGIN_BLOCK: Duration = Duration::hours(24);
+/// How long failed sign-ins of a username that is not blocked are remembered.
+pub const LOGIN_ATTEMPTS_MEMORY: Duration = Duration::days(1);
 /// Room for session-end notices a slow websocket has not read yet; one that falls further
 /// behind re-checks its session anyway.
 const ENDED_CAPACITY: usize = 64;
@@ -147,12 +155,23 @@ impl AuthService {
     }
 
     /// Verifies credentials and starts a session on `device`, when the client names one.
+    ///
+    /// After [`FREE_LOGIN_FAILURES`] wrong passwords for a username, each further attempt waits
+    /// twice as long as the one before, starting at [`FIRST_LOGIN_BLOCK`]; the correct password
+    /// starts the count again. Usernames that do not exist are counted the same way, so that
+    /// a block does not tell which ones do.
     pub async fn login(
         &self,
         username: &str,
         password: &str,
         device: Option<&DeviceInfo>,
     ) -> Result<TokenPair, AuthError> {
+        if let Err(until) = self.db.begin_login_attempt(username, login_block).await? {
+            let wait = until - OffsetDateTime::now_utc();
+            return Err(AuthError::TooManyAttempts {
+                retry_after: wait.whole_seconds().max(0).unsigned_abs() + 1,
+            });
+        }
         let user = self.db.find_user_by_username(username).await?;
         // Always verify against some hash so the timing does not reveal whether the user exists,
         // has a password, or may use password login at all.
@@ -166,7 +185,10 @@ impl AuthService {
         let verified =
             tokio::task::spawn_blocking(move || password::verify(&candidate, &hash)).await?;
         match user {
-            Some(user) if verified && allowed => self.start_session(user.id, device).await,
+            Some(user) if verified && allowed => {
+                self.db.clear_login_attempts(username).await?;
+                self.start_session(user.id, device).await
+            }
             _ => Err(AuthError::InvalidCredentials),
         }
     }
@@ -548,6 +570,18 @@ impl AuthService {
     }
 }
 
+/// How long the next sign-in attempt must wait after `failures` wrong passwords in a row:
+/// not at all for the first [`FREE_LOGIN_FAILURES`], then 30 seconds, 1 minute, 2 minutes and
+/// so on, up to [`MAX_LOGIN_BLOCK`].
+fn login_block(failures: u32) -> Option<Duration> {
+    let doublings = failures.checked_sub(FREE_LOGIN_FAILURES)?;
+    let factor = 1i32.checked_shl(doublings).filter(|factor| *factor > 0);
+    let wait = factor
+        .and_then(|factor| FIRST_LOGIN_BLOCK.checked_mul(factor))
+        .unwrap_or(MAX_LOGIN_BLOCK);
+    Some(wait.min(MAX_LOGIN_BLOCK))
+}
+
 /// `device` checked against what the server stores: a name of 1-100 characters, kept without
 /// surrounding blanks, and a platform of 1-32.
 fn new_device(device: &DeviceInfo) -> Result<NewDevice<'_>, AuthError> {
@@ -842,6 +876,102 @@ mod tests {
     async fn login_fails_for_unknown_user(pool: PgPool) {
         let result = service(pool).login("nobody", "password-1", None).await;
         assert!(matches!(result, Err(AuthError::InvalidCredentials)));
+    }
+
+    #[test]
+    fn login_waits_double_after_three_failures_up_to_a_day() {
+        assert_eq!(login_block(1), None);
+        assert_eq!(login_block(2), None);
+        assert_eq!(login_block(3), Some(Duration::seconds(30)));
+        assert_eq!(login_block(4), Some(Duration::minutes(1)));
+        assert_eq!(login_block(5), Some(Duration::minutes(2)));
+        assert_eq!(login_block(6), Some(Duration::minutes(4)));
+        assert_eq!(login_block(20), Some(MAX_LOGIN_BLOCK));
+        assert_eq!(login_block(u32::MAX), Some(MAX_LOGIN_BLOCK));
+    }
+
+    async fn wrong(auth: &AuthService, username: &str) -> Result<TokenPair, AuthError> {
+        auth.login(username, "wrong-password", None).await
+    }
+
+    /// Ends the current wait, as if it had passed.
+    async fn wait_out(pool: &PgPool) {
+        sqlx::query("UPDATE login_attempts SET blocked_until = now() - interval '1 second'")
+            .execute(pool)
+            .await
+            .expect("wait out");
+    }
+
+    fn retry_after(result: Result<TokenPair, AuthError>) -> u64 {
+        match result {
+            Err(AuthError::TooManyAttempts { retry_after }) => retry_after,
+            other => panic!("expected a block, got {other:?}"),
+        }
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn three_wrong_passwords_block_sign_in_even_with_the_right_one(pool: PgPool) {
+        let auth = service(pool);
+        auth.create_user("alice", "password-1").await.expect("user");
+        for _ in 0..3 {
+            assert!(matches!(
+                wrong(&auth, "alice").await,
+                Err(AuthError::InvalidCredentials)
+            ));
+        }
+        let wait = retry_after(auth.login("alice", "password-1", None).await);
+        assert!((29..=31).contains(&wait), "{wait}");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn each_further_wrong_password_doubles_the_wait(pool: PgPool) {
+        let auth = service(pool.clone());
+        auth.create_user("alice", "password-1").await.expect("user");
+        for _ in 0..3 {
+            wrong(&auth, "alice").await.expect_err("wrong");
+        }
+        for expected in [60, 120, 240] {
+            wait_out(&pool).await;
+            assert!(matches!(
+                wrong(&auth, "alice").await,
+                Err(AuthError::InvalidCredentials)
+            ));
+            let wait = retry_after(wrong(&auth, "alice").await);
+            assert!((expected - 1..=expected + 1).contains(&wait), "{wait}");
+        }
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn the_right_password_resets_the_count(pool: PgPool) {
+        let auth = service(pool.clone());
+        auth.create_user("alice", "password-1").await.expect("user");
+        for _ in 0..3 {
+            wrong(&auth, "alice").await.expect_err("wrong");
+        }
+        wait_out(&pool).await;
+        auth.login("alice", "password-1", None)
+            .await
+            .expect("login");
+        for _ in 0..3 {
+            assert!(matches!(
+                wrong(&auth, "alice").await,
+                Err(AuthError::InvalidCredentials)
+            ));
+        }
+        retry_after(wrong(&auth, "alice").await);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn unknown_users_are_blocked_like_real_ones_and_others_are_not(pool: PgPool) {
+        let auth = service(pool);
+        auth.create_user("alice", "password-1").await.expect("user");
+        for _ in 0..3 {
+            wrong(&auth, "nobody").await.expect_err("wrong");
+        }
+        retry_after(wrong(&auth, "nobody").await);
+        auth.login("alice", "password-1", None)
+            .await
+            .expect("alice");
     }
 
     #[sqlx::test(migrations = "../../migrations")]
