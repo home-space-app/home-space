@@ -61,3 +61,31 @@ impl FromRequestParts<AppState> for AuthUser {
         Self::from_headers(&parts.headers, state).await
     }
 }
+
+/// An authenticated administrator; anyone else is refused with 403.
+///
+/// Checked against the database on every request, so revoking the role takes effect at once.
+#[derive(Clone, Copy, Debug)]
+pub struct AdminUser;
+
+impl FromRequestParts<AppState> for AdminUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let user = AuthUser::from_request_parts(parts, state).await?;
+        let found = state
+            .db
+            .find_user(user.id)
+            .await
+            .map_err(|err| ApiError::Internal(err.to_string()))?
+            .ok_or(ApiError::Unauthorized)?;
+        if found.is_admin {
+            Ok(Self)
+        } else {
+            Err(ApiError::Forbidden)
+        }
+    }
+}

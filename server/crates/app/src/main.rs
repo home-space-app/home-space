@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
-use api::AppState;
+use api::{AppState, ServerInfo};
 use auth::{AuthConfig, AuthService, OidcService};
 use db::Db;
 use files::{BlobStore, FileService};
@@ -49,9 +49,20 @@ enum SearchCommand {
 #[derive(Subcommand)]
 enum UserCommand {
     /// Create a user; the password is prompted for.
-    Add { username: String },
+    Add {
+        username: String,
+        /// Make the user an administrator.
+        #[arg(long)]
+        admin: bool,
+    },
     /// List users.
     List,
+    /// Make a user an administrator, or with `--revoke` a regular user again.
+    Admin {
+        username: String,
+        #[arg(long)]
+        revoke: bool,
+    },
     /// Change a user's password (revokes their sessions); the password is prompted for.
     Passwd { username: String },
 }
@@ -111,6 +122,11 @@ async fn serve(db: Db, config: &Config) -> Result<()> {
             .with_chunk_bytes(config.upload_chunk_bytes),
         hub: Hub::new(),
         search: search.clone(),
+        info: std::sync::Arc::new(ServerInfo {
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            started_at: time::OffsetDateTime::now_utc(),
+            config: config.summary()?,
+        }),
         db,
     };
     tokio::spawn(async move {
@@ -233,17 +249,39 @@ async fn run_search_command(command: SearchCommand, db: Db, config: &Config) -> 
 
 async fn run_user_command(command: UserCommand, db: &Db, config: &Config) -> Result<()> {
     match command {
-        UserCommand::Add { username } => {
+        UserCommand::Add { username, admin } => {
             let password = prompt_new_password()?;
             let user = auth_service(db, config)?
                 .create_user(&username, &password)
                 .await
                 .context("creating user")?;
-            println!("created user {} ({})", user.username, user.id);
+            if admin {
+                db.set_admin(user.id, true)
+                    .await
+                    .context("making the user an administrator")?;
+            }
+            let role = if admin { " as an administrator" } else { "" };
+            println!("created user {} ({}){role}", user.username, user.id);
         }
         UserCommand::List => {
             for user in db.list_users().await.context("listing users")? {
-                println!("{}\t{}", user.id, user.username);
+                let role = if user.is_admin { "\tadmin" } else { "" };
+                println!("{}\t{}{role}", user.id, user.username);
+            }
+        }
+        UserCommand::Admin { username, revoke } => {
+            let user = db
+                .find_user_by_username(&username)
+                .await
+                .context("looking up user")?
+                .with_context(|| format!("no such user: {username}"))?;
+            db.set_admin(user.id, !revoke)
+                .await
+                .context("changing administrator rights")?;
+            if revoke {
+                println!("{username} is no longer an administrator");
+            } else {
+                println!("{username} is now an administrator");
             }
         }
         UserCommand::Passwd { username } => {

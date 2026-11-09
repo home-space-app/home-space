@@ -5,7 +5,7 @@ use leptos_router::components::A;
 
 use client_core::{
     format::{conflicts_title, human_size},
-    labels::{HOME, LOST_AND_FOUND, files},
+    labels::{LOST_AND_FOUND, files},
 };
 use protocol::{Conflict, Event, NodeId, OnConflict, TrashItem};
 
@@ -118,17 +118,7 @@ pub fn TrashPage(auth: Auth) -> impl IntoView {
     view! {
         <main class="explorer">
             <div class="explorer__header">
-                <nav class="breadcrumbs" aria-label="Folder path">
-                    <A href="/" exact=true attr:class="breadcrumbs__link">
-                        {HOME}
-                    </A>
-                    <span class="breadcrumbs__separator" aria-hidden="true">
-                        "/"
-                    </span>
-                    <span class="breadcrumbs__link" aria-current="page">
-                        "Recycle bin"
-                    </span>
-                </nav>
+                <h1 class="page-title">"Recycle bin"</h1>
                 <div class="explorer__toolbar">
                     <button
                         class="button button--primary"

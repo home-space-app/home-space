@@ -4,7 +4,9 @@ mod capabilities;
 mod client;
 mod devices;
 mod error;
+mod password;
 mod pkce;
+mod storage;
 mod uploads;
 
 pub use capabilities::FALLBACK_UPLOAD_CHUNK_BYTES;

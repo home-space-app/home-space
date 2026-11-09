@@ -23,6 +23,7 @@ COPY --from=server /workspace/server/target/release/homespace /usr/local/bin/hom
 COPY --from=web /workspace/clients/web/dist /srv/web
 USER homespace
 ENV HOMESPACE_BIND=0.0.0.0:8080 \
+    HOMESPACE_STORAGE=local \
     HOMESPACE_STORAGE_ROOT=/data \
     HOMESPACE_WEB_ROOT=/srv/web
 EXPOSE 8080

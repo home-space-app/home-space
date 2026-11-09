@@ -4,8 +4,9 @@
   align-items: center;
   gap: var(--space-1);
   min-width: 0;
-  font-size: var(--text-lg);
-  font-weight: 600;
+  font-size: var(--text-xl);
+  font-weight: 650;
+  letter-spacing: -0.01em;
 }
 
 .breadcrumbs__link {
@@ -25,6 +26,10 @@
 
 .breadcrumbs__link[aria-current="page"] {
   color: var(--color-text);
+}
+
+.breadcrumbs:has(.breadcrumbs__link:nth-of-type(2)) {
+  font-size: var(--text-lg);
 }
 
 .breadcrumbs__separator {

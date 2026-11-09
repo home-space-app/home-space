@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     Unauthorized,
+    /// Signed in, but not allowed, such as a non-administrator on an administration endpoint.
+    Forbidden,
     NotFound,
     Conflict,
     BadRequest,

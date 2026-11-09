@@ -41,6 +41,12 @@
   text-decoration: none;
 }
 
+.menu__divider {
+  margin: var(--space-1) 0;
+  border: 0;
+  border-top: 1px solid var(--color-border);
+}
+
 .menu__item--danger {
   color: var(--color-danger);
 }

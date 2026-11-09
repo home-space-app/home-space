@@ -10,6 +10,7 @@ bytes.workspace = true
 db.workspace = true
 futures-util.workspace = true
 mime_guess.workspace = true
+protocol.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -17,6 +18,9 @@ tokio-util.workspace = true
 tracing.workspace = true
 time.workspace = true
 uuid.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.6", features = ["fs"] }
 
 [dev-dependencies]
 tempfile.workspace = true

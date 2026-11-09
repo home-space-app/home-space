@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use auth::AuthService;
 use db::Db;
 use files::FileService;
@@ -12,6 +14,16 @@ pub struct AppState {
     pub files: FileService,
     pub hub: Hub,
     pub search: SearchIndex,
+    /// What the administration status reports about this server.
+    pub info: Arc<ServerInfo>,
+}
+
+/// Facts about the running server that only change with a restart.
+#[derive(Clone, Debug)]
+pub struct ServerInfo {
+    pub version: String,
+    pub started_at: time::OffsetDateTime,
+    pub config: protocol::ServerConfig,
 }
 
 impl AppState {

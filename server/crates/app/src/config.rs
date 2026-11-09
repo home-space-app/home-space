@@ -1,9 +1,16 @@
 use std::{net::SocketAddr, path::PathBuf};
 
 use anyhow::{Context, Result};
-use clap::Args;
+use clap::{Args, ValueEnum};
 
 const MIN_SECRET_LEN: usize = 32;
+
+/// Where file content is kept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum StorageBackend {
+    /// Files on this machine's disk, under the storage root.
+    Local,
+}
 
 /// Settings shared by all subcommands, read from flags or environment.
 #[derive(Args, Debug)]
@@ -24,11 +31,21 @@ pub struct Config {
     #[arg(long, env = "HOMESPACE_JWT_SECRET_PREVIOUS", hide_env_values = true)]
     pub jwt_secret_previous: Option<String>,
 
+    /// Where file content is kept. Only `local` exists today; object storage is planned.
+    #[arg(long, env = "HOMESPACE_STORAGE", value_enum, default_value_t = StorageBackend::Local)]
+    pub storage: StorageBackend,
+
     #[arg(long, env = "HOMESPACE_STORAGE_ROOT", default_value = "./data")]
     pub storage_root: PathBuf,
 
     #[arg(long, env = "HOMESPACE_BIND", default_value = "127.0.0.1:8080")]
     pub bind: SocketAddr,
+
+    /// The host port a container is published on. Compose uses it for the port mapping; the
+    /// server only shows it to administrators, since inside the container it listens on
+    /// `HOMESPACE_BIND`.
+    #[arg(long, env = "HOMESPACE_PORT")]
+    pub port: Option<u16>,
 
     #[arg(long, env = "HOMESPACE_WEB_ROOT")]
     pub web_root: Option<PathBuf>,
@@ -142,6 +159,33 @@ impl Config {
             groups_claim: self.oidc_groups_claim.clone(),
             display_name: self.oidc_name.clone(),
         }))
+    }
+
+    /// The settings shown to administrators, without secrets.
+    pub fn summary(&self) -> Result<protocol::ServerConfig> {
+        let oidc = self.oidc()?.map(|oidc| protocol::OidcStatus {
+            name: oidc.display_name,
+            issuer: oidc.issuer,
+            required_group: oidc.required_group,
+        });
+        let (_, previous) = self.jwt_secrets()?;
+        Ok(protocol::ServerConfig {
+            max_upload_bytes: self.max_upload_bytes,
+            upload_chunk_bytes: self.upload_chunk_bytes,
+            upload_expiry_hours: self.upload_expiry_hours,
+            changes_retention_days: self.changes_retention_days,
+            password_login: self.password_login,
+            oidc,
+            access_ttl_secs: self.access_ttl_secs,
+            refresh_ttl_secs: self.refresh_ttl_secs,
+            previous_jwt_secret: !previous.is_empty(),
+            public_url: non_empty(&self.public_url).map(str::to_owned),
+            bind: self.bind.to_string(),
+            published_port: self.port,
+            storage: match self.storage {
+                StorageBackend::Local => protocol::StorageBackend::Local,
+            },
+        })
     }
 
     /// The current signing secret followed by the previous one, if any.

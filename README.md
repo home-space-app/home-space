@@ -27,9 +27,20 @@ Rust workspace in `server/`: `db` (sqlx/Postgres), `auth` (argon2 + JWT access/r
 cd server
 cp .env.example .env            # set HOMESPACE_JWT_SECRET (>= 32 chars)
 ./scripts/db.sh up              # Postgres in podman (down | destroy | psql | logs)
-cargo run -p app -- user add me # prompts for a password; there is no public signup
+cargo run -p app -- user add me --admin # prompts for a password; there is no public signup
 cargo run -p app -- serve       # http://127.0.0.1:8080/api/v1
 ```
+
+Administrators get the Administration page in the web client (server status, disk and storage
+per user), but no access to other users' files. Grant or revoke the role with
+`user admin <username> [--revoke]`; `user list` marks administrators.
+
+| Variable | Default | |
+|---|---|---|
+| `HOMESPACE_BIND` | `127.0.0.1:8080` | Address the server listens on (`0.0.0.0:8080` in the container). |
+| `HOMESPACE_STORAGE` | `local` | Where file content is kept. Only `local` exists today; object storage is planned ([docs/todo/object-storage.md](docs/todo/object-storage.md)). |
+| `HOMESPACE_STORAGE_ROOT` | `./data` | Directory for the local backend (`/data` in the container). |
+| `HOMESPACE_PORT` | unset | Host port the container is published on. Compose maps it to the container's 8080; the server only shows it on the Administration page. |
 
 Tests need the database running and `DATABASE_URL` set (`.env` is picked up):
 `cargo test --workspace`.
@@ -133,7 +144,10 @@ one.
 | POST | `/auth/login`, `/auth/refresh`, `/auth/logout` | JWT access + rotating refresh tokens; login (and `/auth/oidc/exchange`) take an optional `device: {id, name, platform}`; after 3 wrong passwords for a username, login answers `429 too_many_requests` with `Retry-After` for 30 s, then 1, 2, 4 min and so on (up to a day) until the right password |
 | GET | `/auth/providers` | how users can sign in: `{password, oidc: {name}?}` |
 | GET / GET / POST | `/auth/oidc/start`, `/auth/oidc/callback`, `/auth/oidc/exchange` | single sign-on, see [Single sign-on](#single-sign-on) |
-| GET | `/me` | current user: `{id, username, lost_and_found_id}` |
+| GET | `/me` | current user: `{id, username, lost_and_found_id, is_admin, external}` (`external`: signs in only through the identity provider) |
+| POST | `/me/password` | `{current_password, new_password}` → 204; ends the user's other sessions, this one stays signed in. A wrong current password is 400 and counts towards the sign-in throttle (429). Not for single sign-on accounts (400) |
+| GET | `/storage` | the user's bytes `{usage: {files, versions, trash}, disk: {total, available}?}`; versions count binned files too |
+| GET | `/admin/status` | administrators only (403 `forbidden` otherwise): version, start time, the storage root's disk, every user's `usage`, the read-only configuration and the database version |
 | GET | `/capabilities` | what the server supports: `{upload_chunk_bytes}`, the largest request body of an upload |
 | GET | `/nodes?parent_id=` | list folder (root when omitted) |
 | GET / PATCH / DELETE | `/nodes/{id}` | metadata / rename or move / delete (to the recycle bin; 409 for Lost & Found) |

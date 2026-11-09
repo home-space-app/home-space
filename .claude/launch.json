@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "server-with-web",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "cd server && HOMESPACE_BIND=127.0.0.1:8080 HOMESPACE_PORT=8080 HOMESPACE_WEB_ROOT=../clients/web/dist ./target/debug/homespace serve"],
+      "port": 8080
+    }
+  ]
+}

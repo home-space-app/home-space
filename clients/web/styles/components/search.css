@@ -1,12 +1,6 @@
-.app-bar__search {
-  flex: 0 1 22rem;
+.search-box {
+  flex: 0 1 20rem;
   min-width: 0;
-}
-
-.search-title {
-  font-size: var(--text-lg);
-  font-weight: 600;
-  overflow-wrap: anywhere;
 }
 
 .search-results__location {
