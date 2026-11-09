@@ -1,3 +1,5 @@
+use std::net::{IpAddr, Ipv6Addr};
+
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use time::{Duration, OffsetDateTime};
 use tokio::sync::broadcast;
@@ -19,6 +21,8 @@ use crate::{
 };
 
 const MAX_USERNAME_LEN: usize = 64;
+/// Leading bits of an IPv6 address that name a network; one subscriber usually owns them all.
+const IPV6_NETWORK_BITS: u32 = 64;
 const MIN_PASSWORD_LEN: usize = 8;
 const TICKET_TTL_SECS: i64 = 60;
 const SCOPE_EVENTS: &str = "events";
@@ -157,8 +161,9 @@ impl AuthService {
     /// Replaces the password of a signed-in user after checking the current one, and ends
     /// their other sessions; `session_id` is the session asking, which stays signed in.
     ///
-    /// Wrong current passwords count towards the same block as sign-in, so a stolen session
-    /// cannot be used to guess the password.
+    /// Wrong current passwords are throttled like wrong sign-ins, counted for the session
+    /// asking, so a stolen session cannot be used to guess the password. Sign-in is not
+    /// affected: whoever holds a session must not be able to keep its owner from signing in.
     pub async fn change_password(
         &self,
         user_id: UserId,
@@ -177,9 +182,10 @@ impl AuthService {
                 "password must be at least 8 characters",
             ));
         }
+        let source = format!("session:{session_id}");
         if let Err(until) = self
             .db
-            .begin_login_attempt(&user.username, login_block)
+            .begin_login_attempt(&user.username, &source, login_block)
             .await?
         {
             let wait = until - OffsetDateTime::now_utc();
@@ -193,7 +199,9 @@ impl AuthService {
         if !verified {
             return Err(AuthError::WrongPassword);
         }
-        self.db.clear_login_attempts(&user.username).await?;
+        self.db
+            .clear_login_attempts(&user.username, &source)
+            .await?;
         let hashed = self.hash_blocking(new).await?;
         self.db
             .change_password_hash(user_id, &hashed, session_id)
@@ -204,17 +212,55 @@ impl AuthService {
 
     /// Verifies credentials and starts a session on `device`, when the client names one.
     ///
-    /// After [`FREE_LOGIN_FAILURES`] wrong passwords for a username, each further attempt waits
-    /// twice as long as the one before, starting at [`FIRST_LOGIN_BLOCK`]; the correct password
-    /// starts the count again. Usernames that do not exist are counted the same way, so that
-    /// a block does not tell which ones do.
+    /// Counts wrong passwords as coming from an unknown address; see
+    /// [`login_from`](Self::login_from).
     pub async fn login(
         &self,
         username: &str,
         password: &str,
         device: Option<&DeviceInfo>,
     ) -> Result<TokenPair, AuthError> {
-        if let Err(until) = self.db.begin_login_attempt(username, login_block).await? {
+        self.login_from(username, password, device, None).await
+    }
+
+    /// Verifies credentials sent from `address` and starts a session on `device`, when the
+    /// client names one.
+    ///
+    /// After [`FREE_LOGIN_FAILURES`] wrong passwords for a username from one address, each
+    /// further attempt from there waits twice as long as the one before, starting at
+    /// [`FIRST_LOGIN_BLOCK`]; the correct password starts the count again. Other addresses are
+    /// not held up, so guessing at a username does not lock its owner out. Usernames that do
+    /// not exist are counted the same way, so that a block does not tell which ones do.
+    ///
+    /// A device the user has signed in from before is counted on its own instead of with its
+    /// address. Its id is known only to that install and the server, so the owner can still
+    /// sign in from their phone when someone on the same network, or their own browser, has
+    /// used up the address's attempts. A device id the user never signed in from earns
+    /// nothing: it is counted with the address.
+    pub async fn login_from(
+        &self,
+        username: &str,
+        password: &str,
+        device: Option<&DeviceInfo>,
+        address: Option<IpAddr>,
+    ) -> Result<TokenPair, AuthError> {
+        // No user has such a name, so it is refused before anything is stored for it.
+        if username.chars().count() > MAX_USERNAME_LEN {
+            return Err(AuthError::InvalidCredentials);
+        }
+        let known_device = match device {
+            Some(device) => self.db.is_device_of_username(username, device.id).await?,
+            None => false,
+        };
+        let source = match device {
+            Some(device) if known_device => format!("device:{}", device.id),
+            _ => address.map(attempt_source).unwrap_or_default(),
+        };
+        if let Err(until) = self
+            .db
+            .begin_login_attempt(username, &source, login_block)
+            .await?
+        {
             let wait = until - OffsetDateTime::now_utc();
             return Err(AuthError::TooManyAttempts {
                 retry_after: wait.whole_seconds().max(0).unsigned_abs() + 1,
@@ -234,7 +280,7 @@ impl AuthService {
             tokio::task::spawn_blocking(move || password::verify(&candidate, &hash)).await?;
         match user {
             Some(user) if verified && allowed => {
-                self.db.clear_login_attempts(username).await?;
+                self.db.clear_login_attempts(username, &source).await?;
                 self.start_session(user.id, device).await
             }
             _ => Err(AuthError::InvalidCredentials),
@@ -628,6 +674,19 @@ fn login_block(failures: u32) -> Option<Duration> {
         .and_then(|factor| FIRST_LOGIN_BLOCK.checked_mul(factor))
         .unwrap_or(MAX_LOGIN_BLOCK);
     Some(wait.min(MAX_LOGIN_BLOCK))
+}
+
+/// What failed sign-ins from `address` are counted under: the address itself for IPv4 and
+/// its network for IPv6, where a single client can pick among more addresses than could
+/// ever be blocked one by one.
+fn attempt_source(address: IpAddr) -> String {
+    match address.to_canonical() {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => {
+            let network = u128::from(v6) & (u128::MAX << (u128::BITS - IPV6_NETWORK_BITS));
+            format!("{}/{IPV6_NETWORK_BITS}", Ipv6Addr::from(network))
+        }
+    }
 }
 
 /// `device` checked against what the server stores: a name of 1-100 characters, kept without
@@ -1025,6 +1084,127 @@ mod tests {
         auth.login("alice", "password-1", None)
             .await
             .expect("alice");
+    }
+
+    #[test]
+    fn attempts_are_counted_per_ipv4_address_and_ipv6_network() {
+        let source = |address: &str| attempt_source(address.parse().expect("address"));
+        assert_eq!(source("203.0.113.9"), "203.0.113.9");
+        assert_eq!(source("::ffff:203.0.113.9"), "203.0.113.9");
+        assert_eq!(source("2001:db8:1:2:3:4:5:6"), "2001:db8:1:2::/64");
+        assert_eq!(source("2001:db8:1:2::1"), source("2001:db8:1:2:ffff::9"));
+        assert_ne!(source("2001:db8:1:2::1"), source("2001:db8:1:3::1"));
+    }
+
+    fn address(text: &str) -> Option<IpAddr> {
+        Some(text.parse().expect("address"))
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn wrong_passwords_from_elsewhere_do_not_lock_the_owner_out(pool: PgPool) {
+        let auth = service(pool);
+        auth.create_user("alice", "password-1").await.expect("user");
+        let attacker = address("198.51.100.7");
+        for _ in 0..3 {
+            auth.login_from("alice", "wrong-password", None, attacker)
+                .await
+                .expect_err("wrong");
+        }
+        // The guesser is held up, even with the right password...
+        retry_after(auth.login_from("alice", "password-1", None, attacker).await);
+        // ...and the owner, somewhere else, is not.
+        auth.login_from("alice", "password-1", None, address("192.0.2.1"))
+            .await
+            .expect("owner");
+        // The owner signing in does not give the guesser a fresh start.
+        retry_after(auth.login_from("alice", "password-1", None, attacker).await);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_known_device_can_sign_in_while_its_address_is_blocked(pool: PgPool) {
+        let auth = service(pool);
+        auth.create_user("alice", "password-1").await.expect("user");
+        let shared = address("198.51.100.7");
+        let phone = laptop();
+        auth.login_from("alice", "password-1", Some(&phone), shared)
+            .await
+            .expect("first sign-in registers the phone");
+        for _ in 0..3 {
+            auth.login_from("alice", "wrong-password", None, shared)
+                .await
+                .expect_err("wrong");
+        }
+        retry_after(auth.login_from("alice", "password-1", None, shared).await);
+
+        // A device id alice never signed in from does not get around the block...
+        retry_after(
+            auth.login_from("alice", "password-1", Some(&laptop()), shared)
+                .await,
+        );
+        // ...and her phone does.
+        auth.login_from("alice", "password-1", Some(&phone), shared)
+            .await
+            .expect("known device");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_known_device_is_throttled_on_its_own(pool: PgPool) {
+        let auth = service(pool);
+        auth.create_user("alice", "password-1").await.expect("user");
+        let home = address("192.0.2.1");
+        let phone = laptop();
+        auth.login_from("alice", "password-1", Some(&phone), home)
+            .await
+            .expect("first sign-in registers the phone");
+        for _ in 0..3 {
+            auth.login_from("alice", "wrong-password", Some(&phone), home)
+                .await
+                .expect_err("wrong");
+        }
+        retry_after(
+            auth.login_from("alice", "password-1", Some(&phone), home)
+                .await,
+        );
+        auth.login_from("alice", "password-1", None, home)
+            .await
+            .expect("the address itself is not blocked");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn an_overlong_username_is_refused_without_being_remembered(pool: PgPool) {
+        let auth = service(pool.clone());
+        let name = "x".repeat(MAX_USERNAME_LEN + 1);
+        let result = auth.login(&name, "password-1", None).await;
+        assert!(matches!(result, Err(AuthError::InvalidCredentials)));
+        let remembered: i64 = sqlx::query_scalar("SELECT count(*) FROM login_attempts")
+            .fetch_one(&pool)
+            .await
+            .expect("count");
+        assert_eq!(remembered, 0);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn guessing_the_current_password_does_not_block_sign_in(pool: PgPool) {
+        let auth = service(pool);
+        let user = auth.create_user("alice", "password-1").await.expect("user");
+        let pair = auth
+            .login("alice", "password-1", None)
+            .await
+            .expect("login");
+        let session = grant_of(&auth, &pair).await.session_id;
+        for _ in 0..3 {
+            let result = auth
+                .change_password(user.id, session, "wrong-password", "password-2")
+                .await;
+            assert!(matches!(result, Err(AuthError::WrongPassword)));
+        }
+        let blocked = auth
+            .change_password(user.id, session, "password-1", "password-2")
+            .await;
+        assert!(matches!(blocked, Err(AuthError::TooManyAttempts { .. })));
+        auth.login("alice", "password-1", None)
+            .await
+            .expect("sign-in is not blocked");
     }
 
     #[sqlx::test(migrations = "../../migrations")]

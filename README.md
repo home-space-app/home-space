@@ -38,6 +38,7 @@ per user), but no access to other users' files. Grant or revoke the role with
 | Variable | Default | |
 |---|---|---|
 | `HOMESPACE_BIND` | `127.0.0.1:8080` | Address the server listens on (`0.0.0.0:8080` in the container). |
+| `HOMESPACE_TRUST_FORWARDED_FOR` | `false` | Take the client's address from `X-Forwarded-For`. Set it to `true` behind a reverse proxy that sets the header (the [nginx example](docs/nginx/example.domain.com.conf) does): wrong passwords are counted per client address, and without it everyone behind the proxy counts as one client. Leave it off when clients reach the server directly, since they could forge the header. |
 | `HOMESPACE_STORAGE` | `local` | Where file content is kept. Only `local` exists today; object storage is planned ([docs/todo/object-storage.md](docs/todo/object-storage.md)). |
 | `HOMESPACE_STORAGE_ROOT` | `./data` | Directory for the local backend (`/data` in the container). |
 | `HOMESPACE_PORT` | unset | Host port the container is published on. Compose maps it to the container's 8080; the server only shows it on the Administration page. |
@@ -143,7 +144,7 @@ one.
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/auth/login`, `/auth/refresh`, `/auth/logout` | JWT access + rotating refresh tokens; login (and `/auth/oidc/exchange`) take an optional `device: {id, name, platform}`; after 3 wrong passwords for a username, login answers `429 too_many_requests` with `Retry-After` for 30 s, then 1, 2, 4 min and so on (up to a day) until the right password |
+| POST | `/auth/login`, `/auth/refresh`, `/auth/logout` | JWT access + rotating refresh tokens; login (and `/auth/oidc/exchange`) take an optional `device: {id, name, platform}`; after 3 wrong passwords for a username from one client address (an IPv6 /64 counts as one), login answers that address `429 too_many_requests` with `Retry-After` for 30 s, then 1, 2, 4 min and so on (up to a day) until the right password; other addresses are not held up, so guessing cannot lock the owner out, and a device the user has signed in from before has its own count, so it still gets in when its address is blocked |
 | GET | `/auth/providers` | how users can sign in: `{password, oidc: {name}?}` |
 | GET / GET / POST | `/auth/oidc/start`, `/auth/oidc/callback`, `/auth/oidc/exchange` | single sign-on, see [Single sign-on](#single-sign-on) |
 | GET | `/me` | current user: `{id, username, lost_and_found_id, is_admin, external}` (`external`: signs in only through the identity provider) |

@@ -95,11 +95,8 @@ async fn guessing_the_current_password_is_throttled(pool: PgPool) {
         );
     }
     assert_eq!(statuses.last(), Some(&StatusCode::TOO_MANY_REQUESTS));
-    // The block is shared with sign-in.
-    assert_eq!(
-        login(&app, "alice", PASSWORD).await.status,
-        StatusCode::TOO_MANY_REQUESTS
-    );
+    // Sign-in is not blocked with it: a stolen session must not lock its owner out.
+    assert_eq!(login(&app, "alice", PASSWORD).await.status, StatusCode::OK);
 }
 
 #[sqlx::test(migrations = "../../migrations")]

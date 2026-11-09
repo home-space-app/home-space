@@ -132,6 +132,7 @@ async fn serve(db: Db, config: &Config) -> Result<()> {
             config: config.summary()?,
         }),
         db,
+        trust_forwarded_for: config.trust_forwarded_for,
     };
     tokio::spawn(async move {
         match search.catch_up().await {
@@ -161,10 +162,14 @@ async fn serve(db: Db, config: &Config) -> Result<()> {
         Some(web_root) => api::router_with_web(state, web_root),
         None => api::router(state),
     };
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("serving")
+    // With the peer's address, so that failed sign-ins are counted for where they come from.
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("serving")
 }
 
 /// Compacts the change journal, drops its entries older than `retention` when there is one,

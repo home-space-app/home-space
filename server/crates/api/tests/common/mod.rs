@@ -99,6 +99,7 @@ pub async fn setup_with(
             },
         }),
         db,
+        trust_forwarded_for: true,
     };
     TestApp {
         router: api::router(state.clone()),
