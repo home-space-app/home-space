@@ -112,7 +112,7 @@ jobs:
         working-directory: clients/desktop
         env:
           MACOSX_DEPLOYMENT_TARGET: "12.0"
-        run: cargo bundle --release --target ${{ matrix.target }}
+        run: cargo bundle --release --features keyring --target ${{ matrix.target }}
       - name: Make the .dmg
         run: |
           app="clients/target/${{ matrix.target }}/release/bundle/osx/Home Space.app"
@@ -144,7 +144,7 @@ jobs:
           workspaces: clients
       - name: Build
         working-directory: clients
-        run: cargo build --release --locked -p desktop
+        run: cargo build --release --locked -p desktop --features keyring
       - name: Make the .tar.gz
         run: |
           name="HomeSpace-${{ needs.version.outputs.version }}-linux-x86_64"
