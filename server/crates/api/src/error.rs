@@ -77,7 +77,7 @@ impl ApiError {
                 | FilesError::InvalidTransfer(_),
             ) => (StatusCode::BAD_REQUEST, ErrorCode::BadRequest),
             Self::Gone | Self::Files(FilesError::Gone) => (StatusCode::GONE, ErrorCode::Gone),
-            Self::Auth(AuthError::TooManyAttempts { .. }) => {
+            Self::Auth(AuthError::TooManyAttempts { .. } | AuthError::Busy { .. }) => {
                 (StatusCode::TOO_MANY_REQUESTS, ErrorCode::TooManyRequests)
             }
             Self::Files(FilesError::TooLarge { .. }) => {
@@ -110,7 +110,10 @@ impl IntoResponse for ApiError {
             }),
         )
             .into_response();
-        if let Self::Auth(AuthError::TooManyAttempts { retry_after }) = self {
+        if let Self::Auth(
+            AuthError::TooManyAttempts { retry_after } | AuthError::Busy { retry_after },
+        ) = self
+        {
             response
                 .headers_mut()
                 .insert(RETRY_AFTER, HeaderValue::from(retry_after));
@@ -134,6 +137,16 @@ mod tests {
         assert_eq!(
             error.status_and_code(),
             (StatusCode::BAD_REQUEST, ErrorCode::BadRequest)
+        );
+    }
+
+    #[test]
+    fn a_busy_server_asks_the_client_to_come_back() {
+        let response = ApiError::Auth(AuthError::Busy { retry_after: 5 }).into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response.headers().get(RETRY_AFTER),
+            Some(&HeaderValue::from_static("5"))
         );
     }
 

@@ -2,11 +2,12 @@ use std::{
     collections::HashMap,
     net::{IpAddr, Ipv6Addr},
     sync::{Arc, Mutex, PoisonError},
+    thread::available_parallelism,
 };
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use time::{Duration, OffsetDateTime};
-use tokio::sync::broadcast;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, broadcast};
 use uuid::Uuid;
 
 use db::{Db, DbError, LiveSession, NewDevice, OidcPending, User, UserId};
@@ -50,6 +51,20 @@ const FIRST_LOGIN_BLOCK: Duration = Duration::seconds(30);
 const MAX_LOGIN_BLOCK: Duration = Duration::hours(24);
 /// How long failed sign-ins of a username that is not blocked are remembered.
 pub const LOGIN_ATTEMPTS_MEMORY: Duration = Duration::days(1);
+/// The username that wrong passwords from one address are counted under whatever name they
+/// were for. No user has it, and a sign-in with it is refused before anything is counted.
+const ANY_USERNAME: &str = "";
+/// Wrong passwords one address may send, over all usernames, before it has to wait. Well
+/// above what the people of one household mistype, since they may share an address.
+const FREE_ADDRESS_FAILURES: u32 = 20;
+/// The longest wait of an address. Short, because it holds up everyone who shares it.
+const MAX_ADDRESS_BLOCK: Duration = Duration::minutes(15);
+/// How long after its last wrong password an address starts from nothing again.
+const ADDRESS_ATTEMPTS_MEMORY: Duration = Duration::hours(1);
+/// Passwords hashed at once when the number of processors is unknown.
+const FALLBACK_HASHING_SLOTS: usize = 2;
+/// How long a password waits for its turn to be hashed before the request is refused.
+const HASHING_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Room for session-end notices a slow websocket has not read yet; one that falls further
 /// behind re-checks its session anyway.
 const ENDED_CAPACITY: usize = 64;
@@ -96,6 +111,9 @@ pub struct AuthService {
     /// memory: after a restart a used ticket would be accepted again, for the rest of its
     /// [`TICKET_TTL_SECS`] at most.
     used_tickets: Arc<Mutex<HashMap<Uuid, i64>>>,
+    /// One permit per password that may be hashed at this moment. Hashing takes a processor
+    /// and about 19 MiB each, so without a limit a burst of sign-ins could use up both.
+    hashing: Arc<Semaphore>,
 }
 
 impl AuthService {
@@ -115,6 +133,9 @@ impl AuthService {
             password_login: true,
             ended: broadcast::channel(ENDED_CAPACITY).0,
             used_tickets: Arc::default(),
+            hashing: Arc::new(Semaphore::new(
+                available_parallelism().map_or(FALLBACK_HASHING_SLOTS, usize::from),
+            )),
         })
     }
 
@@ -197,18 +218,12 @@ impl AuthService {
         let source = format!("session:{session_id}");
         if let Err(until) = self
             .db
-            .begin_login_attempt(&user.username, &source, login_block)
+            .begin_login_attempt(&user.username, &source, LOGIN_ATTEMPTS_MEMORY, login_block)
             .await?
         {
-            let wait = until - OffsetDateTime::now_utc();
-            return Err(AuthError::TooManyAttempts {
-                retry_after: wait.whole_seconds().max(0).unsigned_abs() + 1,
-            });
+            return Err(too_many_attempts(until));
         }
-        let candidate = current.to_owned();
-        let verified =
-            tokio::task::spawn_blocking(move || password::verify(&candidate, &hash)).await?;
-        if !verified {
+        if !self.verify_blocking(current, hash).await? {
             return Err(AuthError::WrongPassword);
         }
         self.db
@@ -249,6 +264,12 @@ impl AuthService {
     /// sign in from their phone when someone on the same network, or their own browser, has
     /// used up the address's attempts. A device id the user never signed in from earns
     /// nothing: it is counted with the address.
+    ///
+    /// An address is also counted over all usernames, so that trying a new name every time
+    /// does not get around the limit: after [`FREE_ADDRESS_FAILURES`] wrong passwords it waits
+    /// in the same doubling steps, up to [`MAX_ADDRESS_BLOCK`], and nothing is hashed or stored
+    /// for it meanwhile. A device the user has signed in from before is not held up by this
+    /// either.
     pub async fn login_from(
         &self,
         username: &str,
@@ -257,7 +278,7 @@ impl AuthService {
         address: Option<IpAddr>,
     ) -> Result<TokenPair, AuthError> {
         // No user has such a name, so it is refused before anything is stored for it.
-        if username.chars().count() > MAX_USERNAME_LEN {
+        if username.is_empty() || username.chars().count() > MAX_USERNAME_LEN {
             return Err(AuthError::InvalidCredentials);
         }
         let known_device = match device {
@@ -268,16 +289,55 @@ impl AuthService {
             Some(device) if known_device => format!("device:{}", device.id),
             _ => address.map(attempt_source).unwrap_or_default(),
         };
-        if let Err(until) = self
-            .db
-            .begin_login_attempt(username, &source, login_block)
-            .await?
+        // The address as a whole, unless the attempt is counted for a known device instead.
+        let address_source = address.filter(|_| !known_device).map(|_| source.as_str());
+        if let Some(address) = address_source
+            && let Err(until) = self
+                .db
+                .begin_login_attempt(
+                    ANY_USERNAME,
+                    address,
+                    ADDRESS_ATTEMPTS_MEMORY,
+                    address_block,
+                )
+                .await?
         {
-            let wait = until - OffsetDateTime::now_utc();
-            return Err(AuthError::TooManyAttempts {
-                retry_after: wait.whole_seconds().max(0).unsigned_abs() + 1,
-            });
+            return Err(too_many_attempts(until));
         }
+        let begun = self
+            .db
+            .begin_login_attempt(username, &source, LOGIN_ATTEMPTS_MEMORY, login_block)
+            .await?;
+        let checked = match begun {
+            Ok(()) => self.check_password(username, password).await,
+            Err(until) => Err(too_many_attempts(until)),
+        };
+        let user = match checked {
+            Ok(user) => user,
+            Err(err) => {
+                // Only a wrong password counts against the address: not a repeated try at a
+                // username that is waiting, nor a password that was never checked.
+                if let Some(address) = address_source
+                    && !matches!(err, AuthError::InvalidCredentials)
+                {
+                    self.db
+                        .take_back_login_attempt(ANY_USERNAME, address)
+                        .await?;
+                }
+                return Err(err);
+            }
+        };
+        self.db.clear_login_attempts(username, &source).await?;
+        if let Some(address) = address_source {
+            self.db
+                .take_back_login_attempt(ANY_USERNAME, address)
+                .await?;
+        }
+        self.start_session(user.id, device).await
+    }
+
+    /// The user called `username`, if `password` is theirs and they may sign in with it.
+    async fn check_password(&self, username: &str, password: &str) -> Result<User, AuthError> {
         let user = self.db.find_user_by_username(username).await?;
         // Always verify against some hash so the timing does not reveal whether the user exists,
         // has a password, or may use password login at all.
@@ -287,16 +347,9 @@ impl AuthService {
             .filter(|_| self.password_login);
         let allowed = hash.is_some();
         let hash = hash.unwrap_or_else(|| self.dummy_hash.clone());
-        let candidate = password.to_owned();
-        let verified =
-            tokio::task::spawn_blocking(move || password::verify(&candidate, &hash)).await?;
-        match user {
-            Some(user) if verified && allowed => {
-                self.db.clear_login_attempts(username, &source).await?;
-                self.start_session(user.id, device).await
-            }
-            _ => Err(AuthError::InvalidCredentials),
-        }
+        let verified = self.verify_blocking(password, hash).await?;
+        user.filter(|_| verified && allowed)
+            .ok_or(AuthError::InvalidCredentials)
     }
 
     /// Exchanges a refresh token for a new pair, revoking the old token.
@@ -723,8 +776,53 @@ impl AuthService {
     }
 
     async fn hash_blocking(&self, password: &str) -> Result<String, AuthError> {
+        let turn = self.hashing_turn().await?;
         let password = password.to_owned();
-        tokio::task::spawn_blocking(move || password::hash(&password)).await?
+        tokio::task::spawn_blocking(move || {
+            let _turn = turn;
+            password::hash(&password)
+        })
+        .await?
+    }
+
+    async fn verify_blocking(&self, password: &str, hash: String) -> Result<bool, AuthError> {
+        let turn = self.hashing_turn().await?;
+        let password = password.to_owned();
+        let verified = tokio::task::spawn_blocking(move || {
+            let _turn = turn;
+            password::verify(&password, &hash)
+        })
+        .await?;
+        Ok(verified)
+    }
+
+    /// Waits for a turn to hash a password, which lasts until the permit is dropped. It is
+    /// handed to the hashing thread, so a request that is given up does not free its turn
+    /// while the processor is still at work for it.
+    async fn hashing_turn(&self) -> Result<OwnedSemaphorePermit, AuthError> {
+        turn(&self.hashing, HASHING_WAIT).await
+    }
+}
+
+/// A permit of `slots`, or [`AuthError::Busy`] when none comes free within `wait`.
+async fn turn(
+    slots: &Arc<Semaphore>,
+    wait: std::time::Duration,
+) -> Result<OwnedSemaphorePermit, AuthError> {
+    match tokio::time::timeout(wait, Arc::clone(slots).acquire_owned()).await {
+        Ok(Ok(turn)) => Ok(turn),
+        // The semaphore is never closed, so this is always the wait running out.
+        _ => Err(AuthError::Busy {
+            retry_after: wait.as_secs().max(1),
+        }),
+    }
+}
+
+/// The refusal of a sign-in that must wait until `until`.
+fn too_many_attempts(until: OffsetDateTime) -> AuthError {
+    let wait = until - OffsetDateTime::now_utc();
+    AuthError::TooManyAttempts {
+        retry_after: wait.whole_seconds().max(0).unsigned_abs() + 1,
     }
 }
 
@@ -732,12 +830,25 @@ impl AuthService {
 /// not at all for the first [`FREE_LOGIN_FAILURES`], then 30 seconds, 1 minute, 2 minutes and
 /// so on, up to [`MAX_LOGIN_BLOCK`].
 fn login_block(failures: u32) -> Option<Duration> {
-    let doublings = failures.checked_sub(FREE_LOGIN_FAILURES)?;
+    doubling_block(failures, FREE_LOGIN_FAILURES, MAX_LOGIN_BLOCK)
+}
+
+/// How long an address must wait after `failures` wrong passwords, whatever the usernames:
+/// not at all for the first [`FREE_ADDRESS_FAILURES`], then in the same steps as
+/// [`login_block`], up to [`MAX_ADDRESS_BLOCK`].
+fn address_block(failures: u32) -> Option<Duration> {
+    doubling_block(failures, FREE_ADDRESS_FAILURES, MAX_ADDRESS_BLOCK)
+}
+
+/// No wait for the first `free` failures, then [`FIRST_LOGIN_BLOCK`], doubled with every
+/// further one, up to `longest`.
+fn doubling_block(failures: u32, free: u32, longest: Duration) -> Option<Duration> {
+    let doublings = failures.checked_sub(free)?;
     let factor = 1i32.checked_shl(doublings).filter(|factor| *factor > 0);
     let wait = factor
         .and_then(|factor| FIRST_LOGIN_BLOCK.checked_mul(factor))
-        .unwrap_or(MAX_LOGIN_BLOCK);
-    Some(wait.min(MAX_LOGIN_BLOCK))
+        .unwrap_or(longest);
+    Some(wait.min(longest))
 }
 
 /// What failed sign-ins from `address` are counted under: the address itself for IPv4 and
@@ -1182,6 +1293,136 @@ mod tests {
             .expect("owner");
         // The owner signing in does not give the guesser a fresh start.
         retry_after(auth.login_from("alice", "password-1", None, attacker).await);
+    }
+
+    /// Wrong passwords from `address`, each for a username not tried before.
+    async fn flood(auth: &AuthService, address: Option<IpAddr>) {
+        for attempt in 0..FREE_ADDRESS_FAILURES {
+            let result = auth
+                .login_from(&format!("name-{attempt}"), "wrong-password", None, address)
+                .await;
+            assert!(
+                matches!(result, Err(AuthError::InvalidCredentials)),
+                "{result:?}"
+            );
+        }
+    }
+
+    async fn stored_attempts(pool: &PgPool) -> i64 {
+        sqlx::query_scalar("SELECT count(*) FROM login_attempts")
+            .fetch_one(pool)
+            .await
+            .expect("count")
+    }
+
+    async fn address_failures(pool: &PgPool, address: &str) -> i32 {
+        sqlx::query_scalar(
+            "SELECT failures FROM login_attempts WHERE username = '' AND source = $1",
+        )
+        .bind(address)
+        .fetch_one(pool)
+        .await
+        .expect("failures")
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn an_address_trying_a_new_username_each_time_has_to_wait(pool: PgPool) {
+        let auth = service(pool.clone());
+        auth.create_user("alice", "password-1").await.expect("user");
+        let flooder = address("198.51.100.7");
+        flood(&auth, flooder).await;
+        let stored = stored_attempts(&pool).await;
+        let wait = retry_after(
+            auth.login_from("one-more", "wrong-password", None, flooder)
+                .await,
+        );
+        assert!((29..=31).contains(&wait), "{wait}");
+        // Not even the right password of a real user is checked from there...
+        retry_after(auth.login_from("alice", "password-1", None, flooder).await);
+        // ...nothing more is stored for what is refused...
+        assert_eq!(stored_attempts(&pool).await, stored);
+        // ...and everyone else signs in as before.
+        auth.login_from("alice", "password-1", None, address("192.0.2.1"))
+            .await
+            .expect("owner");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_known_device_can_sign_in_from_an_address_that_has_to_wait(pool: PgPool) {
+        let auth = service(pool);
+        auth.create_user("alice", "password-1").await.expect("user");
+        let shared = address("198.51.100.7");
+        let phone = laptop();
+        auth.login_from("alice", "password-1", Some(&phone), shared)
+            .await
+            .expect("first sign-in");
+        flood(&auth, shared).await;
+        retry_after(auth.login_from("alice", "password-1", None, shared).await);
+        auth.login_from("alice", "password-1", Some(&phone), shared)
+            .await
+            .expect("known device");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn only_wrong_passwords_count_against_an_address(pool: PgPool) {
+        let auth = service(pool.clone());
+        auth.create_user("alice", "password-1").await.expect("user");
+        auth.create_user("bob", "password-2").await.expect("user");
+        let home = address("192.0.2.1");
+        for _ in 0..3 {
+            auth.login_from("alice", "wrong-password", None, home)
+                .await
+                .expect_err("wrong");
+        }
+        // Trying again while the username waits checks no password...
+        for _ in 0..FREE_ADDRESS_FAILURES {
+            retry_after(auth.login_from("alice", "password-1", None, home).await);
+        }
+        // ...and neither does a sign-in that works, however often.
+        for _ in 0..3 {
+            auth.login_from("bob", "password-2", None, home)
+                .await
+                .expect("bob");
+        }
+        assert_eq!(address_failures(&pool, "192.0.2.1").await, 3);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_sign_in_without_a_username_is_refused_and_not_counted(pool: PgPool) {
+        let auth = service(pool.clone());
+        let result = auth
+            .login_from("", "password-1", None, address("192.0.2.1"))
+            .await;
+        assert!(matches!(result, Err(AuthError::InvalidCredentials)));
+        assert_eq!(stored_attempts(&pool).await, 0);
+    }
+
+    #[test]
+    fn an_address_waits_less_long_than_a_username() {
+        assert_eq!(address_block(FREE_ADDRESS_FAILURES - 1), None);
+        assert_eq!(
+            address_block(FREE_ADDRESS_FAILURES),
+            Some(FIRST_LOGIN_BLOCK)
+        );
+        assert_eq!(
+            address_block(FREE_ADDRESS_FAILURES + 1),
+            Some(FIRST_LOGIN_BLOCK * 2)
+        );
+        assert_eq!(address_block(u32::MAX), Some(MAX_ADDRESS_BLOCK));
+        assert_eq!(login_block(u32::MAX), Some(MAX_LOGIN_BLOCK));
+    }
+
+    #[tokio::test]
+    async fn a_password_is_not_hashed_while_all_turns_are_taken() {
+        let slots = Arc::new(Semaphore::new(1));
+        let wait = std::time::Duration::from_millis(20);
+        let taken = turn(&slots, wait).await.expect("first");
+        assert!(matches!(
+            turn(&slots, wait).await,
+            Err(AuthError::Busy { retry_after: 1 })
+        ));
+        drop(taken);
+        let _free = turn(&slots, wait).await.expect("free again");
     }
 
     #[sqlx::test(migrations = "../../migrations")]
