@@ -7,6 +7,7 @@ use iced::{
     Subscription,
     futures::{SinkExt, Stream, StreamExt, channel::mpsc::Sender},
 };
+use tokio::time::{Instant, timeout};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite};
 
 use api_client::{ApiError, Client};
@@ -15,6 +16,13 @@ use protocol::{Event, TicketRequest};
 const MIN_RETRY: Duration = Duration::from_secs(1);
 const MAX_RETRY: Duration = Duration::from_secs(30);
 const BUFFER: usize = 64;
+/// How long connecting, TLS and the upgrade may take.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// The server pings every 15 seconds, so this long without a frame means the connection is
+/// dead even though no error came, as after the laptop slept or changed networks.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(45);
+/// A connection that lasted this long counts as working, and the next retry starts quickly again.
+const STABLE_AFTER: Duration = Duration::from_secs(20);
 
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -43,14 +51,18 @@ fn listen(client: Client) -> impl Stream<Item = Event> {
         loop {
             match client.ticket(&TicketRequest::Events).await {
                 Ok(ticket) => {
-                    if let Ok((mut socket, _)) =
-                        connect_async(client.events_url(&ticket.ticket)).await
+                    let opening = connect_async(client.events_url(&ticket.ticket));
+                    if let Ok(Ok((mut socket, _))) = timeout(CONNECT_TIMEOUT, opening).await
                         && greet(&client, &mut socket).await
                     {
-                        delay = MIN_RETRY;
+                        let opened = Instant::now();
                         let resynced = !reconnecting || output.send(Event::Resync).await.is_ok();
                         if !resynced || !forward(socket, &mut output).await {
                             break;
+                        }
+                        // A socket closed right after opening keeps backing off.
+                        if opened.elapsed() >= STABLE_AFTER {
+                            delay = MIN_RETRY;
                         }
                     }
                 }
@@ -67,14 +79,22 @@ fn listen(client: Client) -> impl Stream<Item = Event> {
 /// Sends the hello naming this device; `false` when the socket is already gone.
 async fn greet(client: &Client, socket: &mut Socket) -> bool {
     match client.hello() {
-        Some(hello) => socket.send(tungstenite::Message::text(hello)).await.is_ok(),
+        Some(hello) => matches!(
+            timeout(
+                CONNECT_TIMEOUT,
+                socket.send(tungstenite::Message::text(hello))
+            )
+            .await,
+            Ok(Ok(()))
+        ),
         None => true,
     }
 }
 
-/// Passes events on until the socket closes; `false` once nobody listens anymore.
+/// Passes events on until the socket closes or goes quiet; `false` once nobody listens anymore.
 async fn forward(mut socket: Socket, output: &mut Sender<Event>) -> bool {
-    while let Some(Ok(message)) = socket.next().await {
+    // Any frame, pings included, shows the connection is alive.
+    while let Ok(Some(Ok(message))) = timeout(IDLE_TIMEOUT, socket.next()).await {
         if let tungstenite::Message::Text(text) = message
             && let Ok(event) = serde_json::from_str::<Event>(&text)
             && output.send(event).await.is_err()

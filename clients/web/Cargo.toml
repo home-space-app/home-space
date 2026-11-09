@@ -10,6 +10,7 @@ api-client.workspace = true
 client-core.workspace = true
 base64 = "0.23.1"
 console_error_panic_hook = "0.1.7"
+futures = { version = "0.3", default-features = false, features = ["std"] }
 gloo-timers = { version = "0.4.0", features = ["futures"] }
 js-sys = "0.3.107"
 leptos = { version = "0.8.23", features = ["csr"] }
@@ -31,6 +32,7 @@ features = [
     "Crypto",
     "CssStyleDeclaration",
     "DataTransfer",
+    "Document",
     "DomRect",
     "DragEvent",
     "File",
@@ -42,6 +44,7 @@ features = [
     "Navigator",
     "ProgressEvent",
     "Storage",
+    "VisibilityState",
     "WebSocket",
     "Window",
     "XmlHttpRequest",

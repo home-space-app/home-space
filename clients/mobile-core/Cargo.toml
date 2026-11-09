@@ -28,11 +28,15 @@ hex = "0.4.3"
 protocol.workspace = true
 rand = "0.10.3"
 rusqlite = { version = "0.41.1", features = ["bundled"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+rustls-platform-verifier = "0.7.1"
+serde_json.workspace = true
 sha2.workspace = true
 sync-core.workspace = true
 thiserror.workspace = true
 time.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "time"] }
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "handshake", "__rustls-tls"] }
 uniffi = "0.32.2"
 url = "2"
 uuid = { version = "1.29.0", features = ["v4"] }
@@ -40,9 +44,8 @@ uuid = { version = "1.29.0", features = ["v4"] }
 # Android's certificate checks run in the JVM, so the verifier needs a handle on it (see `android`).
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { version = "0.22.4", default-features = false }
-rustls-platform-verifier = "0.7.1"
 
 [dev-dependencies]
-serde_json.workspace = true
 tempfile = "3"
+tokio = { workspace = true, features = ["test-util"] }
 wiremock = "0.6.5"

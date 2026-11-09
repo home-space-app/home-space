@@ -181,6 +181,47 @@ async fn a_session_without_a_device_registers_the_one_its_hello_names(pool: PgPo
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn a_hello_whose_device_could_not_be_registered_is_retried_at_the_next_ping(pool: PgPool) {
+    let app = setup(pool.clone()).await;
+    let token = app.user_token("alice").await;
+    let addr = serve(&app).await;
+    let device = Uuid::now_v7();
+    sqlx::raw_sql(
+        "CREATE FUNCTION refuse_devices() RETURNS trigger LANGUAGE plpgsql AS \
+         $$ BEGIN RAISE EXCEPTION 'database unavailable'; END $$; \
+         CREATE TRIGGER refuse_devices BEFORE INSERT ON devices \
+         FOR EACH ROW EXECUTE FUNCTION refuse_devices();",
+    )
+    .execute(&pool)
+    .await
+    .expect("refuse devices");
+
+    let mut socket = connect(addr, &token).await;
+    hello(&mut socket, device).await;
+    tokio::time::sleep(SHORT_WAIT).await;
+    assert_eq!(online(&app, &token, device).await, None);
+
+    sqlx::raw_sql("DROP TRIGGER refuse_devices ON devices")
+        .execute(&pool)
+        .await
+        .expect("accept devices");
+    // The socket answers pings meanwhile, as a client would; the next one registers it.
+    let registered = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            tokio::select! {
+                _ = socket.next() => {}
+                () = tokio::time::sleep(POLL) => {
+                    if online(&app, &token, device).await == Some(true) {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    assert!(registered.await.is_ok(), "the device should come online");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn closing_the_socket_takes_the_device_offline(pool: PgPool) {
     let app = setup(pool).await;
     let device = Uuid::now_v7();

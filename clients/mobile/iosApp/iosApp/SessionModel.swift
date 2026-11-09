@@ -35,6 +35,45 @@ private final class ProgressForwarder: DownloadListener {
     }
 }
 
+/// Forwards live events to the main actor; they come from the Rust runtime's threads.
+private final class EventsForwarder: EventsListener {
+    private let deliver: @Sendable (LiveEvent?) -> Void
+
+    /// Hands the model each event of the stream numbered `stream`, and `nil` once the session
+    /// has ended.
+    init(model: SessionModel, stream: Int) {
+        deliver = { [weak model] event in
+            Task { @MainActor in
+                model?.received(event, stream: stream)
+            }
+        }
+    }
+
+    func event(event: LiveEvent) {
+        deliver(event)
+    }
+
+    func sessionEnded() {
+        deliver(nil)
+    }
+}
+
+/// Changes pushed by the server and gathered for a moment, for each shown folder to tell whether
+/// it is out of date.
+struct LiveChanges: Equatable {
+    var generation = 0
+    /// Events may have been missed, as while the app was in the background: reload everything.
+    var resync = false
+    /// The nodes that changed, and the folders they are in now or were in when deleted; a `nil`
+    /// folder is Home.
+    var ids = Set<String>()
+    var folders = Set<String?>()
+
+    func touches(folder: String?, entries: [Entry]) -> Bool {
+        resync || folders.contains(folder) || entries.contains { ids.contains($0.id) }
+    }
+}
+
 /// A photo or video from the library, as a file of its own. The file the system hands over goes
 /// away once this returns.
 private struct PickedPhoto: Transferable {
@@ -95,6 +134,9 @@ struct RemovalWarning {
 final class SessionModel {
     private static let defaultServer = "http://localhost:8080"
     private static let probeDelay = Duration.milliseconds(600)
+    /// How long live changes are gathered before the shown folders look at them, so a burst of
+    /// them reloads a folder once.
+    private static let liveDelay = Duration.milliseconds(300)
 
     private(set) var session: Session = .signedOut
     private(set) var probe: Probe = .checking
@@ -113,6 +155,8 @@ final class SessionModel {
     private(set) var uploads: [QueuedUpload] = []
     /// Changes when the folder on screen is out of date.
     private(set) var reloadKey = 0
+    /// What other devices changed lately; each shown folder reloads if it is among them.
+    private(set) var liveChanges = LiveChanges()
     /// The file Quick Look is showing.
     var preview: URL?
     /// The copy waiting for the user to say whether its unsent edits may go.
@@ -129,6 +173,11 @@ final class SessionModel {
     @ObservationIgnored private let store = SessionStore()
     @ObservationIgnored private var started = false
     @ObservationIgnored private var isInFront = false
+    /// The live events socket, open while the app is in front and someone is signed in.
+    @ObservationIgnored private var events: EventStream?
+    /// Numbers each stream, so that a stopped one's last events are ignored.
+    @ObservationIgnored private var eventsGeneration = 0
+    @ObservationIgnored private var pendingChanges: LiveChanges?
     @ObservationIgnored private var probeTask: Task<Void, Never>?
     @ObservationIgnored private var probeGeneration = 0
     /// Only the file tapped last opens when its download ends.
@@ -600,15 +649,68 @@ final class SessionModel {
         isInFront = inFront
         if inFront {
             foregroundSync?.start()
+            startEvents()
         } else {
             foregroundSync?.stop()
+            stopEvents()
             BackgroundSync.schedule()
+        }
+    }
+
+    /// Opens the live events socket. Only while the app is in front: iOS suspends the app soon
+    /// after it leaves, and the socket would die unnoticed.
+    private func startEvents() {
+        guard events == nil, isInFront, case .signedIn(let client, _) = session else { return }
+        eventsGeneration += 1
+        events = client.listenEvents(
+            listener: EventsForwarder(model: self, stream: eventsGeneration)
+        )
+    }
+
+    private func stopEvents() {
+        events?.stop()
+        events = nil
+        eventsGeneration += 1
+        pendingChanges = nil
+    }
+
+    /// An event of stream `stream`, or `nil` when the session ended.
+    fileprivate func received(_ event: LiveEvent?, stream: Int) {
+        guard events != nil, stream == eventsGeneration else { return }
+        if let event {
+            gather(event)
+        } else {
+            sessionEnded()
+        }
+    }
+
+    private func gather(_ event: LiveEvent) {
+        let first = pendingChanges == nil
+        var changes = pendingChanges ?? LiveChanges()
+        switch event {
+        case .nodeChanged(let id, let parentId):
+            changes.ids.insert(id)
+            changes.folders.insert(parentId)
+        case .resync:
+            changes.resync = true
+        case .trashChanged, .devicesChanged:
+            return
+        }
+        pendingChanges = changes
+        guard first else { return }
+        Task { [weak self] in
+            try? await Task.sleep(for: Self.liveDelay)
+            guard let self, var changes = self.pendingChanges else { return }
+            self.pendingChanges = nil
+            changes.generation = self.liveChanges.generation + 1
+            self.liveChanges = changes
         }
     }
 
     /// Stops everything that syncs, and returns what to wipe once the session has gone.
     private func endSync() -> AutoUpload? {
         let auto = try? ClientHolder.shared.active?.autoUpload()
+        stopEvents()
         foregroundSync?.stop()
         foregroundSync = nil
         ClientHolder.shared.release()
@@ -635,6 +737,7 @@ final class SessionModel {
         if isInFront {
             sync.start()
         }
+        startEvents()
     }
 
     private func forgetDownloads() {
