@@ -1,6 +1,9 @@
 mod common;
 
-use axum::http::{Method, StatusCode};
+use axum::{
+    body::Body,
+    http::{Method, StatusCode},
+};
 use serde_json::json;
 use sqlx::PgPool;
 
@@ -191,4 +194,42 @@ async fn parallel_wrong_passwords_get_three_checks_at_most(pool: PgPool) {
         .filter(|response| response.status == StatusCode::UNAUTHORIZED)
         .count();
     assert_eq!(checked, 3);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn wrong_passwords_from_one_address_do_not_lock_out_another(pool: PgPool) {
+    let app = setup(pool).await;
+    app.user_token("alice").await;
+    let login = |password: &'static str, forwarded_for: &'static str| {
+        let app = &app;
+        async move {
+            app.send_with(
+                Method::POST,
+                "/api/v1/auth/login",
+                None,
+                Body::from(json!({ "username": "alice", "password": password }).to_string()),
+                Some("application/json"),
+                &[("x-forwarded-for", forwarded_for)],
+            )
+            .await
+            .status
+        }
+    };
+    for _ in 0..3 {
+        assert_eq!(
+            login("wrong-password", "198.51.100.7").await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    assert_eq!(
+        login(PASSWORD, "198.51.100.7").await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // A forged first entry does not get the guesser out of the block.
+    assert_eq!(
+        login(PASSWORD, "192.0.2.1, 198.51.100.7").await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(login(PASSWORD, "192.0.2.1").await, StatusCode::OK);
 }

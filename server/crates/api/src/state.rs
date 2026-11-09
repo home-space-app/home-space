@@ -16,6 +16,9 @@ pub struct AppState {
     pub search: SearchIndex,
     /// What the administration status reports about this server.
     pub info: Arc<ServerInfo>,
+    /// Whether a reverse proxy in front of the server names the client in `X-Forwarded-For`.
+    /// Off, the header is ignored, since any client could put anything in it.
+    pub trust_forwarded_for: bool,
 }
 
 /// Facts about the running server that only change with a restart.

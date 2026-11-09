@@ -13,7 +13,10 @@ use protocol::{
     OidcStartQuery, Providers, RefreshRequest, TicketRequest, TicketResponse, TokenPair,
 };
 
-use crate::{ApiError, AppState, extract::AuthUser};
+use crate::{
+    ApiError, AppState,
+    extract::{AuthUser, ClientIp},
+};
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -86,15 +89,17 @@ async fn oidc_exchange(
 
 async fn login(
     State(state): State<AppState>,
+    ClientIp(address): ClientIp,
     Json(request): Json<LoginRequest>,
 ) -> Result<Json<TokenPair>, ApiError> {
     Ok(Json(
         state
             .auth
-            .login(
+            .login_from(
                 &request.username,
                 &request.password,
                 request.device.as_ref(),
+                address,
             )
             .await?,
     ))

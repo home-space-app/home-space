@@ -47,6 +47,18 @@ pub struct Config {
     #[arg(long, env = "HOMESPACE_PORT")]
     pub port: Option<u16>,
 
+    /// Take the client's address from the `X-Forwarded-For` header, for a server behind a
+    /// reverse proxy that sets it (nginx: `proxy_add_x_forwarded_for`). Failed sign-ins are
+    /// counted per client address, and without this every client behind the proxy counts as
+    /// one. Leave it off when clients reach the server directly: they could forge the header.
+    #[arg(
+        long,
+        env = "HOMESPACE_TRUST_FORWARDED_FOR",
+        default_value_t = false,
+        action = clap::ArgAction::Set
+    )]
+    pub trust_forwarded_for: bool,
+
     #[arg(long, env = "HOMESPACE_WEB_ROOT")]
     pub web_root: Option<PathBuf>,
 
