@@ -120,6 +120,8 @@ which stays below nginx's default limit of 1 MiB. Unfinished uploads are kept un
 | `HOMESPACE_MAX_UPLOAD_BYTES` | 10737418240 (10 GiB) | Largest file accepted, however it is uploaded. |
 | `HOMESPACE_UPLOAD_CHUNK_BYTES` | 33554432 (32 MiB) | Largest request of any upload, single or chunked. Keep it below the proxy's limit (Cloudflare: 100 MB). It does not limit the file size. |
 | `HOMESPACE_UPLOAD_EXPIRY_HOURS` | 24 | Unfinished uploads idle this long are deleted. |
+| `HOMESPACE_TRANSFER_TTL_HOURS` | 24 | Files sent to a device are deleted this long after they were sent, received or not ([`docs/send-to-device.md`](docs/send-to-device.md)). |
+| `HOMESPACE_MAX_TRANSFER_BYTES` | unset | The most bytes one transfer to a device may hold. |
 
 A reverse proxy needs a body limit above `HOMESPACE_UPLOAD_CHUNK_BYTES` on `/api/v1/files` (for
 single-request uploads and replacements) and on `/api/v1/uploads`. Larger single requests (from a
@@ -155,12 +157,20 @@ one.
 | POST | `/folders` | `{parent_id?, name}` |
 | POST | `/files?name=&parent_id=` | raw-body streaming upload (201 new, 200 unchanged or new version) |
 | GET / PUT | `/files/{id}/content` | download / replace content |
-| POST | `/uploads` | `{name, parent_id?, size, modified_at?, mime?, node_id?, keep_both?, version_of?, auto_upload?}` → 201 `{id, offset, size, chunk_size}`; starts a resumable upload (`node_id` replaces that file's content; for the other options see [`docs/chunked-upload.md`](docs/chunked-upload.md)) |
+| POST | `/uploads` | `{name, parent_id?, size, modified_at?, mime?, node_id?, keep_both?, version_of?, auto_upload?, transfer_item_id?}` → 201 `{id, offset, size, chunk_size}`; starts a resumable upload (`node_id` replaces that file's content; `transfer_item_id` uploads a file of a transfer; for the other options see [`docs/chunked-upload.md`](docs/chunked-upload.md)) |
 | PATCH | `/uploads/{id}` | raw-body chunk with `Upload-Offset: N` → `{offset, node?}`; 409 with the right offset on a mismatch, `node` once complete |
 | GET / HEAD / DELETE | `/uploads/{id}` | current offset (also in `Upload-Offset`) / cancel |
-| GET | `/uploads?this_device=` | unfinished uploads `{id, parent_id?, node_id?, name, size, device_id?, updated_at}`, or only the calling device's |
-| GET | `/devices` | the user's devices: `{id, name, platform, created_at, last_seen_at, signed_in, current, uploads}` |
+| GET | `/uploads?this_device=` | unfinished uploads `{id, parent_id?, node_id?, name, size, device_id?, transfer_item_id?, updated_at}`, or only the calling device's |
+| GET | `/devices` | the user's devices: `{id, name, platform, created_at, last_seen_at, signed_in, current, uploads, visibility, visible_to?}` |
 | PATCH / DELETE | `/devices/{id}` | rename `{name}` / sign out: end its sessions and cancel its unfinished uploads (it stays listed) |
+| PUT | `/devices/{id}/visibility` | `{visibility, users?}`: who can send files to the device: `owner` (default), `hidden`, `everyone` or `users` (the owner plus `users`) |
+| GET | `/devices/targets` | the devices the caller can send to, grouped by user, own first: `[{user: {id, username}, own, devices: [{id, name, platform, signed_in, online, current}]}]` |
+| GET | `/users` | the other users `[{id, username}]`, for choosing who sees a device |
+| POST | `/transfers` | `{recipient_id, recipient_device, items: [{path, kind, size?, node_id?, mime?, modified_at?}], message?}` → 201 `{id, state, items: [{id, path, upload_needed}]}`; send files to a device ([`docs/send-to-device.md`](docs/send-to-device.md)) |
+| GET | `/transfers/incoming?this_device=`, `/transfers/outgoing` | transfers waiting for the caller (ready or declined) / transfers the caller sent |
+| GET / DELETE | `/transfers/{id}` | summary with items (sender or recipient) / cancel (sender) |
+| GET | `/transfers/{id}/items/{item}/content` | download one file of a ready transfer (recipient); supports `Range` |
+| POST | `/transfers/{id}/received`, `/transfers/{id}/decline`, `/transfers/{id}/save` | recipient: confirm the download / decline / move into the tree under `{parent_id?}`; each removes the transfer's bytes |
 | GET | `/nodes/{id}/properties` | predefined properties of a node: `{source_device?}`, the name of the device that last auto-uploaded the file |
 | GET | `/nodes/{id}/versions` | previous versions of a file, newest first |
 | DELETE | `/nodes/{id}/versions/{version}` | delete a previous version |
@@ -171,8 +181,8 @@ one.
 | DELETE | `/trash` | empty the recycle bin (permanent) |
 | DELETE | `/trash/{id}` | permanently delete one binned file and its versions (404 unless binned) |
 | GET | `/search?q=&limit=` | full-text search; every word matches as a prefix, hits carry their `location` |
-| POST | `/tickets` | `{scope: "events"}`, `{scope: "download", node_id}` or `{scope: "download_version", node_id, version}` → 60 s ticket |
-| GET | `/ws` | live `node_created` / `node_updated` / `node_deleted` / `trash_changed` / `resync` events |
+| POST | `/tickets` | `{scope: "events"}`, `{scope: "download", node_id}`, `{scope: "download_version", node_id, version}` or `{scope: "transfer_item", transfer_id, item_id}` → 60 s ticket |
+| GET | `/ws` | live `node_created` / `node_updated` / `node_deleted` / `trash_changed` / `devices_changed` / `transfer_received` / `transfer_changed` / `resync` events |
 | GET | `/health` | liveness + DB ping |
 
 All node and trash endpoints return 404 for ids owned by someone else. Authenticate with `Authorization: Bearer <access_token>`.

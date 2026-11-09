@@ -25,7 +25,10 @@ use protocol::{
 use crate::{
     ApiError, AppState,
     extract::AuthUser,
-    routes::nodes::{body_stream, publish_stored},
+    routes::{
+        nodes::{body_stream, publish_stored},
+        transfers::publish_ready,
+    },
 };
 
 pub fn routes() -> Router<AppState> {
@@ -85,6 +88,7 @@ fn upload_info(upload: db::Upload) -> UploadInfo {
         name: upload.name,
         size: u64::try_from(upload.size).unwrap_or_default(),
         device_id: upload.device_id,
+        transfer_item_id: upload.transfer_item_id,
         updated_at: upload.updated_at,
     }
 }
@@ -94,9 +98,10 @@ async fn create(
     user: AuthUser,
     Json(request): Json<CreateUpload>,
 ) -> Result<Response, ApiError> {
-    let target = match request.node_id {
-        Some(id) => UploadTarget::Replace(id),
-        None => UploadTarget::New {
+    let target = match (request.transfer_item_id, request.node_id) {
+        (Some(item), _) => UploadTarget::TransferItem(item),
+        (None, Some(id)) => UploadTarget::Replace(id),
+        (None, None) => UploadTarget::New {
             parent: request.parent_id,
             name: request.name,
             options: StoreOptions {
@@ -195,6 +200,16 @@ async fn append(
                 node: Some(node),
             });
             Ok(with_offset(status, offset, body))
+        }
+        Ok(ChunkOutcome::Transferred { size, ready }) => {
+            if let Some(transfer) = ready {
+                publish_ready(&state, transfer);
+            }
+            let body = Json(ChunkResult {
+                offset: size,
+                node: None,
+            });
+            Ok(with_offset(StatusCode::OK, size, body))
         }
         Err(FilesError::OffsetMismatch { current }) => {
             let error = ApiError::Files(FilesError::OffsetMismatch { current });

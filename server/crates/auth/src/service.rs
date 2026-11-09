@@ -715,6 +715,10 @@ fn scope_of(request: &TicketRequest) -> String {
         TicketRequest::DownloadVersion { node_id, version } => {
             format!("{}:v{version}", download_scope(*node_id))
         }
+        TicketRequest::TransferItem {
+            transfer_id,
+            item_id,
+        } => format!("transfer:{transfer_id}:{item_id}"),
     }
 }
 

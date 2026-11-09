@@ -72,6 +72,12 @@ pub struct ServerConfig {
     pub max_upload_bytes: u64,
     pub upload_chunk_bytes: u64,
     pub upload_expiry_hours: u64,
+    /// How long files sent to a device are kept (`HOMESPACE_TRANSFER_TTL_HOURS`).
+    #[serde(default)]
+    pub transfer_ttl_hours: u64,
+    /// The most bytes one transfer may hold; `None` for no limit.
+    #[serde(default)]
+    pub max_transfer_bytes: Option<u64>,
     /// `None` keeps the change journal for good.
     pub changes_retention_days: Option<i64>,
     pub password_login: bool,
@@ -171,6 +177,8 @@ mod tests {
                 max_upload_bytes: 0,
                 upload_chunk_bytes: 0,
                 upload_expiry_hours: 0,
+                transfer_ttl_hours: 0,
+                max_transfer_bytes: None,
                 changes_retention_days: None,
                 password_login: true,
                 oidc: None,

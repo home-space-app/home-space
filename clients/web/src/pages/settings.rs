@@ -312,7 +312,10 @@ mod tests {
             password_problem("long-enough", "long-enough", "long-enough"),
             Some("The new password is the same as the current one.")
         );
-        assert_eq!(password_problem("old-one", "long-enough", "long-enough"), None);
+        assert_eq!(
+            password_problem("old-one", "long-enough", "long-enough"),
+            None
+        );
     }
 
     #[test]

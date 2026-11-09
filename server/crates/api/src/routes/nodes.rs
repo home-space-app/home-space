@@ -391,7 +391,7 @@ async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn percent_encode(value: &str) -> String {
+pub(crate) fn percent_encode(value: &str) -> String {
     value
         .bytes()
         .map(|byte| {

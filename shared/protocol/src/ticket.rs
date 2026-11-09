@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use uuid::Uuid;
+
 use crate::NodeId;
 
 /// What a short-lived ticket may be used for.
@@ -7,8 +9,18 @@ use crate::NodeId;
 #[serde(tag = "scope", rename_all = "snake_case")]
 pub enum TicketRequest {
     Events,
-    Download { node_id: NodeId },
-    DownloadVersion { node_id: NodeId, version: i32 },
+    Download {
+        node_id: NodeId,
+    },
+    DownloadVersion {
+        node_id: NodeId,
+        version: i32,
+    },
+    /// A file of a transfer sent to the user.
+    TransferItem {
+        transfer_id: Uuid,
+        item_id: Uuid,
+    },
 }
 
 /// A short-lived ticket passed in the query string where headers are unavailable.
@@ -20,8 +32,6 @@ pub struct TicketResponse {
 
 #[cfg(test)]
 mod tests {
-    use uuid::Uuid;
-
     use super::*;
 
     #[test]

@@ -1,5 +1,10 @@
 # Send files and folders to a device
 
+> **Status:** the server part is done and documented in
+> [../send-to-device.md](../send-to-device.md). It differs from the proposal below where the
+> decisions at the end say so. Still to do: the shared client code (`api-client`, `client-core`),
+> then the desktop, web and mobile clients, and the zip route for the web client.
+
 ## Problem
 
 There is no quick way to hand a file to a specific device: "put this PDF on the laptop", "send
@@ -190,17 +195,26 @@ CREATE TABLE transfer_items (
 7. Docs: a `docs/send-to-device.md` like `docs/chunked-upload.md`, settings in the README,
    `compose.yaml` and `server/.env.example`.
 
+## Decisions
+
+- **Sending to other users**: each device has a visibility: `owner` (the default: only its
+  owner), `hidden` (nobody, the owner included), `everyone`, or `users` (the owner plus chosen
+  users). A transfer is not accepted or declined before it is sent: the recipient downloads,
+  saves or declines it once it arrives.
+- **Other devices of the recipient**: any signed-in session of the recipient user may download,
+  save or decline. The target device is the one notified.
+- **After download**: the bytes are deleted once the recipient confirms (`/received`), saves,
+  or declines. The row stays until it expires.
+- **Saving**: `POST /transfers/{id}/save` moves the files into the recipient's tree on the
+  server, with no round trip through a client.
+- **Retention**: fixed, `HOMESPACE_TRANSFER_TTL_HOURS` (24 by default), counted from creation.
+  Expiry removes the row as well; there is no 30-day history.
+
 ## Open questions
 
-- **Sending to other users**: should every user of the server be able to see every other user's
-  devices and send to them? Options: allow all (simple, fits a household), an opt-in per user
-  ("Others can send to my devices"), or only users in a shared group once groups exist
-  ([admin-panel.md](admin-panel.md)). Also: should a transfer from another user wait for
-  Accept/Decline before it is downloaded, while one from the user's own device downloads at once?
-- **Other devices of the recipient**: allow them to "take" a transfer meant for a lost or
-  signed-out device? That would turn it into a per-user inbox.
-- **Retention**: fixed 24 hours, or a sender choice (1 h, 24 h, 7 days) capped by the setting?
 - **Several targets at once**: one transfer per device (bytes linked, not copied, between them),
   or leave it out at first?
 - **Quota**: transfer bytes count against nobody now. With quotas from
   [admin-panel.md](admin-panel.md), should a pending transfer count against the sender?
+- **Free-space reserve**: refuse a transfer with 507 once [storage-limits.md](storage-limits.md)
+  adds a reserve.

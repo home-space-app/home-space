@@ -49,7 +49,10 @@ impl LostAndFound {
                 false
             }
             Event::Resync => true,
-            Event::TrashChanged | Event::DevicesChanged => false,
+            Event::TrashChanged
+            | Event::DevicesChanged
+            | Event::TransferReceived { .. }
+            | Event::TransferChanged { .. } => false,
         }
     }
 }

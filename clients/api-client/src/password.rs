@@ -13,7 +13,11 @@ impl Client {
             new_password: new.to_owned(),
         };
         let response = self
-            .send(|| self.http().post(self.url(paths::ME_PASSWORD)).json(&request))
+            .send(|| {
+                self.http()
+                    .post(self.url(paths::ME_PASSWORD))
+                    .json(&request)
+            })
             .await?;
         expect_success(response).await
     }

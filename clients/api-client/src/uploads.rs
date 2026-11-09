@@ -244,6 +244,7 @@ mod tests {
             keep_both: false,
             version_of: None,
             auto_upload: false,
+            transfer_item_id: None,
         };
         let source = content.clone();
 

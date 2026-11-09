@@ -147,7 +147,9 @@ pub fn config_groups(
                 ),
                 row("Listens on", config.bind.clone(), "HOMESPACE_BIND"),
                 ConfigRow {
-                    note: config.published_port.map(|_| "on the container host".to_owned()),
+                    note: config
+                        .published_port
+                        .map(|_| "on the container host".to_owned()),
                     ..row(
                         "Published port",
                         config
@@ -490,6 +492,8 @@ mod tests {
             max_upload_bytes: 10 * 1024 * 1024 * 1024,
             upload_chunk_bytes: 32 * 1024 * 1024,
             upload_expiry_hours: 24,
+            transfer_ttl_hours: 24,
+            max_transfer_bytes: None,
             changes_retention_days: None,
             password_login: true,
             oidc: None,

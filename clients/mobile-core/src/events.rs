@@ -62,9 +62,11 @@ pub enum LiveEvent {
     Resync,
 }
 
-impl From<Event> for LiveEvent {
-    fn from(event: Event) -> Self {
-        match event {
+impl LiveEvent {
+    /// The event the apps are told about; `None` for those they do not follow yet, such as
+    /// transfers to a device.
+    fn from_event(event: Event) -> Option<Self> {
+        Some(match event {
             Event::NodeCreated { node } | Event::NodeUpdated { node } => Self::NodeChanged {
                 id: node.id.to_string(),
                 parent_id: node.parent_id.map(|id| id.to_string()),
@@ -76,7 +78,8 @@ impl From<Event> for LiveEvent {
             Event::TrashChanged => Self::TrashChanged,
             Event::DevicesChanged => Self::DevicesChanged,
             Event::Resync => Self::Resync,
-        }
+            Event::TransferReceived { .. } | Event::TransferChanged { .. } => return None,
+        })
     }
 }
 
@@ -204,8 +207,11 @@ async fn forward(
         };
         match message {
             Ok(Some(Ok(tungstenite::Message::Text(text)))) => {
-                if let Ok(event) = serde_json::from_str::<Event>(&text) {
-                    listener.event(event.into());
+                if let Some(event) = serde_json::from_str::<Event>(&text)
+                    .ok()
+                    .and_then(LiveEvent::from_event)
+                {
+                    listener.event(event);
                 }
             }
             // Pings are answered by the socket itself; they only show the line is alive.
@@ -267,23 +273,23 @@ mod tests {
         let parent = NodeId(Uuid::new_v4());
         let created = node(Some(parent));
         assert_eq!(
-            LiveEvent::from(Event::NodeCreated {
+            LiveEvent::from_event(Event::NodeCreated {
                 node: created.clone()
             }),
-            LiveEvent::NodeChanged {
+            Some(LiveEvent::NodeChanged {
                 id: created.id.to_string(),
                 parent_id: Some(parent.to_string()),
-            }
+            })
         );
         assert_eq!(
-            LiveEvent::from(Event::NodeDeleted {
+            LiveEvent::from_event(Event::NodeDeleted {
                 id: created.id,
                 parent_id: None,
             }),
-            LiveEvent::NodeChanged {
+            Some(LiveEvent::NodeChanged {
                 id: created.id.to_string(),
                 parent_id: None,
-            }
+            })
         );
     }
 

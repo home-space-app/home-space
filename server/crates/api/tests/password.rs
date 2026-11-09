@@ -53,7 +53,10 @@ async fn changing_keeps_this_session_and_ends_the_others(pool: PgPool) {
         login(&app, "alice", PASSWORD).await.status,
         StatusCode::UNAUTHORIZED
     );
-    assert_eq!(login(&app, "alice", NEW_PASSWORD).await.status, StatusCode::OK);
+    assert_eq!(
+        login(&app, "alice", NEW_PASSWORD).await.status,
+        StatusCode::OK
+    );
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -63,10 +66,7 @@ async fn a_wrong_current_password_changes_nothing(pool: PgPool) {
 
     let response = change(&app, &token, "not-the-password", NEW_PASSWORD).await;
     assert_eq!(response.status, StatusCode::BAD_REQUEST);
-    assert_eq!(
-        response.json()["message"],
-        "the current password is wrong"
-    );
+    assert_eq!(response.json()["message"], "the current password is wrong");
     assert_eq!(app.get(ME, &token).await.status, StatusCode::OK);
     assert_eq!(login(&app, "alice", PASSWORD).await.status, StatusCode::OK);
 }
@@ -88,7 +88,11 @@ async fn guessing_the_current_password_is_throttled(pool: PgPool) {
 
     let mut statuses = Vec::new();
     for _ in 0..5 {
-        statuses.push(change(&app, &token, "guess-guess", NEW_PASSWORD).await.status);
+        statuses.push(
+            change(&app, &token, "guess-guess", NEW_PASSWORD)
+                .await
+                .status,
+        );
     }
     assert_eq!(statuses.last(), Some(&StatusCode::TOO_MANY_REQUESTS));
     // The block is shared with sign-in.

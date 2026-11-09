@@ -11,30 +11,9 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use common::{PASSWORD, TestApp, setup};
+use common::{TestApp, setup};
 
 const DEVICES: &str = "/api/v1/devices";
-
-async fn sign_in_from(app: &TestApp, username: &str, device: Uuid, name: &str) -> String {
-    app.state.auth.create_user(username, PASSWORD).await.ok();
-    let response = app
-        .json(
-            Method::POST,
-            "/api/v1/auth/login",
-            None,
-            json!({
-                "username": username,
-                "password": PASSWORD,
-                "device": { "id": device, "name": name, "platform": "desktop-linux" },
-            }),
-        )
-        .await;
-    assert_eq!(response.status, StatusCode::OK);
-    response.json()["access_token"]
-        .as_str()
-        .expect("access")
-        .to_owned()
-}
 
 async fn devices(app: &TestApp, token: &str) -> Vec<Value> {
     let response = app.get(DEVICES, token).await;
@@ -65,8 +44,8 @@ async fn delete(app: &TestApp, uri: &str, token: &str) -> StatusCode {
 async fn the_device_list_marks_the_current_one(pool: PgPool) {
     let app = setup(pool).await;
     let (laptop, phone) = (Uuid::now_v7(), Uuid::now_v7());
-    sign_in_from(&app, "alice", laptop, "Laptop").await;
-    let token = sign_in_from(&app, "alice", phone, "Phone").await;
+    app.sign_in_from("alice", laptop, "Laptop").await;
+    let token = app.sign_in_from("alice", phone, "Phone").await;
 
     let listed = devices(&app, &token).await;
 
@@ -83,8 +62,8 @@ async fn the_device_list_marks_the_current_one(pool: PgPool) {
 async fn signing_out_a_device_ends_its_sessions_and_cancels_its_uploads(pool: PgPool) {
     let app = setup(pool).await;
     let (laptop, phone) = (Uuid::now_v7(), Uuid::now_v7());
-    let on_laptop = sign_in_from(&app, "alice", laptop, "Laptop").await;
-    let on_phone = sign_in_from(&app, "alice", phone, "Phone").await;
+    let on_laptop = app.sign_in_from("alice", laptop, "Laptop").await;
+    let on_phone = app.sign_in_from("alice", phone, "Phone").await;
     let upload = start_upload(&app, &on_laptop).await;
     let listed = devices(&app, &on_phone).await;
     assert!(
@@ -117,7 +96,7 @@ async fn signing_out_a_device_ends_its_sessions_and_cancels_its_uploads(pool: Pg
 async fn a_device_can_be_renamed_but_not_to_a_blank_name(pool: PgPool) {
     let app = setup(pool).await;
     let laptop = Uuid::now_v7();
-    let token = sign_in_from(&app, "alice", laptop, "Laptop").await;
+    let token = app.sign_in_from("alice", laptop, "Laptop").await;
     let uri = format!("{DEVICES}/{laptop}");
 
     let blank = app
@@ -136,8 +115,8 @@ async fn a_device_can_be_renamed_but_not_to_a_blank_name(pool: PgPool) {
 async fn another_users_device_is_not_found(pool: PgPool) {
     let app = setup(pool).await;
     let laptop = Uuid::now_v7();
-    sign_in_from(&app, "alice", laptop, "Laptop").await;
-    let bob = sign_in_from(&app, "bob", Uuid::now_v7(), "Bob's").await;
+    app.sign_in_from("alice", laptop, "Laptop").await;
+    let bob = app.sign_in_from("bob", Uuid::now_v7(), "Bob's").await;
 
     let status = delete(&app, &format!("{DEVICES}/{laptop}"), &bob).await;
 
@@ -147,8 +126,8 @@ async fn another_users_device_is_not_found(pool: PgPool) {
 #[sqlx::test(migrations = "../../migrations")]
 async fn a_device_lists_only_its_own_uploads_when_asked(pool: PgPool) {
     let app = setup(pool).await;
-    let on_laptop = sign_in_from(&app, "alice", Uuid::now_v7(), "Laptop").await;
-    let on_phone = sign_in_from(&app, "alice", Uuid::now_v7(), "Phone").await;
+    let on_laptop = app.sign_in_from("alice", Uuid::now_v7(), "Laptop").await;
+    let on_phone = app.sign_in_from("alice", Uuid::now_v7(), "Phone").await;
     let from_laptop = start_upload(&app, &on_laptop).await;
     start_upload(&app, &on_phone).await;
 
@@ -178,7 +157,7 @@ async fn a_client_that_names_no_device_still_signs_in(pool: PgPool) {
 async fn the_change_feed_names_the_device_a_change_came_from(pool: PgPool) {
     let app = setup(pool).await;
     let laptop = Uuid::now_v7();
-    let token = sign_in_from(&app, "alice", laptop, "Laptop").await;
+    let token = app.sign_in_from("alice", laptop, "Laptop").await;
     let start = app.get("/api/v1/changes", &token).await.json()["cursor"].clone();
     let created = app
         .json(
@@ -204,7 +183,7 @@ async fn the_change_feed_names_the_device_a_change_came_from(pool: PgPool) {
 async fn a_node_names_the_device_it_was_made_on(pool: PgPool) {
     let app = setup(pool).await;
     let laptop = Uuid::now_v7();
-    let token = sign_in_from(&app, "alice", laptop, "Laptop").await;
+    let token = app.sign_in_from("alice", laptop, "Laptop").await;
     let created = app
         .json(
             Method::POST,

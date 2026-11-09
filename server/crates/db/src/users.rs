@@ -219,9 +219,7 @@ mod tests {
             .create_user_with_identity("sso", "https://idp.example", "sub", None)
             .await
             .expect("user");
-        let result = db
-            .change_password_hash(user.id, "hash", Uuid::nil())
-            .await;
+        let result = db.change_password_hash(user.id, "hash", Uuid::nil()).await;
         assert!(matches!(result, Err(DbError::NotFound)));
         let found = db.find_user(user.id).await.expect("db").expect("user");
         assert!(found.password_hash.is_none());

@@ -102,6 +102,7 @@ async fn upload_chunked(
                 keep_both: false,
                 version_of: None,
                 auto_upload: false,
+                transfer_item_id: None,
             };
             let session = client.create_upload(&request).await?;
             remember(&key, Some(&session.id.to_string()));

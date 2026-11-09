@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{DeviceInfo, Node, NodeId};
+use uuid::Uuid;
+
+use crate::{DeviceInfo, Node, NodeId, TransferState, TransferSummary};
 
 /// A change to a user's tree, pushed over the websocket.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,6 +22,16 @@ pub enum Event {
     TrashChanged,
     /// A device of the user came online or went offline.
     DevicesChanged,
+    /// A transfer to a device of the user is ready to be downloaded. Clients that are not
+    /// `transfer.recipient_device` may only refresh what they show.
+    TransferReceived {
+        transfer: TransferSummary,
+    },
+    /// A transfer the user sent or receives changed state.
+    TransferChanged {
+        id: Uuid,
+        state: TransferState,
+    },
     /// Events were missed; the client should refetch what it displays.
     Resync,
 }
@@ -35,8 +47,6 @@ pub enum ClientMessage {
 
 #[cfg(test)]
 mod tests {
-    use uuid::Uuid;
-
     use super::*;
 
     #[test]

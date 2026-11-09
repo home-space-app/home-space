@@ -27,6 +27,8 @@ pub struct FileService {
     pub(crate) max_upload_bytes: u64,
     pub(crate) chunk_bytes: u64,
     pub(crate) uploads: Uploads,
+    pub(crate) transfer_ttl: std::time::Duration,
+    pub(crate) max_transfer_bytes: Option<u64>,
 }
 
 impl FileService {
@@ -37,6 +39,8 @@ impl FileService {
             max_upload_bytes,
             chunk_bytes: DEFAULT_CHUNK_BYTES,
             uploads: Uploads::default(),
+            transfer_ttl: crate::transfers::DEFAULT_TRANSFER_TTL,
+            max_transfer_bytes: None,
         }
     }
 

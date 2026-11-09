@@ -535,6 +535,7 @@ impl Pass<'_> {
                     keep_both: true,
                     version_of,
                     auto_upload: true,
+                    transfer_item_id: None,
                 };
                 let session = self.client.create_upload(&request).await?;
                 self.store.save_upload(&SavedUpload {
