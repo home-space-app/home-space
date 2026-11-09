@@ -2,14 +2,17 @@ use leptos::{html::Input, prelude::*, task::spawn_local};
 use uuid::Uuid;
 use web_sys::KeyboardEvent;
 
-use client_core::labels::{THIS_DEVICE, device_state, platform, sign_out_question};
-use protocol::{Device, Event};
+use client_core::{
+    labels::{THIS_DEVICE, device_state, platform, sign_out_question},
+    transfers::visible_to,
+};
+use protocol::{Device, DeviceVisibility, Event};
 
-use super::settings::SettingsHeader;
+use super::{settings::SettingsHeader, visibility_dialog::VisibilityDialog};
 use crate::{
-    components::ErrorAlert,
+    components::{ErrorAlert, Menu, MenuItem},
     events,
-    icon::Icon,
+    icon::{Icon, platform_icon, visibility_icon},
     load,
     locale::short_date,
     session::{self, Auth},
@@ -32,6 +35,7 @@ pub fn DevicesPage(auth: Auth) -> impl IntoView {
     let error = RwSignal::new(None::<String>);
     let renaming = RwSignal::new(None::<Renaming>);
     let signing_out = RwSignal::new(None::<Device>);
+    let choosing = RwSignal::new(None::<Device>);
 
     let list = load::load(
         || async { session::client().devices().await },
@@ -79,6 +83,12 @@ pub fn DevicesPage(auth: Auth) -> impl IntoView {
             list.refetch();
         });
     };
+    let close_visibility = Callback::new(move |saved: bool| {
+        choosing.set(None);
+        if saved {
+            list.refetch();
+        }
+    });
 
     view! {
         <main class="explorer explorer--tabbed">
@@ -92,10 +102,13 @@ pub fn DevicesPage(auth: Auth) -> impl IntoView {
                         <tr>
                             <th class="node-table__header-cell">"Name"</th>
                             <th class="node-table__header-cell node-table__header-cell--modified">
-                                "Last seen"
+                                "State"
                             </th>
                             <th class="node-table__header-cell node-table__header-cell--modified">
-                                "State"
+                                "Visible to"
+                            </th>
+                            <th class="node-table__header-cell node-table__header-cell--modified">
+                                "Last seen"
                             </th>
                             <th class="node-table__header-cell node-table__cell--actions"></th>
                         </tr>
@@ -103,10 +116,21 @@ pub fn DevicesPage(auth: Auth) -> impl IntoView {
                     <tbody class="node-table__body">
                         <For
                             each=move || devices.get()
-                            key=|device| (device.id, device.name.clone(), device.signed_in, device.uploads)
+                            key=|device| {
+                                (
+                                    device.id,
+                                    device.name.clone(),
+                                    device.signed_in,
+                                    device.online,
+                                    device.uploads,
+                                    device.visibility,
+                                    device.visible_to.clone(),
+                                    device.last_seen_at,
+                                )
+                            }
                             children=move |device| {
                                 view! {
-                                    <DeviceRow device renaming signing_out save cancel />
+                                    <DeviceRow device renaming signing_out choosing save cancel />
                                 }
                             }
                         />
@@ -117,6 +141,11 @@ pub fn DevicesPage(auth: Auth) -> impl IntoView {
                 </Show>
             </div>
         </main>
+        {move || {
+            choosing
+                .get()
+                .map(|device| view! { <VisibilityDialog device auth on_close=close_visibility /> })
+        }}
         {move || {
             signing_out
                 .get()
@@ -159,6 +188,7 @@ fn DeviceRow(
     device: Device,
     renaming: RwSignal<Option<Renaming>>,
     signing_out: RwSignal<Option<Device>>,
+    choosing: RwSignal<Option<Device>>,
     save: Callback<()>,
     cancel: Callback<()>,
 ) -> impl IntoView {
@@ -180,25 +210,43 @@ fn DeviceRow(
     };
     let last_seen = short_date(device.last_seen_at);
     let state = device_state(&device);
-    let meta = format!("{kind} · {last_seen} · {state}");
-    // The current device signs out with the app bar's button; one that is signed out and
-    // left nothing behind has nothing to end.
+    let visibility = visible_to(&device);
+    let meta = format!("{kind} · {state} · {visibility}");
+    // The current device signs out with the account menu; one that is signed out and left
+    // nothing behind has nothing to end.
     let can_sign_out = !device.current && (device.signed_in || device.uploads > 0);
-    let name = device.name.clone();
-    let start_rename = move |_| {
-        signing_out.set(None);
-        renaming.set(Some(Renaming {
-            id,
-            name: name.clone(),
-        }));
+    let icon = platform_icon(&device.platform);
+    let state_class = if device.online || device.signed_in {
+        "pill pill--success"
+    } else {
+        "pill"
+    };
+    let start_rename = {
+        let name = device.name.clone();
+        Callback::new(move |()| {
+            signing_out.set(None);
+            renaming.set(Some(Renaming {
+                id,
+                name: name.clone(),
+            }));
+        })
     };
     let ask_sign_out = {
         let device = device.clone();
-        move |_| {
+        Callback::new(move |()| {
             renaming.set(None);
             signing_out.set(Some(device.clone()));
-        }
+        })
     };
+    let choose_visibility = {
+        let device = device.clone();
+        Callback::new(move |()| {
+            renaming.set(None);
+            choosing.set(Some(device.clone()));
+        })
+    };
+    let visibility_icon = visibility_icon(device.visibility);
+    let hidden = device.visibility == DeviceVisibility::Hidden;
 
     view! {
         <tr class="node-table__row">
@@ -235,6 +283,7 @@ fn DeviceRow(
                 } else {
                     view! {
                         <span class="node-table__name">
+                            <Icon name=icon />
                             <span class="node-table__text">
                                 {device.name.clone()}
                                 <span class="device-kind">{kind.clone()}</span>
@@ -245,8 +294,16 @@ fn DeviceRow(
                         .into_any()
                 }}
             </td>
+            <td class="node-table__cell node-table__cell--modified">
+                <span class=state_class>{state.clone()}</span>
+            </td>
+            <td class="node-table__cell node-table__cell--modified">
+                <span class="device-visibility" class:device-visibility--hidden=hidden>
+                    <Icon name=visibility_icon />
+                    {visibility.clone()}
+                </span>
+            </td>
             <td class="node-table__cell node-table__cell--modified">{last_seen.clone()}</td>
-            <td class="node-table__cell node-table__cell--modified">{state.clone()}</td>
             <td class="node-table__cell node-table__cell--actions">
                 <span class="node-table__actions">
                     {move || if editing.get() {
@@ -264,17 +321,25 @@ fn DeviceRow(
                             .into_any()
                     } else {
                         view! {
-                            <button class="button button--small button--ghost" on:click=start_rename.clone()>
-                                "Rename"
-                            </button>
-                            <button
-                                class="button button--small button--ghost button--danger"
-                                disabled=!can_sign_out
-                                on:click=ask_sign_out.clone()
-                            >
-                                <Icon name="logout" />
-                                <span class="label">{SIGN_OUT}</span>
-                            </button>
+                            <Menu id=format!("device-menu-{id}") label="Device actions">
+                                <MenuItem icon="edit" label="Rename" on_select=start_rename />
+                                <MenuItem
+                                    icon="visibility"
+                                    label="Visibility…"
+                                    on_select=choose_visibility
+                                />
+                                {can_sign_out
+                                    .then(|| {
+                                        view! {
+                                            <MenuItem
+                                                icon="logout"
+                                                label=SIGN_OUT
+                                                danger=true
+                                                on_select=ask_sign_out
+                                            />
+                                        }
+                                    })}
+                            </Menu>
                         }
                             .into_any()
                     }}

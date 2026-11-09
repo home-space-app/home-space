@@ -23,6 +23,9 @@ pub struct Transfer {
     pub state: TransferState,
     pub total_bytes: i64,
     pub item_count: i32,
+    pub file_count: i64,
+    /// The path of the only top-level item, when there is one.
+    pub name: Option<String>,
     pub message: Option<String>,
     pub created_at: OffsetDateTime,
     pub ready_at: Option<OffsetDateTime>,
@@ -82,7 +85,11 @@ macro_rules! transfer_query {
             "SELECT t.id, t.sender_id, s.username AS sender_name, t.sender_device, \
              sd.name AS sender_device_name, t.recipient_id, r.username AS recipient_name, \
              t.recipient_device, rd.name AS recipient_device_name, t.state, t.total_bytes, \
-             t.item_count, t.message, t.created_at, t.ready_at, t.expires_at, t.finished_at \
+             t.item_count, t.message, t.created_at, t.ready_at, t.expires_at, t.finished_at, \
+             (SELECT count(*) FROM transfer_items i \
+              WHERE i.transfer_id = t.id AND i.kind = 'file') AS file_count, \
+             (SELECT CASE WHEN count(*) = 1 THEN min(i.path) END FROM transfer_items i \
+              WHERE i.transfer_id = t.id AND strpos(i.path, '/') = 0) AS name \
              FROM transfers t \
              JOIN users s ON s.id = t.sender_id \
              JOIN users r ON r.id = t.recipient_id \

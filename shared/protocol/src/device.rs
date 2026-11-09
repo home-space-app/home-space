@@ -82,7 +82,7 @@ pub enum DeviceVisibility {
 }
 
 /// Another user, as shown in pickers.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "server", derive(sqlx::FromRow))]
 pub struct UserRef {
     pub id: UserId,

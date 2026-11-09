@@ -18,6 +18,11 @@ pub const SETTINGS_PATH: &str = "/settings";
 /// The settings tab listing the user's devices.
 pub const DEVICES_PATH: &str = "/settings/devices";
 
+/// Files sent to the user's devices.
+pub const TRANSFERS_PATH: &str = "/transfers";
+/// Files the user sent.
+pub const TRANSFERS_SENT_PATH: &str = "/transfers/sent";
+
 /// The administration pages, for administrators only.
 pub const ADMIN_PATH: &str = "/admin";
 

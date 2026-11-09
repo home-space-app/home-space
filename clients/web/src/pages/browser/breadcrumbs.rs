@@ -4,7 +4,7 @@ use leptos_router::components::A;
 use client_core::{labels::HOME, listing::collapsed_crumbs};
 use protocol::Node;
 
-use super::menu::{Menu, MenuLink};
+use crate::components::{Menu, MenuLink};
 use crate::route;
 
 const OVERFLOW_ICON: &str = "";

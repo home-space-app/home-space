@@ -1,0 +1,209 @@
+.page__note {
+  color: var(--color-muted);
+  font-size: 0.8125rem;
+}
+
+.card__empty {
+  padding: var(--space-6) var(--space-4);
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+
+.transfer-table td {
+  height: 60px;
+}
+
+.transfer-table__time {
+  width: 16rem;
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+
+.transfer-table__cancel {
+  width: 1%;
+  text-align: right;
+}
+
+.transfer-cell > .icon {
+  flex: none;
+}
+
+.transfer-cell > .icon:not(.icon--folder) {
+  color: var(--color-muted);
+}
+
+.transfer-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.modal__actions--split {
+  align-items: center;
+}
+
+.save-trail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+}
+
+.save-trail > .icon {
+  font-size: 16px;
+}
+
+.save-trail__crumb {
+  padding: var(--space-1);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.save-trail__crumb:hover {
+  color: var(--color-text);
+}
+
+.save-trail__crumb--current {
+  color: var(--color-text);
+  font-weight: 500;
+}
+
+.save-folders {
+  max-height: min(40vh, 50dvh);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: auto;
+}
+
+.save-folders__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding-right: var(--space-2);
+}
+
+.save-folders__row + .save-folders__row {
+  border-top: 1px solid var(--color-border);
+}
+
+.save-folders__row--new {
+  padding: var(--space-2) var(--space-3);
+}
+
+.save-folders__row--new > .icon {
+  color: var(--color-accent);
+}
+
+.save-folders__row--selected {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+.save-folders__pick {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.9375rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.save-folders__pick > .icon {
+  color: var(--color-accent);
+}
+
+.save-folders__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.save-folders__check {
+  display: inline-grid;
+  place-items: center;
+  min-width: 32px;
+  color: var(--color-accent);
+}
+
+.save-folders__input {
+  flex: 1;
+  min-width: 0;
+  padding-block: var(--space-1);
+}
+
+@media (hover: hover) {
+  .save-folders__row:not(.save-folders__row--selected):hover {
+    background: var(--color-surface-hover);
+  }
+}
+
+@media (width < 640px) {
+  .transfer-table thead {
+    display: none;
+  }
+
+  .transfer-table tr {
+    display: grid;
+    grid-template-areas:
+      "item time"
+      "state state";
+    grid-template-columns: minmax(0, 1fr) auto;
+    border-top: 1px solid var(--color-border);
+  }
+
+  .transfer-table tr:first-child {
+    border-top: 0;
+  }
+
+  .transfer-table td {
+    height: auto;
+    border-top: 0;
+  }
+
+  .transfer-table td:first-child {
+    grid-area: item;
+  }
+
+  .transfer-table td:nth-child(2) {
+    grid-area: state;
+    padding-top: 0;
+  }
+
+  .transfer-table__time {
+    grid-area: time;
+    width: auto;
+    text-align: right;
+  }
+
+  .transfer-table__cancel {
+    grid-area: state;
+    justify-self: end;
+    padding-top: 0;
+  }
+
+  .transfer-actions {
+    display: flex;
+  }
+
+  .transfer-actions .button {
+    flex: 1;
+    padding-inline: var(--space-2);
+  }
+}

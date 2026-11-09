@@ -1,6 +1,7 @@
 //! The devices a user signs in from.
 
 use std::collections::HashMap;
+
 use axum::{
     Json, Router,
     extract::{Path, State},

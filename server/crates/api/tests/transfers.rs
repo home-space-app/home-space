@@ -386,6 +386,75 @@ async fn a_folder_from_the_tree_brings_everything_in_it(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn a_transfer_downloads_as_one_zip(pool: PgPool) {
+    let app = setup(pool).await;
+    let u = users(&app).await;
+    let folder = app
+        .json(
+            Method::POST,
+            "/api/v1/folders",
+            Some(&u.alice),
+            json!({ "name": "Docs" }),
+        )
+        .await
+        .json()["id"]
+        .as_str()
+        .expect("folder")
+        .to_owned();
+    app.upload(&u.alice, &format!("name=a.txt&parent_id={folder}"), "aaa")
+        .await;
+    app.upload(&u.alice, &format!("name=b.txt&parent_id={folder}"), "bb")
+        .await;
+    let created = send(
+        &app,
+        &u.alice,
+        "alice",
+        u.alice_phone,
+        json!([{ "path": "Sent", "kind": "folder", "node_id": folder }]),
+    )
+    .await
+    .json();
+    let id = created["id"].as_str().expect("id");
+
+    let listed = incoming(&app, &u.alice).await;
+    assert_eq!(listed[0]["name"], "Sent");
+    assert_eq!(listed[0]["file_count"], 2);
+    assert_eq!(listed[0]["item_count"], 3);
+
+    let archive = format!("{TRANSFERS}/{id}/archive");
+    assert_eq!(
+        app.get(&archive, &u.carol).await.status,
+        StatusCode::NOT_FOUND
+    );
+    let response = app.get(&archive, &u.alice).await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.headers["content-type"], "application/zip");
+    assert!(
+        response.headers["content-disposition"]
+            .to_str()
+            .expect("disposition")
+            .ends_with("Sent.zip")
+    );
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(response.body)).expect("zip");
+    let names = zip
+        .file_names()
+        .map(|name| name.expect("name").into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["Sent/", "Sent/a.txt", "Sent/b.txt"]);
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name("Sent/a.txt").expect("a"), &mut text)
+        .expect("read");
+    assert_eq!(text, "aaa");
+
+    // Once the download is confirmed, there is nothing left to archive.
+    assert_eq!(
+        post(&app, &format!("{TRANSFERS}/{id}/received"), &u.alice).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(app.get(&archive, &u.alice).await.status, StatusCode::GONE);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn uploaded_files_make_a_transfer_ready_and_can_be_saved(pool: PgPool) {
     let app = setup(pool).await;
     let u = users(&app).await;

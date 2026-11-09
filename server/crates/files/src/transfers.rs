@@ -7,6 +7,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    path::PathBuf,
     time::Duration,
 };
 
@@ -190,6 +191,28 @@ impl FileService {
         }
         let file = self.store.open_transfer_item(id, item.id).await?;
         Ok((item, file))
+    }
+
+    /// The items of a ready transfer for its recipient, each file with where its bytes are, to
+    /// be sent as one archive.
+    pub async fn transfer_archive(
+        &self,
+        caller: UserId,
+        id: Uuid,
+    ) -> Result<(Transfer, Vec<(TransferItem, PathBuf)>), FilesError> {
+        let transfer = self.received_transfer(caller, id).await?;
+        require_ready(&transfer)?;
+        let items = self
+            .db
+            .transfer_items(id)
+            .await?
+            .into_iter()
+            .map(|item| {
+                let path = self.store.transfer_item_path(id, item.id);
+                (item, path)
+            })
+            .collect();
+        Ok((transfer, items))
     }
 
     /// The recipient confirms a download; the bytes are removed.

@@ -17,3 +17,10 @@ pub fn short_date(time: OffsetDateTime) -> String {
         .and_then(|text| text.as_string())
         .unwrap_or_else(|| client_core::format::short_date(time))
 }
+
+/// The current time, from the browser's clock: the standard library has none in wasm.
+pub fn now() -> OffsetDateTime {
+    let millis = Date::now() as i128;
+    OffsetDateTime::from_unix_timestamp_nanos(millis * 1_000_000)
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH)
+}
