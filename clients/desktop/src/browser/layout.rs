@@ -11,8 +11,9 @@ use client_core::{labels::HOME, listing::collapsed_crumbs};
 use protocol::Node;
 
 use super::{
-    Menu, Message, Page, State, anchor::Anchor, context_menu, context_menu::Placement, dialogs,
-    grid, parts, search, sidebar, sync_queue, syncing, toolbar, toolbar::SyncChip,
+    Menu, Message, Page, State, anchor::Anchor, context_menu, context_menu::Placement, devices,
+    dialogs, grid, parts, search, sidebar, sync_queue, syncing, toolbar, toolbar::SyncChip,
+    transfer_list, transfer_save,
 };
 use crate::{
     icons::{ICON_SIZE, Icon, Tint},
@@ -57,6 +58,7 @@ const TRASH: &str = "Recycle bin";
 const SYNC_QUEUE: &str = "Sync queue";
 const SYNC_SETTINGS: &str = "Sync settings";
 const DEVICES: &str = "Devices";
+const TRANSFERS: &str = "Transfers";
 const CRUMB_SEPARATOR: &str = "›";
 const CRUMB_OVERFLOW: &str = "…";
 
@@ -88,7 +90,9 @@ impl State {
                     .into(),
             );
         }
-        if let Some(menu) = self.menu {
+        // The people picker opens from a dialog, so it goes over it below.
+        let menu = self.menu.filter(|menu| !matches!(menu, Menu::Users(_)));
+        if let Some(menu) = menu {
             layers.extend(self.menu_layers(menu, &selected));
         }
         if let Some(confirm) = &self.syncing.confirm {
@@ -102,6 +106,31 @@ impl State {
                 dialog.view().map(Message::Dialog),
                 Message::Dialog(dialogs::Message::Cancel),
             ));
+        }
+        match &self.page {
+            Page::Devices(devices) => {
+                if let Some(dialog) = devices.dialog() {
+                    layers.push(modal(
+                        dialog.map(Message::Devices),
+                        Message::Devices(devices::Message::Cancel),
+                    ));
+                }
+                if let (Some(Menu::Users(placement)), Some(picker)) = (self.menu, devices.picker())
+                {
+                    layers.extend(menu_layers(picker.map(Message::Devices), placement));
+                }
+            }
+            Page::Transfers => {
+                if let Some(dialog) = self.transfer_list.dialog() {
+                    layers.push(modal(
+                        dialog.map(Message::Transfers),
+                        Message::Transfers(transfer_list::Message::SaveDialog(
+                            transfer_save::Message::Cancel,
+                        )),
+                    ));
+                }
+            }
+            _ => {}
         }
         stack(layers).into()
     }
@@ -159,6 +188,11 @@ impl State {
                     DEVICES,
                     devices.action().map(Message::Devices),
                     devices.view().map(Message::Devices),
+                ),
+                Page::Transfers => (
+                    TRANSFERS,
+                    self.transfer_list.action().map(Message::Transfers),
+                    self.transfer_list.view().map(Message::Transfers),
                 ),
                 Page::Folder => return self.folder_page(selected),
             };
@@ -241,14 +275,10 @@ impl State {
                 };
                 (placement, context_menu::device(id, can_sign_out))
             }
+            // Shown over its dialog by the caller.
+            Menu::Users(placement) => (placement, space().into()),
         };
-        [
-            mouse_area(space().width(Length::Fill).height(Length::Fill))
-                .on_press(Message::CloseMenu)
-                .on_right_press(Message::CloseMenu)
-                .into(),
-            context_menu::place(panel, placement),
-        ]
+        menu_layers(panel, placement)
     }
 
     /// What the chip above the listing says about the folder shown, if it takes part in the sync.
@@ -376,6 +406,17 @@ fn dashed_outline<'a>(size: Size) -> Element<'a, Message> {
             color: Some(theme::tokens(theme).accent),
         })
         .into()
+}
+
+/// The click-away backdrop and the popup `panel` placed by `placement`.
+fn menu_layers(panel: Element<'_, Message>, placement: Placement) -> [Element<'_, Message>; 2] {
+    [
+        mouse_area(space().width(Length::Fill).height(Length::Fill))
+            .on_press(Message::CloseMenu)
+            .on_right_press(Message::CloseMenu)
+            .into(),
+        context_menu::place(panel, placement),
+    ]
 }
 
 fn modal<'a>(content: Element<'a, Message>, on_dismiss: Message) -> Element<'a, Message> {

@@ -677,7 +677,7 @@ pub(crate) async fn expect_success(response: Response) -> Result<(), ApiError> {
     }
 }
 
-async fn error_from(response: Response) -> ApiError {
+pub(crate) async fn error_from(response: Response) -> ApiError {
     let status = response.status();
     match response.json::<ErrorBody>().await {
         _ if status == StatusCode::UNAUTHORIZED => ApiError::Unauthorized,

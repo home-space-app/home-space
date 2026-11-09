@@ -124,6 +124,26 @@ impl Client {
         )
     }
 
+    /// Starts downloading one file of a transfer.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn download_transfer_item(
+        &self,
+        id: Uuid,
+        item: Uuid,
+    ) -> Result<reqwest::Response, ApiError> {
+        let response = self
+            .send(|| {
+                self.http()
+                    .get(self.url(&paths::transfer_item_content(id, item)))
+            })
+            .await?;
+        if response.status().is_success() {
+            Ok(response)
+        } else {
+            Err(crate::client::error_from(response).await)
+        }
+    }
+
     async fn post_empty(&self, path: &str) -> Result<(), ApiError> {
         let response = self.send(|| self.http().post(self.url(path))).await?;
         expect_success(response).await

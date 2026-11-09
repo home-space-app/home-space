@@ -100,6 +100,7 @@ pub fn account<'a>() -> Element<'a, Message> {
 pub fn device<'a>(id: Uuid, can_sign_out: bool) -> Element<'a, Message> {
     let rename = Message::Devices(devices::Message::Rename(id));
     let sign_out = Message::Devices(devices::Message::SignOut(id));
+    let visibility = Message::Devices(devices::Message::ChooseVisibility(id));
     panel([
         menu_row(
             Icon::Rename,
@@ -108,6 +109,14 @@ pub fn device<'a>(id: Uuid, can_sign_out: bool) -> Element<'a, Message> {
             "",
             theme::tool,
             Some(rename),
+        ),
+        menu_row(
+            Icon::Visibility,
+            Tint::Muted,
+            "Visibility…",
+            "",
+            theme::tool,
+            Some(visibility),
         ),
         separator(),
         menu_row(

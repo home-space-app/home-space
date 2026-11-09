@@ -87,6 +87,17 @@ pub enum Icon {
     Stop,
     /// Clears finished rows from a list.
     ClearAll,
+    /// A device only its owner can send to.
+    Lock,
+    /// A device everyone can send to.
+    Public,
+    /// A device some users can send to.
+    Group,
+    PersonAdd,
+    /// Transfers between devices.
+    SwapVert,
+    /// Saves a transfer on the server.
+    SaveToServer,
 }
 
 /// How an icon is tinted.
@@ -157,6 +168,12 @@ impl Icon {
             Self::Resume => include_bytes!("../assets/icons/play_arrow.svg"),
             Self::Stop => include_bytes!("../assets/icons/stop.svg"),
             Self::ClearAll => include_bytes!("../assets/icons/clear_all.svg"),
+            Self::Lock => include_bytes!("../assets/icons/lock.svg"),
+            Self::Public => include_bytes!("../assets/icons/public.svg"),
+            Self::Group => include_bytes!("../assets/icons/group.svg"),
+            Self::PersonAdd => include_bytes!("../assets/icons/person_add.svg"),
+            Self::SwapVert => include_bytes!("../assets/icons/swap_vert.svg"),
+            Self::SaveToServer => include_bytes!("../assets/icons/drive_folder_upload.svg"),
         }
     }
 
