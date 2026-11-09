@@ -35,6 +35,7 @@ pub struct TableActions {
     pub save_rename: Callback<()>,
     pub cancel_rename: Callback<()>,
     pub download: Callback<Node>,
+    pub send: Callback<Vec<Node>>,
     pub details: Callback<Node>,
     pub delete: Callback<Vec<Node>>,
     pub lost_and_found: Signal<Option<NodeId>>,
@@ -194,6 +195,7 @@ fn NodeRow(node: Node, actions: TableActions) -> impl IntoView {
         save_rename,
         cancel_rename,
         download,
+        send,
         details,
         delete,
         lost_and_found,
@@ -336,6 +338,11 @@ fn NodeRow(node: Node, actions: TableActions) -> impl IntoView {
                                         />
                                     }
                                 })}
+                            <MenuItem
+                                icon="send"
+                                label="Send to device…"
+                                on_select=Callback::new(move |()| send.run(vec![target.get_value()]))
+                            />
                             <MenuItem
                                 icon="info"
                                 label="Details"

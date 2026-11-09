@@ -207,3 +207,151 @@
     padding-inline: var(--space-2);
   }
 }
+
+.send-box {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.send-box__title {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.send-items {
+  display: grid;
+  max-height: min(40vh, 50dvh);
+  margin: 0;
+  padding: var(--space-1);
+  list-style: none;
+  overflow: auto;
+}
+
+.send-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 40px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: 0.9375rem;
+}
+
+.send-row > .icon {
+  flex: none;
+  color: var(--color-muted);
+}
+
+.send-row > .icon--folder {
+  color: var(--color-accent);
+}
+
+.send-row__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.send-row__detail {
+  flex: none;
+  color: var(--color-muted);
+  font-size: 0.8125rem;
+}
+
+.send-row__hint {
+  flex: 1;
+}
+
+.send-row > .button {
+  flex: none;
+  margin-block: calc(-1 * var(--space-1));
+}
+
+.send-row--add {
+  margin-top: var(--space-1);
+  border-top: 1px solid var(--color-border);
+  border-radius: 0;
+}
+
+.send-row--add > .icon {
+  color: var(--color-accent);
+}
+
+.send-link {
+  color: var(--color-accent);
+  cursor: pointer;
+}
+
+.send-link:hover {
+  text-decoration: underline;
+}
+
+.send-row--button {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.9375rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.send-row--choice {
+  cursor: pointer;
+}
+
+.send-row--nested {
+  padding-left: var(--space-6);
+}
+
+.send-row--selected {
+  background: var(--color-surface-hover);
+}
+
+.send-row--user {
+  color: var(--color-muted);
+}
+
+.send-row--empty {
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+}
+
+.send-row--choice + .send-row--button,
+.send-row--empty + .send-row--button {
+  margin-top: var(--space-1);
+  border-top: 1px solid var(--color-border);
+  border-radius: 0;
+}
+
+@media (hover: hover) {
+  .send-row--choice:not(.send-row--selected):hover,
+  .send-row--button:hover {
+    background: var(--color-surface-hover);
+  }
+}
+
+@media (width < 640px) {
+  .send-row__detail {
+    max-width: 45%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .send-row--add {
+    flex-wrap: wrap;
+  }
+}
+
+.send-row--add:first-child {
+  margin-top: 0;
+  border-top: 0;
+}

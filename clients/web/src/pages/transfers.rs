@@ -20,6 +20,7 @@ use crate::{
     locale::{self, short_date},
     route,
     session::{self, Auth},
+    uploads::Sending,
 };
 
 /// How often the time left in each row is brought up to date.
@@ -106,6 +107,16 @@ pub fn TransfersPage(auth: Auth, list: TransferList) -> impl IntoView {
         },
     );
     let refresh = Callback::new(move |()| resource.refetch());
+    // A send this tab finished uploading is now waiting for its device.
+    let sending = expect_context::<Sending>();
+    let uploading = Memo::new(move |_| sending.0.read().len());
+    Effect::new(move |before: Option<usize>| {
+        let now = uploading.get();
+        if before.is_some_and(|before| now < before) {
+            resource.refetch();
+        }
+        now
+    });
     events::use_events(move |event| {
         if matches!(
             event,
@@ -180,7 +191,7 @@ pub fn TransfersPage(auth: Auth, list: TransferList) -> impl IntoView {
                                 each=move || transfers.get()
                                 key=|transfer| (transfer.id, transfer.state)
                                 children=move |transfer| {
-                                    view! { <TransferRow transfer list me now act saving /> }
+                                    view! { <TransferRow transfer list me now act saving sending /> }
                                 }
                             />
                         </tbody>
@@ -284,6 +295,11 @@ async fn download(transfer: &TransferSummary) -> Result<(), api_client::ApiError
     Ok(())
 }
 
+/// The state of a transfer this tab is uploading: `Uploading 64%`.
+fn uploading_label(fraction: f64) -> String {
+    format!("Uploading {}%", (fraction.clamp(0.0, 1.0) * 100.0).floor())
+}
+
 /// The pill of a state, and its look.
 fn state_pill(state: TransferState) -> &'static str {
     match state {
@@ -301,6 +317,7 @@ fn TransferRow(
     now: RwSignal<OffsetDateTime>,
     act: Callback<(Action, TransferSummary)>,
     saving: RwSignal<Option<TransferSummary>>,
+    sending: Sending,
 ) -> impl IntoView {
     let title = match list {
         TransferList::Incoming => {
@@ -330,6 +347,7 @@ fn TransferRow(
     let cancellable = list == TransferList::Sent && !state.is_finished();
     let created = short_date(transfer.created_at);
     let single = single_file(&transfer);
+    let id = transfer.id;
 
     let state_cell = if actionable {
         let (save, download, decline) = (transfer.clone(), transfer.clone(), transfer.clone());
@@ -358,7 +376,12 @@ fn TransferRow(
     } else {
         view! {
             <span class=state_pill(state)>
-                {move || transfer_state(state, expires_at, now.get())}
+                {move || match sending.0.read().get(&id) {
+                    Some(fraction) if state == TransferState::Uploading => {
+                        uploading_label(*fraction)
+                    }
+                    _ => transfer_state(state, expires_at, now.get()),
+                }}
             </span>
         }
         .into_any()
@@ -443,5 +466,7 @@ mod tests {
         assert!(!single_file(&summary(2, 1)));
         assert!(!single_file(&summary(3, 3)));
         assert_eq!(transfer_icon(&summary(3, 3)), "folder");
+        assert_eq!(uploading_label(0.645), "Uploading 64%");
+        assert_eq!(uploading_label(1.2), "Uploading 100%");
     }
 }

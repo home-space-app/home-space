@@ -13,6 +13,8 @@ use crate::{
 pub fn Toolbar(
     selected_count: Signal<usize>,
     on_move: Callback<()>,
+    on_send: Callback<()>,
+    on_send_local: Callback<()>,
     on_delete: Callback<()>,
     can_delete: Signal<bool>,
     can_add: Signal<bool>,
@@ -29,6 +31,7 @@ pub fn Toolbar(
                     text=Signal::derive(move || format!("{} selected", selected_count.get()))
                     icon="more_horiz"
                 >
+                    <MenuItem icon="send" label="Send to device…" on_select=on_send />
                     <MenuItem icon="drive_file_move" label="Move" on_select=on_move />
                     <Show when=move || can_delete.get()>
                         <MenuItem icon="delete" label="Delete" danger=true on_select=on_delete />
@@ -64,6 +67,15 @@ pub fn Toolbar(
             >
                 <Icon name="create_new_folder" />
                 <span class="label">"New folder"</span>
+            </button>
+            <button
+                class="button"
+                aria-label="Send files from this computer to a device"
+                title="Send files from this computer to a device"
+                on:click=move |_| on_send_local.run(())
+            >
+                <Icon name="send" />
+                <span class="label">"Send…"</span>
             </button>
         </div>
     }

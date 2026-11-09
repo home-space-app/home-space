@@ -21,7 +21,11 @@ use self::{
     node_table::{NodeTable, TableActions},
     toolbar::Toolbar,
 };
-use super::{delete_dialog::DeleteDialog, move_dialog::MoveDialog};
+use super::{
+    delete_dialog::DeleteDialog,
+    move_dialog::MoveDialog,
+    send_dialog::{SendDialog, SendSource},
+};
 use crate::{
     components::ErrorAlert,
     session::{self, Auth},
@@ -54,6 +58,7 @@ fn Explorer(auth: Auth) -> impl IntoView {
     let saving = RwSignal::new(false);
     let draft_input = NodeRef::<Input>::new();
     let details = RwSignal::new(None::<NodeId>);
+    let send_from = RwSignal::new(None::<SendSource>);
 
     Effect::new(move |_| {
         folder.track();
@@ -154,6 +159,9 @@ fn Explorer(auth: Auth) -> impl IntoView {
         });
     });
     let move_selected = Callback::new(move |()| moving.set(Some(selected_nodes.get_untracked())));
+    let send = Callback::new(move |nodes: Vec<Node>| send_from.set(Some(SendSource::Nodes(nodes))));
+    let send_selected = Callback::new(move |()| send.run(selected_nodes.get_untracked()));
+    let send_local = Callback::new(move |()| send_from.set(Some(SendSource::Local)));
     let delete_selected = Callback::new(move |()| delete.run(selected_nodes.get_untracked()));
     let selected_count = Signal::derive(move || selected_nodes.read().len());
     let lost_and_found = Signal::derive(move || auth.user.get().map(|user| user.lost_and_found_id));
@@ -186,8 +194,10 @@ fn Explorer(auth: Auth) -> impl IntoView {
         selected.set(HashSet::from([node.id]));
         details.set(Some(node.id));
     });
+    // The send dialog takes files dropped on it; the page takes them otherwise.
+    let can_drop = Signal::derive(move || can_add.get() && send_from.read().is_none());
     let upload = Callback::new(move |files: Vec<File>| {
-        if can_add.get_untracked() {
+        if can_drop.get_untracked() {
             start_upload(
                 uploads,
                 move || listing.refetch(),
@@ -198,7 +208,7 @@ fn Explorer(auth: Auth) -> impl IntoView {
         }
     });
 
-    let dragging = use_file_drop(can_add, upload);
+    let dragging = use_file_drop(can_drop, upload);
 
     let actions = TableActions {
         draft,
@@ -211,6 +221,7 @@ fn Explorer(auth: Auth) -> impl IntoView {
         save_rename,
         cancel_rename,
         download,
+        send,
         details: show_details,
         delete,
         lost_and_found,
@@ -223,6 +234,8 @@ fn Explorer(auth: Auth) -> impl IntoView {
                     <Toolbar
                         selected_count
                         on_move=move_selected
+                        on_send=send_selected
+                        on_send_local=send_local
                         on_delete=delete_selected
                         can_delete
                         can_add
@@ -276,6 +289,13 @@ fn Explorer(auth: Auth) -> impl IntoView {
             moving
                 .get()
                 .map(|nodes| view! { <MoveDialog nodes moving selected refresh=move || listing.refetch() auth /> })
+        }}
+        {move || {
+            send_from
+                .get()
+                .map(|source| {
+                    view! { <SendDialog source auth on_close=Callback::new(move |()| send_from.set(None)) /> }
+                })
         }}
         {move || {
             deleting
