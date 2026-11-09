@@ -346,7 +346,6 @@ fn TransferRow(
     let actionable = list == TransferList::Incoming && state == TransferState::Ready;
     let cancellable = list == TransferList::Sent && !state.is_finished();
     let created = short_date(transfer.created_at);
-    let single = single_file(&transfer);
     let id = transfer.id;
 
     let state_cell = if actionable {
@@ -362,7 +361,7 @@ fn TransferRow(
                     on:click=move |_| act.run((Action::Download, download.clone()))
                 >
                     <Icon name="download" />
-                    {if single { "Download" } else { "Download zip" }}
+                    "Download"
                 </button>
                 <button
                     class="button"

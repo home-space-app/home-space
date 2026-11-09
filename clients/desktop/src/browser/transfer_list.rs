@@ -118,7 +118,7 @@ pub struct TransferList {
     downloads: HashMap<Uuid, Download>,
     /// What the last download put in the downloads folder.
     downloaded: Option<PathBuf>,
-    saving: Option<transfer_save::State>,
+    saving: Option<transfer_save::TransferSave>,
     now: OffsetDateTime,
 }
 
@@ -190,7 +190,7 @@ impl TransferList {
                     return Task::none();
                 };
                 let (saving, task) =
-                    transfer_save::State::open(client, transfer, self.lost_and_found);
+                    transfer_save::TransferSave::open(client, transfer, self.lost_and_found);
                 self.saving = Some(saving);
                 task.map(Message::SaveDialog)
             }
