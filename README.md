@@ -170,6 +170,7 @@ one.
 | GET | `/transfers/incoming?this_device=`, `/transfers/outgoing` | transfers waiting for the caller (ready or declined) / transfers the caller sent |
 | GET / DELETE | `/transfers/{id}` | summary with items (sender or recipient) / cancel (sender) |
 | GET | `/transfers/{id}/items/{item}/content` | download one file of a ready transfer (recipient); supports `Range` |
+| GET | `/transfers/{id}/archive` | download a ready transfer as one zip (recipient) |
 | POST | `/transfers/{id}/received`, `/transfers/{id}/decline`, `/transfers/{id}/save` | recipient: confirm the download / decline / move into the tree under `{parent_id?}`; each removes the transfer's bytes |
 | GET | `/nodes/{id}/properties` | predefined properties of a node: `{source_device?}`, the name of the device that last auto-uploaded the file |
 | GET | `/nodes/{id}/versions` | previous versions of a file, newest first |

@@ -395,7 +395,8 @@ impl BlobStore {
         self.root.join(TRANSFERS_DIR).join(transfer.to_string())
     }
 
-    fn transfer_item_path(&self, transfer: Uuid, item: Uuid) -> PathBuf {
+    /// Where the bytes of a file of a transfer are.
+    pub fn transfer_item_path(&self, transfer: Uuid, item: Uuid) -> PathBuf {
         self.transfer_dir(transfer).join(item.to_string())
     }
 

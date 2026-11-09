@@ -2,7 +2,6 @@ mod breadcrumbs;
 mod details;
 mod file_drop;
 mod listing;
-mod menu;
 mod node_table;
 mod toolbar;
 

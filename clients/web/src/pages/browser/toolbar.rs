@@ -2,11 +2,12 @@ use client_core::selection::shows_bulk_actions;
 use leptos::prelude::*;
 use web_sys::{File, HtmlInputElement};
 
-use super::{
-    file_drop::files_of,
-    menu::{Menu, MenuItem},
+use super::file_drop::files_of;
+use crate::{
+    components::{Menu, MenuItem},
+    icon::Icon,
+    pages::search_box::SearchBox,
 };
-use crate::{icon::Icon, pages::search_box::SearchBox};
 
 #[component]
 pub fn Toolbar(

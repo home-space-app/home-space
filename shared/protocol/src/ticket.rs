@@ -21,6 +21,10 @@ pub enum TicketRequest {
         transfer_id: Uuid,
         item_id: Uuid,
     },
+    /// Every file of a transfer sent to the user, as one zip.
+    TransferArchive {
+        transfer_id: Uuid,
+    },
 }
 
 /// A short-lived ticket passed in the query string where headers are unavailable.

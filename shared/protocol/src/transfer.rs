@@ -114,7 +114,14 @@ pub struct TransferSummary {
     pub recipient_device_name: String,
     pub state: TransferState,
     pub total_bytes: u64,
+    /// Files and folders, counting everything inside folders.
     pub item_count: u32,
+    /// Files only.
+    #[serde(default)]
+    pub file_count: u32,
+    /// The path of the one file or folder at the top of the transfer, when there is only one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     #[serde(with = "time::serde::rfc3339")]

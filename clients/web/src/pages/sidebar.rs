@@ -153,6 +153,7 @@ pub fn Sidebar(auth: Auth) -> impl IntoView {
             && !in_found()
     };
     let in_trash = move || location.pathname.get() == route::TRASH_PATH;
+    let in_transfers = move || location.pathname.get().starts_with(route::TRANSFERS_PATH);
 
     view! {
         <aside class="sidebar">
@@ -174,6 +175,12 @@ pub fn Sidebar(auth: Auth) -> impl IntoView {
                             }
                         })
                 }}
+                <NavLink
+                    href=route::TRANSFERS_PATH.to_owned()
+                    icon="swap_vert"
+                    label="Transfers"
+                    active=Signal::derive(in_transfers)
+                />
             </nav>
             <div class="sidebar__footer">
                 {move || storage.get().map(|storage| view! { <StorageCard storage /> })}

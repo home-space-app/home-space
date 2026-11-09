@@ -85,3 +85,8 @@
     animation: none;
   }
 }
+
+.modal__note {
+  color: var(--color-muted);
+  font-size: 0.8125rem;
+}

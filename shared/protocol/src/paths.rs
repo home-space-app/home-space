@@ -63,6 +63,10 @@ pub fn transfer_item_content(id: uuid::Uuid, item: uuid::Uuid) -> String {
     format!("{TRANSFERS}/{id}/items/{item}/content")
 }
 
+pub fn transfer_archive(id: uuid::Uuid) -> String {
+    format!("{TRANSFERS}/{id}/archive")
+}
+
 pub fn transfer_decline(id: uuid::Uuid) -> String {
     format!("{TRANSFERS}/{id}/decline")
 }

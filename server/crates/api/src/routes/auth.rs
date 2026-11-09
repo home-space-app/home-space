@@ -163,7 +163,8 @@ async fn ticket(
         TicketRequest::Download { node_id } | TicketRequest::DownloadVersion { node_id, .. } => {
             state.files.get(user.id, node_id).await?;
         }
-        TicketRequest::TransferItem { transfer_id, .. } => {
+        TicketRequest::TransferItem { transfer_id, .. }
+        | TicketRequest::TransferArchive { transfer_id } => {
             let (transfer, _) = state.files.transfer(user.id, transfer_id).await?;
             if transfer.recipient_id != user.id {
                 return Err(ApiError::Forbidden);

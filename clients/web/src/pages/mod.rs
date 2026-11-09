@@ -11,7 +11,10 @@ mod search_box;
 mod settings;
 mod shell;
 mod sidebar;
+mod transfer_save;
+mod transfers;
 mod trash;
+mod visibility_dialog;
 
 pub use admin::AdminPage;
 pub use browser::Browser;
@@ -21,4 +24,5 @@ pub use oidc_callback::OidcCallback;
 pub use search::SearchPage;
 pub use settings::SettingsPage;
 pub use shell::Shell;
+pub use transfers::{TransferList, TransfersPage};
 pub use trash::TrashPage;

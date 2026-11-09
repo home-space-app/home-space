@@ -1,10 +1,15 @@
 //! Files and folders sent to a device.
 
-use std::{fmt::Write as _, io::SeekFrom};
+use std::{
+    fmt::Write as _,
+    fs::File,
+    io::{self, BufWriter, SeekFrom, Write},
+    path::PathBuf,
+};
 
 use axum::{
     Json, Router,
-    body::Body,
+    body::{Body, Bytes},
     extract::{Path, Query, State},
     http::{
         HeaderMap, HeaderValue, StatusCode,
@@ -15,9 +20,14 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use time::PrimitiveDateTime;
+use tokio::{
+    io::{AsyncReadExt, AsyncSeekExt},
+    sync::mpsc,
+};
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
+use zip::{CompressionMethod, DateTime, ZipWriter, write::SimpleFileOptions};
 
 use notifications::Event;
 use protocol::{
@@ -32,6 +42,11 @@ use crate::{
 };
 
 const FALLBACK_MIME: &str = "application/octet-stream";
+const ZIP_MIME: &str = "application/zip";
+/// How much of an archive is gathered before it is sent on.
+const ARCHIVE_CHUNK_BYTES: usize = 64 * 1024;
+/// How many chunks of an archive may wait for a slow client.
+const ARCHIVE_QUEUE: usize = 4;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -40,6 +55,7 @@ pub fn routes() -> Router<AppState> {
         .route("/transfers/outgoing", get(outgoing))
         .route("/transfers/{id}", get(get_transfer).delete(cancel))
         .route("/transfers/{id}/items/{item}/content", get(content))
+        .route("/transfers/{id}/archive", get(archive))
         .route("/transfers/{id}/decline", post(decline))
         .route("/transfers/{id}/received", post(received))
         .route("/transfers/{id}/save", post(save))
@@ -63,6 +79,8 @@ pub(crate) fn summary(transfer: db::Transfer) -> TransferSummary {
         state: transfer.state,
         total_bytes: u64::try_from(transfer.total_bytes).unwrap_or_default(),
         item_count: u32::try_from(transfer.item_count).unwrap_or_default(),
+        file_count: u32::try_from(transfer.file_count).unwrap_or_default(),
+        name: transfer.name,
         message: transfer.message,
         created_at: transfer.created_at,
         expires_at: transfer.expires_at,
@@ -344,6 +362,104 @@ async fn content(
         headers.insert(CONTENT_DISPOSITION, value);
     }
     Ok(response)
+}
+
+/// Every file and folder of a ready transfer as one zip, for its recipient. The zip is made
+/// while it is sent, without compression, so it has no length up front and cannot resume.
+async fn archive(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<TicketQuery>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ApiError> {
+    let caller = match query.ticket {
+        Some(ticket) => {
+            state
+                .auth
+                .verify_ticket(&ticket, &TicketRequest::TransferArchive { transfer_id: id })
+                .await?
+                .user_id
+        }
+        None => AuthUser::from_headers(&headers, &state).await?.id,
+    };
+    let (transfer, items) = state.files.transfer_archive(caller, id).await?;
+    let (sender, receiver) = mpsc::channel::<io::Result<Bytes>>(ARCHIVE_QUEUE);
+    tokio::task::spawn_blocking(move || {
+        let out = BufWriter::with_capacity(ARCHIVE_CHUNK_BYTES, ChunkWriter(sender.clone()));
+        if let Err(err) = write_archive(out, &items) {
+            tracing::warn!(transfer = %id, error = %err, "transfer archive failed");
+            // Ends the response with an error, so the client does not keep a cut-off zip.
+            let _ = sender.blocking_send(Err(io::Error::other(err)));
+        }
+    });
+    let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
+        receiver.recv().await.map(|chunk| (chunk, receiver))
+    });
+    let mut response = Response::new(Body::from_stream(stream));
+    let headers = response.headers_mut();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static(ZIP_MIME));
+    let disposition = format!(
+        "attachment; filename*=UTF-8''{}",
+        percent_encode(&archive_name(&transfer))
+    );
+    if let Ok(value) = HeaderValue::from_str(&disposition) {
+        headers.insert(CONTENT_DISPOSITION, value);
+    }
+    Ok(response)
+}
+
+/// The file name of a transfer's zip: its only top-level item, or who sent it.
+fn archive_name(transfer: &db::Transfer) -> String {
+    let base = match &transfer.name {
+        Some(name) => name.clone(),
+        None => format!("From {}", transfer.sender_name),
+    };
+    format!("{base}.zip")
+}
+
+/// Hands what is written to the response, a chunk at a time.
+struct ChunkWriter(mpsc::Sender<io::Result<Bytes>>);
+
+impl Write for ChunkWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0
+            .blocking_send(Ok(Bytes::copy_from_slice(buf)))
+            .map_err(|_| io::Error::from(io::ErrorKind::BrokenPipe))?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Writes `items` into a zip on `out`: folders as entries of their own, files with the bytes
+/// at their path.
+fn write_archive(
+    out: impl Write,
+    items: &[(db::TransferItem, PathBuf)],
+) -> zip::result::ZipResult<()> {
+    let mut zip = ZipWriter::new_stream(out);
+    for (item, path) in items {
+        let mut options = SimpleFileOptions::default()
+            .compression_method(CompressionMethod::Stored)
+            .large_file(item.size >= i64::from(u32::MAX));
+        if let Some(modified) = item
+            .modified_at
+            .and_then(|at| DateTime::try_from(PrimitiveDateTime::new(at.date(), at.time())).ok())
+        {
+            options = options.last_modified_time(modified);
+        }
+        match item.kind {
+            NodeKind::Folder => zip.add_directory(item.path.as_str(), options)?,
+            NodeKind::File => {
+                zip.start_file(item.path.as_str(), options)?;
+                io::copy(&mut File::open(path)?, &mut zip)?;
+            }
+        }
+    }
+    zip.finish()?.into_inner().flush()?;
+    Ok(())
 }
 
 /// Parses a single `bytes=` range of a file of `size` bytes into inclusive bounds; `None`

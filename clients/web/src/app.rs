@@ -8,7 +8,7 @@ use crate::{
     events,
     pages::{
         AdminPage, Browser, DevicesPage, Login, OidcCallback, SearchPage, SettingsPage, Shell,
-        TrashPage,
+        TransferList, TransfersPage, TrashPage,
     },
     session::Auth,
     uploads::{UploadItem, UploadPanel},
@@ -56,6 +56,16 @@ pub fn App() -> impl IntoView {
                         <Route
                             path=path!("/devices")
                             view=move || view! { <DevicesPage auth /> }
+                        />
+                        <Route
+                            path=path!("/transfers")
+                            view=move || {
+                                view! { <TransfersPage auth list=TransferList::Incoming /> }
+                            }
+                        />
+                        <Route
+                            path=path!("/transfers/sent")
+                            view=move || view! { <TransfersPage auth list=TransferList::Sent /> }
                         />
                         <Route path=path!("/admin") view=move || view! { <AdminPage auth /> } />
                     </ParentRoute>

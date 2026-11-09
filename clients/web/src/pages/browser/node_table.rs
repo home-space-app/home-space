@@ -10,7 +10,7 @@ use client_core::{
 };
 use protocol::{Node, NodeId, NodeKind};
 
-use super::menu::{Menu, MenuItem};
+use crate::components::{Menu, MenuItem};
 use crate::{
     components::{RowCheckbox, SelectAll, select_on_click},
     icon::{Icon, node_icon},

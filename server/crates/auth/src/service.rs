@@ -719,6 +719,7 @@ fn scope_of(request: &TicketRequest) -> String {
             transfer_id,
             item_id,
         } => format!("transfer:{transfer_id}:{item_id}"),
+        TicketRequest::TransferArchive { transfer_id } => format!("transfer:{transfer_id}"),
     }
 }
 

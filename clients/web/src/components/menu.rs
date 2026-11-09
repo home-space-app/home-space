@@ -18,13 +18,17 @@ fn close(panel: NodeRef<Div>) {
     }
 }
 
-/// A button that opens a popover list of actions anchored under it.
+/// A button that opens a popover list of actions anchored under it, right-aligned with it
+/// unless `align_start`.
 #[component]
 pub fn Menu(
     id: String,
     #[prop(into)] label: String,
     #[prop(optional, into)] text: Option<Signal<String>>,
     #[prop(default = ICON_MORE)] icon: &'static str,
+    /// Lines the panel up with the trigger's left edge instead of its right.
+    #[prop(optional)]
+    align_start: bool,
     children: ChildrenFn,
 ) -> impl IntoView {
     let panel = NodeRef::<Div>::new();
@@ -49,7 +53,11 @@ pub fn Menu(
             let style = HtmlElement::style(&element);
             let (panel_width, panel_height) = measure(&element);
             let y = top(rect.top(), rect.bottom(), panel_height, height);
-            let x = left(rect.right(), panel_width, width);
+            let x = if align_start {
+                left(rect.left() + panel_width, panel_width, width)
+            } else {
+                left(rect.right(), panel_width, width)
+            };
             let _ = style.set_property("top", &format!("{y}px"));
             let _ = style.set_property("left", &format!("{x}px"));
             let _ = style.set_property("right", "auto");

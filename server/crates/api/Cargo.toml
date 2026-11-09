@@ -23,6 +23,7 @@ tokio-util.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
@@ -36,3 +37,4 @@ tower.workspace = true
 time.workspace = true
 url.workspace = true
 wiremock.workspace = true
+zip.workspace = true
