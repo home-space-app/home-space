@@ -217,8 +217,15 @@ impl AuthService {
         {
             return Err(too_many_attempts(until));
         }
-        if !self.verify_blocking(current, hash).await? {
-            return Err(AuthError::WrongPassword);
+        match self.verify_blocking(current, hash).await {
+            Ok(true) => {}
+            Ok(false) => return Err(AuthError::WrongPassword),
+            Err(err) => {
+                self.db
+                    .take_back_login_attempt(&user.username, &source, login_block)
+                    .await?;
+                return Err(err);
+            }
         }
         self.db
             .clear_login_attempts(&user.username, &source)
@@ -313,13 +320,20 @@ impl AuthService {
         let user = match checked {
             Ok(user) => user,
             Err(err) => {
+                // An admitted attempt that could not be checked is not a wrong password.
+                // An already-blocked request never incremented this counter.
+                if begun.is_ok() && !matches!(err, AuthError::InvalidCredentials) {
+                    self.db
+                        .take_back_login_attempt(username, &source, login_block)
+                        .await?;
+                }
                 // Only a wrong password counts against the address: not a repeated try at a
                 // username that is waiting, nor a password that was never checked.
                 if let Some(address) = address_source
                     && !matches!(err, AuthError::InvalidCredentials)
                 {
                     self.db
-                        .take_back_login_attempt(ANY_USERNAME, address)
+                        .take_back_login_attempt(ANY_USERNAME, address, address_block)
                         .await?;
                 }
                 return Err(err);
@@ -328,7 +342,7 @@ impl AuthService {
         self.db.clear_login_attempts(username, &source).await?;
         if let Some(address) = address_source {
             self.db
-                .take_back_login_attempt(ANY_USERNAME, address)
+                .take_back_login_attempt(ANY_USERNAME, address, address_block)
                 .await?;
         }
         self.start_session(user.id, device).await
@@ -1681,5 +1695,84 @@ mod tests {
             .expect("login");
         auth.logout(&pair.refresh_token).await.expect("logout");
         assert!(auth.refresh(&pair.refresh_token).await.is_err());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn unchecked_logins_do_not_block_the_username_or_address(pool: PgPool) {
+        let auth = service(pool.clone());
+        auth.create_user("alice", "password-1").await.expect("user");
+        // A closed semaphore refuses hashing immediately through the same Busy path as
+        // a timeout. Restore capacity after three unchecked attempts.
+        auth.hashing.close();
+        let home = address("192.0.2.1");
+        for _ in 0..3 {
+            assert!(matches!(
+                auth.login_from("alice", "password-1", None, home).await,
+                Err(AuthError::Busy { .. })
+            ));
+        }
+        assert_eq!(address_failures(&pool, "192.0.2.1").await, 0);
+        let mut auth = auth;
+        auth.hashing = Arc::new(Semaphore::new(1));
+        auth.login_from("alice", "password-1", None, home)
+            .await
+            .expect("not blocked");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn unchecked_password_changes_do_not_block_the_session(pool: PgPool) {
+        let mut auth = service(pool);
+        let user = auth.create_user("alice", "password-1").await.expect("user");
+        let pair = auth
+            .login("alice", "password-1", None)
+            .await
+            .expect("login");
+        let session = grant_of(&auth, &pair).await.session_id;
+        auth.hashing.close();
+        for _ in 0..3 {
+            assert!(matches!(
+                auth.change_password(user.id, session, "password-1", "password-2")
+                    .await,
+                Err(AuthError::Busy { .. })
+            ));
+        }
+        auth.hashing = Arc::new(Semaphore::new(1));
+        auth.change_password(user.id, session, "password-1", "password-2")
+            .await
+            .expect("not blocked");
+    }
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn unchecked_and_blocked_attempts_preserve_real_failures(pool: PgPool) {
+        let mut auth = service(pool.clone());
+        auth.create_user("alice", "password-1").await.expect("user");
+        for _ in 0..2 {
+            assert!(matches!(
+                auth.login("alice", "wrong", None).await,
+                Err(AuthError::InvalidCredentials)
+            ));
+        }
+        auth.hashing.close();
+        assert!(matches!(
+            auth.login("alice", "password-1", None).await,
+            Err(AuthError::Busy { .. })
+        ));
+        auth.hashing = Arc::new(Semaphore::new(1));
+        assert!(matches!(
+            auth.login("alice", "wrong", None).await,
+            Err(AuthError::InvalidCredentials)
+        ));
+        for _ in 0..3 {
+            assert!(matches!(
+                auth.login("alice", "password-1", None).await,
+                Err(AuthError::TooManyAttempts { .. })
+            ));
+        }
+        let failures: i32 = sqlx::query_scalar(
+            "SELECT failures FROM login_attempts WHERE username = 'alice' AND source = ''",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+        assert_eq!(failures, 3);
     }
 }

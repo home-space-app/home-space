@@ -398,3 +398,22 @@ async fn a_page_of_another_site_cannot_open_the_websocket(pool: PgPool) {
     assert!(connect(OTHER_ORIGIN).await.is_err());
     assert!(connect(&format!("http://{addr}")).await.is_ok());
 }
+
+#[tokio::test]
+async fn a_database_failure_preserves_the_refresh_cookie() {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .connect_lazy("postgres://unused:unused@localhost/unused")
+        .expect("pool");
+    pool.close().await;
+    let app = setup(pool).await;
+    let response = browser_post(
+        &app,
+        REFRESH,
+        Some(ORIGIN),
+        Some("existing-token"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(response.headers.get("set-cookie").is_none());
+}

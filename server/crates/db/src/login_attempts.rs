@@ -94,22 +94,40 @@ impl Db {
         Ok(())
     }
 
-    /// Takes back the attempt that [`begin_login_attempt`](Self::begin_login_attempt) counted
-    /// last for `username` from `source`, and the block it may have set, leaving the failures
-    /// before it counted.
+    /// Removes one provisional failure and adjusts its block under the same row lock as
+    /// admission. Remaining failures keep their block; rollback never extends a deadline.
     pub async fn take_back_login_attempt(
         &self,
         username: &str,
         source: &str,
+        block: impl FnOnce(u32) -> Option<Duration>,
     ) -> Result<(), DbError> {
-        sqlx::query(
-            "UPDATE login_attempts SET failures = GREATEST(failures - 1, 0), blocked_until = NULL \
-             WHERE username = $1 AND source = $2",
+        let mut tx = self.pool().begin().await?;
+        let row = sqlx::query_as::<_, (i32, Option<OffsetDateTime>, OffsetDateTime)>(
+            "SELECT failures, blocked_until, last_failed_at FROM login_attempts \
+             WHERE username = $1 AND source = $2 FOR UPDATE",
         )
         .bind(username)
         .bind(source)
-        .execute(self.pool())
+        .fetch_optional(&mut *tx)
         .await?;
+        if let Some((failures, blocked_until, last_failed_at)) = row {
+            let failures = (failures - 1).max(0);
+            let blocked_until = blocked_until
+                .zip(block(failures as u32))
+                .map(|(until, wait)| until.min(last_failed_at + wait));
+            sqlx::query(
+                "UPDATE login_attempts SET failures = $3, blocked_until = $4 \
+                 WHERE username = $1 AND source = $2",
+            )
+            .bind(username)
+            .bind(source)
+            .bind(failures)
+            .bind(blocked_until)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -261,7 +279,7 @@ mod tests {
                 .expect("db")
                 .expect("free");
         }
-        db.take_back_login_attempt("alice", HOME)
+        db.take_back_login_attempt("alice", HOME, after_two)
             .await
             .expect("take back");
         let failures = std::cell::Cell::new(0);
@@ -291,5 +309,42 @@ mod tests {
         .expect("db")
         .expect("free");
         assert_eq!(failures.get(), 1);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn rollback_preserves_a_block_earned_by_overlapping_failures(pool: PgPool) {
+        let db = Db::from_pool(pool.clone());
+        db.begin_login_attempt("alice", HOME, DAY, after_two)
+            .await
+            .expect("db")
+            .expect("first");
+        db.begin_login_attempt("alice", HOME, DAY, after_two)
+            .await
+            .expect("db")
+            .expect("second");
+        // The first check is still in flight when the initial block elapses.
+        sqlx::query("UPDATE login_attempts SET blocked_until = now() - interval '1 second'")
+            .execute(&pool)
+            .await
+            .expect("expire initial block");
+        db.begin_login_attempt("alice", HOME, DAY, after_two)
+            .await
+            .expect("db")
+            .expect("third");
+        db.take_back_login_attempt("alice", HOME, after_two)
+            .await
+            .expect("undo first");
+        assert!(
+            db.begin_login_attempt("alice", HOME, DAY, after_two)
+                .await
+                .expect("db")
+                .is_err()
+        );
+        let failures: i32 =
+            sqlx::query_scalar("SELECT failures FROM login_attempts WHERE username = 'alice'")
+                .fetch_one(&pool)
+                .await
+                .expect("count");
+        assert_eq!(failures, 2);
     }
 }
