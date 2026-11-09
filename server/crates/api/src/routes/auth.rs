@@ -129,10 +129,10 @@ async fn refresh(
     match (refreshed, browser) {
         (Ok(pair), browser) => Ok(session(&state, pair, browser)),
         // The token is of no more use, so the browser need not keep it.
-        (Err(err), Some(browser)) => {
+        (Err(err @ auth::AuthError::InvalidCredentials), Some(browser)) => {
             Ok(([(SET_COOKIE, browser.forget())], ApiError::from(err)).into_response())
         }
-        (Err(err), None) => Err(err.into()),
+        (Err(err), _) => Err(err.into()),
     }
 }
 
