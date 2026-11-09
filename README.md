@@ -183,13 +183,13 @@ one.
 | DELETE | `/trash` | empty the recycle bin (permanent) |
 | DELETE | `/trash/{id}` | permanently delete one binned file and its versions (404 unless binned) |
 | GET | `/search?q=&limit=` | full-text search; every word matches as a prefix, hits carry their `location` |
-| POST | `/tickets` | `{scope: "events"}`, `{scope: "download", node_id}`, `{scope: "download_version", node_id, version}` or `{scope: "transfer_item", transfer_id, item_id}` → 60 s ticket |
+| POST | `/tickets` | `{scope: "events"}`, `{scope: "download", node_id}`, `{scope: "download_version", node_id, version}` or `{scope: "transfer_item", transfer_id, item_id}` → ticket valid for 30 s and for one request |
 | GET | `/ws` | live `node_created` / `node_updated` / `node_deleted` / `trash_changed` / `devices_changed` / `transfer_received` / `transfer_changed` / `resync` events |
 | GET | `/health` | liveness + DB ping |
 
 All node and trash endpoints return 404 for ids owned by someone else. Authenticate with `Authorization: Bearer <access_token>`.
 Browsers cannot send that header on a websocket or a plain download link, so `/ws?ticket=` and
-`/files/{id}/content?ticket=` accept a short-lived, single-scope ticket instead.
+`/files/{id}/content?ticket=` accept a short-lived, single-scope, single-use ticket instead.
 
 ## Shared protocol
 

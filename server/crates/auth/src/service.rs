@@ -1,4 +1,8 @@
-use std::net::{IpAddr, Ipv6Addr};
+use std::{
+    collections::HashMap,
+    net::{IpAddr, Ipv6Addr},
+    sync::{Arc, Mutex, PoisonError},
+};
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use time::{Duration, OffsetDateTime};
@@ -24,7 +28,7 @@ const MAX_USERNAME_LEN: usize = 64;
 /// Leading bits of an IPv6 address that name a network; one subscriber usually owns them all.
 const IPV6_NETWORK_BITS: u32 = 64;
 const MIN_PASSWORD_LEN: usize = 8;
-const TICKET_TTL_SECS: i64 = 60;
+const TICKET_TTL_SECS: i64 = 30;
 const SCOPE_EVENTS: &str = "events";
 const SCOPE_DOWNLOAD_PREFIX: &str = "download:";
 const DUMMY_PASSWORD: &str = "dummy-password-for-timing";
@@ -85,6 +89,10 @@ pub struct AuthService {
     password_login: bool,
     /// Users some of whose sessions just ended, so open websockets re-check theirs.
     ended: broadcast::Sender<UserId>,
+    /// Tickets already used, by id, with the time they expire and can be forgotten. Kept in
+    /// memory: after a restart a used ticket would be accepted again, for the rest of its
+    /// [`TICKET_TTL_SECS`] at most.
+    used_tickets: Arc<Mutex<HashMap<Uuid, i64>>>,
 }
 
 impl AuthService {
@@ -103,6 +111,7 @@ impl AuthService {
             oidc: None,
             password_login: true,
             ended: broadcast::channel(ENDED_CAPACITY).0,
+            used_tickets: Arc::default(),
         })
     }
 
@@ -384,12 +393,18 @@ impl AuthService {
     }
 
     /// Validates a ticket for `request`'s scope and returns whom it was issued to.
+    ///
+    /// A ticket works once. It reaches the server in a URL, so a copy of it, from a proxy's
+    /// log or the browser's history, must be worth nothing after the request it was made for.
     pub async fn verify_ticket(
         &self,
         ticket: &str,
         request: &TicketRequest,
     ) -> Result<Grant, AuthError> {
         let grant = decode_ticket(&self.keys, ticket, &scope_of(request))?;
+        if !self.use_ticket(grant.id, grant.expires_at) {
+            return Err(AuthError::InvalidCredentials);
+        }
         let session = self
             .require_session(grant.session_id, grant.user_id)
             .await?;
@@ -398,6 +413,19 @@ impl AuthService {
             session_id: grant.session_id,
             device_id: session.device_id,
         })
+    }
+
+    /// Marks a ticket used; `false` when it already was. Only tickets that passed validation
+    /// get here, and each is forgotten once it has expired, so the list stays as short as the
+    /// tickets used within one lifetime.
+    fn use_ticket(&self, id: Uuid, expires_at: i64) -> bool {
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+        let mut used = self
+            .used_tickets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        used.retain(|_, expires_at| *expires_at > now);
+        used.insert(id, expires_at).is_none()
     }
 
     /// The device of `grant`'s session. A session that names none takes `device`, which is
@@ -1205,6 +1233,76 @@ mod tests {
         auth.login("alice", "password-1", None)
             .await
             .expect("sign-in is not blocked");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_ticket_works_once(pool: PgPool) {
+        let auth = service(pool);
+        auth.create_user("alice", "password-1").await.expect("user");
+        let pair = auth
+            .login("alice", "password-1", None)
+            .await
+            .expect("login");
+        let grant = grant_of(&auth, &pair).await;
+        let issue = || {
+            auth.issue_ticket(grant.user_id, grant.session_id, &TicketRequest::Events)
+                .expect("ticket")
+                .ticket
+        };
+        let (first, second) = (issue(), issue());
+
+        assert!(
+            auth.verify_ticket(&first, &TicketRequest::Events)
+                .await
+                .is_ok()
+        );
+        assert!(matches!(
+            auth.verify_ticket(&first, &TicketRequest::Events).await,
+            Err(AuthError::InvalidCredentials)
+        ));
+        // Another ticket of the same session and scope is its own ticket.
+        assert!(
+            auth.verify_ticket(&second, &TicketRequest::Events)
+                .await
+                .is_ok()
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_ticket_refused_for_its_scope_is_not_used_up(pool: PgPool) {
+        let auth = service(pool);
+        auth.create_user("alice", "password-1").await.expect("user");
+        let pair = auth
+            .login("alice", "password-1", None)
+            .await
+            .expect("login");
+        let grant = grant_of(&auth, &pair).await;
+        let ticket = auth
+            .issue_ticket(grant.user_id, grant.session_id, &TicketRequest::Events)
+            .expect("ticket")
+            .ticket;
+        let download = TicketRequest::Download {
+            node_id: NodeId::new(),
+        };
+
+        assert!(auth.verify_ticket(&ticket, &download).await.is_err());
+        assert!(
+            auth.verify_ticket(&ticket, &TicketRequest::Events)
+                .await
+                .is_ok()
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn used_tickets_are_forgotten_once_they_expire(pool: PgPool) {
+        let auth = service(pool);
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+        let (expired, live) = (Uuid::now_v7(), Uuid::now_v7());
+        assert!(auth.use_ticket(expired, now - 1));
+        assert!(auth.use_ticket(live, now + 30));
+        assert!(!auth.use_ticket(live, now + 30));
+        let used = auth.used_tickets.lock().expect("lock");
+        assert_eq!(used.keys().collect::<Vec<_>>(), [&live]);
     }
 
     #[sqlx::test(migrations = "../../migrations")]

@@ -49,6 +49,35 @@ async fn download_ticket_downloads_without_a_bearer_header(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn download_ticket_works_once(pool: PgPool) {
+    let app = setup(pool).await;
+    let alice = app.user_token("alice").await;
+    let id = uploaded_file_id(&app, &alice).await;
+    let ticket = ticket(&app, &alice, json!({ "scope": "download", "node_id": id })).await;
+    let uri = format!("/api/v1/files/{id}/content?ticket={ticket}");
+    let download = || app.send(Method::GET, &uri, None, Body::empty(), None);
+
+    assert_eq!(download().await.status, StatusCode::OK);
+    assert_eq!(download().await.status, StatusCode::UNAUTHORIZED);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn events_ticket_opens_one_websocket_only(pool: PgPool) {
+    let app = setup(pool).await;
+    let alice = app.user_token("alice").await;
+    let ticket = ticket(&app, &alice, json!({ "scope": "events" })).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(axum::serve(listener, app.router.clone()).into_future());
+    let url = format!("ws://{addr}/api/v1/ws?ticket={ticket}");
+
+    let _open = connect_async(&url).await.expect("first connection");
+    assert!(connect_async(&url).await.is_err());
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn download_ticket_is_limited_to_its_node(pool: PgPool) {
     let app = setup(pool).await;
     let alice = app.user_token("alice").await;

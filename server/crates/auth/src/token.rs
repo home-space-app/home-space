@@ -115,6 +115,8 @@ struct TicketClaims {
     iat: i64,
     exp: i64,
     tkt: String,
+    /// Names this one ticket, so that it can be refused once it has been used.
+    jti: Uuid,
 }
 
 /// Signs a short-lived ticket for `user_id`'s session limited to `scope`.
@@ -132,6 +134,7 @@ pub fn encode_ticket(
         iat: now.unix_timestamp(),
         exp: (now + ttl).unix_timestamp(),
         tkt: scope.to_owned(),
+        jti: Uuid::now_v7(),
     };
     Ok(encode(
         &keys.header(),
@@ -140,11 +143,15 @@ pub fn encode_ticket(
     )?)
 }
 
-/// Who a ticket was issued to.
+/// Who a ticket was issued to, and which ticket it is.
 #[derive(Clone, Copy, Debug)]
 pub struct TicketGrant {
     pub user_id: UserId,
     pub session_id: Uuid,
+    /// Unique to the ticket.
+    pub id: Uuid,
+    /// Unix timestamp at which the ticket expires.
+    pub expires_at: i64,
 }
 
 /// Validates a ticket's signature, expiry and scope, returning whom it was issued to.
@@ -161,6 +168,8 @@ pub fn decode_ticket(keys: &Keys, token: &str, scope: &str) -> Result<TicketGran
         Ok(TicketGrant {
             user_id: claims.sub,
             session_id: claims.sid,
+            id: claims.jti,
+            expires_at: claims.exp,
         })
     } else {
         Err(AuthError::InvalidCredentials)
@@ -258,6 +267,25 @@ mod tests {
         let token =
             encode(&k.header(), &claims, &EncodingKey::from_secret(&k.current)).expect("encode");
         assert!(decode_access(&k, &token).is_err());
+    }
+
+    #[test]
+    fn every_ticket_has_its_own_id() {
+        let (user, session) = (UserId::new(), Uuid::now_v7());
+        let id = || {
+            let ticket = encode_ticket(
+                &keys(SECRET),
+                user,
+                session,
+                "events",
+                Duration::seconds(60),
+            )
+            .expect("encode");
+            decode_ticket(&keys(SECRET), &ticket, "events")
+                .expect("decode")
+                .id
+        };
+        assert_ne!(id(), id());
     }
 
     #[test]
