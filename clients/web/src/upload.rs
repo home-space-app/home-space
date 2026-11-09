@@ -53,6 +53,13 @@ struct Request<'a> {
     body: &'a Blob,
 }
 
+/// Where a chunked upload goes.
+#[derive(Clone, Copy)]
+enum Target {
+    Folder(Option<NodeId>),
+    TransferItem(uuid::Uuid),
+}
+
 /// Uploads `file` into `parent` with progress. Files larger than one chunk go up in
 /// resumable chunks, the rest in a single request.
 pub async fn upload(
@@ -62,7 +69,9 @@ pub async fn upload(
     on_progress: &OnProgress,
 ) -> Result<Node, ApiError> {
     if file_size(file) > client.upload_chunk_bytes() {
-        return upload_chunked(client, file, parent, on_progress).await;
+        return upload_chunked(client, file, Target::Folder(parent), on_progress)
+            .await?
+            .ok_or_else(|| ApiError::Decode("the upload ended without a file".to_owned()));
     }
     let name = String::from(js_sys::encode_uri_component(&file.name()));
     let mut url = format!("{}?name={name}", client.url(paths::FILES));
@@ -81,14 +90,31 @@ pub async fn upload(
     decode(&outcome)
 }
 
+/// Uploads the bytes of a transfer's file item with progress, always in resumable chunks.
+pub async fn upload_transfer_item(
+    client: &Client,
+    file: &File,
+    item: uuid::Uuid,
+    on_progress: &OnProgress,
+) -> Result<(), ApiError> {
+    upload_chunked(client, file, Target::TransferItem(item), on_progress)
+        .await
+        .map(drop)
+}
+
+/// Uploads `file` in chunks; the stored node once it lands in a folder, `None` for a transfer item.
 async fn upload_chunked(
     client: &Client,
     file: &File,
-    parent: Option<NodeId>,
+    target: Target,
     on_progress: &OnProgress,
-) -> Result<Node, ApiError> {
+) -> Result<Option<Node>, ApiError> {
     let size = file_size(file);
-    let key = resume_key(file, parent);
+    let key = resume_key(file, target);
+    let (parent, transfer_item_id) = match target {
+        Target::Folder(parent) => (parent, None),
+        Target::TransferItem(item) => (None, Some(item)),
+    };
     let session = match resumable(client, &key, size).await? {
         Some(session) => session,
         None => {
@@ -102,7 +128,7 @@ async fn upload_chunked(
                 keep_both: false,
                 version_of: None,
                 auto_upload: false,
-                transfer_item_id: None,
+                transfer_item_id,
             };
             let session = client.create_upload(&request).await?;
             remember(&key, Some(&session.id.to_string()));
@@ -138,9 +164,11 @@ async fn upload_chunked(
             Ok(result) => {
                 failures = 0;
                 on_progress(fraction(result.offset));
-                if let Some(node) = result.node {
+                // A transfer item is stored once all its bytes are in; it never becomes a node.
+                let finished = transfer_item_id.is_some() && result.offset >= size;
+                if result.node.is_some() || finished {
                     remember(&key, None);
-                    return Ok(node);
+                    return Ok(result.node);
                 }
                 offset = result.offset;
             }
@@ -187,9 +215,12 @@ async fn resumable(
 }
 
 /// Identifies a local file across page loads: the same name, size and modification time
-/// dropped into the same folder.
-fn resume_key(file: &File, parent: Option<NodeId>) -> String {
-    let folder = parent.map_or_else(|| "root".to_owned(), |id| id.to_string());
+/// dropped into the same folder, or sent as the same transfer item.
+fn resume_key(file: &File, target: Target) -> String {
+    let folder = match target {
+        Target::Folder(parent) => parent.map_or_else(|| "root".to_owned(), |id| id.to_string()),
+        Target::TransferItem(item) => format!("transfer-{item}"),
+    };
     format!(
         "{RESUME_KEY_PREFIX}{folder}:{}:{}:{}",
         file_size(file),

@@ -6,5 +6,6 @@ pub mod labels;
 pub mod listing;
 pub mod search;
 pub mod selection;
+pub mod send;
 pub mod storage;
 pub mod transfers;

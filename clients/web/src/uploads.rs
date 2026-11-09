@@ -1,9 +1,10 @@
-use std::rc::Rc;
+use std::{collections::HashMap, rc::Rc};
 
 use leptos::{prelude::*, task::spawn_local};
+use uuid::Uuid;
 use web_sys::File;
 
-use protocol::NodeId;
+use protocol::{CreatedTransfer, NodeId};
 
 use crate::{
     session::{self, Auth},
@@ -74,6 +75,95 @@ pub fn start_upload(
             }
         }
         on_done();
+    });
+}
+
+/// How far each transfer this tab is uploading has got, between 0 and 1, by transfer id.
+#[derive(Clone, Copy)]
+pub struct Sending(pub RwSignal<HashMap<Uuid, f64>>);
+
+/// Adds a finished row for something sent without uploading, such as files already on the
+/// server.
+pub fn note_sent(uploads: RwSignal<Vec<UploadItem>>, name: String) {
+    uploads.update(|items| {
+        items.push(UploadItem {
+            id: upload::next_id(),
+            name,
+            progress: 1.0,
+            state: UploadState::Done,
+        });
+    });
+}
+
+/// Uploads the files of a created transfer, `files` by their path in it, as one row of the
+/// uploads panel named `name`; `sending` follows its progress until it ends.
+pub fn start_send(
+    uploads: RwSignal<Vec<UploadItem>>,
+    sending: Sending,
+    auth: Auth,
+    name: String,
+    created: CreatedTransfer,
+    files: Vec<(String, File)>,
+) {
+    let id = upload::next_id();
+    let transfer = created.id;
+    let mut by_path: HashMap<String, File> = files.into_iter().collect();
+    let work: Vec<(Uuid, File)> = created
+        .items
+        .iter()
+        .filter(|item| item.upload_needed)
+        .filter_map(|item| Some((item.id, by_path.remove(&item.path)?)))
+        .collect();
+    let total = work
+        .iter()
+        .map(|(_, file)| file.size())
+        .sum::<f64>()
+        .max(1.0);
+    uploads.update(|items| {
+        items.push(UploadItem {
+            id,
+            name,
+            progress: 0.0,
+            state: UploadState::Active,
+        });
+    });
+    let report = move |fraction: f64| {
+        update_upload(uploads, id, |item| item.progress = fraction);
+        sending.0.update(|sends| {
+            sends.insert(transfer, fraction);
+        });
+    };
+    report(0.0);
+    spawn_local(async move {
+        let client = session::client();
+        let mut done = 0.0;
+        let mut outcome = Ok(());
+        for (item, file) in work {
+            let size = file.size();
+            let start = done;
+            let on_progress: upload::OnProgress =
+                Rc::new(move |fraction| report((start + fraction * size) / total));
+            outcome = upload::upload_transfer_item(&client, &file, item, &on_progress).await;
+            if outcome.is_err() {
+                break;
+            }
+            done += size;
+        }
+        sending.0.update(|sends| {
+            sends.remove(&transfer);
+        });
+        match outcome {
+            Ok(()) => update_upload(uploads, id, |item| {
+                item.progress = 1.0;
+                item.state = UploadState::Done;
+            }),
+            Err(err) => {
+                let message = auth.fail(&err);
+                update_upload(uploads, id, |item| {
+                    item.state = UploadState::Failed(message)
+                });
+            }
+        }
     });
 }
 

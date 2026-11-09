@@ -11,7 +11,7 @@ use crate::{
         TransferList, TransfersPage, TrashPage,
     },
     session::Auth,
-    uploads::{UploadItem, UploadPanel},
+    uploads::{Sending, UploadItem, UploadPanel},
 };
 
 #[component]
@@ -19,6 +19,7 @@ pub fn App() -> impl IntoView {
     let auth = Auth::start();
     let uploads = RwSignal::new(Vec::<UploadItem>::new());
     provide_context(uploads);
+    provide_context(Sending(RwSignal::new(Default::default())));
     let hub = events::provide_hub();
     Effect::new(move |_| {
         if auth.user.read().is_some() {

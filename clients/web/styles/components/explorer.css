@@ -87,8 +87,10 @@
     flex: 1 1 100%;
   }
 
+  /* A zero basis lets the search field give up room to the buttons instead of widening the page. */
   .explorer__toolbar .search-box {
-    flex: 1 1 auto;
+    flex: 1 1 0;
+    width: 0;
   }
 }
 

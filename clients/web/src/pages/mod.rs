@@ -8,6 +8,7 @@ mod move_dialog;
 mod oidc_callback;
 mod search;
 mod search_box;
+mod send_dialog;
 mod settings;
 mod shell;
 mod sidebar;

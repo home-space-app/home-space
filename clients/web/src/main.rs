@@ -3,6 +3,7 @@ mod components;
 mod events;
 mod icon;
 mod load;
+mod local_files;
 mod locale;
 mod pages;
 mod route;
