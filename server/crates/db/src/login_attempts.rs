@@ -7,8 +7,9 @@ impl Db {
     /// Counts a sign-in attempt for `username` from `source`, as a failure until
     /// [`clear_login_attempts`](Self::clear_login_attempts) takes it back, unless attempts for
     /// that pair are blocked. Other sources of the same username are not affected, so a block
-    /// cannot be used to keep the owner out. `block` maps the number of failures, this attempt included, to how long the
-    /// next attempt must wait, if at all.
+    /// cannot be used to keep the owner out. Failures older than `memory` are forgotten when
+    /// none followed them. `block` maps the number of failures, this attempt included, to how
+    /// long the next attempt must wait, if at all.
     ///
     /// Returns `Err` with the time the block ends when the attempt must not be checked. Counting
     /// before the password is checked keeps a burst of parallel guesses from all getting through
@@ -17,6 +18,7 @@ impl Db {
         &self,
         username: &str,
         source: &str,
+        memory: Duration,
         block: impl FnOnce(u32) -> Option<Duration>,
     ) -> Result<Result<(), OffsetDateTime>, DbError> {
         let mut tx = self.pool().begin().await?;
@@ -27,20 +29,26 @@ impl Db {
         .bind(source)
         .execute(&mut *tx)
         .await?;
-        let (failures, blocked_until) = sqlx::query_as::<_, (i32, Option<OffsetDateTime>)>(
-            "SELECT failures, blocked_until FROM login_attempts \
-             WHERE username = $1 AND source = $2 FOR UPDATE",
-        )
-        .bind(username)
-        .bind(source)
-        .fetch_one(&mut *tx)
-        .await?;
+        let (failures, blocked_until, last_failed_at) =
+            sqlx::query_as::<_, (i32, Option<OffsetDateTime>, OffsetDateTime)>(
+                "SELECT failures, blocked_until, last_failed_at FROM login_attempts \
+                 WHERE username = $1 AND source = $2 FOR UPDATE",
+            )
+            .bind(username)
+            .bind(source)
+            .fetch_one(&mut *tx)
+            .await?;
         let now = OffsetDateTime::now_utc();
         if let Some(until) = blocked_until.filter(|until| *until > now) {
             tx.commit().await?;
             return Ok(Err(until));
         }
-        let failures = failures.saturating_add(1);
+        let remembered = if last_failed_at < now - memory {
+            0
+        } else {
+            failures
+        };
+        let failures = remembered.saturating_add(1);
         let blocked_until = block(failures.unsigned_abs()).map(|wait| now + wait);
         sqlx::query(
             "UPDATE login_attempts SET failures = $3, blocked_until = $4, last_failed_at = $5 \
@@ -86,6 +94,25 @@ impl Db {
         Ok(())
     }
 
+    /// Takes back the attempt that [`begin_login_attempt`](Self::begin_login_attempt) counted
+    /// last for `username` from `source`, and the block it may have set, leaving the failures
+    /// before it counted.
+    pub async fn take_back_login_attempt(
+        &self,
+        username: &str,
+        source: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE login_attempts SET failures = GREATEST(failures - 1, 0), blocked_until = NULL \
+             WHERE username = $1 AND source = $2",
+        )
+        .bind(username)
+        .bind(source)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
     /// Forgets the failed attempts of usernames that are not blocked and have not failed since
     /// `before`, returning how many were forgotten.
     pub async fn prune_login_attempts(&self, before: OffsetDateTime) -> Result<u64, DbError> {
@@ -108,6 +135,7 @@ mod tests {
 
     const HOME: &str = "192.0.2.1";
     const ELSEWHERE: &str = "198.51.100.7";
+    const DAY: Duration = Duration::days(1);
 
     fn after_two(failures: u32) -> Option<Duration> {
         (failures >= 2).then_some(Duration::minutes(1))
@@ -117,24 +145,24 @@ mod tests {
     async fn attempts_are_blocked_once_the_policy_says_so(pool: PgPool) {
         let db = Db::from_pool(pool);
         assert_eq!(
-            db.begin_login_attempt("alice", HOME, after_two)
+            db.begin_login_attempt("alice", HOME, DAY, after_two)
                 .await
                 .expect("db"),
             Ok(())
         );
         assert_eq!(
-            db.begin_login_attempt("alice", HOME, after_two)
+            db.begin_login_attempt("alice", HOME, DAY, after_two)
                 .await
                 .expect("db"),
             Ok(())
         );
         let blocked = db
-            .begin_login_attempt("alice", HOME, after_two)
+            .begin_login_attempt("alice", HOME, DAY, after_two)
             .await
             .expect("db");
         assert!(blocked.is_err());
         assert_eq!(
-            db.begin_login_attempt("bob", HOME, after_two)
+            db.begin_login_attempt("bob", HOME, DAY, after_two)
                 .await
                 .expect("db"),
             Ok(())
@@ -144,13 +172,13 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn clearing_starts_the_count_again(pool: PgPool) {
         let db = Db::from_pool(pool);
-        db.begin_login_attempt("alice", HOME, |_| None)
+        db.begin_login_attempt("alice", HOME, DAY, |_| None)
             .await
             .expect("db")
             .expect("free");
         db.clear_login_attempts("alice", HOME).await.expect("clear");
         let failures = std::cell::Cell::new(0);
-        db.begin_login_attempt("alice", HOME, |count| {
+        db.begin_login_attempt("alice", HOME, DAY, |count| {
             failures.set(count);
             None
         })
@@ -163,18 +191,18 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn pruning_keeps_blocked_usernames(pool: PgPool) {
         let db = Db::from_pool(pool);
-        db.begin_login_attempt("alice", HOME, |_| None)
+        db.begin_login_attempt("alice", HOME, DAY, |_| None)
             .await
             .expect("db")
             .expect("free");
-        db.begin_login_attempt("bob", HOME, |_| Some(Duration::hours(1)))
+        db.begin_login_attempt("bob", HOME, DAY, |_| Some(Duration::hours(1)))
             .await
             .expect("db")
             .expect("free");
         let later = OffsetDateTime::now_utc() + Duration::seconds(1);
         assert_eq!(db.prune_login_attempts(later).await.expect("prune"), 1);
         assert!(
-            db.begin_login_attempt("bob", HOME, |_| None)
+            db.begin_login_attempt("bob", HOME, DAY, |_| None)
                 .await
                 .expect("db")
                 .is_err()
@@ -185,19 +213,19 @@ mod tests {
     async fn a_block_holds_only_for_the_source_that_earned_it(pool: PgPool) {
         let db = Db::from_pool(pool);
         for _ in 0..2 {
-            db.begin_login_attempt("alice", ELSEWHERE, after_two)
+            db.begin_login_attempt("alice", ELSEWHERE, DAY, after_two)
                 .await
                 .expect("db")
                 .expect("free");
         }
         assert!(
-            db.begin_login_attempt("alice", ELSEWHERE, after_two)
+            db.begin_login_attempt("alice", ELSEWHERE, DAY, after_two)
                 .await
                 .expect("db")
                 .is_err()
         );
         assert_eq!(
-            db.begin_login_attempt("alice", HOME, after_two)
+            db.begin_login_attempt("alice", HOME, DAY, after_two)
                 .await
                 .expect("db"),
             Ok(())
@@ -207,20 +235,61 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn clearing_one_source_keeps_the_block_of_another(pool: PgPool) {
         let db = Db::from_pool(pool);
-        db.begin_login_attempt("alice", ELSEWHERE, |_| Some(Duration::hours(1)))
+        db.begin_login_attempt("alice", ELSEWHERE, DAY, |_| Some(Duration::hours(1)))
             .await
             .expect("db")
             .expect("free");
-        db.begin_login_attempt("alice", HOME, |_| None)
+        db.begin_login_attempt("alice", HOME, DAY, |_| None)
             .await
             .expect("db")
             .expect("free");
         db.clear_login_attempts("alice", HOME).await.expect("clear");
         assert!(
-            db.begin_login_attempt("alice", ELSEWHERE, |_| None)
+            db.begin_login_attempt("alice", ELSEWHERE, DAY, |_| None)
                 .await
                 .expect("db")
                 .is_err()
         );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn taking_an_attempt_back_leaves_the_ones_before_it(pool: PgPool) {
+        let db = Db::from_pool(pool);
+        for _ in 0..2 {
+            db.begin_login_attempt("alice", HOME, DAY, after_two)
+                .await
+                .expect("db")
+                .expect("free");
+        }
+        db.take_back_login_attempt("alice", HOME)
+            .await
+            .expect("take back");
+        let failures = std::cell::Cell::new(0);
+        db.begin_login_attempt("alice", HOME, DAY, |count| {
+            failures.set(count);
+            None
+        })
+        .await
+        .expect("db")
+        .expect("the block is taken back too");
+        assert_eq!(failures.get(), 2);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn failures_older_than_the_memory_are_not_counted(pool: PgPool) {
+        let db = Db::from_pool(pool);
+        db.begin_login_attempt("alice", HOME, DAY, |_| None)
+            .await
+            .expect("db")
+            .expect("free");
+        let failures = std::cell::Cell::new(0);
+        db.begin_login_attempt("alice", HOME, Duration::seconds(-1), |count| {
+            failures.set(count);
+            None
+        })
+        .await
+        .expect("db")
+        .expect("free");
+        assert_eq!(failures.get(), 1);
     }
 }

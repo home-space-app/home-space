@@ -8,6 +8,10 @@ pub enum AuthError {
     /// in whole seconds, is over.
     #[error("too many failed sign-in attempts, try again in {}", describe_wait(*retry_after))]
     TooManyAttempts { retry_after: u64 },
+    /// More passwords are waiting to be checked than the server takes on at once; `retry_after`
+    /// is in whole seconds.
+    #[error("the server is busy, try again in {}", describe_wait(*retry_after))]
+    Busy { retry_after: u64 },
     /// The current password given to change it is wrong. Unlike
     /// [`InvalidCredentials`](Self::InvalidCredentials) it leaves the session signed in.
     #[error("the current password is wrong")]
