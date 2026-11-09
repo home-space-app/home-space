@@ -154,6 +154,54 @@ impl AuthService {
         }
     }
 
+    /// Replaces the password of a signed-in user after checking the current one, and ends
+    /// their other sessions; `session_id` is the session asking, which stays signed in.
+    ///
+    /// Wrong current passwords count towards the same block as sign-in, so a stolen session
+    /// cannot be used to guess the password.
+    pub async fn change_password(
+        &self,
+        user_id: UserId,
+        session_id: Uuid,
+        current: &str,
+        new: &str,
+    ) -> Result<(), AuthError> {
+        let user = self
+            .db
+            .find_user(user_id)
+            .await?
+            .ok_or(AuthError::InvalidCredentials)?;
+        let hash = user.password_hash.ok_or(AuthError::NoPassword)?;
+        if new.len() < MIN_PASSWORD_LEN {
+            return Err(AuthError::InvalidInput(
+                "password must be at least 8 characters",
+            ));
+        }
+        if let Err(until) = self
+            .db
+            .begin_login_attempt(&user.username, login_block)
+            .await?
+        {
+            let wait = until - OffsetDateTime::now_utc();
+            return Err(AuthError::TooManyAttempts {
+                retry_after: wait.whole_seconds().max(0).unsigned_abs() + 1,
+            });
+        }
+        let candidate = current.to_owned();
+        let verified =
+            tokio::task::spawn_blocking(move || password::verify(&candidate, &hash)).await?;
+        if !verified {
+            return Err(AuthError::WrongPassword);
+        }
+        self.db.clear_login_attempts(&user.username).await?;
+        let hashed = self.hash_blocking(new).await?;
+        self.db
+            .change_password_hash(user_id, &hashed, session_id)
+            .await?;
+        self.sessions_ended(user_id);
+        Ok(())
+    }
+
     /// Verifies credentials and starts a session on `device`, when the client names one.
     ///
     /// After [`FREE_LOGIN_FAILURES`] wrong passwords for a username, each further attempt waits

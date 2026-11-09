@@ -6,7 +6,7 @@ use super::{
     file_drop::files_of,
     menu::{Menu, MenuItem},
 };
-use crate::icon::Icon;
+use crate::{icon::Icon, pages::search_box::SearchBox};
 
 #[component]
 pub fn Toolbar(
@@ -20,6 +20,7 @@ pub fn Toolbar(
 ) -> impl IntoView {
     view! {
         <div class="explorer__toolbar">
+            <SearchBox />
             <Show when=move || shows_bulk_actions(selected_count.get())>
                 <Menu
                     id="bulk-menu".to_owned()
@@ -33,22 +34,13 @@ pub fn Toolbar(
                     </Show>
                 </Menu>
             </Show>
-            <button
-                class="button"
-                aria-label="New folder"
-                disabled=move || !can_add.get()
-                on:click=move |_| on_new_folder.run(())
-            >
-                <Icon name="create_new_folder" />
-                <span class="label">"New folder"</span>
-            </button>
             <label
                 class="button button--primary"
                 aria-label="Upload files"
                 class:button--disabled=move || !can_add.get()
             >
                 <Icon name="upload" />
-                <span class="label">"Upload files"</span>
+                <span class="label">"Upload"</span>
                 <input
                     type="file"
                     multiple
@@ -63,6 +55,15 @@ pub fn Toolbar(
                     }
                 />
             </label>
+            <button
+                class="button"
+                aria-label="New folder"
+                disabled=move || !can_add.get()
+                on:click=move |_| on_new_folder.run(())
+            >
+                <Icon name="create_new_folder" />
+                <span class="label">"New folder"</span>
+            </button>
         </div>
     }
 }

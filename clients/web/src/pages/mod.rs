@@ -1,4 +1,4 @@
-mod app_bar;
+mod admin;
 mod browser;
 mod conflict_dialog;
 mod delete_dialog;
@@ -7,13 +7,18 @@ mod login;
 mod move_dialog;
 mod oidc_callback;
 mod search;
+mod search_box;
+mod settings;
 mod shell;
+mod sidebar;
 mod trash;
 
+pub use admin::AdminPage;
 pub use browser::Browser;
 pub use devices::DevicesPage;
 pub use login::Login;
 pub use oidc_callback::OidcCallback;
 pub use search::SearchPage;
+pub use settings::SettingsPage;
 pub use shell::Shell;
 pub use trash::TrashPage;

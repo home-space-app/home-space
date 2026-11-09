@@ -54,6 +54,20 @@ impl BlobStore {
         Ok(Self { root })
     }
 
+    /// The directory everything is stored under.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Size of the filesystem holding the root and the bytes still available on it; `None`
+    /// where the platform cannot tell.
+    pub async fn disk_space(&self) -> io::Result<Option<protocol::DiskSpace>> {
+        let root = self.root.clone();
+        tokio::task::spawn_blocking(move || disk_space(&root))
+            .await
+            .map_err(io::Error::other)?
+    }
+
     /// Streams `body` into a temp file, hashing it and enforcing `max_bytes`.
     pub async fn stage<S>(&self, body: S, max_bytes: u64) -> Result<StagedBlob, FilesError>
     where
@@ -316,6 +330,21 @@ impl BlobStore {
     }
 }
 
+#[cfg(unix)]
+fn disk_space(path: &Path) -> io::Result<Option<protocol::DiskSpace>> {
+    let stats = rustix::fs::statvfs(path)?;
+    let block = stats.f_frsize;
+    Ok(Some(protocol::DiskSpace {
+        total: stats.f_blocks.saturating_mul(block),
+        available: stats.f_bavail.saturating_mul(block),
+    }))
+}
+
+#[cfg(not(unix))]
+fn disk_space(_path: &Path) -> io::Result<Option<protocol::DiskSpace>> {
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use futures_util::stream;
@@ -329,6 +358,18 @@ mod tests {
                 .map(|part| Ok(Bytes::from_static(part.as_bytes())))
                 .collect::<Vec<_>>(),
         )
+    }
+
+    #[tokio::test]
+    async fn disk_space_is_reported_for_the_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = BlobStore::open(dir.path()).await.expect("open");
+        let space = store.disk_space().await.expect("statvfs");
+        if cfg!(unix) {
+            let space = space.expect("space");
+            assert!(space.total > 0);
+            assert!(space.available <= space.total);
+        }
     }
 
     #[tokio::test]

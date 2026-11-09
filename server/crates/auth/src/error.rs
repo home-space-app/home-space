@@ -8,6 +8,13 @@ pub enum AuthError {
     /// in whole seconds, is over.
     #[error("too many failed sign-in attempts, try again in {}", describe_wait(*retry_after))]
     TooManyAttempts { retry_after: u64 },
+    /// The current password given to change it is wrong. Unlike
+    /// [`InvalidCredentials`](Self::InvalidCredentials) it leaves the session signed in.
+    #[error("the current password is wrong")]
+    WrongPassword,
+    /// The account signs in through single sign-on and has no password to change.
+    #[error("this account signs in through single sign-on and has no password")]
+    NoPassword,
     /// The username is already taken.
     #[error("username already exists")]
     UsernameTaken,

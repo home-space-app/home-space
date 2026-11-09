@@ -11,12 +11,13 @@ mod ids;
 mod node;
 pub mod paths;
 mod search;
+mod storage;
 mod ticket;
 mod trash;
 mod upload;
 
 pub use auth::{
-    LoginRequest, Me, OidcCallbackQuery, OidcExchangeRequest, OidcProvider, OidcStartQuery,
+    ChangePasswordRequest, LoginRequest, Me, OidcCallbackQuery, OidcExchangeRequest, OidcProvider, OidcStartQuery,
     Providers, RefreshRequest, TokenPair,
 };
 pub use capabilities::Capabilities;
@@ -34,6 +35,10 @@ pub use node::{
     Node, NodeKind, NodeProperties, OnConflict, UpdateRequest, UploadQuery,
 };
 pub use search::{SearchHit, SearchQuery};
+pub use storage::{
+    DatabaseStatus, DiskSpace, DiskStatus, OidcStatus, ServerConfig, ServerStatus, Storage,
+    StorageBackend, StorageUsage, UserStorage,
+};
 pub use ticket::{TicketRequest, TicketResponse};
 pub use trash::{RestoreRequest, TrashItem};
 pub use upload::{ChunkResult, CreateUpload, UploadInfo, UploadSession, UploadsQuery};

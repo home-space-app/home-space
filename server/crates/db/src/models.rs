@@ -14,6 +14,8 @@ pub struct User {
     /// `None` for users who only sign in through an identity provider.
     pub password_hash: Option<String>,
     pub created_at: OffsetDateTime,
+    /// Sees the server status; gets no access to other users' files.
+    pub is_admin: bool,
 }
 
 /// A stored refresh token (only its hash is kept).

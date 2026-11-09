@@ -24,6 +24,7 @@ mod oidc;
 mod refresh_tokens;
 mod search;
 mod sessions;
+mod storage;
 mod trash;
 mod uploads;
 mod users;
@@ -42,6 +43,7 @@ pub use protocol::{NodeId, NodeKind, OnConflict, UserId};
 pub use search::{ContentState, RankedNode};
 pub use sessions::LiveSession;
 pub use sqlx::PgPool;
+pub use storage::{DatabaseInfo, StorageUsage, UserStorage};
 pub use trash::{LOST_AND_FOUND, SpecialFolders, TrashOutcome, TrashedNode};
 pub use uploads::{NewUpload, Upload};
 

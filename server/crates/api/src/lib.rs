@@ -6,7 +6,7 @@ mod routes;
 mod state;
 
 pub use error::ApiError;
-pub use state::AppState;
+pub use state::{AppState, ServerInfo};
 
 use std::path::Path;
 

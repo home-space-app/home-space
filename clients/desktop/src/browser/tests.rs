@@ -44,6 +44,8 @@ fn state_with_listing() -> State {
         id: protocol::UserId(Uuid::nil()),
         username: "alice".to_owned(),
         lost_and_found_id: NodeId(Uuid::nil()),
+        is_admin: false,
+        external: false,
     };
     let (mut state, _task) = State::open(Client::new("http://localhost"), me);
     let listing = Listing {
@@ -602,6 +604,8 @@ fn home_never_lists_lost_and_found() {
         id: protocol::UserId(Uuid::nil()),
         username: "alice".to_owned(),
         lost_and_found_id: id(FOUND_ID),
+        is_admin: false,
+        external: false,
     };
     let (mut state, _task) = State::open(client, me);
     let found = node(LOST_AND_FOUND, NodeKind::Folder, FOUND_ID);

@@ -12,6 +12,13 @@ pub struct LoginRequest {
     pub device: Option<DeviceInfo>,
 }
 
+/// `POST /me/password`: a signed-in user replaces their own password.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
+}
+
 /// Refresh token submitted to rotate a session or log out.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RefreshRequest {
@@ -33,6 +40,13 @@ pub struct Me {
     pub username: String,
     /// The Lost & Found folder, which cannot be deleted.
     pub lost_and_found_id: NodeId,
+    /// May open the administration pages; older servers leave it out.
+    #[serde(default)]
+    pub is_admin: bool,
+    /// Signs in through the identity provider rather than with a password; older servers leave
+    /// it out.
+    #[serde(default)]
+    pub external: bool,
 }
 
 /// How this server lets users sign in.

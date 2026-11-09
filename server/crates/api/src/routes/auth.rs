@@ -9,7 +9,7 @@ use axum::{
     routing::{get, post},
 };
 use protocol::{
-    LoginRequest, Me, OidcCallbackQuery, OidcExchangeRequest, OidcStartQuery, Providers,
+    ChangePasswordRequest, LoginRequest, Me, OidcCallbackQuery, OidcExchangeRequest, OidcStartQuery, Providers,
     RefreshRequest, TicketRequest, TicketResponse, TokenPair,
 };
 
@@ -25,6 +25,7 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/refresh", post(refresh))
         .route("/auth/logout", post(logout))
         .route("/me", get(me))
+        .route("/me/password", post(change_password))
         .route("/tickets", post(ticket))
 }
 
@@ -130,7 +131,27 @@ async fn me(State(state): State<AppState>, user: AuthUser) -> Result<Json<Me>, A
         id: found.id,
         username: found.username,
         lost_and_found_id: folders.lost_and_found_id,
+        is_admin: found.is_admin,
+        external: found.password_hash.is_none(),
     }))
+}
+
+/// Replaces the caller's password; their other sessions end, this one stays signed in.
+async fn change_password(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(request): Json<ChangePasswordRequest>,
+) -> Result<StatusCode, ApiError> {
+    state
+        .auth
+        .change_password(
+            user.id,
+            user.session_id,
+            &request.current_password,
+            &request.new_password,
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn ticket(

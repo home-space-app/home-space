@@ -1,10 +1,11 @@
 use sqlx::{Postgres, Transaction};
+use uuid::Uuid;
 
 use crate::{Db, DbError, FOLDER_MIME, LOST_AND_FOUND, NodeId, User, UserId};
 
 macro_rules! user_columns {
     () => {
-        "id, username, password_hash, created_at"
+        "id, username, password_hash, created_at, is_admin"
     };
 }
 
@@ -99,6 +100,19 @@ impl Db {
         Ok(users)
     }
 
+    /// Grants or revokes administrator rights; `NotFound` if there is no such user.
+    pub async fn set_admin(&self, id: UserId, is_admin: bool) -> Result<(), DbError> {
+        let updated = sqlx::query("UPDATE users SET is_admin = $2 WHERE id = $1")
+            .bind(id)
+            .bind(is_admin)
+            .execute(self.pool())
+            .await?;
+        if updated.rows_affected() == 0 {
+            return Err(DbError::NotFound);
+        }
+        Ok(())
+    }
+
     /// Replaces a user's password hash and ends all their sessions.
     pub async fn set_password_hash(&self, id: UserId, password_hash: &str) -> Result<(), DbError> {
         let mut tx = self.pool().begin().await?;
@@ -112,6 +126,36 @@ impl Db {
         }
         sqlx::query("DELETE FROM sessions WHERE user_id = $1")
             .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+}
+
+impl Db {
+    /// Replaces a user's password hash and ends every session except `keep`, the one that
+    /// asked for the change.
+    pub async fn change_password_hash(
+        &self,
+        id: UserId,
+        password_hash: &str,
+        keep: Uuid,
+    ) -> Result<(), DbError> {
+        let mut tx = self.pool().begin().await?;
+        let updated = sqlx::query(
+            "UPDATE users SET password_hash = $2 WHERE id = $1 AND password_hash IS NOT NULL",
+        )
+        .bind(id)
+        .bind(password_hash)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() == 0 {
+            return Err(DbError::NotFound);
+        }
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND id <> $2")
+            .bind(id)
+            .bind(keep)
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
@@ -160,4 +204,26 @@ async fn insert_user(
     .execute(&mut **tx)
     .await?;
     Ok(user)
+}
+
+#[cfg(test)]
+mod tests {
+    use sqlx::PgPool;
+
+    use super::*;
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn password_less_users_get_no_password(pool: PgPool) {
+        let db = Db::from_pool(pool);
+        let user = db
+            .create_user_with_identity("sso", "https://idp.example", "sub", None)
+            .await
+            .expect("user");
+        let result = db
+            .change_password_hash(user.id, "hash", Uuid::nil())
+            .await;
+        assert!(matches!(result, Err(DbError::NotFound)));
+        let found = db.find_user(user.id).await.expect("db").expect("user");
+        assert!(found.password_hash.is_none());
+    }
 }

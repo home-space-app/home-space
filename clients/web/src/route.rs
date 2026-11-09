@@ -13,7 +13,13 @@ pub fn folder(id: NodeId) -> String {
 
 pub const TRASH_PATH: &str = "/trash";
 
-pub const DEVICES_PATH: &str = "/devices";
+/// The account settings: profile and storage.
+pub const SETTINGS_PATH: &str = "/settings";
+/// The settings tab listing the user's devices.
+pub const DEVICES_PATH: &str = "/settings/devices";
+
+/// The administration pages, for administrators only.
+pub const ADMIN_PATH: &str = "/admin";
 
 pub const SEARCH_PATH: &str = "/search";
 pub const SEARCH_PARAM: &str = "q";

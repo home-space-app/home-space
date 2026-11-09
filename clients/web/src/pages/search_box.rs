@@ -4,52 +4,20 @@ use gloo_timers::future::sleep;
 use leptos::{prelude::*, task::spawn_local};
 use leptos_router::{
     NavigateOptions,
-    components::A,
     hooks::{use_location, use_navigate, use_query_map},
 };
 use web_sys::KeyboardEvent;
 
-use crate::{icon::Icon, route, session::Auth};
+use crate::route;
 
 const KEY_ENTER: &str = "Enter";
 const KEY_ESCAPE: &str = "Escape";
 const HOME_PATH: &str = "/";
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
 
+/// Searches as the user types and opens the results page.
 #[component]
-pub fn AppBar(auth: Auth) -> impl IntoView {
-    view! {
-        <header class="app-bar">
-            <h1 class="app-bar__brand">"Home Space"</h1>
-            <SearchBox />
-            <span class="app-bar__spacer"></span>
-            <A href=route::TRASH_PATH attr:class="button button--ghost">
-                <Icon name="recycling" />
-                <span class="label">"Recycle bin"</span>
-            </A>
-            <A href=route::DEVICES_PATH attr:class="app-bar__user" attr:title="Your devices">
-                {move || auth.user.get().map(|user| user.username)}
-            </A>
-            <button
-                class="button button--ghost"
-                aria-label="Log out"
-                title=move || {
-                    auth.user
-                        .get()
-                        .map(|user| format!("Log out {}", user.username))
-                        .unwrap_or_else(|| "Log out".to_owned())
-                }
-                on:click=move |_| auth.logout()
-            >
-                <Icon name="logout" />
-                <span class="label">"Log out"</span>
-            </button>
-        </header>
-    }
-}
-
-#[component]
-fn SearchBox() -> impl IntoView {
+pub fn SearchBox() -> impl IntoView {
     let navigate = use_navigate();
     let location = use_location();
     let query = use_query_map();
@@ -91,7 +59,7 @@ fn SearchBox() -> impl IntoView {
 
     view! {
         <input
-            class="field__input app-bar__search"
+            class="field__input search-box"
             type="search"
             placeholder="Search files and folders"
             aria-label="Search files and folders"

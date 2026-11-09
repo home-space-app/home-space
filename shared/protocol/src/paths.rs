@@ -17,6 +17,7 @@ pub const OIDC_EXCHANGE: &str = "/api/v1/auth/oidc/exchange";
 /// Not a route on the server: the apps claim this address on the device.
 pub const MOBILE_OIDC_REDIRECT: &str = "app.homespace://oidc/callback";
 pub const ME: &str = "/api/v1/me";
+pub const ME_PASSWORD: &str = "/api/v1/me/password";
 pub const NODES: &str = "/api/v1/nodes";
 pub const NODES_MOVE: &str = "/api/v1/nodes/move";
 pub const FOLDERS: &str = "/api/v1/folders";
@@ -31,6 +32,8 @@ pub const TICKET_PARAM: &str = "ticket";
 pub const UPLOADS: &str = "/api/v1/uploads";
 pub const DEVICES: &str = "/api/v1/devices";
 pub const CAPABILITIES: &str = "/api/v1/capabilities";
+pub const STORAGE: &str = "/api/v1/storage";
+pub const ADMIN_STATUS: &str = "/api/v1/admin/status";
 /// Header of `PATCH /uploads/{id}` naming where the chunk starts, and of upload responses
 /// naming how many bytes the server has.
 pub const UPLOAD_OFFSET: &str = "Upload-Offset";

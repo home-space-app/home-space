@@ -4,6 +4,7 @@ use leptos_router::{components::A, hooks::use_query_map};
 use client_core::{format::human_size, labels::location_label, search::destination};
 use protocol::{NodeKind, SearchHit};
 
+use super::search_box::SearchBox;
 use crate::{
     components::ErrorAlert,
     icon::{Icon, node_icon},
@@ -77,7 +78,7 @@ pub fn SearchPage(auth: Auth) -> impl IntoView {
     view! {
         <main class="explorer">
             <div class="explorer__header">
-                <h2 class="search-title">
+                <h1 class="page-title">
                     {move || {
                         let term = term.get();
                         if term.is_empty() {
@@ -86,7 +87,8 @@ pub fn SearchPage(auth: Auth) -> impl IntoView {
                             format!("Results for \u{201c}{term}\u{201d}")
                         }
                     }}
-                </h2>
+                </h1>
+                <SearchBox />
             </div>
             <ErrorAlert message=failure />
             <div class="explorer__scroll">

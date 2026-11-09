@@ -77,6 +77,25 @@ pub async fn setup_with(
         files: FileService::new(db.clone(), store, 1024 * 1024).with_chunk_bytes(UPLOAD_CHUNK),
         hub: Hub::new(),
         search,
+        info: std::sync::Arc::new(api::ServerInfo {
+            version: "0.0.0-test".to_owned(),
+            started_at: time::OffsetDateTime::now_utc(),
+            config: protocol::ServerConfig {
+                max_upload_bytes: 1024 * 1024,
+                upload_chunk_bytes: UPLOAD_CHUNK,
+                upload_expiry_hours: 24,
+                changes_retention_days: None,
+                password_login: true,
+                oidc: None,
+                access_ttl_secs: 900,
+                refresh_ttl_secs: 30 * 24 * 3600,
+                previous_jwt_secret: false,
+                public_url: None,
+                bind: "127.0.0.1:0".to_owned(),
+                published_port: None,
+                storage: protocol::StorageBackend::Local,
+            },
+        }),
         db,
     };
     TestApp {

@@ -1,11 +1,11 @@
 use leptos::{html::Input, prelude::*, task::spawn_local};
-use leptos_router::components::A;
 use uuid::Uuid;
 use web_sys::KeyboardEvent;
 
-use client_core::labels::{HOME, THIS_DEVICE, device_state, platform, sign_out_question};
+use client_core::labels::{THIS_DEVICE, device_state, platform, sign_out_question};
 use protocol::{Device, Event};
 
+use super::settings::SettingsHeader;
 use crate::{
     components::ErrorAlert,
     events,
@@ -81,19 +81,9 @@ pub fn DevicesPage(auth: Auth) -> impl IntoView {
     };
 
     view! {
-        <main class="explorer">
-            <div class="explorer__header">
-                <nav class="breadcrumbs" aria-label="Folder path">
-                    <A href="/" exact=true attr:class="breadcrumbs__link">
-                        {HOME}
-                    </A>
-                    <span class="breadcrumbs__separator" aria-hidden="true">
-                        "/"
-                    </span>
-                    <span class="breadcrumbs__link" aria-current="page">
-                        "Devices"
-                    </span>
-                </nav>
+        <main class="explorer explorer--tabbed">
+            <div class="explorer__header explorer__header--stacked">
+                <SettingsHeader />
             </div>
             <ErrorAlert message=error />
             <div class="explorer__scroll">

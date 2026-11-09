@@ -61,6 +61,16 @@ impl FileService {
         self.chunk_bytes
     }
 
+    /// The largest file a single upload may hold.
+    pub fn max_upload_bytes(&self) -> u64 {
+        self.max_upload_bytes
+    }
+
+    /// The blob store files are kept in.
+    pub fn store(&self) -> &BlobStore {
+        &self.store
+    }
+
     /// Creates a folder under `parent` (or at the root).
     pub async fn create_folder(
         &self,

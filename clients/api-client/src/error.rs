@@ -60,6 +60,7 @@ impl ApiError {
 fn error_code_name(code: ErrorCode) -> &'static str {
     match code {
         ErrorCode::Unauthorized => "unauthorized",
+        ErrorCode::Forbidden => "forbidden",
         ErrorCode::NotFound => "not_found",
         ErrorCode::Conflict => "conflict",
         ErrorCode::BadRequest => "bad_request",

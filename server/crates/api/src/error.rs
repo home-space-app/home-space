@@ -16,6 +16,8 @@ const INTERRUPTED_BODY: &str = "the request body was cut off";
 pub enum ApiError {
     #[error("authentication required")]
     Unauthorized,
+    #[error("not allowed")]
+    Forbidden,
     #[error("not found")]
     NotFound,
     #[error("no longer available")]
@@ -51,8 +53,11 @@ impl ApiError {
             Self::Unauthorized | Self::Auth(AuthError::InvalidCredentials) => {
                 (StatusCode::UNAUTHORIZED, ErrorCode::Unauthorized)
             }
+            Self::Forbidden => (StatusCode::FORBIDDEN, ErrorCode::Forbidden),
             Self::Auth(AuthError::UsernameTaken) => (StatusCode::CONFLICT, ErrorCode::Conflict),
-            Self::Auth(AuthError::InvalidInput(_)) => {
+            Self::Auth(
+                AuthError::InvalidInput(_) | AuthError::WrongPassword | AuthError::NoPassword,
+            ) => {
                 (StatusCode::BAD_REQUEST, ErrorCode::BadRequest)
             }
             Self::NotFound
