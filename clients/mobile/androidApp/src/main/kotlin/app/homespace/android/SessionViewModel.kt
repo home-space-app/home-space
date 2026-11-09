@@ -694,6 +694,8 @@ private fun CoreException.signInMessage(): String = when (this) {
     is CoreException.SsoFailed -> SIGN_IN_FAILED
     is CoreException.InvalidServerAddress ->
         "The server address must start with http:// or https://"
+    is CoreException.UnprotectedServerAddress ->
+        "Use https:// for a server outside your home network"
     is CoreException.Unreachable -> "Could not reach the server"
     is CoreException.Failed -> detail
     is CoreException.Unauthorized -> "Your session has ended. Please sign in again."

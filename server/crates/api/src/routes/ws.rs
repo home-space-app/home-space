@@ -30,6 +30,7 @@ use protocol::{ClientMessage, DeviceInfo, TicketRequest};
 
 use crate::{
     ApiError, AppState,
+    browser::refuse_other_sites,
     extract::{AuthUser, TicketQuery},
 };
 
@@ -56,6 +57,8 @@ async fn upgrade(
     Query(query): Query<TicketQuery>,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
+    // A page of another site must not open the user's events, however the socket signs in.
+    refuse_other_sites(&headers, &state)?;
     // Listen before the session is checked, so that it cannot end unnoticed in between.
     let ended = state.auth.ended_sessions();
     let (grant, lifetime) = match query.ticket {

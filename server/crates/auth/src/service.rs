@@ -29,6 +29,9 @@ const MAX_USERNAME_LEN: usize = 64;
 const IPV6_NETWORK_BITS: u32 = 64;
 const MIN_PASSWORD_LEN: usize = 8;
 const TICKET_TTL_SECS: i64 = 30;
+/// How long after a refresh token kept in a cookie was used it may be presented once more
+/// without ending the session: long enough for two tabs that refreshed at the same moment.
+const SHARED_REFRESH_GRACE: Duration = Duration::seconds(10);
 const SCOPE_EVENTS: &str = "events";
 const SCOPE_DOWNLOAD_PREFIX: &str = "download:";
 const DUMMY_PASSWORD: &str = "dummy-password-for-timing";
@@ -300,23 +303,56 @@ impl AuthService {
     ///
     /// Presenting an already-used token ends the whole session.
     pub async fn refresh(&self, refresh_token: &str) -> Result<TokenPair, AuthError> {
+        self.refresh_with(refresh_token, false).await
+    }
+
+    /// Like [`refresh`](Self::refresh), for a token kept in a browser's cookie, which all of
+    /// its tabs share. Two tabs may send the same token at the same moment, so the one that
+    /// comes second within [`SHARED_REFRESH_GRACE`] gets an access token for the session and
+    /// no refresh token: the cookie already holds the one the first tab was given.
+    pub async fn refresh_shared(&self, refresh_token: &str) -> Result<TokenPair, AuthError> {
+        self.refresh_with(refresh_token, true).await
+    }
+
+    async fn refresh_with(
+        &self,
+        refresh_token: &str,
+        shared: bool,
+    ) -> Result<TokenPair, AuthError> {
         let stored = self
             .db
             .find_refresh_token(&hash_refresh_token(refresh_token))
             .await?
             .ok_or(AuthError::InvalidCredentials)?;
-        if stored.revoked_at.is_some() {
+        let now = OffsetDateTime::now_utc();
+        if let Some(revoked_at) = stored.revoked_at {
+            if shared && now - revoked_at <= SHARED_REFRESH_GRACE {
+                return self.rejoin_session(stored.user_id, stored.family_id).await;
+            }
             self.end_session(stored.user_id, stored.family_id).await?;
             Err(AuthError::InvalidCredentials)
-        } else if stored.expires_at <= OffsetDateTime::now_utc() {
+        } else if stored.expires_at <= now {
             Err(AuthError::InvalidCredentials)
         } else if self.db.revoke_refresh_token(stored.id).await? {
             self.continue_session(stored.user_id, stored.family_id)
                 .await
+        } else if shared {
+            // Another tab revoked it between the two statements above.
+            self.rejoin_session(stored.user_id, stored.family_id).await
         } else {
             self.end_session(stored.user_id, stored.family_id).await?;
             Err(AuthError::InvalidCredentials)
         }
+    }
+
+    /// An access token for a session that still lives, without a new refresh token.
+    async fn rejoin_session(
+        &self,
+        user_id: UserId,
+        session_id: Uuid,
+    ) -> Result<TokenPair, AuthError> {
+        self.require_session(session_id, user_id).await?;
+        self.pair(user_id, session_id, String::new())
     }
 
     /// Ends the session of `refresh_token`; unknown tokens are ignored.
@@ -1336,6 +1372,64 @@ mod tests {
         let second = auth.refresh(&first.refresh_token).await.expect("refresh");
         assert!(auth.refresh(&first.refresh_token).await.is_err());
         assert!(auth.refresh(&second.refresh_token).await.is_err());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_shared_token_sent_twice_at_once_keeps_the_session(pool: PgPool) {
+        let auth = service(pool);
+        auth.create_user("alice", "password-1").await.expect("user");
+        let first = auth
+            .login("alice", "password-1", None)
+            .await
+            .expect("login");
+        let second = auth
+            .refresh_shared(&first.refresh_token)
+            .await
+            .expect("refresh");
+        let late = auth
+            .refresh_shared(&first.refresh_token)
+            .await
+            .expect("the tab that came second");
+        // It gets into the session, but only the first tab was handed the next token.
+        assert!(late.refresh_token.is_empty());
+        assert!(auth.verify_access(&late.access_token).await.is_ok());
+        assert!(auth.refresh_shared(&second.refresh_token).await.is_ok());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_shared_token_reused_later_ends_the_session(pool: PgPool) {
+        let auth = service(pool.clone());
+        auth.create_user("alice", "password-1").await.expect("user");
+        let first = auth
+            .login("alice", "password-1", None)
+            .await
+            .expect("login");
+        let second = auth
+            .refresh_shared(&first.refresh_token)
+            .await
+            .expect("refresh");
+        sqlx::query("UPDATE refresh_tokens SET revoked_at = revoked_at - interval '11 seconds'")
+            .execute(&pool)
+            .await
+            .expect("age the used token");
+        assert!(auth.refresh_shared(&first.refresh_token).await.is_err());
+        assert!(auth.refresh_shared(&second.refresh_token).await.is_err());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_token_that_is_not_shared_has_no_grace(pool: PgPool) {
+        let auth = service(pool);
+        auth.create_user("alice", "password-1").await.expect("user");
+        let first = auth
+            .login("alice", "password-1", None)
+            .await
+            .expect("login");
+        let second = auth
+            .refresh_shared(&first.refresh_token)
+            .await
+            .expect("refresh");
+        assert!(auth.refresh(&first.refresh_token).await.is_err());
+        assert!(auth.refresh_shared(&second.refresh_token).await.is_err());
     }
 
     #[sqlx::test(migrations = "../../migrations")]
