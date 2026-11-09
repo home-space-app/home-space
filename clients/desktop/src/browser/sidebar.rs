@@ -133,6 +133,14 @@ impl State {
             compact,
             Message::OpenDevices,
         ));
+        let places = places.push(place(
+            Icon::SwapVert,
+            "Transfers",
+            matches!(self.page, Page::Transfers),
+            self.transfer_list.waiting(),
+            compact,
+            Message::OpenTransfers,
+        ));
         let foot = column![
             syncing::status_card(
                 self.syncing.status(),

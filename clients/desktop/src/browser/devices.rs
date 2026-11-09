@@ -6,10 +6,13 @@ use iced::{
 use uuid::Uuid;
 
 use api_client::{ApiError, Client};
-use client_core::labels::{THIS_DEVICE, device_state, platform, sign_out_question};
+use client_core::{
+    labels::{THIS_DEVICE, device_state, platform, sign_out_question},
+    transfers::visible_to,
+};
 use protocol::{
-    Device, PLATFORM_ANDROID, PLATFORM_IOS, PLATFORM_LINUX, PLATFORM_MACOS, PLATFORM_WEB,
-    PLATFORM_WINDOWS,
+    Device, DeviceVisibility, PLATFORM_ANDROID, PLATFORM_IOS, PLATFORM_LINUX, PLATFORM_MACOS,
+    PLATFORM_WEB, PLATFORM_WINDOWS,
 };
 
 use super::{
@@ -18,6 +21,7 @@ use super::{
         COLUMN_GAP, DATE_WIDTH, LIST_PADDING, MENU_WIDTH, ROW_SIZE, SECOND_LINE_SIZE, alert_error,
         divider, empty, ghost, header_bar, list_box, menu_button, muted_cell, title,
     },
+    visibility::{self, visibility_icon},
 };
 use crate::{
     ellipsis::ellipsized,
@@ -31,6 +35,9 @@ const NAME_GAP: f32 = 12.0;
 const DEVICE_ROW: f32 = 60.0;
 const NAME_PORTION: u16 = 3;
 const STATE_PORTION: u16 = 2;
+const VISIBLE_PORTION: u16 = 2;
+const VISIBLE_GAP: f32 = 6.0;
+const VISIBLE_ICON: f32 = 16.0;
 const PILL_HEIGHT: f32 = 24.0;
 const PILL_SIZE: f32 = 12.0;
 const PILL_PADDING: [f32; 2] = [0.0, 8.0];
@@ -55,8 +62,18 @@ pub enum Message {
     SignOut(Uuid),
     ConfirmSignOut,
     SignedOut(Result<(), ApiError>),
-    /// Leaves the rename or the sign-out question.
+    /// Asks who can see a device.
+    ChooseVisibility(Uuid),
+    Visibility(visibility::Message),
+    /// Leaves the rename, the sign-out question or the visibility dialog.
     Cancel,
+}
+
+impl Message {
+    /// Whether the message comes from the people picker, which stays open for more.
+    pub fn keeps_picker_open(&self) -> bool {
+        matches!(self, Self::Visibility(message) if message.keeps_picker_open())
+    }
 }
 
 /// A device being renamed.
@@ -76,6 +93,8 @@ pub struct State {
     renaming: Option<Renaming>,
     /// The device waiting for the user to confirm its sign-out.
     confirming: Option<Uuid>,
+    /// The dialog choosing who can see a device.
+    choosing: Option<visibility::State>,
 }
 
 impl State {
@@ -93,9 +112,23 @@ impl State {
         Task::perform(async move { client.devices().await }, Message::Loaded)
     }
 
-    /// Whether a rename or a sign-out question is open, which Escape leaves first.
+    /// Whether a rename, a sign-out question or a dialog is open, which Escape leaves first.
     pub fn is_asking(&self) -> bool {
-        self.renaming.is_some() || self.confirming.is_some()
+        self.renaming.is_some() || self.confirming.is_some() || self.choosing.is_some()
+    }
+
+    /// The visibility dialog, while it is open.
+    pub fn dialog(&self) -> Option<Element<'_, Message>> {
+        self.choosing
+            .as_ref()
+            .map(|choosing| choosing.view().map(Message::Visibility))
+    }
+
+    /// The people picker of the visibility dialog.
+    pub fn picker(&self) -> Option<Element<'_, Message>> {
+        self.choosing
+            .as_ref()
+            .map(|choosing| choosing.picker().map(Message::Visibility))
     }
 
     pub fn update(&mut self, client: &Client, message: Message) -> Task<Message> {
@@ -156,9 +189,36 @@ impl State {
                 )
             }
             Message::SignedOut(result) => self.done(client, result),
+            Message::ChooseVisibility(id) => {
+                let Some(device) = self.device(id).cloned() else {
+                    return Task::none();
+                };
+                self.renaming = None;
+                self.confirming = None;
+                let (choosing, task) = visibility::State::open(client, device);
+                self.choosing = Some(choosing);
+                task.map(Message::Visibility)
+            }
+            Message::Visibility(message) => {
+                let Some(choosing) = &mut self.choosing else {
+                    return Task::none();
+                };
+                match choosing.update(client, message) {
+                    visibility::Outcome::Task(task) => task.map(Message::Visibility),
+                    visibility::Outcome::Closed => {
+                        self.choosing = None;
+                        Task::none()
+                    }
+                    visibility::Outcome::Saved => {
+                        self.choosing = None;
+                        self.load(client)
+                    }
+                }
+            }
             Message::Cancel => {
                 self.renaming = None;
                 self.confirming = None;
+                self.choosing = None;
                 Task::none()
             }
         }
@@ -265,6 +325,11 @@ fn header<'a>() -> Element<'a, Message> {
                 Length::FillPortion(STATE_PORTION),
                 Alignment::Start
             ),
+            title(
+                "Visible to",
+                Length::FillPortion(VISIBLE_PORTION),
+                Alignment::Start
+            ),
             title("Last seen", DATE_WIDTH, Alignment::Start),
             space().width(MENU_WIDTH),
         ],
@@ -310,6 +375,7 @@ fn device_cells(device: &Device) -> iced::widget::Row<'_, Message> {
     row![
         name,
         state_cell(device, active),
+        visible_cell(device),
         muted_cell(
             short_date(device.last_seen_at),
             DATE_WIDTH,
@@ -338,6 +404,21 @@ fn state_cell<'a>(device: &Device, active: bool) -> Element<'a, Message> {
         .align_y(Alignment::Center)
         .width(Length::FillPortion(STATE_PORTION))
         .into()
+}
+
+/// Who can send to the device, after the icon of its visibility.
+fn visible_cell<'a>(device: &Device) -> Element<'a, Message> {
+    let hidden = device.visibility == DeviceVisibility::Hidden;
+    row![
+        visibility_icon(device.visibility).view(VISIBLE_ICON, Tint::Muted),
+        container(ellipsized(visible_to(device), ROW_SIZE, Alignment::Start))
+            .style(if hidden { theme::muted } else { theme::plain })
+            .width(Length::Fill),
+    ]
+    .spacing(VISIBLE_GAP)
+    .align_y(Alignment::Center)
+    .width(Length::FillPortion(VISIBLE_PORTION))
+    .into()
 }
 
 fn rename_cells(renaming: &Renaming) -> iced::widget::Row<'_, Message> {

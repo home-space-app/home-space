@@ -62,6 +62,7 @@ const DIALOG_PADDING: f32 = 24.0;
 const DIALOG_GAP: f32 = 16.0;
 const DIALOG_TITLE_SIZE: f32 = 18.0;
 const DIALOG_BUTTON_GAP: f32 = 8.0;
+const DIALOG_HEAD_GAP: f32 = 2.0;
 const FIELD_GAP: f32 = 4.0;
 pub(crate) const FIELD_PADDING: [f32; 2] = [9.0, 10.0];
 
@@ -330,9 +331,38 @@ pub(super) fn dialog<'a, M: 'a>(
     lines: Column<'a, M>,
     buttons: impl IntoIterator<Item = Element<'a, M>>,
 ) -> Element<'a, M> {
-    let buttons = row![space::horizontal()]
+    dialog_with_aside(width, lines, None, buttons)
+}
+
+/// The title of a dialog with a line about it below.
+pub(super) fn dialog_head<'a, M: 'a>(
+    title: impl text::IntoFragment<'a>,
+    subtitle: impl text::IntoFragment<'a>,
+) -> Element<'a, M> {
+    iced::widget::column![
+        dialog_title(title),
+        text(subtitle)
+            .size(SECOND_LINE_SIZE)
+            .style(theme::muted_text),
+    ]
+    .spacing(DIALOG_HEAD_GAP)
+    .into()
+}
+
+/// A dialog like [`dialog`] with `aside`, such as a secondary action, at the start of its last
+/// line.
+pub(super) fn dialog_with_aside<'a, M: 'a>(
+    width: f32,
+    lines: Column<'a, M>,
+    aside: Option<Element<'a, M>>,
+    buttons: impl IntoIterator<Item = Element<'a, M>>,
+) -> Element<'a, M> {
+    let buttons = row![]
+        .push(aside)
+        .push(space::horizontal())
         .extend(buttons)
-        .spacing(DIALOG_BUTTON_GAP);
+        .spacing(DIALOG_BUTTON_GAP)
+        .align_y(Alignment::Center);
     container(lines.push(buttons).spacing(DIALOG_GAP))
         .padding(DIALOG_PADDING)
         .width(width)

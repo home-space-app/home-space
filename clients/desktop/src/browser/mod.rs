@@ -17,7 +17,10 @@ mod sidebar;
 mod sync_queue;
 mod syncing;
 mod toolbar;
+mod transfer_list;
+mod transfer_save;
 mod trash;
+mod visibility;
 
 use std::path::{Path, PathBuf};
 
@@ -45,6 +48,7 @@ use self::{
     search::Search,
     syncing::Syncing,
     toolbar::Action,
+    transfer_list::TransferList,
 };
 use crate::{
     events, sync,
@@ -52,6 +56,8 @@ use crate::{
 };
 
 const DEFAULT_WINDOW: Size = Size::new(1280.0, 800.0);
+/// How often the Transfers page says the times left again.
+const CLOCK_TICK: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -91,6 +97,8 @@ pub enum Message {
     OpenSyncSettings,
     OpenDevices,
     Devices(devices::Message),
+    OpenTransfers,
+    Transfers(transfer_list::Message),
     Transfer(transfers::Message),
     Shortcut(Shortcut),
     Modifiers(Modifiers),
@@ -121,6 +129,8 @@ enum Menu {
     Crumbs(Placement),
     Account(Placement),
     Device(Uuid, Placement),
+    /// The people picker of the device visibility dialog.
+    Users(Placement),
 }
 
 /// What the browser shows below the header, other than search results.
@@ -134,6 +144,8 @@ enum Page {
     SyncSettings,
     /// The user's devices.
     Devices(Box<devices::State>),
+    /// What was sent to this device and what the user sent.
+    Transfers,
 }
 
 pub struct State {
@@ -153,11 +165,14 @@ pub struct State {
     search: Search,
     syncing: Syncing,
     lost_and_found: LostAndFound,
+    /// The Transfers page, kept while elsewhere so downloads go on and the sidebar counts.
+    transfer_list: TransferList,
 }
 
 impl State {
     pub fn open(client: Client, me: Me) -> (Self, Task<Message>) {
-        let state = Self {
+        let mut state = Self {
+            transfer_list: TransferList::new(me.id, me.lost_and_found_id),
             client,
             folder: Folder::new(me.lost_and_found_id),
             lost_and_found: LostAndFound::new(me.lost_and_found_id),
@@ -178,9 +193,11 @@ impl State {
         let size = window::latest()
             .and_then(window::size)
             .map(Message::Resized);
+        let transfers = state.transfer_list.load(&state.client);
         let task = Task::batch([
             state.folder.load(&state.client),
             state.load_lost_and_found(),
+            transfers.map(Message::Transfers),
             size,
         ]);
         (state, task)
@@ -319,10 +336,25 @@ impl State {
                 self.menu = Some(Menu::Device(id, placement));
                 Task::none()
             }
+            Message::Devices(devices::Message::Visibility(visibility::Message::Pick(
+                placement,
+            ))) => {
+                self.menu = Some(Menu::Users(placement));
+                self.devices_update(devices::Message::Visibility(visibility::Message::Pick(
+                    placement,
+                )))
+            }
             Message::Devices(message) => {
-                self.menu = None;
+                if !message.keeps_picker_open() {
+                    self.menu = None;
+                }
                 self.devices_update(message)
             }
+            Message::OpenTransfers => self.open_transfers(),
+            Message::Transfers(message) => self
+                .transfer_list
+                .update(&self.client, message)
+                .map(Message::Transfers),
             Message::Transfer(message) => {
                 let reload = matches!(message, transfers::Message::BatchDone(Direction::Upload));
                 let task = self
@@ -385,7 +417,16 @@ impl State {
                     ) => devices.load(&self.client).map(Message::Devices),
                     _ => Task::none(),
                 };
-                Task::batch([details, found, listing, trash])
+                let transfers = match event {
+                    protocol::Event::TransferReceived { .. }
+                    | protocol::Event::TransferChanged { .. }
+                    | protocol::Event::Resync => self
+                        .transfer_list
+                        .load(&self.client)
+                        .map(Message::Transfers),
+                    _ => Task::none(),
+                };
+                Task::batch([details, found, listing, trash, transfers])
             }
             Message::Sync(message) => {
                 if matches!(
@@ -495,6 +536,18 @@ impl State {
         task.map(Message::Devices)
     }
 
+    fn open_transfers(&mut self) -> Task<Message> {
+        self.search.clear();
+        self.folder.error = None;
+        self.details = None;
+        self.menu = None;
+        self.folder.selection.clear();
+        self.page = Page::Transfers;
+        self.transfer_list
+            .load(&self.client)
+            .map(Message::Transfers)
+    }
+
     fn devices_update(&mut self, message: devices::Message) -> Task<Message> {
         match &mut self.page {
             Page::Devices(devices) => devices.update(&self.client, message).map(Message::Devices),
@@ -525,6 +578,10 @@ impl State {
         match &mut self.page {
             Page::Trash(trash) => trash.load(&self.client).map(Message::Trash),
             Page::Devices(devices) => devices.load(&self.client).map(Message::Devices),
+            Page::Transfers => self
+                .transfer_list
+                .load(&self.client)
+                .map(Message::Transfers),
             Page::Folder | Page::SyncQueue | Page::SyncSettings => self.folder.reload(&self.client),
         }
     }
@@ -752,6 +809,24 @@ impl State {
                 }
                 _ => Task::none(),
             }
+        } else if matches!(self.page, Page::Transfers) {
+            match shortcut {
+                Shortcut::Escape if self.transfer_list.is_asking() => {
+                    self.handle(Message::Transfers(transfer_list::Message::SaveDialog(
+                        transfer_save::Message::Cancel,
+                    )))
+                }
+                Shortcut::Activate if self.transfer_list.is_asking() => {
+                    self.handle(Message::Transfers(transfer_list::Message::SaveDialog(
+                        transfer_save::Message::Submit,
+                    )))
+                }
+                Shortcut::Refresh => self.reload(),
+                Shortcut::Escape | Shortcut::Back | Shortcut::Parent => {
+                    self.open_folder(self.folder.id)
+                }
+                _ => Task::none(),
+            }
         } else if matches!(self.page, Page::SyncQueue | Page::SyncSettings) {
             match shortcut {
                 Shortcut::Escape | Shortcut::Back | Shortcut::Parent => {
@@ -828,7 +903,13 @@ impl State {
 
     /// Input events and live server events while the browser is shown.
     pub fn subscription(&self) -> Subscription<Message> {
+        let clock = if matches!(self.page, Page::Transfers) {
+            iced::time::every(CLOCK_TICK).map(|_| Message::Transfers(transfer_list::Message::Tick))
+        } else {
+            Subscription::none()
+        };
         Subscription::batch([
+            clock,
             event::listen_with(input),
             events::subscription(&self.client).map(Message::Server),
             sync::subscription(&self.client, self.me.id)

@@ -42,6 +42,11 @@ const RADIUS_CHECKBOX: f32 = 4.0;
 const RADIUS_INNER: f32 = RADIUS_MD - 1.0;
 /// How far a disabled filled button fades.
 const BUTTON_DISABLED_ALPHA: f32 = 0.55;
+/// A colour's tint behind a pill, like the `_soft` tokens.
+const SOFT_ALPHA: f32 = 0.12;
+/// The tint of a chosen row, lighter than a selected one.
+const CHOSEN_ALPHA: f32 = 0.06;
+const RADIO_CHOSEN_BORDER: f32 = 5.0;
 
 /// The system's UI font, by name: the generic sans-serif family resolves to a font that exists
 /// nowhere but on some Linux systems, and elsewhere each weight falls back to a font of its own.
@@ -744,4 +749,79 @@ pub fn pill(on: bool) -> impl Fn(&Theme) -> container::Style {
 /// No colours of its own, where a function has to pick between styles.
 pub fn plain(_theme: &Theme) -> container::Style {
     container::Style::default()
+}
+
+/// How strongly a state stands out, from the accent of something under way to the muted grey of
+/// something that is over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    Accent,
+    Muted,
+    Success,
+    Danger,
+}
+
+/// A short state in the colours of `tone`.
+pub fn tone_pill(tone: Tone) -> impl Fn(&Theme) -> container::Style {
+    move |theme| {
+        let t = tokens(theme);
+        let (background, color) = match tone {
+            Tone::Accent => (t.accent_soft, t.accent),
+            Tone::Muted => (t.surface_hover, t.muted),
+            Tone::Success => (t.success.scale_alpha(SOFT_ALPHA), t.success),
+            Tone::Danger => (t.danger_soft, t.danger),
+        };
+        container::Style {
+            background: Some(background.into()),
+            text_color: Some(color),
+            border: Border::default().rounded(f32::MAX),
+            ..container::Style::default()
+        }
+    }
+}
+
+/// The mark of a choice among several: a ring, thickened in the accent colour when chosen.
+pub fn radio(selected: bool) -> impl Fn(&Theme) -> container::Style {
+    move |theme| {
+        let t = tokens(theme);
+        let (color, width) = if selected {
+            (t.accent, RADIO_CHOSEN_BORDER)
+        } else {
+            (t.border_strong, CHECKBOX_BORDER)
+        };
+        container::Style {
+            background: Some(t.surface.into()),
+            border: Border {
+                color,
+                width,
+                radius: Radius::from(f32::MAX),
+            },
+            ..container::Style::default()
+        }
+    }
+}
+
+/// A choice in a list, tinted while it is the one chosen.
+pub fn choice(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, status| {
+        let t = tokens(theme);
+        let background = match (selected, status) {
+            (true, _) => Some(t.accent.scale_alpha(CHOSEN_ALPHA)),
+            (false, button::Status::Hovered | button::Status::Pressed) => Some(t.surface_hover),
+            (false, _) => None,
+        };
+        button::Style {
+            background: background.map(Background::Color),
+            text_color: t.text,
+            ..button::Style::default()
+        }
+    }
+}
+
+/// Text in the accent colour, for a container.
+pub fn accent(theme: &Theme) -> container::Style {
+    container::Style {
+        text_color: Some(tokens(theme).accent),
+        ..container::Style::default()
+    }
 }
