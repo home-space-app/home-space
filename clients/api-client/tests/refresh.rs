@@ -151,6 +151,88 @@ async fn restore_rotates_the_saved_refresh_token() {
     );
 }
 
+/// A browser's refresh token stays in its cookie: the client asks for that at sign-in, never
+/// receives the token, and sends none when it refreshes or signs out.
+#[tokio::test]
+async fn a_cookie_session_never_sends_or_holds_the_refresh_token() {
+    let server = MockServer::start().await;
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let listener: TokenListener = {
+        let seen = seen.clone();
+        Arc::new(move |token| {
+            seen.lock().expect("seen").push(token.map(str::to_owned));
+        })
+    };
+    let client = Client::with_listener(server.uri(), listener).with_cookie_session();
+    let access_only = |access: &str| json!({ "access_token": access, "expires_in": 900 });
+    Mock::given(method("POST"))
+        .and(path("/api/v1/auth/login"))
+        .and(body_json(
+            json!({ "username": "alice", "password": "pw", "cookie": true }),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(access_only("old")))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/me"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(me()))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/auth/refresh"))
+        .and(body_json(json!({ "cookie": true })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(access_only("new")))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/auth/logout"))
+        .and(body_json(json!({ "cookie": true })))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    client.login("alice", "pw").await.expect("login");
+    client.refresh_session("old").await.expect("refresh");
+    assert_eq!(client.access_token().as_deref(), Some("new"));
+    client.resume(None).await.expect("resume");
+    client.logout().await.expect("logout");
+
+    let seen = seen.lock().expect("seen");
+    let signed_in = Some(String::new());
+    assert_eq!(
+        *seen,
+        [signed_in.clone(), signed_in.clone(), signed_in, None]
+    );
+}
+
+/// A token saved before the cookie existed is handed to the server once.
+#[tokio::test]
+async fn a_cookie_session_hands_over_a_token_saved_earlier() {
+    let server = MockServer::start().await;
+    let client = Client::new(server.uri()).with_cookie_session();
+    Mock::given(method("POST"))
+        .and(path("/api/v1/auth/refresh"))
+        .and(body_json(
+            json!({ "refresh_token": "saved", "cookie": true }),
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "access_token": "new", "expires_in": 900 })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/me"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(me()))
+        .mount(&server)
+        .await;
+
+    client.resume(Some("saved")).await.expect("resume");
+}
+
 #[tokio::test]
 async fn error_bodies_are_decoded_into_codes() {
     let server = MockServer::start().await;

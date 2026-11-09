@@ -96,6 +96,10 @@ pub enum CoreError {
     /// What was typed as a server address is not an http or https URL.
     #[error("the server address must start with http:// or https://")]
     InvalidServerAddress,
+    /// What was typed is an `http://` address outside the home network, where the password
+    /// would cross the internet unencrypted.
+    #[error("use https:// for a server outside your home network")]
+    UnprotectedServerAddress,
     /// The download was stopped by [`CoreClient::cancel_download`] or by signing out.
     #[error("the download was cancelled")]
     Cancelled,
@@ -747,16 +751,19 @@ pub fn human_size(bytes: i64) -> String {
     format::human_size(bytes)
 }
 
-/// Tidies what was typed as a server address: no surrounding space or trailing slash.
+/// Tidies what was typed as a server address: no surrounding space or trailing slash. Plain
+/// `http://` is accepted only for a server on the home network.
 #[uniffi::export]
 pub fn normalize_server_url(input: String) -> Result<String, CoreError> {
     let trimmed = input.trim().trim_end_matches('/');
     let url = url::Url::parse(trimmed).map_err(|_| CoreError::InvalidServerAddress)?;
     let is_web = matches!(url.scheme(), "http" | "https");
-    if is_web && url.host_str().is_some() {
-        Ok(trimmed.to_owned())
-    } else {
+    if !is_web || url.host_str().is_none() {
         Err(CoreError::InvalidServerAddress)
+    } else if api_client::is_unprotected(trimmed) {
+        Err(CoreError::UnprotectedServerAddress)
+    } else {
+        Ok(trimmed.to_owned())
     }
 }
 
@@ -1132,6 +1139,14 @@ mod tests {
             normalize_server_url("http://10.0.2.2:8080".into()).unwrap(),
             "http://10.0.2.2:8080"
         );
+        assert_eq!(
+            normalize_server_url("http://nas.local:8080/".into()).unwrap(),
+            "http://nas.local:8080"
+        );
+        assert!(matches!(
+            normalize_server_url("http://files.example.com".into()),
+            Err(CoreError::UnprotectedServerAddress)
+        ));
         for input in [
             "",
             "files.example.com",

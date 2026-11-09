@@ -6,6 +6,8 @@ use crate::NodeId;
 
 pub const API_PREFIX: &str = "/api/v1";
 pub const HEALTH: &str = "/api/v1/health";
+/// Everything about signing in lives below this path; the refresh cookie is limited to it.
+pub const AUTH: &str = "/api/v1/auth";
 pub const LOGIN: &str = "/api/v1/auth/login";
 pub const REFRESH: &str = "/api/v1/auth/refresh";
 pub const LOGOUT: &str = "/api/v1/auth/logout";

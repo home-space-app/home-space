@@ -786,6 +786,8 @@ private func signInMessage(for error: Error) -> String {
         "You are not allowed to sign in with this account."
     case .InvalidServerAddress:
         "The server address must start with http:// or https://"
+    case .UnprotectedServerAddress:
+        "Use https:// for a server outside your home network"
     case .Unreachable(let detail):
         "Could not reach the server: \(detail)"
     case .Failed(_, let detail):

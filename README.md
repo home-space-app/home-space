@@ -191,6 +191,21 @@ All node and trash endpoints return 404 for ids owned by someone else. Authentic
 Browsers cannot send that header on a websocket or a plain download link, so `/ws?ticket=` and
 `/files/{id}/content?ticket=` accept a short-lived, single-scope, single-use ticket instead.
 
+The apps send their refresh token in the body of `/auth/refresh` and `/auth/logout` and get the next
+one back the same way. A browser sets `cookie: true` when it signs in (`/auth/login`,
+`/auth/oidc/exchange`): its refresh token then goes into an `HttpOnly`, `SameSite=Strict` cookie
+limited to `/api/v1/auth` and is left out of the response, so no script of the page can read it.
+Requests that use the cookie, and the websocket, are refused with 403 unless their `Origin` is the
+server itself: the `Host` they were sent to, or `HOMESPACE_PUBLIC_URL`. A reverse proxy must
+therefore pass `Host` on unchanged or that variable must be set. All tabs of a browser share the
+cookie; when two refresh at the same moment, the second gets an access token for the same session
+within 10 s instead of ending it.
+
+Every response carries `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+`Referrer-Policy: no-referrer` and a `Content-Security-Policy`: nothing at all for API responses
+(which are also `Cache-Control: no-store`), and for the web client only its own files, with the
+scripts written into its `index.html` allowed by their hashes.
+
 ## Shared protocol
 
 `shared/protocol` holds the wire types (DTOs, events, error codes, route paths) used by the
@@ -201,6 +216,11 @@ server and every client. It has no server dependencies and compiles to WebAssemb
 Rust workspace in `clients/`: `api-client` (typed HTTP client with serialized token refresh,
 shared by every client), `web` (Leptos CSR app), `desktop` (iced) and `mobile-core` (the same
 client for the mobile apps). A CLI is planned.
+
+The desktop and mobile apps refuse to sign in to an `http://` server outside the home network,
+where the password would cross the internet unencrypted. Plain `http://` stays allowed for this
+machine, private and link-local addresses (including the 100.64.0.0/10 range of VPNs such as
+Tailscale) and names only a local network resolves (`nas`, `nas.local`, `files.lan`, `*.ts.net`).
 
 The mobile clients live in `clients/mobile`: an Android app (Jetpack Compose) and an iOS app
 (SwiftUI), both calling the Rust client through `clients/mobile-core` (UniFFI bindings over
@@ -243,7 +263,7 @@ tokens, so the rest of the API works as before. Setting `HOMESPACE_OIDC_ISSUER` 
 
 | Variable | |
 |---|---|
-| `HOMESPACE_PUBLIC_URL` | Address users reach the server at, e.g. `https://files.example.com`. Required. |
+| `HOMESPACE_PUBLIC_URL` | Address users reach the server at, e.g. `https://files.example.com`. Required. (Without single sign-on it is optional, and names the origin the web client is served from when a proxy does not pass `Host` on.) |
 | `HOMESPACE_OIDC_ISSUER` | Issuer URL of the provider. Required. |
 | `HOMESPACE_OIDC_CLIENT_ID`, `HOMESPACE_OIDC_CLIENT_SECRET` | The client registered at the provider. |
 | `HOMESPACE_OIDC_NAME` | Label on the sign-in button (default `Single sign-on`). |
@@ -303,6 +323,9 @@ The signing secret can also come from a file (`HOMESPACE_JWT_SECRET_FILE`, e.g. 
 secret). To rotate it, set the new value and move the old one to `HOMESPACE_JWT_SECRET_PREVIOUS`;
 sessions keep working, and the old value can be removed once access tokens (15 minutes by default)
 signed with it have expired.
+
+Access tokens and tickets are signed with the same secret and each names its kind in a `typ`
+claim, so neither is accepted in place of the other.
 
 Access tokens are only accepted while the session they were issued for exists in the database. A
 session starts after a verified password or provider login and ends on logout, on refresh token

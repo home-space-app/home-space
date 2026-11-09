@@ -19,6 +19,9 @@ use crate::{
 };
 
 const DEFAULT_SERVER: &str = "http://127.0.0.1:8080";
+/// Shown for an `http://` server outside the home network, where the password would cross
+/// the internet unencrypted.
+const UNPROTECTED_SERVER: &str = "Use https:// for a server outside your home network";
 const CARD_WIDTH: f32 = 400.0;
 const CARD_PADDING: f32 = 32.0;
 const FORM_GAP: f32 = 20.0;
@@ -190,6 +193,10 @@ impl State {
                 }
                 Update::Task(Task::none())
             }
+            Message::SignInWithProvider | Message::Submit if self.is_unprotected() => {
+                self.error = Some(UNPROTECTED_SERVER.to_owned());
+                Update::Task(Task::none())
+            }
             Message::SignInWithProvider if self.busy => Update::Task(Task::none()),
             Message::SignInWithProvider => {
                 self.busy = true;
@@ -280,6 +287,8 @@ impl State {
     fn server_state(&self) -> ServerState {
         if self.restoring {
             ServerState::Resuming
+        } else if self.is_unprotected() {
+            ServerState::Unprotected
         } else if let Some(providers) = &self.providers {
             ServerState::Connected(sign_in_methods(providers))
         } else if self.unreachable {
@@ -293,6 +302,12 @@ impl State {
 
     fn server_url(&self) -> String {
         self.server.trim().trim_end_matches('/').to_owned()
+    }
+
+    /// Whether signing in to the server in the field would send the password over the
+    /// internet unencrypted.
+    fn is_unprotected(&self) -> bool {
+        api_client::is_unprotected(&self.server_url())
     }
 
     /// Asks the server how users sign in once the server field stops changing.
@@ -398,7 +413,9 @@ impl State {
         let overlay = row![Icon::Dns.view(ICON_SIZE, Tint::Muted), space::horizontal()]
             .push(match state {
                 ServerState::Connected(_) => Some(Icon::Synced.view(ICON_SIZE, Tint::Success)),
-                ServerState::Unreachable => Some(Icon::Error.view(ICON_SIZE, Tint::Danger)),
+                ServerState::Unreachable | ServerState::Unprotected => {
+                    Some(Icon::Error.view(ICON_SIZE, Tint::Danger))
+                }
                 _ => None,
             })
             .align_y(Alignment::Center)
@@ -440,6 +457,8 @@ enum ServerState {
     Resuming,
     Contacting,
     Unreachable,
+    /// An `http://` address outside the home network; signing in there is refused.
+    Unprotected,
     /// It answered; how users sign in there, in words.
     Connected(String),
 }
@@ -451,6 +470,7 @@ impl ServerState {
             Self::Resuming => Some("Resuming your session…".to_owned()),
             Self::Contacting => Some("Contacting the server…".to_owned()),
             Self::Unreachable => Some("Could not reach the server".to_owned()),
+            Self::Unprotected => Some(UNPROTECTED_SERVER.to_owned()),
             Self::Connected(methods) => Some(methods.clone()),
         }
     }
@@ -721,6 +741,24 @@ mod tests {
         let _ = state.update(Message::ServerChanged("http://other.local".to_owned()));
 
         assert_eq!(state.providers, None);
+    }
+
+    #[test]
+    fn signing_in_over_http_across_the_internet_is_refused() {
+        let mut state = State::default();
+        let _ = state.update(Message::ServerChanged(
+            "http://files.example.com".to_owned(),
+        ));
+
+        let _ = state.update(Message::Submit);
+
+        assert_eq!(state.server_state(), ServerState::Unprotected);
+        assert_eq!(
+            (state.busy, state.error.as_deref()),
+            (false, Some(UNPROTECTED_SERVER))
+        );
+        let _ = state.update(Message::ServerChanged("http://nas.local:8080".to_owned()));
+        assert_ne!(state.server_state(), ServerState::Unprotected);
     }
 
     #[test]

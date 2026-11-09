@@ -25,6 +25,7 @@ const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Called with the new refresh token after every rotation, or `None` once the session ends.
+/// With a [cookie session](Client::with_cookie_session) the token is empty: the browser has it.
 pub type TokenListener = Arc<dyn Fn(Option<&str>) + Send + Sync>;
 
 /// Client for one server; cheap to clone, clones share the session.
@@ -34,6 +35,7 @@ pub struct Client {
     base_url: String,
     shared: Arc<Shared>,
     device: Option<DeviceInfo>,
+    cookie_session: bool,
 }
 
 impl std::fmt::Debug for Client {
@@ -73,7 +75,15 @@ impl Client {
                 listener,
             }),
             device: None,
+            cookie_session: false,
         }
+    }
+
+    /// The client of a browser: the server keeps the refresh token in a cookie that scripts
+    /// cannot read, so this client never holds it and the session is shared by all tabs.
+    pub fn with_cookie_session(mut self) -> Self {
+        self.cookie_session = true;
+        self
     }
 
     /// The client signing in as `device`, which the server then lists among the user's
@@ -144,7 +154,7 @@ impl Client {
         let _gate = self.shared.refresh_gate.lock().await;
         let current = self.session().ok_or(ApiError::Unauthorized)?;
         if current.access_token == stale_access_token {
-            self.rotate(&current.refresh_token).await
+            self.rotate(self.held_token(&current)).await
         } else {
             Ok(())
         }
@@ -156,6 +166,7 @@ impl Client {
             username: username.to_owned(),
             password: password.to_owned(),
             device: self.device.clone(),
+            cookie: self.cookie_session,
         };
         let response = self
             .http
@@ -195,6 +206,7 @@ impl Client {
             code: code.to_owned(),
             code_verifier: pkce.verifier().to_owned(),
             device: self.device.clone(),
+            cookie: self.cookie_session,
         };
         let response = self
             .http
@@ -209,9 +221,16 @@ impl Client {
 
     /// Resumes a session from a saved refresh token.
     pub async fn restore(&self, refresh_token: &str) -> Result<Me, ApiError> {
+        self.resume(Some(refresh_token)).await
+    }
+
+    /// Resumes a [cookie session](Self::with_cookie_session) from the browser's cookie.
+    /// `saved_token` is a refresh token the browser still holds from before the cookie
+    /// existed; the server moves it into the cookie.
+    pub async fn resume(&self, saved_token: Option<&str>) -> Result<Me, ApiError> {
         {
             let _gate = self.shared.refresh_gate.lock().await;
-            self.rotate(refresh_token).await?;
+            self.rotate(saved_token).await?;
         }
         self.signed_in().await
     }
@@ -222,7 +241,8 @@ impl Client {
         self.clear();
         if let Some(session) = session {
             let request = RefreshRequest {
-                refresh_token: session.refresh_token,
+                refresh_token: self.held_token(&session).map(str::to_owned),
+                cookie: self.cookie_session,
             };
             let response = self
                 .http
@@ -570,9 +590,15 @@ impl Client {
         }
     }
 
-    async fn rotate(&self, refresh_token: &str) -> Result<(), ApiError> {
+    /// The refresh token to send for `session`: none when the browser's cookie carries it.
+    fn held_token<'a>(&self, session: &'a TokenPair) -> Option<&'a str> {
+        (!self.cookie_session).then_some(session.refresh_token.as_str())
+    }
+
+    async fn rotate(&self, refresh_token: Option<&str>) -> Result<(), ApiError> {
         let request = RefreshRequest {
-            refresh_token: refresh_token.to_owned(),
+            refresh_token: refresh_token.map(str::to_owned),
+            cookie: self.cookie_session,
         };
         let response = self
             .http

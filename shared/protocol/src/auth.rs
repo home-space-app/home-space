@@ -10,6 +10,10 @@ pub struct LoginRequest {
     /// The device signing in; older clients leave it out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<DeviceInfo>,
+    /// Set by a browser: the server then keeps the refresh token in a cookie that scripts
+    /// cannot read, and leaves it out of the response.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cookie: bool,
 }
 
 /// `POST /me/password`: a signed-in user replaces their own password.
@@ -20,15 +24,22 @@ pub struct ChangePasswordRequest {
 }
 
 /// Refresh token submitted to rotate a session or log out.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RefreshRequest {
-    pub refresh_token: String,
+    /// Left out by a browser whose token is in the cookie.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+    /// Set by a browser: the next refresh token goes into the cookie, not the response.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cookie: bool,
 }
 
 /// Access and refresh token returned on login and refresh.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenPair {
     pub access_token: String,
+    /// Empty when the server keeps it in a cookie instead (see [`LoginRequest::cookie`]).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub refresh_token: String,
     pub expires_in: i64,
 }
@@ -92,4 +103,8 @@ pub struct OidcExchangeRequest {
     /// The device signing in; older clients leave it out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<DeviceInfo>,
+    /// Set by a browser: the server then keeps the refresh token in a cookie that scripts
+    /// cannot read, and leaves it out of the response.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cookie: bool,
 }

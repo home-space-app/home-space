@@ -11,6 +11,10 @@ use crate::AuthError;
 
 const REFRESH_TOKEN_BYTES: usize = 32;
 const KEY_ID_BYTES: usize = 6;
+/// The `typ` claim of an access token and of a ticket. Both are signed with the same key, so
+/// each names what it is and is refused when presented as the other.
+const TYPE_ACCESS: &str = "access";
+const TYPE_TICKET: &str = "ticket";
 
 /// Signing keys: tokens are signed with the current secret and verified against the current
 /// and any previous secrets, so the secret can be rotated without ending sessions.
@@ -62,17 +66,28 @@ impl Keys {
     }
 }
 
-/// Claims carried by an access token.
-///
-/// Unknown claims are rejected so a ticket can never pass as an access token.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// Whom an access token was issued to.
+#[derive(Clone, Copy, Debug)]
 pub struct Claims {
     pub sub: UserId,
     /// The session this token belongs to; it is only valid while that session exists.
     pub sid: Uuid,
     pub iat: i64,
     pub exp: i64,
+}
+
+/// Claims carried by an access token.
+///
+/// Unknown claims are rejected as well as a wrong `typ`, so a ticket has two reasons not to
+/// pass as an access token.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AccessClaims {
+    typ: String,
+    sub: UserId,
+    sid: Uuid,
+    iat: i64,
+    exp: i64,
 }
 
 /// Signs an access token for `user_id` valid for `ttl`.
@@ -83,7 +98,8 @@ pub fn encode_access(
     ttl: Duration,
 ) -> Result<String, AuthError> {
     let now = OffsetDateTime::now_utc();
-    let claims = Claims {
+    let claims = AccessClaims {
+        typ: TYPE_ACCESS.to_owned(),
         sub: user_id,
         sid: session_id,
         iat: now.unix_timestamp(),
@@ -103,13 +119,24 @@ pub fn decode_access(keys: &Keys, token: &str) -> Result<Claims, AuthError> {
         ..Validation::default()
     };
     let secret = keys.secret_for(token)?;
-    decode::<Claims>(token, &DecodingKey::from_secret(secret), &validation)
+    let claims = decode::<AccessClaims>(token, &DecodingKey::from_secret(secret), &validation)
         .map(|data| data.claims)
-        .map_err(|_| AuthError::InvalidCredentials)
+        .map_err(|_| AuthError::InvalidCredentials)?;
+    if claims.typ == TYPE_ACCESS {
+        Ok(Claims {
+            sub: claims.sub,
+            sid: claims.sid,
+            iat: claims.iat,
+            exp: claims.exp,
+        })
+    } else {
+        Err(AuthError::InvalidCredentials)
+    }
 }
 
 #[derive(Serialize, Deserialize)]
 struct TicketClaims {
+    typ: String,
     sub: UserId,
     sid: Uuid,
     iat: i64,
@@ -129,6 +156,7 @@ pub fn encode_ticket(
 ) -> Result<String, AuthError> {
     let now = OffsetDateTime::now_utc();
     let claims = TicketClaims {
+        typ: TYPE_TICKET.to_owned(),
         sub: user_id,
         sid: session_id,
         iat: now.unix_timestamp(),
@@ -164,7 +192,7 @@ pub fn decode_ticket(keys: &Keys, token: &str, scope: &str) -> Result<TicketGran
     let claims = decode::<TicketClaims>(token, &DecodingKey::from_secret(secret), &validation)
         .map(|data| data.claims)
         .map_err(|_| AuthError::InvalidCredentials)?;
-    if claims.tkt == scope {
+    if claims.typ == TYPE_TICKET && claims.tkt == scope {
         Ok(TicketGrant {
             user_id: claims.sub,
             session_id: claims.sid,
@@ -337,6 +365,43 @@ mod tests {
         )
         .expect("encode");
         assert!(decode_ticket(&keys(SECRET), &token, "events").is_err());
+    }
+
+    /// A token shaped exactly like an access token is still refused under another `typ`.
+    #[test]
+    fn access_token_of_another_type_is_rejected() {
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+        let k = keys(SECRET);
+        for typ in [TYPE_TICKET, ""] {
+            let claims = AccessClaims {
+                typ: typ.to_owned(),
+                sub: UserId::new(),
+                sid: Uuid::now_v7(),
+                iat: now,
+                exp: now + 300,
+            };
+            let token = encode(&k.header(), &claims, &EncodingKey::from_secret(&k.current))
+                .expect("encode");
+            assert!(decode_access(&k, &token).is_err(), "{typ:?}");
+        }
+    }
+
+    #[test]
+    fn ticket_of_another_type_is_rejected() {
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+        let k = keys(SECRET);
+        let claims = TicketClaims {
+            typ: TYPE_ACCESS.to_owned(),
+            sub: UserId::new(),
+            sid: Uuid::now_v7(),
+            iat: now,
+            exp: now + 30,
+            tkt: "events".to_owned(),
+            jti: Uuid::now_v7(),
+        };
+        let token =
+            encode(&k.header(), &claims, &EncodingKey::from_secret(&k.current)).expect("encode");
+        assert!(decode_ticket(&k, &token, "events").is_err());
     }
 
     #[test]
