@@ -27,6 +27,18 @@ pub enum FilesError {
     /// A chunk of a resumable upload does not start where the received bytes end.
     #[error("upload has {current} bytes; the chunk must start there")]
     OffsetMismatch { current: u64 },
+    /// The caller may not send to that device.
+    #[error("the device cannot receive files from you")]
+    Forbidden,
+    /// The transfer was declined, cancelled, downloaded or saved, or has expired.
+    #[error("the transfer is no longer available")]
+    Gone,
+    /// The transfer's files are still being uploaded.
+    #[error("the transfer is not ready yet")]
+    NotReady,
+    /// The manifest of a transfer is not acceptable.
+    #[error("{0}")]
+    InvalidTransfer(String),
     #[error("storage error: {0}")]
     Io(#[from] std::io::Error),
     #[error(transparent)]

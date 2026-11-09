@@ -31,6 +31,11 @@ pub const WS: &str = "/api/v1/ws";
 pub const TICKET_PARAM: &str = "ticket";
 pub const UPLOADS: &str = "/api/v1/uploads";
 pub const DEVICES: &str = "/api/v1/devices";
+pub const DEVICE_TARGETS: &str = "/api/v1/devices/targets";
+pub const USERS: &str = "/api/v1/users";
+pub const TRANSFERS: &str = "/api/v1/transfers";
+pub const TRANSFERS_INCOMING: &str = "/api/v1/transfers/incoming";
+pub const TRANSFERS_OUTGOING: &str = "/api/v1/transfers/outgoing";
 pub const CAPABILITIES: &str = "/api/v1/capabilities";
 pub const STORAGE: &str = "/api/v1/storage";
 pub const ADMIN_STATUS: &str = "/api/v1/admin/status";
@@ -44,6 +49,30 @@ pub fn upload(id: uuid::Uuid) -> String {
 
 pub fn device(id: uuid::Uuid) -> String {
     format!("{DEVICES}/{id}")
+}
+
+pub fn device_visibility(id: uuid::Uuid) -> String {
+    format!("{DEVICES}/{id}/visibility")
+}
+
+pub fn transfer(id: uuid::Uuid) -> String {
+    format!("{TRANSFERS}/{id}")
+}
+
+pub fn transfer_item_content(id: uuid::Uuid, item: uuid::Uuid) -> String {
+    format!("{TRANSFERS}/{id}/items/{item}/content")
+}
+
+pub fn transfer_decline(id: uuid::Uuid) -> String {
+    format!("{TRANSFERS}/{id}/decline")
+}
+
+pub fn transfer_received(id: uuid::Uuid) -> String {
+    format!("{TRANSFERS}/{id}/received")
+}
+
+pub fn transfer_save(id: uuid::Uuid) -> String {
+    format!("{TRANSFERS}/{id}/save")
 }
 
 pub fn node(id: NodeId) -> String {

@@ -50,6 +50,11 @@ pub struct CreateUpload {
     /// when `node_id` is set.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_upload: bool,
+    /// The item of a transfer whose bytes this is (see `POST /transfers`). `parent_id`,
+    /// `node_id`, `keep_both`, `version_of` and `auto_upload` are then ignored, and `size`
+    /// must match the item's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_item_id: Option<Uuid>,
 }
 
 /// An upload in progress, returned by `POST /uploads` and `GET /uploads/{id}`.
@@ -94,6 +99,9 @@ pub struct UploadInfo {
     /// The device that started it; `None` for one started before devices were known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<Uuid>,
+    /// The transfer item it uploads, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_item_id: Option<Uuid>,
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }

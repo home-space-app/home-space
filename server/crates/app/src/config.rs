@@ -63,6 +63,15 @@ pub struct Config {
     #[arg(long, env = "HOMESPACE_UPLOAD_EXPIRY_HOURS", default_value_t = 24)]
     pub upload_expiry_hours: u64,
 
+    /// How long files sent to a device are kept, whether they were received or not.
+    #[arg(long, env = "HOMESPACE_TRANSFER_TTL_HOURS", default_value_t = 24)]
+    pub transfer_ttl_hours: u64,
+
+    /// The most bytes one transfer to a device may hold; unset for no limit beyond
+    /// `HOMESPACE_MAX_UPLOAD_BYTES` per file.
+    #[arg(long, env = "HOMESPACE_MAX_TRANSFER_BYTES")]
+    pub max_transfer_bytes: Option<u64>,
+
     #[arg(long, env = "HOMESPACE_ACCESS_TTL_SECS", default_value_t = 900)]
     pub access_ttl_secs: i64,
 
@@ -122,6 +131,10 @@ pub struct Config {
 impl Config {
     /// Rejects settings that would make the server insecure.
     pub fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.transfer_ttl_hours > 0,
+            "HOMESPACE_TRANSFER_TTL_HOURS must be at least 1"
+        );
         self.jwt_secrets()
             .map(drop)
             .context("invalid configuration")?;
@@ -173,6 +186,8 @@ impl Config {
             max_upload_bytes: self.max_upload_bytes,
             upload_chunk_bytes: self.upload_chunk_bytes,
             upload_expiry_hours: self.upload_expiry_hours,
+            transfer_ttl_hours: self.transfer_ttl_hours,
+            max_transfer_bytes: self.max_transfer_bytes,
             changes_retention_days: self.changes_retention_days,
             password_login: self.password_login,
             oidc,

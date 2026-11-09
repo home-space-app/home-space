@@ -125,6 +125,8 @@ mod tests {
             online: false,
             current: false,
             uploads,
+            visibility: Default::default(),
+            visible_to: Vec::new(),
         }
     }
 

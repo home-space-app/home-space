@@ -162,7 +162,10 @@ impl Mirror {
                 .get(&node.id)
                 .is_some_and(|held| *held == RemoteNode::from(node.clone())),
             Event::NodeDeleted { id, .. } => !self.nodes.contains_key(id),
-            Event::TrashChanged | Event::DevicesChanged => true,
+            Event::TrashChanged
+            | Event::DevicesChanged
+            | Event::TransferReceived { .. }
+            | Event::TransferChanged { .. } => true,
             Event::Resync => false,
         }
     }

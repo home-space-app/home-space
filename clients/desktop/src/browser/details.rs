@@ -410,6 +410,8 @@ mod tests {
             online: false,
             current: false,
             uploads: 0,
+            visibility: Default::default(),
+            visible_to: Vec::new(),
         }
     }
 

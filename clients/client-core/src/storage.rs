@@ -166,7 +166,11 @@ impl UserSort {
             } else {
                 size(a).cmp(&size(b))
             };
-            let order = if self.descending { order.reverse() } else { order };
+            let order = if self.descending {
+                order.reverse()
+            } else {
+                order
+            };
             order.then_with(by_name)
         });
     }
@@ -291,7 +295,9 @@ mod tests {
         sort.toggle(UserColumn::Storage).apply(&mut users);
         assert_eq!(names(&users), ["cy", "Al", "bea"]);
 
-        UserSort::default().toggle(UserColumn::Trash).apply(&mut users);
+        UserSort::default()
+            .toggle(UserColumn::Trash)
+            .apply(&mut users);
         assert_eq!(names(&users), ["Al", "cy", "bea"]);
 
         let by_name = UserSort::default().toggle(UserColumn::Name);
@@ -303,7 +309,9 @@ mod tests {
     #[test]
     fn equal_sizes_fall_back_to_the_name() {
         let mut users = vec![named("b", 1, 0, 0), named("a", 1, 0, 0)];
-        UserSort::default().toggle(UserColumn::Files).apply(&mut users);
+        UserSort::default()
+            .toggle(UserColumn::Files)
+            .apply(&mut users);
         assert_eq!(names(&users), ["a", "b"]);
     }
 }

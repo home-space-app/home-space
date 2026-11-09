@@ -53,24 +53,30 @@ impl ApiError {
             Self::Unauthorized | Self::Auth(AuthError::InvalidCredentials) => {
                 (StatusCode::UNAUTHORIZED, ErrorCode::Unauthorized)
             }
-            Self::Forbidden => (StatusCode::FORBIDDEN, ErrorCode::Forbidden),
+            Self::Forbidden | Self::Files(FilesError::Forbidden) => {
+                (StatusCode::FORBIDDEN, ErrorCode::Forbidden)
+            }
             Self::Auth(AuthError::UsernameTaken) => (StatusCode::CONFLICT, ErrorCode::Conflict),
             Self::Auth(
                 AuthError::InvalidInput(_) | AuthError::WrongPassword | AuthError::NoPassword,
-            ) => {
-                (StatusCode::BAD_REQUEST, ErrorCode::BadRequest)
-            }
+            ) => (StatusCode::BAD_REQUEST, ErrorCode::BadRequest),
             Self::NotFound
             | Self::Auth(AuthError::OidcDisabled)
             | Self::Files(FilesError::NotFound) => (StatusCode::NOT_FOUND, ErrorCode::NotFound),
             Self::Files(
-                FilesError::Conflict | FilesError::LostAndFound | FilesError::OffsetMismatch { .. },
+                FilesError::Conflict
+                | FilesError::LostAndFound
+                | FilesError::OffsetMismatch { .. }
+                | FilesError::NotReady,
             ) => (StatusCode::CONFLICT, ErrorCode::Conflict),
             Self::BadRequest(_)
-            | Self::Files(FilesError::InvalidName | FilesError::Cycle | FilesError::NotAFile) => {
-                (StatusCode::BAD_REQUEST, ErrorCode::BadRequest)
-            }
-            Self::Gone => (StatusCode::GONE, ErrorCode::Gone),
+            | Self::Files(
+                FilesError::InvalidName
+                | FilesError::Cycle
+                | FilesError::NotAFile
+                | FilesError::InvalidTransfer(_),
+            ) => (StatusCode::BAD_REQUEST, ErrorCode::BadRequest),
+            Self::Gone | Self::Files(FilesError::Gone) => (StatusCode::GONE, ErrorCode::Gone),
             Self::Auth(AuthError::TooManyAttempts { .. }) => {
                 (StatusCode::TOO_MANY_REQUESTS, ErrorCode::TooManyRequests)
             }

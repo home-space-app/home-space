@@ -6,8 +6,10 @@ mod devices;
 mod nodes;
 mod search;
 mod storage;
+mod transfers;
 mod trash;
 mod uploads;
+mod users;
 mod ws;
 
 use axum::{Json, Router, routing::get};
@@ -25,7 +27,9 @@ pub fn routes() -> Router<AppState> {
         .merge(devices::routes())
         .merge(nodes::routes())
         .merge(trash::routes())
+        .merge(transfers::routes())
         .merge(uploads::routes())
+        .merge(users::routes())
         .merge(search::routes())
         .merge(storage::routes())
         .merge(ws::routes())

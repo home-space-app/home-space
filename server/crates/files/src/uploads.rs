@@ -19,6 +19,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use db::{NewContent, NewUpload, NodeId, NodeKind, StoreOptions, StoreOutcome, Upload, UserId};
+use protocol::TransferState;
 
 use crate::{FileService, FilesError, service::new_content};
 
@@ -34,6 +35,8 @@ pub enum UploadTarget {
     },
     /// New content for an existing file, stored like [`FileService::replace_content`].
     Replace(NodeId),
+    /// The bytes of a file of a transfer the caller is sending.
+    TransferItem(Uuid),
 }
 
 /// Where an upload stands.
@@ -51,6 +54,12 @@ pub enum ChunkOutcome {
     Partial { offset: u64 },
     /// The last chunk arrived and the file was stored.
     Complete(StoreOutcome),
+    /// The last chunk of a transfer's file arrived (`size` bytes in all); `ready` is the
+    /// transfer when it was its last missing file.
+    Transferred {
+        size: u64,
+        ready: Option<db::Transfer>,
+    },
 }
 
 /// The running hash of an upload's received bytes.
@@ -85,7 +94,7 @@ impl Uploads {
         slots.insert(id, Arc::new(tokio::sync::Mutex::new(hashing)));
     }
 
-    fn remove(&self, id: Uuid) {
+    pub(crate) fn remove(&self, id: Uuid) {
         let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
         slots.remove(&id);
     }
@@ -113,6 +122,7 @@ impl FileService {
                 limit: self.max_upload_bytes,
             });
         }
+        let mut transfer_item_id = None;
         let (parent_id, node_id, name, options) = match target {
             UploadTarget::New {
                 parent,
@@ -131,6 +141,29 @@ impl FileService {
                 }
                 (None, Some(id), current.name, StoreOptions::default())
             }
+            UploadTarget::TransferItem(item_id) => {
+                let (transfer, item) = self.db.sent_transfer_item(owner, item_id).await?;
+                if transfer.state != TransferState::Uploading {
+                    return Err(FilesError::Gone);
+                }
+                if item.kind != NodeKind::File || item.sha256.is_some() {
+                    return Err(FilesError::Conflict);
+                }
+                if u64::try_from(item.size).ok() != Some(size) {
+                    return Err(FilesError::InvalidTransfer(format!(
+                        "the item has {} bytes, not {size}",
+                        item.size
+                    )));
+                }
+                transfer_item_id = Some(item_id);
+                let name = item
+                    .path
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&item.path)
+                    .to_owned();
+                (None, None, name, StoreOptions::default())
+            }
         };
         let id = Uuid::now_v7();
         let new = NewUpload {
@@ -145,6 +178,7 @@ impl FileService {
             keep_both: options.keep_both,
             version_of: options.version_of,
             auto_upload: options.auto_upload,
+            transfer_item_id,
         };
         self.db.create_upload(owner, new).await?;
         if let Err(err) = self.store.create_partial(id).await {
@@ -225,10 +259,19 @@ impl FileService {
             Some(state) => state.hasher.finalize().to_vec(),
             None => self.store.hash_partial(id).await?.finalize().to_vec(),
         };
-        let stored = self.finish_upload(owner, &upload, len, sha256).await;
+        let stored = match upload.transfer_item_id {
+            Some(item) => self
+                .finish_transfer_upload(owner, &upload, item, sha256)
+                .await
+                .map(|ready| ChunkOutcome::Transferred { size: len, ready }),
+            None => self
+                .finish_upload(owner, &upload, len, sha256)
+                .await
+                .map(ChunkOutcome::Complete),
+        };
         drop(hashing);
         self.forget_upload(id).await;
-        stored.map(ChunkOutcome::Complete)
+        stored
     }
 
     /// Abandons an upload and the bytes it has received.
@@ -330,6 +373,38 @@ impl FileService {
         self.finish_store(owner, staged, stored).await
     }
 
+    async fn finish_transfer_upload(
+        &self,
+        owner: UserId,
+        upload: &Upload,
+        item: Uuid,
+        sha256: Vec<u8>,
+    ) -> Result<Option<db::Transfer>, FilesError> {
+        let (transfer, _) = self.db.sent_transfer_item(owner, item).await?;
+        if transfer.state != TransferState::Uploading {
+            return Err(FilesError::Gone);
+        }
+        self.store
+            .commit_into_transfer(upload.id, transfer.id, item)
+            .await?;
+        match self.db.store_transfer_item(item, &sha256).await {
+            Ok(ready) => Ok(ready),
+            Err(db::DbError::NotFound) => {
+                // Cancelled or expired meanwhile.
+                self.remove_transfer_files(transfer.id).await;
+                Err(FilesError::Gone)
+            }
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    /// Ends an upload once any chunk being written to it is done, whoever owns it.
+    pub(crate) async fn abandon_upload(&self, id: Uuid) {
+        let slot = self.uploads.slot(id);
+        let _guard = slot.lock().await;
+        self.forget_upload(id).await;
+    }
+
     async fn forget_upload(&self, id: Uuid) {
         self.uploads.remove(id);
         if let Err(err) = self.db.delete_upload(id).await {
@@ -416,6 +491,7 @@ mod tests {
         match outcome {
             ChunkOutcome::Complete(stored) => stored.into_node(),
             ChunkOutcome::Partial { offset } => panic!("still partial at {offset}"),
+            ChunkOutcome::Transferred { .. } => panic!("stored into a transfer"),
         }
     }
 

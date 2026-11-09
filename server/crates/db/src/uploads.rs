@@ -23,6 +23,8 @@ pub struct Upload {
     pub version_of: Option<NodeId>,
     /// Record the device as the file's source.
     pub auto_upload: bool,
+    /// The transfer item the upload brings the bytes of, instead of a file in the tree.
+    pub transfer_item_id: Option<Uuid>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -41,12 +43,13 @@ pub struct NewUpload {
     pub keep_both: bool,
     pub version_of: Option<NodeId>,
     pub auto_upload: bool,
+    pub transfer_item_id: Option<Uuid>,
 }
 
 macro_rules! upload_columns {
     () => {
         "id, owner_id, parent_id, node_id, name, size, mime, modified_at, device_id, keep_both, \
-         version_of, auto_upload, created_at, updated_at"
+         version_of, auto_upload, transfer_item_id, created_at, updated_at"
     };
 }
 
@@ -56,8 +59,8 @@ impl Db {
         let upload = sqlx::query_as::<_, Upload>(concat!(
             "INSERT INTO uploads \
              (id, owner_id, parent_id, node_id, name, size, mime, modified_at, device_id, \
-              keep_both, version_of, auto_upload) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING ",
+              keep_both, version_of, auto_upload, transfer_item_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING ",
             upload_columns!()
         ))
         .bind(new.id)
@@ -72,6 +75,7 @@ impl Db {
         .bind(new.keep_both)
         .bind(new.version_of)
         .bind(new.auto_upload)
+        .bind(new.transfer_item_id)
         .fetch_one(self.pool())
         .await?;
         Ok(upload)
@@ -164,6 +168,7 @@ mod tests {
             keep_both: false,
             version_of: None,
             auto_upload: false,
+            transfer_item_id: None,
         }
     }
 

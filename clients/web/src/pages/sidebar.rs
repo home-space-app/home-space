@@ -248,7 +248,11 @@ fn AccountMenu(auth: Auth) -> impl IntoView {
             value.and_then(|value| value.as_f64()).unwrap_or_default()
         };
         let viewport_width = size(window.as_ref().and_then(|window| window.inner_width().ok()));
-        let viewport_height = size(window.as_ref().and_then(|window| window.inner_height().ok()));
+        let viewport_height = size(
+            window
+                .as_ref()
+                .and_then(|window| window.inner_height().ok()),
+        );
         let place = menu_placement(
             Rect {
                 left: rect.left(),

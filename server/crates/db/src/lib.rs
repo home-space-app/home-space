@@ -25,13 +25,14 @@ mod refresh_tokens;
 mod search;
 mod sessions;
 mod storage;
+mod transfers;
 mod trash;
 mod uploads;
 mod users;
 mod versions;
 
 pub use changes::{ChangeBatch, NodeChange};
-pub use devices::{Device, NewDevice};
+pub use devices::{Device, NewDevice, TargetDevice};
 pub use error::DbError;
 pub use models::{FileVersion, Node, RefreshToken, User};
 pub use nodes::{
@@ -44,6 +45,7 @@ pub use search::{ContentState, RankedNode};
 pub use sessions::LiveSession;
 pub use sqlx::PgPool;
 pub use storage::{DatabaseInfo, StorageUsage, UserStorage};
+pub use transfers::{ExpiredTransfer, NewTransfer, SubtreeNode, Transfer, TransferItem};
 pub use trash::{LOST_AND_FOUND, SpecialFolders, TrashOutcome, TrashedNode};
 pub use uploads::{NewUpload, Upload};
 

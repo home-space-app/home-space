@@ -119,7 +119,11 @@ async fn serve(db: Db, config: &Config) -> Result<()> {
     let state = AppState {
         auth,
         files: FileService::new(db.clone(), store, config.max_upload_bytes)
-            .with_chunk_bytes(config.upload_chunk_bytes),
+            .with_chunk_bytes(config.upload_chunk_bytes)
+            .with_transfers(
+                std::time::Duration::from_secs(config.transfer_ttl_hours.saturating_mul(3600)),
+                config.max_transfer_bytes,
+            ),
         hub: Hub::new(),
         search: search.clone(),
         info: std::sync::Arc::new(ServerInfo {
@@ -148,6 +152,7 @@ async fn serve(db: Db, config: &Config) -> Result<()> {
         state.files.clone(),
         std::time::Duration::from_secs(config.upload_expiry_hours.saturating_mul(3600)),
     ));
+    tokio::spawn(expire_transfers(state.files.clone(), state.hub.clone()));
     let listener = tokio::net::TcpListener::bind(config.bind)
         .await
         .with_context(|| format!("binding {}", config.bind))?;
@@ -214,6 +219,26 @@ async fn expire_uploads(files: FileService, expiry: std::time::Duration) {
             Ok(0) => {}
             Ok(removed) => tracing::info!(removed, "expired unfinished uploads"),
             Err(err) => tracing::error!(error = %err, "expiring unfinished uploads failed"),
+        }
+    }
+}
+
+/// Removes transfers to devices whose time ran out and tells both sides, once at start and
+/// then hourly.
+async fn expire_transfers(files: FileService, hub: Hub) {
+    let mut hourly = tokio::time::interval(std::time::Duration::from_secs(3600));
+    loop {
+        hourly.tick().await;
+        match files.expire_transfers().await {
+            Ok(expired) => {
+                if !expired.is_empty() {
+                    tracing::info!(removed = expired.len(), "expired transfers");
+                }
+                for transfer in expired {
+                    api::publish_transfer_expired(&hub, &transfer);
+                }
+            }
+            Err(err) => tracing::error!(error = %err, "expiring transfers failed"),
         }
     }
 }

@@ -57,7 +57,11 @@ pub fn apply_event(nodes: &mut Vec<Node>, folder: Option<NodeId>, event: &Event,
             }
         }
         Event::NodeDeleted { id, .. } => nodes.retain(|existing| existing.id != *id),
-        Event::TrashChanged | Event::DevicesChanged | Event::Resync => {}
+        Event::TrashChanged
+        | Event::DevicesChanged
+        | Event::TransferReceived { .. }
+        | Event::TransferChanged { .. }
+        | Event::Resync => {}
     }
 }
 
@@ -66,9 +70,12 @@ pub fn affects_path(path: &[Node], event: &Event) -> bool {
     match event {
         Event::NodeUpdated { node } => path.iter().any(|folder| folder.id == node.id),
         Event::NodeDeleted { id, .. } => path.iter().any(|folder| folder.id == *id),
-        Event::NodeCreated { .. } | Event::TrashChanged | Event::DevicesChanged | Event::Resync => {
-            false
-        }
+        Event::NodeCreated { .. }
+        | Event::TrashChanged
+        | Event::DevicesChanged
+        | Event::TransferReceived { .. }
+        | Event::TransferChanged { .. }
+        | Event::Resync => false,
     }
 }
 
@@ -87,6 +94,8 @@ pub fn reveals_lost_and_found(
             Event::NodeDeleted { .. }
             | Event::TrashChanged
             | Event::DevicesChanged
+            | Event::TransferReceived { .. }
+            | Event::TransferChanged { .. }
             | Event::Resync => false,
         }
 }

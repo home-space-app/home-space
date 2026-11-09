@@ -9,8 +9,8 @@ use axum::{
     routing::{get, post},
 };
 use protocol::{
-    ChangePasswordRequest, LoginRequest, Me, OidcCallbackQuery, OidcExchangeRequest, OidcStartQuery, Providers,
-    RefreshRequest, TicketRequest, TicketResponse, TokenPair,
+    ChangePasswordRequest, LoginRequest, Me, OidcCallbackQuery, OidcExchangeRequest,
+    OidcStartQuery, Providers, RefreshRequest, TicketRequest, TicketResponse, TokenPair,
 };
 
 use crate::{ApiError, AppState, extract::AuthUser};
@@ -162,6 +162,12 @@ async fn ticket(
     match request {
         TicketRequest::Download { node_id } | TicketRequest::DownloadVersion { node_id, .. } => {
             state.files.get(user.id, node_id).await?;
+        }
+        TicketRequest::TransferItem { transfer_id, .. } => {
+            let (transfer, _) = state.files.transfer(user.id, transfer_id).await?;
+            if transfer.recipient_id != user.id {
+                return Err(ApiError::Forbidden);
+            }
         }
         TicketRequest::Events => {}
     }

@@ -84,6 +84,8 @@ pub async fn setup_with(
                 max_upload_bytes: 1024 * 1024,
                 upload_chunk_bytes: UPLOAD_CHUNK,
                 upload_expiry_hours: 24,
+                transfer_ttl_hours: 24,
+                max_transfer_bytes: None,
                 changes_retention_days: None,
                 password_login: true,
                 oidc: None,
@@ -200,6 +202,40 @@ impl TestApp {
             .as_str()
             .expect("access token")
             .to_owned()
+    }
+
+    /// Signs `username` in from `device` (creating the user if needed), returning the access
+    /// token.
+    pub async fn sign_in_from(&self, username: &str, device: uuid::Uuid, name: &str) -> String {
+        self.state.auth.create_user(username, PASSWORD).await.ok();
+        let response = self
+            .json(
+                Method::POST,
+                "/api/v1/auth/login",
+                None,
+                json!({
+                    "username": username,
+                    "password": PASSWORD,
+                    "device": { "id": device, "name": name, "platform": "desktop-linux" },
+                }),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::OK);
+        response.json()["access_token"]
+            .as_str()
+            .expect("access")
+            .to_owned()
+    }
+
+    /// The id of an existing user.
+    pub async fn user_id(&self, username: &str) -> db::UserId {
+        self.state
+            .db
+            .find_user_by_username(username)
+            .await
+            .expect("lookup")
+            .expect("user")
+            .id
     }
 
     pub async fn upload(&self, token: &str, query: &str, content: &'static str) -> Response {
