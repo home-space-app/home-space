@@ -347,6 +347,12 @@ private struct FolderView: View {
             photos = []
         }
         .task(id: model.reloadKey) { await load() }
+        // Changes from other devices, when they touch this folder.
+        .onChange(of: model.liveChanges) { _, changes in
+            if changes.touches(folder: folderId, entries: entries) {
+                Task { await load() }
+            }
+        }
         .task(id: SearchRequest(text: searchText, reloadKey: model.reloadKey)) { await search() }
         // Updating and failed copies change while the folder is open, with nothing new on the server.
         .onChange(of: ClientHolder.shared.changes.generation) {

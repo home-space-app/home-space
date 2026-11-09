@@ -188,7 +188,7 @@ internal fun SubPageScaffold(
 /** Who is signed in and where, and the user's other devices. */
 @Composable
 private fun ProfileScreen(session: Session.SignedIn, model: SessionViewModel, onBack: () -> Unit) {
-    val devices by produceState<List<UserDevice>?>(null, session.client) {
+    val devices by produceState<List<UserDevice>?>(null, session.client, model.devicesKey) {
         value = try {
             session.client.devices()
         } catch (_: CoreException.Unauthorized) {

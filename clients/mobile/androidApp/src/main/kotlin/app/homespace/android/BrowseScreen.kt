@@ -95,6 +95,7 @@ import uniffi.homespace_core.CoreException
 import uniffi.homespace_core.Entry
 import uniffi.homespace_core.EntryIcon
 import uniffi.homespace_core.EntryKind
+import uniffi.homespace_core.LiveEvent
 import uniffi.homespace_core.OfflineState
 import uniffi.homespace_core.QueuedUpload
 import uniffi.homespace_core.QueuedUploadState
@@ -203,6 +204,22 @@ fun BrowseScreen(
             model.onSessionEnded()
         } catch (e: CoreException) {
             error = e.fileMessage()
+        }
+    }
+
+    // Changes from other devices: reload when they touch the folder on screen, or when some may
+    // have been missed, as after the app was in the background.
+    LaunchedEffect(model) {
+        model.liveEvents.collect { event ->
+            val stale = when (event) {
+                is LiveEvent.Resync -> true
+                is LiveEvent.NodeChanged ->
+                    // The current path, not the one this effect started with.
+                    event.parentId == model.path.lastOrNull()?.id ||
+                        entries.any { it.id == event.id }
+                else -> false
+            }
+            if (stale) model.reloadSoon()
         }
     }
 

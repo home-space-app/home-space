@@ -21,6 +21,8 @@ import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.homespace_core.CoreClient
@@ -29,6 +31,9 @@ import uniffi.homespace_core.DeviceIdentity
 import uniffi.homespace_core.DownloadListener
 import uniffi.homespace_core.Entry
 import uniffi.homespace_core.EntryKind
+import uniffi.homespace_core.EventStream
+import uniffi.homespace_core.EventsListener
+import uniffi.homespace_core.LiveEvent
 import uniffi.homespace_core.QueuedUpload
 import uniffi.homespace_core.SessionListener
 import uniffi.homespace_core.SignInOptions
@@ -38,6 +43,8 @@ import uniffi.homespace_core.normalizeServerUrl
 /** The server on the host machine, as seen from the emulator. */
 private const val DEFAULT_SERVER = "http://10.0.2.2:8080"
 private const val PROBE_DELAY_MILLIS = 600L
+/** How long live changes are gathered before the folder on screen is reloaded once for them. */
+private const val LIVE_RELOAD_DELAY_MILLIS = 300L
 
 sealed interface Session {
     /** Trying a saved session; `error` is set when that failed but the session may still work. */
@@ -108,6 +115,17 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
     var reloadKey by mutableIntStateOf(0)
         private set
 
+    /** The user's devices are reloaded whenever this changes, such as when one comes online. */
+    var devicesKey by mutableIntStateOf(0)
+        private set
+
+    private val _liveEvents = MutableSharedFlow<LiveEvent>(extraBufferCapacity = 64)
+
+    /** What the server pushes while the app is in front, for the screens to pick what to reload. */
+    val liveEvents: SharedFlow<LiveEvent> = _liveEvents
+
+    private var pendingReload: Job? = null
+
     /** A finished download for the screen to open. */
     /** The copy waiting for the user to say whether its unsent edits may go. */
     var removalWarning by mutableStateOf<RemovalWarning?>(null)
@@ -129,6 +147,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
         private set
 
     private var sync: ForegroundSync? = null
+    private var events: EventStream? = null
     private var appInFront = false
 
     // Only the file tapped last opens when it finishes.
@@ -287,6 +306,15 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
 
     fun reload() {
         reloadKey++
+    }
+
+    /** Reloads the folder on screen shortly, once for however many changes arrive meanwhile. */
+    fun reloadSoon() {
+        if (pendingReload?.isActive == true) return
+        pendingReload = viewModelScope.launch {
+            delay(LIVE_RELOAD_DELAY_MILLIS)
+            reload()
+        }
     }
 
     fun onOpened() {
@@ -548,6 +576,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
     // The client stays with `ClientHolder`, for the next activity or background work.
     override fun onCleared() {
         sync?.stop()
+        stopEvents()
     }
 
     /** Called as the app comes to the front and leaves it. */
@@ -557,9 +586,44 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
         if (inFront) {
             clearUploadFailureNotice(getApplication())
             sync?.start()
+            startEvents()
         } else {
             sync?.stop()
+            stopEvents()
         }
+    }
+
+    /**
+     * Opens the live events socket of the signed-in session. Only while the app is in front: in
+     * the background the system cuts the network and the socket would die unnoticed.
+     */
+    private fun startEvents() {
+        val current = session as? Session.SignedIn ?: return
+        if (events != null || !appInFront) return
+        lateinit var stream: EventStream
+        stream = current.client.listenEvents(object : EventsListener {
+            override fun event(event: LiveEvent) {
+                viewModelScope.launch {
+                    if (event is LiveEvent.DevicesChanged || event is LiveEvent.Resync) devicesKey++
+                    _liveEvents.emit(event)
+                }
+            }
+
+            override fun sessionEnded() {
+                viewModelScope.launch {
+                    if (events === stream && session === current) onSessionEnded()
+                }
+            }
+        })
+        events = stream
+    }
+
+    private fun stopEvents() {
+        events?.let {
+            it.stop()
+            it.close()
+        }
+        events = null
     }
 
     /** Tries what can be tried at once, such as after the user asked. */
@@ -568,6 +632,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun endSync() {
+        stopEvents()
         sync?.stop()
         sync = null
         cancelBackgroundSync(getApplication())
@@ -595,6 +660,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
         }.also {
             if (appInFront) it.start()
         }
+        startEvents()
         watchUploads(active)
         runCatching { applyBackgroundSetting(getApplication(), active.autoUpload.settings()) }
     }

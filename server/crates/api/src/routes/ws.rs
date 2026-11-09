@@ -19,14 +19,14 @@ use axum::{
 };
 use tokio::{
     sync::broadcast::{Receiver, error::RecvError},
-    time::{Instant, interval_at},
+    time::{Instant, interval_at, timeout},
 };
 use uuid::Uuid;
 
-use auth::Grant;
+use auth::{AuthError, Grant};
 use db::UserId;
 use notifications::{Event, Presence};
-use protocol::{ClientMessage, TicketRequest};
+use protocol::{ClientMessage, DeviceInfo, TicketRequest};
 
 use crate::{
     ApiError, AppState,
@@ -37,8 +37,14 @@ use crate::{
 const PING_INTERVAL: Duration = Duration::from_secs(15);
 /// How long a client may stay silent, pongs included, before its socket is closed.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(45);
+/// How long one message may take to go out. A client that stops reading would otherwise hold
+/// the socket's loop, and with it the idle, expiry and session checks, for as long as it likes.
+const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 /// Close reason sent when the socket's session has ended.
 const SESSION_ENDED: &str = "session ended";
+/// Close reason sent when the credentials the socket was opened with have expired; the client
+/// reconnects with fresh ones.
+const CREDENTIALS_EXPIRED: &str = "credentials expired";
 
 pub fn routes() -> Router<AppState> {
     Router::new().route("/ws", get(upgrade))
@@ -103,6 +109,8 @@ async fn session(
     let mut online = grant
         .device_id
         .map(|device| (device, state.hub.connect(grant.user_id, device)));
+    // The device a hello named that could not be registered yet; tried again at each ping.
+    let mut unregistered = None;
     let expiry = tokio::time::sleep(lifetime);
     tokio::pin!(expiry);
     let mut ping = interval_at(Instant::now() + PING_INTERVAL, PING_INTERVAL);
@@ -111,7 +119,10 @@ async fn session(
         // Biased, so that a session that ended is noticed before any further event is sent.
         let outgoing = tokio::select! {
             biased;
-            () = &mut expiry => break,
+            () = &mut expiry => {
+                close(&mut socket, close_code::AGAIN, CREDENTIALS_EXPIRED).await;
+                break;
+            }
             notice = ended.recv() => {
                 let recheck = match notice {
                     Ok(user) => user == grant.user_id,
@@ -134,6 +145,9 @@ async fn session(
                     close_ended(&mut socket).await;
                     break;
                 }
+                if online.is_none() {
+                    online = register(&state, &grant, &mut unregistered).await;
+                }
                 Some(Message::Ping(Default::default()))
             }
             event = events.recv() => match event {
@@ -149,15 +163,21 @@ async fn session(
                     heard = Instant::now();
                     if online.is_none()
                         && let Message::Text(text) = &message
+                        && let Ok(ClientMessage::Hello { device }) =
+                            serde_json::from_str(text.as_str())
                     {
-                        online = greet(&state, &grant, text.as_str()).await;
+                        unregistered = Some(device);
+                        online = register(&state, &grant, &mut unregistered).await;
                     }
                     None
                 }
             },
         };
         if let Some(message) = outgoing
-            && socket.send(message).await.is_err()
+            && !matches!(
+                timeout(SEND_TIMEOUT, socket.send(message)).await,
+                Ok(Ok(()))
+            )
         {
             break;
         }
@@ -178,25 +198,37 @@ async fn still_live(state: &AppState, grant: &Grant) -> bool {
 
 /// Tells the client that its session has ended before the socket closes.
 async fn close_ended(socket: &mut WebSocket) {
-    let frame = CloseFrame {
-        code: close_code::POLICY,
-        reason: SESSION_ENDED.into(),
-    };
-    // The socket closes either way.
-    let _ = socket.send(Message::Close(Some(frame))).await;
+    close(socket, close_code::POLICY, SESSION_ENDED).await;
 }
 
-/// Takes the device a client names in its hello, registering it for a session that names
-/// none, and marks it online. Anything else, or a device that cannot be registered, is
-/// ignored: the socket still delivers events.
-async fn greet(state: &AppState, grant: &Grant, text: &str) -> Option<(Uuid, Presence)> {
-    let Ok(ClientMessage::Hello { device }) = serde_json::from_str(text) else {
-        return None;
+/// Sends a close frame, giving up after [`SEND_TIMEOUT`]: the socket closes either way.
+async fn close(socket: &mut WebSocket, code: u16, reason: &'static str) {
+    let frame = CloseFrame {
+        code,
+        reason: reason.into(),
     };
+    let _ = timeout(SEND_TIMEOUT, socket.send(Message::Close(Some(frame)))).await;
+}
+
+/// Registers the device a client named in its hello, for a session that names none, and marks
+/// it online. Anything other than a hello is ignored: the socket still delivers events. A
+/// failure that may pass, such as the database being unreachable, leaves the device in
+/// `unregistered` to be tried again, so a socket is not left offline for its whole life.
+async fn register(
+    state: &AppState,
+    grant: &Grant,
+    unregistered: &mut Option<DeviceInfo>,
+) -> Option<(Uuid, Presence)> {
+    let device = unregistered.take()?;
     match state.auth.session_device(grant, &device).await {
         Ok(device) => Some((device, state.hub.connect(grant.user_id, device))),
+        Err(err @ AuthError::InvalidInput(_)) => {
+            tracing::warn!(error = %err, "the websocket's hello names an invalid device");
+            None
+        }
         Err(err) => {
-            tracing::warn!(error = %err, "registering the websocket's device failed");
+            tracing::warn!(error = %err, "registering the websocket's device failed, will retry");
+            *unregistered = Some(device);
             None
         }
     }

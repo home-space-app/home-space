@@ -17,6 +17,7 @@ use protocol::{DeviceInfo, NodeId, NodeKind, OnConflict, paths};
 #[cfg(target_os = "android")]
 mod android;
 mod autoupload;
+mod events;
 mod files;
 mod offline;
 mod uploads;
@@ -25,6 +26,7 @@ pub use autoupload::{
     AutoUpload, AutoUploadListener, LocalItem, LocalSources, PassSummary, SourceKind, SyncSettings,
     UploadSource,
 };
+pub use events::{EventStream, EventsListener, LiveEvent};
 pub use files::DownloadListener;
 pub use offline::{OfflineProblem, OfflineState, OfflineStatus};
 
