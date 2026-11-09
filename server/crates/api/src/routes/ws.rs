@@ -41,6 +41,12 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(45);
 /// How long one message may take to go out. A client that stops reading would otherwise hold
 /// the socket's loop, and with it the idle, expiry and session checks, for as long as it likes.
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
+/// The largest message a client may send. The only one that means anything is the hello,
+/// which names a device in a few hundred bytes.
+const MAX_MESSAGE_BYTES: usize = 4096;
+/// Sockets one user may have open at a time, over all devices and browser tabs. Each holds
+/// a task and buffers on the server.
+const MAX_SOCKETS_PER_USER: usize = 32;
 /// Close reason sent when the socket's session has ended.
 const SESSION_ENDED: &str = "session ended";
 /// Close reason sent when the credentials the socket was opened with have expired; the client
@@ -79,9 +85,15 @@ async fn upgrade(
             (grant, remaining_lifetime(user.token_exp))
         }
     };
-    let events = state.hub.subscribe(grant.user_id);
+    let events = state
+        .hub
+        .subscribe_within(grant.user_id, MAX_SOCKETS_PER_USER)
+        .ok_or(ApiError::TooManyConnections)?;
     let feeds = Feeds { events, ended };
-    Ok(ws.on_upgrade(move |socket| session(state, grant, socket, feeds, lifetime)))
+    Ok(ws
+        .max_message_size(MAX_MESSAGE_BYTES)
+        .max_frame_size(MAX_MESSAGE_BYTES)
+        .on_upgrade(move |socket| session(state, grant, socket, feeds, lifetime)))
 }
 
 fn remaining_lifetime(token_exp: i64) -> Duration {

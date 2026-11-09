@@ -1,4 +1,4 @@
-FROM docker.io/library/rust:latest AS toolchain
+FROM docker.io/library/rust:1 AS toolchain
 RUN rustup target add wasm32-unknown-unknown \
     && cargo install trunk --locked
 WORKDIR /workspace

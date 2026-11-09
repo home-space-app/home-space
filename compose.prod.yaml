@@ -8,8 +8,15 @@
 #   HOMESPACE_DATA_DIR   host directory for the blobs,          e.g. /srv/homespace/files
 #   HOMESPACE_UID        numeric uid of the owning host user (id -u homespace)
 #   HOMESPACE_GID        numeric gid of the owning host user (id -g homespace)
+#   HOMESPACE_DB_PASSWORD  password of the database user; the development default is not
+#                          accepted here. Postgres takes it when the database directory is
+#                          first created: for an existing one, give the password it was
+#                          created with, or change it there first (ALTER USER ... PASSWORD).
+#   HOMESPACE_JWT_SECRET   signs the access tokens (openssl rand -base64 48)
 services:
   db:
+    environment:
+      POSTGRES_PASSWORD: ${HOMESPACE_DB_PASSWORD:?set HOMESPACE_DB_PASSWORD}
     user: "${HOMESPACE_UID:?set HOMESPACE_UID}:${HOMESPACE_GID:?set HOMESPACE_GID}"
     volumes:
       - ${HOMESPACE_DB_DIR:?set HOMESPACE_DB_DIR}:/var/lib/postgresql
@@ -17,6 +24,9 @@ services:
       - /etc/passwd:/etc/passwd:ro
 
   app:
+    environment:
+      DATABASE_URL: postgres://${HOMESPACE_DB_USER:-homespace}:${HOMESPACE_DB_PASSWORD:?set HOMESPACE_DB_PASSWORD}@db:5432/homespace
+      HOMESPACE_JWT_SECRET: ${HOMESPACE_JWT_SECRET:?set HOMESPACE_JWT_SECRET}
     user: "${HOMESPACE_UID:?set HOMESPACE_UID}:${HOMESPACE_GID:?set HOMESPACE_GID}"
     volumes:
       - ${HOMESPACE_DATA_DIR:?set HOMESPACE_DATA_DIR}:/data

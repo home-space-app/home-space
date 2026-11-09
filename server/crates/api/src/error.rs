@@ -22,6 +22,8 @@ pub enum ApiError {
     NotFound,
     #[error("no longer available")]
     Gone,
+    #[error("too many connections are open for this account")]
+    TooManyConnections,
     #[error("{0}")]
     BadRequest(String),
     #[error(transparent)]
@@ -77,7 +79,8 @@ impl ApiError {
                 | FilesError::InvalidTransfer(_),
             ) => (StatusCode::BAD_REQUEST, ErrorCode::BadRequest),
             Self::Gone | Self::Files(FilesError::Gone) => (StatusCode::GONE, ErrorCode::Gone),
-            Self::Auth(AuthError::TooManyAttempts { .. } | AuthError::Busy { .. }) => {
+            Self::TooManyConnections
+            | Self::Auth(AuthError::TooManyAttempts { .. } | AuthError::Busy { .. }) => {
                 (StatusCode::TOO_MANY_REQUESTS, ErrorCode::TooManyRequests)
             }
             Self::Files(FilesError::TooLarge { .. }) => {

@@ -1,11 +1,15 @@
-# Start the app:   HOMESPACE_JWT_SECRET=<32+ chars> podman compose up --build
+# Start the app:   HOMESPACE_JWT_SECRET=$(openssl rand -base64 48) podman compose up --build
 # Add a user:      podman compose run --rm app user add <name>
 # Run all tests:   podman compose run --rm test
 # Try single sign-on with a local Keycloak: podman compose --profile oidc up -d keycloak
 #                  (see "Single sign-on" in the README)
+#
+# The database password, the Keycloak administrator and the published ports (this machine
+# only) are for development. On a server add compose.prod.yaml, which requires real secrets.
 services:
   db:
-    image: docker.io/library/postgres:latest
+    # A new major version cannot read the files of the one before: upgrade deliberately.
+    image: docker.io/library/postgres:18
     environment:
       POSTGRES_USER: ${HOMESPACE_DB_USER:-homespace}
       POSTGRES_PASSWORD: ${HOMESPACE_DB_PASSWORD:-homespace}
@@ -57,7 +61,7 @@ services:
   # Optional Keycloak with a ready-made realm (user demo / demo) for trying single sign-on.
   keycloak:
     profiles: ["oidc"]
-    image: quay.io/keycloak/keycloak:latest
+    image: quay.io/keycloak/keycloak:26.8
     command: ["start-dev", "--import-realm", "--http-port=8180"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
