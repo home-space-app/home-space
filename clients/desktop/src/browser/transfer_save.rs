@@ -4,7 +4,7 @@ use iced::{
     Alignment, Element, Length, Task,
     widget::{button, column, container, operation, row, scrollable, text, text_input},
 };
-
+use iced::widget::Row;
 use api_client::{ApiError, Client};
 use client_core::{
     labels::{HOME, files},
@@ -21,7 +21,7 @@ use crate::{
 };
 
 const WIDTH: f32 = 520.0;
-const LIST_HEIGHT: f32 = 216.0;
+const LIST_HEIGHT: f32 = 300.0;
 const ROW_HEIGHT: f32 = 48.0;
 const ROW_PADDING: [f32; 2] = [0.0, 14.0];
 const ROW_GAP: f32 = 12.0;
@@ -59,7 +59,7 @@ pub enum Outcome {
 }
 
 /// The dialog picking where on the server a transfer goes.
-pub struct State {
+pub struct TransferSave {
     transfer: TransferSummary,
     lost_and_found: NodeId,
     /// The folders opened so far, the last one being where the list is.
@@ -69,12 +69,12 @@ pub struct State {
     /// A folder of the list picked as the destination, instead of the open one.
     picked: Option<Node>,
     /// The name of a new folder being typed.
-    naming: Option<String>,
+    new_folder_name: Option<String>,
     saving: bool,
     error: Option<String>,
 }
 
-impl State {
+impl TransferSave {
     pub fn open(
         client: &Client,
         transfer: TransferSummary,
@@ -86,7 +86,7 @@ impl State {
             trail: Vec::new(),
             folders: None,
             picked: None,
-            naming: None,
+            new_folder_name: None,
             saving: false,
             error: None,
         };
@@ -120,7 +120,7 @@ impl State {
     fn navigate(&mut self, client: &Client, change: impl FnOnce(&mut Vec<Node>)) -> Outcome {
         change(&mut self.trail);
         self.picked = None;
-        self.naming = None;
+        self.new_folder_name = None;
         self.folders = None;
         self.error = None;
         Outcome::Task(self.list(client))
@@ -152,18 +152,23 @@ impl State {
             },
             Message::Folders(..) => {}
             Message::NewFolder => {
-                self.naming = Some(String::new());
+                self.new_folder_name = Some(String::new());
                 return Outcome::Task(operation::focus(NAME_INPUT));
             }
             Message::NameChanged(name) => {
-                if let Some(naming) = &mut self.naming {
+                if let Some(naming) = &mut self.new_folder_name {
                     *naming = name;
                 }
             }
             Message::CreateFolder => {
-                let name = self.naming.as_deref().unwrap_or_default().trim().to_owned();
+                let name = self
+                    .new_folder_name
+                    .as_deref()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned();
                 if name.is_empty() {
-                    self.naming = None;
+                    self.new_folder_name = None;
                 } else {
                     let (client, parent) = (client.clone(), self.open_folder());
                     return Outcome::Task(Task::perform(
@@ -173,12 +178,12 @@ impl State {
                 }
             }
             Message::Created(Ok(folder)) => {
-                self.naming = None;
+                self.new_folder_name = None;
                 self.picked = Some(folder);
                 return Outcome::Task(self.list(client));
             }
             Message::Created(Err(err)) => self.error = Some(err.to_string()),
-            Message::Submit if !self.saving && self.naming.is_none() => {
+            Message::Submit if !self.saving && self.new_folder_name.is_none() => {
                 self.saving = true;
                 self.error = None;
                 let target = self.destination().last().map(|folder| folder.id);
@@ -194,7 +199,7 @@ impl State {
                 self.saving = false;
                 self.error = Some(err.to_string());
             }
-            Message::Cancel if self.naming.is_some() => self.naming = None,
+            Message::Cancel if self.new_folder_name.is_some() => self.new_folder_name = None,
             Message::Cancel => return Outcome::Closed,
         }
         Outcome::Task(Task::none())
@@ -229,14 +234,14 @@ impl State {
         if let Some(error) = &self.error {
             lines = lines.push(parts::alert_error(Icon::Error, error.as_str(), None));
         }
-        let can_save = !self.saving && self.naming.is_none();
+        let can_save = !self.saving && self.new_folder_name.is_none();
         parts::dialog_with_aside(
             WIDTH,
             lines,
             Some(parts::ghost(
                 Some(Icon::NewFolder),
                 "New folder",
-                self.naming.is_none().then_some(Message::NewFolder),
+                self.new_folder_name.is_none().then_some(Message::NewFolder),
             )),
             [
                 parts::outlined(None, "Cancel", Some(Message::Cancel)),
@@ -276,16 +281,19 @@ impl State {
                     .into_iter()
                     .chain([crumb])
             });
-        row![back]
-            .extend(crumbs)
-            .spacing(TRAIL_GAP)
-            .align_y(Alignment::Center)
-            .into()
+        let mut row = Row::new();
+        if !self.trail.is_empty() {
+            row = row.push(back);
+        }
+        row = row.extend(crumbs);
+        row = row.spacing(TRAIL_GAP);
+        row = row.align_y(Alignment::Center);
+        row.into()
     }
 
     fn rows(&self) -> Element<'_, Message> {
         let mut rows = column![];
-        if let Some(name) = &self.naming {
+        if let Some(name) = &self.new_folder_name {
             let input = text_input("Folder name", name)
                 .id(NAME_INPUT)
                 .style(theme::input)
@@ -298,6 +306,7 @@ impl State {
                         Icon::NewFolder.view(ICON_SIZE, Tint::Accent),
                         input,
                         parts::small_primary(Icon::Check, "Create", Some(Message::CreateFolder)),
+                        parts::small_outlined_icon(Icon::Close, "Cancel", Some(Message::Cancel)),
                     ]
                     .spacing(ROW_GAP)
                     .align_y(Alignment::Center),
@@ -308,10 +317,10 @@ impl State {
         }
         match self.folders.as_deref() {
             None => rows = rows.push(note("Loading…")),
-            Some([]) if self.naming.is_none() => rows = rows.push(note("No folders here")),
+            Some([]) if self.new_folder_name.is_none() => rows = rows.push(note("No folders here")),
             Some(folders) => {
                 for (index, folder) in folders.iter().enumerate() {
-                    if index > 0 || self.naming.is_some() {
+                    if index > 0 || self.new_folder_name.is_some() {
                         rows = rows.push(divider());
                     }
                     rows = rows.push(self.folder_row(folder));
@@ -347,7 +356,8 @@ impl State {
         button(
             row![Icon::FolderOutline.view(ICON_SIZE, Tint::Accent), name, end]
                 .spacing(ROW_GAP)
-                .align_y(Alignment::Center),
+                .align_y(Alignment::Center)
+                .height(Length::Fill),
         )
         .padding(ROW_PADDING)
         .height(ROW_HEIGHT)
@@ -429,8 +439,8 @@ mod tests {
         Client::new("http://localhost")
     }
 
-    fn listed() -> State {
-        let (mut state, _) = State::open(&client(), transfer(), NodeId(Uuid::from_u128(99)));
+    fn listed() -> TransferSave {
+        let (mut state, _) = TransferSave::open(&client(), transfer(), NodeId(Uuid::from_u128(99)));
         let folders = vec![folder(1, "Documents"), folder(2, "Photos")];
         let _ = state.update(&client(), Message::Folders(None, Ok(folders)));
         state
@@ -500,7 +510,7 @@ mod tests {
             state.update(&client(), Message::Cancel),
             Outcome::Task(_)
         ));
-        assert!(state.naming.is_none());
+        assert!(state.new_folder_name.is_none());
         assert!(matches!(
             state.update(&client(), Message::Cancel),
             Outcome::Closed
