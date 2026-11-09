@@ -1,9 +1,14 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::{collections::HashSet, net::SocketAddr, path::PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Args, ValueEnum};
 
 const MIN_SECRET_LEN: usize = 32;
+/// Fewer different characters than this in a secret means it was typed, not generated.
+const MIN_SECRET_DISTINCT_CHARS: usize = 10;
+/// What the example configuration used to ship as the secret, and so known to everyone.
+const PLACEHOLDER_SECRET_MARK: &str = "change-me";
+const GENERATE_SECRET: &str = "`openssl rand -base64 48`";
 
 /// Where file content is kept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -230,14 +235,14 @@ impl Config {
                 anyhow::bail!("HOMESPACE_JWT_SECRET or HOMESPACE_JWT_SECRET_FILE must be set")
             }
         };
-        check_secret_len("the JWT secret", &current)?;
+        check_secret("the JWT secret", &current)?;
         let previous = match self
             .jwt_secret_previous
             .as_ref()
             .filter(|secret| !secret.is_empty())
         {
             Some(secret) => {
-                check_secret_len("HOMESPACE_JWT_SECRET_PREVIOUS", secret)?;
+                check_secret("HOMESPACE_JWT_SECRET_PREVIOUS", secret)?;
                 vec![secret.clone().into_bytes()]
             }
             None => Vec::new(),
@@ -246,9 +251,19 @@ impl Config {
     }
 }
 
-fn check_secret_len(name: &str, secret: &str) -> Result<()> {
+/// Refuses a signing secret that is short, a placeholder left in place, or made of a few
+/// repeated characters: whoever can guess it can sign tokens.
+fn check_secret(name: &str, secret: &str) -> Result<()> {
+    let distinct = secret.chars().collect::<HashSet<_>>().len();
     if secret.len() < MIN_SECRET_LEN {
         anyhow::bail!("{name} must be at least {MIN_SECRET_LEN} characters");
+    } else if secret
+        .to_ascii_lowercase()
+        .contains(PLACEHOLDER_SECRET_MARK)
+    {
+        anyhow::bail!("{name} is still a placeholder; generate one with {GENERATE_SECRET}");
+    } else if distinct < MIN_SECRET_DISTINCT_CHARS {
+        anyhow::bail!("{name} is too easy to guess; generate one with {GENERATE_SECRET}");
     }
     Ok(())
 }
@@ -276,7 +291,25 @@ fn is_https_or_loopback(url: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_https_or_loopback;
+    use super::{check_secret, is_https_or_loopback};
+
+    #[test]
+    fn a_generated_secret_is_accepted() {
+        check_secret("secret", "kq3ZcV0m8Tn1yWfLr7uGxP2aHs9EoJd4BbNiC6tM5QzK").expect("accepted");
+    }
+
+    #[test]
+    fn short_placeholder_and_repetitive_secrets_are_refused() {
+        for secret in [
+            "kq3ZcV0m8Tn1yWfLr7uGxP2aHs9Eo",
+            "change-me-to-a-long-random-string",
+            "Change-Me-kq3ZcV0m8Tn1yWfLr7uGxP2aHs9EoJd4",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "abcabcabcabcabcabcabcabcabcabcabcabcabc",
+        ] {
+            assert!(check_secret("secret", secret).is_err(), "{secret}");
+        }
+    }
 
     #[test]
     fn https_and_loopback_http_are_accepted() {

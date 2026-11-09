@@ -67,6 +67,19 @@ impl Hub {
             .subscribe()
     }
 
+    /// Subscribes to the events of `user` unless `limit` subscribers already listen to them.
+    pub fn subscribe_within(
+        &self,
+        user: UserId,
+        limit: usize,
+    ) -> Option<broadcast::Receiver<Event>> {
+        let mut channels = self.lock();
+        let sender = channels
+            .entry(user)
+            .or_insert_with(|| broadcast::channel(CHANNEL_CAPACITY).0);
+        (sender.receiver_count() < limit).then(|| sender.subscribe())
+    }
+
     /// Sends `event` to every session of `user`; a no-op when nobody listens.
     pub fn publish(&self, user: UserId, event: Event) {
         let mut channels = self.lock();

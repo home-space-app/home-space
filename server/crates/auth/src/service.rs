@@ -28,7 +28,9 @@ use crate::{
 const MAX_USERNAME_LEN: usize = 64;
 /// Leading bits of an IPv6 address that name a network; one subscriber usually owns them all.
 const IPV6_NETWORK_BITS: u32 = 64;
-const MIN_PASSWORD_LEN: usize = 8;
+/// The longest password, in bytes. Hashing takes time in proportion to the length, and
+/// nothing anyone types or a password manager makes comes near it.
+use password::MAX_PASSWORD_LEN;
 const TICKET_TTL_SECS: i64 = 30;
 /// How long after a refresh token kept in a cookie was used it may be presented once more
 /// without ending the session: long enough for two tabs that refreshed at the same moment.
@@ -161,11 +163,8 @@ impl AuthService {
     pub async fn create_user(&self, username: &str, password: &str) -> Result<User, AuthError> {
         if username.is_empty() || username.len() > MAX_USERNAME_LEN {
             Err(AuthError::InvalidInput("username must be 1-64 characters"))
-        } else if password.len() < MIN_PASSWORD_LEN {
-            Err(AuthError::InvalidInput(
-                "password must be at least 8 characters",
-            ))
         } else {
+            password::check_new(password)?;
             let hashed = self.hash_blocking(password).await?;
             self.db
                 .create_user(username, &hashed)
@@ -179,16 +178,11 @@ impl AuthService {
 
     /// Changes a user's password and revokes their sessions.
     pub async fn set_password(&self, user_id: UserId, password: &str) -> Result<(), AuthError> {
-        if password.len() < MIN_PASSWORD_LEN {
-            Err(AuthError::InvalidInput(
-                "password must be at least 8 characters",
-            ))
-        } else {
-            let hashed = self.hash_blocking(password).await?;
-            self.db.set_password_hash(user_id, &hashed).await?;
-            self.sessions_ended(user_id);
-            Ok(())
-        }
+        password::check_new(password)?;
+        let hashed = self.hash_blocking(password).await?;
+        self.db.set_password_hash(user_id, &hashed).await?;
+        self.sessions_ended(user_id);
+        Ok(())
     }
 
     /// Replaces the password of a signed-in user after checking the current one, and ends
@@ -210,10 +204,10 @@ impl AuthService {
             .await?
             .ok_or(AuthError::InvalidCredentials)?;
         let hash = user.password_hash.ok_or(AuthError::NoPassword)?;
-        if new.len() < MIN_PASSWORD_LEN {
-            return Err(AuthError::InvalidInput(
-                "password must be at least 8 characters",
-            ));
+        password::check_new(new)?;
+        // No password is that long, so it is not worth a count or the time to hash it.
+        if current.len() > MAX_PASSWORD_LEN {
+            return Err(AuthError::WrongPassword);
         }
         let source = format!("session:{session_id}");
         if let Err(until) = self
@@ -278,7 +272,11 @@ impl AuthService {
         address: Option<IpAddr>,
     ) -> Result<TokenPair, AuthError> {
         // No user has such a name, so it is refused before anything is stored for it.
-        if username.is_empty() || username.chars().count() > MAX_USERNAME_LEN {
+        // Nor has anyone a password that long, and hashing it would take its time.
+        if username.is_empty()
+            || username.chars().count() > MAX_USERNAME_LEN
+            || password.len() > MAX_PASSWORD_LEN
+        {
             return Err(AuthError::InvalidCredentials);
         }
         let known_device = match device {

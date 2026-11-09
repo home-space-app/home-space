@@ -25,9 +25,9 @@ Rust workspace in `server/`: `db` (sqlx/Postgres), `auth` (argon2 + JWT access/r
 
 ```sh
 cd server
-cp .env.example .env            # set HOMESPACE_JWT_SECRET (>= 32 chars)
+cp .env.example .env            # set HOMESPACE_JWT_SECRET: openssl rand -base64 48
 ./scripts/db.sh up              # Postgres in podman (down | destroy | psql | logs)
-cargo run -p app -- user add me --admin # prompts for a password; there is no public signup
+cargo run -p app -- user add me --admin # prompts for a password (8-1024 characters); there is no public signup
 cargo run -p app -- serve       # http://127.0.0.1:8080/api/v1
 ```
 
@@ -184,7 +184,7 @@ one.
 | DELETE | `/trash/{id}` | permanently delete one binned file and its versions (404 unless binned) |
 | GET | `/search?q=&limit=` | full-text search; every word matches as a prefix, hits carry their `location` |
 | POST | `/tickets` | `{scope: "events"}`, `{scope: "download", node_id}`, `{scope: "download_version", node_id, version}` or `{scope: "transfer_item", transfer_id, item_id}` → ticket valid for 30 s and for one request |
-| GET | `/ws` | live `node_created` / `node_updated` / `node_deleted` / `trash_changed` / `devices_changed` / `transfer_received` / `transfer_changed` / `resync` events |
+| GET | `/ws` | live `node_created` / `node_updated` / `node_deleted` / `trash_changed` / `devices_changed` / `transfer_received` / `transfer_changed` / `resync` events; a user may have 32 sockets open (`429` beyond that) and a client message over 4 KiB closes the socket |
 | GET | `/health` | liveness + DB ping |
 
 All node and trash endpoints return 404 for ids owned by someone else. Authenticate with `Authorization: Bearer <access_token>`.
@@ -319,6 +319,8 @@ podman-compose --profile test run --rm test   # server + client tests against th
 podman-compose down                           # add -v to also delete the database and files
 ```
 
+The server does not start with a signing secret that is shorter than 32 characters, still a
+placeholder (`change-me...`) or made of only a few different characters.
 The signing secret can also come from a file (`HOMESPACE_JWT_SECRET_FILE`, e.g. a Docker/Podman
 secret). To rotate it, set the new value and move the old one to `HOMESPACE_JWT_SECRET_PREVIOUS`;
 sessions keep working, and the old value can be removed once access tokens (15 minutes by default)

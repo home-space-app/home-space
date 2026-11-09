@@ -445,3 +445,61 @@ async fn a_socket_opened_with_a_ticket_closes_when_its_session_ends(pool: PgPool
 
     closes_for_ended_session(&mut socket).await;
 }
+
+/// Sockets one user may have open; the same number as in the websocket route.
+const MAX_SOCKETS: usize = 32;
+
+async fn try_connect(addr: SocketAddr, token: &str) -> Option<Socket> {
+    let mut request = format!("ws://{addr}/api/v1/ws")
+        .into_client_request()
+        .expect("request");
+    request.headers_mut().insert(
+        "authorization",
+        format!("Bearer {token}").parse().expect("header"),
+    );
+    connect_async(request).await.ok().map(|(socket, _)| socket)
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_user_can_open_only_so_many_sockets(pool: PgPool) {
+    let app = setup(pool).await;
+    let alice = app.user_token("alice").await;
+    let bob = app.user_token("bob").await;
+    let addr = serve(&app).await;
+    let mut sockets = Vec::new();
+    for _ in 0..MAX_SOCKETS {
+        sockets.push(connect(addr, &alice).await);
+    }
+    assert!(try_connect(addr, &alice).await.is_none());
+    // Another user is not held up, and a closed socket makes room again.
+    connect(addr, &bob).await;
+    sockets
+        .pop()
+        .expect("socket")
+        .close(None)
+        .await
+        .expect("close");
+    assert!(eventually(|| async { try_connect(addr, &alice).await.is_some() }).await);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_message_larger_than_a_hello_closes_the_socket(pool: PgPool) {
+    let app = setup(pool).await;
+    let alice = app.user_token("alice").await;
+    let addr = serve(&app).await;
+    let mut socket = connect(addr, &alice).await;
+    socket
+        .send(Message::text("x".repeat(8192)))
+        .await
+        .expect("send");
+    let closed = tokio::time::timeout(SHORT_WAIT * 10, async {
+        loop {
+            match socket.next().await {
+                None | Some(Err(_) | Ok(Message::Close(_))) => break,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await;
+    assert!(closed.is_ok(), "the socket stayed open");
+}
