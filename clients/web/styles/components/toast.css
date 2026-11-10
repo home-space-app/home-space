@@ -1,0 +1,80 @@
+/* What floats in the bottom right corner: a transfer that just arrived, above the uploads. */
+.corner {
+  position: fixed;
+  right: var(--space-4);
+  bottom: var(--space-4);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: min(388px, calc(100vw - 2 * var(--space-4)));
+  pointer-events: none;
+}
+
+.corner > * {
+  pointer-events: auto;
+}
+
+.toast {
+  display: grid;
+  gap: 2px;
+  padding: 10px var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.toast__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.toast__title > .icon {
+  flex: none;
+  color: var(--color-accent);
+  font-size: 20px;
+}
+
+.toast__detail {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 0.75rem;
+}
+
+.toast__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.toast--error {
+  border-color: var(--color-danger);
+}
+
+.toast--error .toast__title {
+  color: var(--color-danger);
+}
+
+@media (width < 640px) {
+  .corner {
+    right: 0;
+    bottom: 0;
+    width: 100%;
+  }
+
+  .toast {
+    margin-inline: var(--space-3);
+  }
+
+  .toast:last-child {
+    margin-bottom: calc(var(--space-3) + var(--safe-bottom));
+  }
+}

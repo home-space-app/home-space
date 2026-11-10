@@ -290,6 +290,8 @@ pub struct UserDevice {
     /// When the server last heard from it.
     pub last_seen_at: SystemTime,
     pub signed_in: bool,
+    /// Whether it is connected to the server right now.
+    pub online: bool,
     /// Whether this is the device that asked.
     pub current: bool,
 }
@@ -532,6 +534,7 @@ impl CoreClient {
                 platform: device.platform,
                 last_seen_at: device.last_seen_at.into(),
                 signed_in: device.signed_in,
+                online: device.online,
                 current: device.current,
             })
             .collect())
@@ -1802,6 +1805,7 @@ mod tests {
                     "created_at": "2026-11-01T00:00:00Z",
                     "last_seen_at": "2026-11-07T08:00:00Z",
                     "signed_in": true,
+                    "online": true,
                     "current": true,
                     "uploads": 0,
                 },
@@ -1812,6 +1816,7 @@ mod tests {
                     "created_at": "2026-10-01T00:00:00Z",
                     "last_seen_at": "2026-11-03T22:10:00Z",
                     "signed_in": false,
+                    "online": false,
                     "current": false,
                     "uploads": 0,
                 },
@@ -1824,9 +1829,15 @@ mod tests {
 
         let summary: Vec<_> = devices
             .iter()
-            .map(|device| (device.name.as_str(), device.signed_in, device.current))
+            .map(|device| {
+                let name = device.name.as_str();
+                (name, device.signed_in, device.online, device.current)
+            })
             .collect();
-        assert_eq!(summary, [("Pixel", true, true), ("Laptop", false, false)]);
+        assert_eq!(
+            summary,
+            [("Pixel", true, true, true), ("Laptop", false, false, false)]
+        );
     }
 
     #[tokio::test]

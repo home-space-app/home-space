@@ -86,6 +86,15 @@ object TransferCenter {
         listChanges.update { it + 1 }
     }
 
+    private val deviceChanges = MutableStateFlow(0)
+
+    /** Changes whenever a device may have come online, gone offline or been signed out. */
+    val devices: StateFlow<Int> = deviceChanges
+
+    fun devicesChanged() {
+        deviceChanges.update { it + 1 }
+    }
+
     /** Follows one send or download; `id` is the transfer's once it is known. */
     private class Tracker(var id: String?) : DownloadListener {
         private var ended = false

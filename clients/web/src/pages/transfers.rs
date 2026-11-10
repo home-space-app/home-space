@@ -4,9 +4,10 @@ use leptos::{prelude::*, task::spawn_local};
 use time::OffsetDateTime;
 
 use client_core::transfers::{
-    time_left, transfer_from, transfer_name, transfer_size, transfer_state, transfer_to,
+    is_single_file, time_left, transfer_from, transfer_name, transfer_size, transfer_state,
+    transfer_to,
 };
-use protocol::{Event, NodeKind, TicketRequest, TransferState, TransferSummary, UserId};
+use protocol::{Event, TransferState, TransferSummary, UserId};
 
 use super::{
     shell::{Tab, Tabs},
@@ -16,9 +17,10 @@ use crate::{
     components::ErrorAlert,
     events,
     icon::Icon,
+    incoming::{Incoming, percent},
     load,
     locale::{self, short_date},
-    route,
+    route, save_file,
     session::{self, Auth},
     uploads::Sending,
 };
@@ -33,14 +35,9 @@ pub enum TransferList {
     Sent,
 }
 
-/// Whether a transfer is one file, downloaded as is; anything else comes as a zip.
-fn single_file(transfer: &TransferSummary) -> bool {
-    transfer.item_count == 1 && transfer.file_count == 1
-}
-
 /// The icon of a transfer: a file, or a folder for several items.
 fn transfer_icon(transfer: &TransferSummary) -> &'static str {
-    if single_file(transfer) {
+    if is_single_file(transfer) {
         "description"
     } else {
         "folder"
@@ -78,7 +75,7 @@ pub fn TransfersPage(auth: Auth, list: TransferList) -> impl IntoView {
     let error = RwSignal::new(None::<String>);
     let loaded = RwSignal::new(false);
     let saving = RwSignal::new(None::<TransferSummary>);
-    let confirming = RwSignal::new(None::<TransferSummary>);
+    let incoming = expect_context::<Incoming>();
     // Ticks so the time left in each row stays current.
     let now = RwSignal::new(locale::now());
     let ticker = StoredValue::new_local(Some(gloo_timers::callback::Interval::new(
@@ -128,22 +125,23 @@ pub fn TransfersPage(auth: Auth, list: TransferList) -> impl IntoView {
 
     let act = move |action: Action, transfer: TransferSummary| {
         let id = transfer.id;
+        if action == Action::Download {
+            incoming.download(auth, transfer);
+            return;
+        }
         spawn_local(async move {
             let client = session::client();
             let result = match action {
                 Action::Decline => client.decline_transfer(id).await,
                 Action::Cancel => client.cancel_transfer(id).await,
-                Action::Confirm => client.confirm_transfer(id).await,
-                Action::Download => download(&transfer).await.map(|()| {
-                    confirming.set(Some(transfer.clone()));
-                }),
+                // The user says the download is on this computer, so the server's copy can go.
+                Action::Delete => client.confirm_transfer(id).await,
+                Action::Download => Ok(()),
             };
             if let Err(err) = result {
                 error.set(Some(auth.fail(&err)));
             }
-            if action != Action::Download {
-                resource.refetch();
-            }
+            resource.refetch();
         });
     };
     let act = Callback::new(move |(action, transfer)| act(action, transfer));
@@ -153,8 +151,11 @@ pub fn TransfersPage(auth: Auth, list: TransferList) -> impl IntoView {
         TransferList::Sent => "You have not sent anything yet.",
     };
     let note = match list {
+        TransferList::Incoming if save_file::supported() => {
+            "Several files or a folder download as one zip. The server deletes its copy once the download is complete."
+        }
         TransferList::Incoming => {
-            "Several files or a folder download as one zip. The server deletes its copy once you confirm the download finished."
+            "Several files or a folder download as one zip. This browser does not say when a download is complete: delete the transfer afterwards, or leave it until it expires."
         }
         TransferList::Sent => {
             "Close (×) cancels a transfer that has not been downloaded yet and deletes the copy on the server."
@@ -191,7 +192,7 @@ pub fn TransfersPage(auth: Auth, list: TransferList) -> impl IntoView {
                                 each=move || transfers.get()
                                 key=|transfer| (transfer.id, transfer.state)
                                 children=move |transfer| {
-                                    view! { <TransferRow transfer list me now act saving sending /> }
+                                    view! { <TransferRow transfer list me now act saving sending incoming /> }
                                 }
                             />
                         </tbody>
@@ -208,96 +209,25 @@ pub fn TransfersPage(auth: Auth, list: TransferList) -> impl IntoView {
                 .get()
                 .map(|transfer| view! { <SaveTransferDialog transfer auth on_close=close_save /> })
         }}
-        {move || {
-            confirming
-                .get()
-                .map(|transfer| {
-                    let title = format!(
-                        "{} · {} · {}",
-                        transfer_name(&transfer),
-                        transfer_size(&transfer),
-                        transfer_from(&transfer, me),
-                    );
-                    let kind = if single_file(&transfer) { "file" } else { "zip" };
-                    let left = time_left(transfer.expires_at, locale::now());
-                    let body = format!(
-                        "The browser does not say whether the {kind} was saved. If it was, the server deletes its copy. If not, you can download it again until it expires {left}.",
-                    );
-                    let yes = transfer.clone();
-                    view! {
-                        <div class="modal" on:click=move |_| confirming.set(None)>
-                            <div
-                                class="modal__panel modal__panel--wide"
-                                role="alertdialog"
-                                aria-modal="true"
-                                on:click=|event| event.stop_propagation()
-                            >
-                                <header class="modal__header">
-                                    <h2 class="modal__title">"Did the download finish?"</h2>
-                                    <p class="modal__subtitle">{title}</p>
-                                </header>
-                                <p>{body}</p>
-                                <div class="modal__actions">
-                                    <button class="button" on:click=move |_| confirming.set(None)>
-                                        "Not yet"
-                                    </button>
-                                    <button
-                                        class="button button--primary"
-                                        on:click=move |_| {
-                                            confirming.set(None);
-                                            act.run((Action::Confirm, yes.clone()));
-                                        }
-                                    >
-                                        <Icon name="check" />
-                                        "Yes, it finished"
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    }
-                })
-        }}
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Action {
     Download,
-    Confirm,
+    Delete,
     Decline,
     Cancel,
 }
 
-/// Starts the browser's download of a transfer: its one file, or a zip of everything.
-async fn download(transfer: &TransferSummary) -> Result<(), api_client::ApiError> {
-    let client = session::client();
-    let url = if single_file(transfer) {
-        let full = client.transfer(transfer.id).await?;
-        let Some(item) = full.items.iter().find(|item| item.kind == NodeKind::File) else {
-            return Ok(());
-        };
-        let request = TicketRequest::TransferItem {
-            transfer_id: transfer.id,
-            item_id: item.id,
-        };
-        let ticket = client.ticket(&request).await?;
-        client.transfer_item_url(transfer.id, item.id, &ticket.ticket)
-    } else {
-        let request = TicketRequest::TransferArchive {
-            transfer_id: transfer.id,
-        };
-        let ticket = client.ticket(&request).await?;
-        client.transfer_archive_url(transfer.id, &ticket.ticket)
-    };
-    if let Some(window) = web_sys::window() {
-        let _ = window.location().set_href(&url);
-    }
-    Ok(())
-}
-
 /// The state of a transfer this tab is uploading: `Uploading 64%`.
 fn uploading_label(fraction: f64) -> String {
-    format!("Uploading {}%", (fraction.clamp(0.0, 1.0) * 100.0).floor())
+    format!("Uploading {}%", percent(fraction))
+}
+
+/// The state of a transfer this tab is downloading: `Downloading 64%`.
+fn downloading_label(fraction: f64) -> String {
+    format!("Downloading {}%", percent(fraction))
 }
 
 /// The pill of a state, and its look.
@@ -318,6 +248,7 @@ fn TransferRow(
     act: Callback<(Action, TransferSummary)>,
     saving: RwSignal<Option<TransferSummary>>,
     sending: Sending,
+    incoming: Incoming,
 ) -> impl IntoView {
     let title = match list {
         TransferList::Incoming => {
@@ -349,28 +280,44 @@ fn TransferRow(
     let id = transfer.id;
 
     let state_cell = if actionable {
-        let (save, download, decline) = (transfer.clone(), transfer.clone(), transfer.clone());
-        view! {
-            <span class="transfer-actions">
-                <button class="button" on:click=move |_| saving.set(Some(save.clone()))>
-                    <Icon name="drive_folder_upload" />
-                    "Save"
-                </button>
-                <button
-                    class="button button--primary"
-                    on:click=move |_| act.run((Action::Download, download.clone()))
-                >
-                    <Icon name="download" />
-                    "Download"
-                </button>
-                <button
-                    class="button"
-                    on:click=move |_| act.run((Action::Decline, decline.clone()))
-                >
-                    "Decline"
-                </button>
-            </span>
-        }
+        let progress = Memo::new(move |_| incoming.downloading.read().get(&id).copied());
+        // Once the browser has the download, the transfer is only in the way: it can go.
+        let handed_over = Memo::new(move |_| incoming.handed_over.read().contains(&id));
+        let waiting = transfer.clone();
+        (move || {
+            if let Some(fraction) = progress.get() {
+                return view! { <span class="pill pill--accent">{downloading_label(fraction)}</span> }
+                    .into_any();
+            }
+            let (save, download, last) = (waiting.clone(), waiting.clone(), waiting.clone());
+            let (last_action, last_label) = if handed_over.get() {
+                (Action::Delete, "Delete")
+            } else {
+                (Action::Decline, "Decline")
+            };
+            view! {
+                <span class="transfer-actions">
+                    <button class="button" on:click=move |_| saving.set(Some(save.clone()))>
+                        <Icon name="drive_folder_upload" />
+                        "Save"
+                    </button>
+                    <button
+                        class="button button--primary"
+                        on:click=move |_| act.run((Action::Download, download.clone()))
+                    >
+                        <Icon name="download" />
+                        "Download"
+                    </button>
+                    <button
+                        class="button"
+                        on:click=move |_| act.run((last_action, last.clone()))
+                    >
+                        {last_label}
+                    </button>
+                </span>
+            }
+            .into_any()
+        })
         .into_any()
     } else {
         view! {
@@ -461,11 +408,10 @@ mod tests {
 
     #[test]
     fn only_a_lone_file_downloads_without_a_zip() {
-        assert!(single_file(&summary(1, 1)));
-        assert!(!single_file(&summary(2, 1)));
-        assert!(!single_file(&summary(3, 3)));
+        assert_eq!(transfer_icon(&summary(1, 1)), "description");
         assert_eq!(transfer_icon(&summary(3, 3)), "folder");
         assert_eq!(uploading_label(0.645), "Uploading 64%");
         assert_eq!(uploading_label(1.2), "Uploading 100%");
+        assert_eq!(downloading_label(0.5), "Downloading 50%");
     }
 }

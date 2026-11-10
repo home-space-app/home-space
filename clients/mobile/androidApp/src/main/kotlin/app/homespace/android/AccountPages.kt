@@ -277,6 +277,7 @@ private fun DeviceRow(device: UserDevice) {
     val status = when {
         device.current -> "This phone · $platform"
         !device.signedIn -> "$platform · signed out"
+        device.online -> "$platform · online"
         else -> "$platform · seen ${localDate(device.lastSeenAt)}"
     }
     ListItem(

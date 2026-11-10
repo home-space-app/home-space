@@ -688,7 +688,10 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
         stream = current.client.listenEvents(object : EventsListener {
             override fun event(event: LiveEvent) {
                 viewModelScope.launch {
-                    if (event is LiveEvent.DevicesChanged || event is LiveEvent.Resync) devicesKey++
+                    if (event is LiveEvent.DevicesChanged || event is LiveEvent.Resync) {
+                        devicesKey++
+                        TransferCenter.devicesChanged()
+                    }
                     if (event is LiveEvent.TransfersChanged || event is LiveEvent.Resync) loadTransfers()
                     _liveEvents.emit(event)
                 }

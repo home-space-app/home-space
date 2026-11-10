@@ -81,6 +81,11 @@ fn device() -> Option<DeviceInfo> {
     })
 }
 
+/// The id this browser has as a device, when it has one.
+pub fn device_id() -> Option<Uuid> {
+    device().map(|device| device.id)
+}
+
 /// The browser's name from its user agent.
 fn browser_name(agent: &str) -> &'static str {
     BROWSERS

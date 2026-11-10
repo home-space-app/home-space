@@ -99,6 +99,49 @@ pub fn time_left(at: OffsetDateTime, now: OffsetDateTime) -> String {
     }
 }
 
+/// The headline of a transfer that just arrived: `dana’s MacBook sent you 3 files`.
+pub fn received_title(transfer: &TransferSummary, me: UserId) -> String {
+    let what = transfer_name(transfer);
+    let device = transfer.sender_device_name.as_deref();
+    match (transfer.sender.id == me, device) {
+        (true, Some(device)) => format!("{device} sent you {what}"),
+        (true, None) => format!("You were sent {what}"),
+        (false, Some(device)) => {
+            format!("{}’s {device} sent you {what}", transfer.sender.username)
+        }
+        (false, None) => format!("{} sent you {what}", transfer.sender.username),
+    }
+}
+
+/// The line under [`received_title`]: `12.0 MB · downloads as one zip · expires in 23 h`.
+pub fn received_detail(transfer: &TransferSummary, now: OffsetDateTime) -> String {
+    let size = transfer_size(transfer);
+    let left = time_left(transfer.expires_at, now);
+    if is_single_file(transfer) {
+        format!("{size} · expires {left}")
+    } else {
+        format!("{size} · downloads as one zip · expires {left}")
+    }
+}
+
+/// Whether a transfer is one file, downloaded as is; anything else comes as a zip.
+pub fn is_single_file(transfer: &TransferSummary) -> bool {
+    transfer.item_count == 1 && transfer.file_count == 1
+}
+
+/// The file name a browser saves a transfer under: its one file, or the zip the server makes.
+pub fn download_name(transfer: &TransferSummary) -> String {
+    let base = match &transfer.name {
+        Some(name) => name.rsplit('/').next().unwrap_or(name).to_owned(),
+        None => format!("From {}", transfer.sender.username),
+    };
+    if is_single_file(transfer) {
+        base
+    } else {
+        format!("{base}.zip")
+    }
+}
+
 /// The state of a transfer, e.g. `Waiting · 23 h left` or `Downloaded`.
 pub fn transfer_state(
     state: TransferState,
@@ -187,6 +230,32 @@ mod tests {
             transfer_to(&transfer, UserId(Uuid::from_u128(2))),
             "To Phone"
         );
+    }
+
+    #[test]
+    fn an_arrival_says_who_sent_what_and_how_it_downloads() {
+        let now = datetime!(2026-11-09 10:00 UTC);
+        let mut transfer = summary(None, 3, 3);
+        transfer.expires_at = now + Duration::hours(23);
+        assert_eq!(
+            received_title(&transfer, UserId(Uuid::from_u128(2))),
+            "sam’s Laptop sent you 3 files"
+        );
+        assert_eq!(
+            received_title(&transfer, UserId(Uuid::from_u128(1))),
+            "Laptop sent you 3 files"
+        );
+        assert_eq!(
+            received_detail(&transfer, now),
+            "1.5 KB · downloads as one zip · expires in 23 h"
+        );
+        assert_eq!(download_name(&transfer), "From sam.zip");
+
+        let mut file = summary(Some("a.pdf"), 1, 1);
+        file.expires_at = now + Duration::hours(23);
+        assert_eq!(received_detail(&file, now), "1.5 KB · expires in 23 h");
+        assert_eq!(download_name(&file), "a.pdf");
+        assert_eq!(download_name(&summary(Some("Photos"), 4, 3)), "Photos.zip");
     }
 
     #[test]
