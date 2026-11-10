@@ -122,6 +122,12 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
 
     /** Set to bring the Transfers tab to the front, as a transfer's notification does. */
     var showTransfers by mutableStateOf(false)
+
+    /**
+     * Set by the signed-in screen while its Transfers tab is the one shown. A transfer that arrives
+     * then, with the app in front, is in plain sight and gets no notification.
+     */
+    var transfersOnScreen = false
     private var transferWatch: Job? = null
 
     /** The folder on screen is reloaded whenever this changes. */
@@ -459,7 +465,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
                 sent.clear()
                 sent.addAll(lists.sent)
                 transfersError = null
-                notifyIncoming(getApplication(), lists.received)
+                notifyIncoming(getApplication(), lists.received, quiet = appInFront && transfersOnScreen)
             } catch (_: CoreException.Unauthorized) {
                 if (session === current) onSessionEnded()
             } catch (e: CoreException) {

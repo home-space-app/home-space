@@ -78,6 +78,10 @@ pub struct TransferRow {
     pub this_device: bool,
     /// The sender's note, if any.
     pub note: Option<String>,
+    /// The headline of a notification about a received one: `dana’s MacBook sent you 3 files`.
+    pub notice_title: String,
+    /// The line under `notice_title`: `12.0 MB · expires in 23 h`.
+    pub notice_detail: String,
 }
 
 /// What was sent to the user and what the user sent, the newest first.
@@ -451,6 +455,8 @@ fn row(
         single_file: transfer.item_count == 1 && transfer.file_count == 1,
         this_device: device == Some(transfer.recipient_device),
         note: transfer.message.clone().filter(|note| !note.is_empty()),
+        notice_title: words::received_title(transfer, me),
+        notice_detail: words::received_detail(transfer, now),
     }
 }
 
@@ -704,6 +710,8 @@ mod tests {
         assert_eq!(received.status, TransferStatus::Ready);
         assert!(received.time_left.as_deref().unwrap().ends_with(" left"));
         assert!(!received.single_file);
+        assert_eq!(received.notice_title, "dana’s MacBook sent you 3 files");
+        assert!(received.notice_detail.contains(" · expires in "));
         let sent = &lists.sent[0];
         assert_eq!(sent.title, "a.pdf");
         assert_eq!(sent.status_label, "Downloaded");

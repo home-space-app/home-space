@@ -1,5 +1,6 @@
 package app.homespace.android
 
+import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color.TRANSPARENT
@@ -15,6 +16,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 
 /** Runtime permission for private addresses, from Android 17 (API 37). */
@@ -27,11 +29,20 @@ private const val NAV_SCRIM_DARK = 0x801B1B1B.toInt()
 class MainActivity : ComponentActivity() {
     private val model: SessionViewModel by viewModels()
 
+    /** While the local network question is up; Android shows one permission question at a time. */
+    private var askingLocalNetwork = false
+
     // The first check of the server ran before the user answered, so it may have been dropped.
     private val localNetwork =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            askingLocalNetwork = false
             if (granted && model.session is Session.SignedOut) model.probeNow()
+            askForNotifications()
         }
+
+    // A "no" needs nothing: received transfers are still listed, just without a notification.
+    private val notifications =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,6 +52,7 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= 37 &&
             checkSelfPermission(ACCESS_LOCAL_NETWORK) != PackageManager.PERMISSION_GRANTED
         ) {
+            askingLocalNetwork = true
             localNetwork.launch(ACCESS_LOCAL_NETWORK)
         }
         handleCallback(intent)
@@ -65,6 +77,11 @@ class MainActivity : ComponentActivity() {
                     },
                 )
                 onDispose { }
+            }
+            // Once signed in, where transfers can arrive, is when a notification starts to matter.
+            val signedIn = model.session is Session.SignedIn
+            LaunchedEffect(signedIn) {
+                if (signedIn) askForNotifications()
             }
             HomeSpaceTheme(dark = dark, useSystemColours = model.useSystemColours) {
                 Surface {
@@ -94,6 +111,16 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleCallback(intent)
+    }
+
+    /**
+     * Asks once, on Android 13 and later, for the permission to post notifications, which tell of
+     * files sent to this phone. Waits while the local network question is up, and needs a session.
+     */
+    private fun askForNotifications() {
+        if (askingLocalNetwork || model.session !is Session.SignedIn || !shouldAskForNotifications(this)) return
+        markNotificationsAsked(this)
+        notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
     /** Called from `onCreate` too: Android may have killed the app while the browser was open. */

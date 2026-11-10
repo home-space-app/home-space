@@ -1,5 +1,6 @@
 package app.homespace.android
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -16,6 +17,9 @@ import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
 import android.widget.Toast
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.core.app.NotificationChannelCompat
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
 import androidx.work.ForegroundInfo
@@ -49,11 +53,18 @@ private const val RECEIVE_DIR = "transfers"
 private const val DOWNLOADS_FOLDER = "Home Space"
 private const val OCTET_STREAM = "application/octet-stream"
 private const val INCOMING_CHANNEL = "transfers"
+private const val INCOMING_CHANNEL_NAME = "Transfers"
+private const val INCOMING_CHANNEL_DESCRIPTION = "Files sent to this phone from your other devices or other users"
+/** The notification id of a received transfer; its tag is the transfer's id. */
+private const val INCOMING_NOTIFICATION = 0
+/** The request code of the intent a received transfer's notification opens the app with. */
+private const val OPEN_TRANSFERS_REQUEST = 1
 private const val SENDING_CHANNEL = "sending"
 private const val SENDING_NOTIFICATION = 4
 private const val SEND_WORK = "send-to-device"
 private const val PREFS = "transfers"
 private const val NOTIFIED = "notified"
+private const val ASKED_NOTIFICATIONS = "asked_notifications"
 
 /** Set on the intent that opens the app from a transfer's notification. */
 const val EXTRA_SHOW_TRANSFERS = "app.homespace.android.SHOW_TRANSFERS"
@@ -291,43 +302,70 @@ private fun exportToDownloads(context: Context, dir: File, files: List<String>):
 /**
  * Tells the user about transfers waiting for this phone, once each. The server only pushes them
  * while the app is open, so this also runs after reconnecting and from background sync.
+ *
+ * With `quiet`, as while the Transfers screen is in front, new ones count as seen without a
+ * notification. Without the permission to post, they count as seen too, so that granting it later
+ * doesn't bring a pile of old ones.
  */
-fun notifyIncoming(context: Context, received: List<TransferRow>) {
+// The permission is checked by needsNotificationPermission, which lint can't see into.
+@SuppressLint("MissingPermission")
+fun notifyIncoming(context: Context, received: List<TransferRow>, quiet: Boolean = false) {
     val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     val waiting = received.filter { it.thisDevice && it.status == TransferStatus.READY }
     val notified = prefs.getStringSet(NOTIFIED, emptySet()).orEmpty()
-    val manager = context.getSystemService(NotificationManager::class.java)
+    val manager = NotificationManagerCompat.from(context)
     // Those no longer waiting were dealt with, here or on another device.
-    (notified - waiting.map { it.id }.toSet()).forEach { manager.cancel(it, 0) }
+    (notified - waiting.map { it.id }.toSet()).forEach { manager.cancel(it, INCOMING_NOTIFICATION) }
     prefs.edit().putStringSet(NOTIFIED, waiting.map { it.id }.toSet()).apply()
     val fresh = waiting.filter { it.id !in notified }
-    if (fresh.isEmpty() || needsNotificationPermission(context)) return
+    if (fresh.isEmpty() || quiet || needsNotificationPermission(context)) return
     manager.createNotificationChannel(
-        NotificationChannel(INCOMING_CHANNEL, "Files sent to this phone", NotificationManager.IMPORTANCE_HIGH),
+        NotificationChannelCompat.Builder(INCOMING_CHANNEL, NotificationManagerCompat.IMPORTANCE_HIGH)
+            .setName(INCOMING_CHANNEL_NAME)
+            .setDescription(INCOMING_CHANNEL_DESCRIPTION)
+            .build(),
     )
     val open = Intent(context, MainActivity::class.java)
         .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
         .putExtra(EXTRA_SHOW_TRANSFERS, true)
+    // One for all of them: each opens the same tab.
     val tap = PendingIntent.getActivity(
-        context, 1, open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        context, OPEN_TRANSFERS_REQUEST, open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
     )
     for (row in fresh) {
-        val notification = Notification.Builder(context, INCOMING_CHANNEL)
+        val notification = NotificationCompat.Builder(context, INCOMING_CHANNEL)
             .setSmallIcon(R.drawable.ic_download)
-            .setContentTitle("${row.party.removePrefix("From ")} sent you ${row.title}")
-            .setContentText(listOfNotNull(row.sizeLabel, row.timeLeft).joinToString(" · "))
+            .setContentTitle(row.noticeTitle)
+            .setContentText(row.noticeDetail)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(tap)
             .setAutoCancel(true)
             .build()
-        manager.notify(row.id, 0, notification)
+        manager.notify(row.id, INCOMING_NOTIFICATION, notification)
     }
 }
 
+/** Takes down the notifications of received transfers and forgets them, as on signing out. */
 fun forgetIncomingNotices(context: Context) {
     val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-    val manager = context.getSystemService(NotificationManager::class.java)
-    prefs.getStringSet(NOTIFIED, emptySet()).orEmpty().forEach { manager.cancel(it, 0) }
+    val manager = NotificationManagerCompat.from(context)
+    prefs.getStringSet(NOTIFIED, emptySet()).orEmpty().forEach { manager.cancel(it, INCOMING_NOTIFICATION) }
     prefs.edit().remove(NOTIFIED).apply()
+}
+
+/**
+ * Whether to ask for the permission to post notifications now: Android 13 or later, not granted,
+ * and not asked before by [markNotificationsAsked]. Asked once, so that a "no" is not met with the
+ * same question on every start.
+ */
+fun shouldAskForNotifications(context: Context): Boolean =
+    needsNotificationPermission(context) &&
+        !context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(ASKED_NOTIFICATIONS, false)
+
+/** Remembers that the permission to post notifications was asked for. */
+fun markNotificationsAsked(context: Context) {
+    context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(ASKED_NOTIFICATIONS, true).apply()
 }
 
 /** Keeps the process going, with a notification, until the sends from this phone are done. */

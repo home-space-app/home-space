@@ -34,6 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -88,6 +89,12 @@ fun SignedInScreen(session: Session.SignedIn, model: SessionViewModel) {
         )
     }
     val closePage = { page = null }
+    // While the list of transfers is shown, a new one needs no notification.
+    val transfersShown = tab == Tab.TRANSFERS && page == null
+    DisposableEffect(transfersShown) {
+        model.transfersOnScreen = transfersShown
+        onDispose { model.transfersOnScreen = false }
+    }
     // A transfer's notification opens the list it is in.
     if (model.showTransfers) {
         LaunchedEffect(Unit) {
