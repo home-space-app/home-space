@@ -501,11 +501,27 @@ fn rename_is_disabled_for_two_selected_items() {
     let mut state = state_with_listing();
     let _ = state.update(Message::Toggle(id(FILE_ID)));
     let _ = state.update(Message::Toggle(id(OTHER_FILE_ID)));
+    let _ = state.update(Message::SelectionMenu(Placement::cursor(Point::ORIGIN)));
     let mut ui = simulator(state.view());
 
     ui.click("Rename").expect("rename is shown");
 
-    assert_eq!(ui.into_messages().count(), 0);
+    // The press may reach the backdrop, which closes the menu, but never renames.
+    assert!(
+        ui.into_messages()
+            .all(|message| !matches!(message, Message::Act(Action::Rename)))
+    );
+}
+
+#[test]
+fn several_selected_items_keep_their_actions_in_the_count_menu() {
+    let mut state = state_with_listing();
+    let _ = state.update(Message::Toggle(id(FILE_ID)));
+    let _ = state.update(Message::Toggle(id(OTHER_FILE_ID)));
+    let mut ui = simulator(state.view());
+
+    assert!(ui.find("2 selected").is_ok());
+    assert!(ui.find("Download").is_err());
 }
 
 fn inside_lost_and_found() -> State {

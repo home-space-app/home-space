@@ -14,7 +14,7 @@ use std::{
 use iced::{
     Alignment, Element, Length, Task,
     futures::{SinkExt, Stream, StreamExt, channel::mpsc},
-    widget::{button, column, container, row, scrollable, space, text},
+    widget::{button, column, container, progress_bar, row, scrollable, space, text},
 };
 use time::OffsetDateTime;
 use tokio::{fs, io::AsyncWriteExt};
@@ -24,7 +24,10 @@ use uuid::Uuid;
 use api_client::{ApiError, Client};
 use client_core::{
     format::sanitize_component,
-    transfers::{time_left, transfer_from, transfer_name, transfer_size, transfer_to},
+    transfers::{
+        received_detail, received_title, time_left, transfer_from, transfer_name, transfer_size,
+        transfer_to,
+    },
 };
 use protocol::{ErrorCode, NodeId, NodeKind, TransferState, TransferSummary, UserId};
 
@@ -68,6 +71,11 @@ const IMAGE_EXTENSIONS: &[&str] = &[
 const DOCUMENT_EXTENSIONS: &[&str] = &[
     "pdf", "txt", "md", "rtf", "doc", "docx", "odt", "json", "csv", "xls", "xlsx", "ods",
 ];
+const TOAST_WIDTH: f32 = 380.0;
+const TOAST_PADDING: f32 = 16.0;
+const TOAST_GAP: f32 = 10.0;
+const TOAST_TITLE_GAP: f32 = 8.0;
+const TOAST_BAR: f32 = 6.0;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -91,8 +99,29 @@ pub enum Message {
     Done(Result<(), ApiError>),
     /// Opens the downloads folder.
     ShowDownloads,
+    /// Opens what a download put in the downloads folder with the system's default app.
+    OpenDownloaded(PathBuf),
     /// Hides the note about the last download.
     Dismiss,
+    /// A transfer arrived for this device while another page is shown.
+    Received(TransferSummary),
+    /// Downloads the transfer the toast announced, following it in the toast.
+    ToastDownload(Uuid),
+    /// Hides the toast.
+    CloseToast,
+}
+
+/// The toast in the corner of the window, over pages other than Transfers.
+#[derive(Debug, Clone)]
+enum Toast {
+    /// A transfer that just arrived, until the user answers.
+    Received(Box<TransferSummary>),
+    /// The download the toast started.
+    Downloading(Uuid),
+    /// Where that download went.
+    Downloaded(PathBuf),
+    /// Why it failed.
+    Failed(String),
 }
 
 /// The transfers waiting for this device and those the user sent.
@@ -119,6 +148,7 @@ pub struct TransferList {
     /// What the last download put in the downloads folder.
     downloaded: Option<PathBuf>,
     saving: Option<transfer_save::TransferSave>,
+    toast: Option<Toast>,
     now: OffsetDateTime,
 }
 
@@ -133,6 +163,7 @@ impl TransferList {
             downloads: HashMap::new(),
             downloaded: None,
             saving: None,
+            toast: None,
             now: OffsetDateTime::now_utc(),
         }
     }
@@ -176,6 +207,14 @@ impl TransferList {
                     Ok(lists) => {
                         self.lists = lists;
                         self.error = None;
+                        // Dealt with elsewhere, such as on another device.
+                        if let Some(Toast::Received(shown)) = &self.toast
+                            && self
+                                .incoming(shown.id)
+                                .is_none_or(|transfer| transfer.state != TransferState::Ready)
+                        {
+                            self.toast = None;
+                        }
                     }
                     Err(err) => self.error = Some(load_error(&err)),
                 }
@@ -219,8 +258,12 @@ impl TransferList {
             }
             Message::Downloaded(id, result) => {
                 self.downloads.remove(&id);
+                let followed = matches!(self.toast, Some(Toast::Downloading(shown)) if shown == id);
                 match result {
                     Ok(path) => {
+                        if followed {
+                            self.toast = Some(Toast::Downloaded(path.clone()));
+                        }
                         self.downloaded = Some(path);
                         let client = client.clone();
                         Task::perform(
@@ -229,6 +272,9 @@ impl TransferList {
                         )
                     }
                     Err(err) => {
+                        if followed {
+                            self.toast = Some(Toast::Failed(err.clone()));
+                        }
                         self.error = Some(err);
                         Task::none()
                     }
@@ -237,6 +283,9 @@ impl TransferList {
             Message::StopDownload(id) => {
                 if let Some(download) = self.downloads.remove(&id) {
                     download.token.cancel();
+                }
+                if matches!(self.toast, Some(Toast::Downloading(shown)) if shown == id) {
+                    self.toast = None;
                 }
                 Task::none()
             }
@@ -268,11 +317,139 @@ impl TransferList {
                 }
                 Task::none()
             }
+            Message::OpenDownloaded(path) => {
+                if let Err(err) = crate::transfers::open_file(&path) {
+                    self.error = Some(err.clone());
+                    if self.toast.is_some() {
+                        self.toast = Some(Toast::Failed(err));
+                    }
+                }
+                Task::none()
+            }
             Message::Dismiss => {
                 self.downloaded = None;
                 Task::none()
             }
+            Message::Received(transfer) => {
+                self.toast = Some(Toast::Received(Box::new(transfer)));
+                self.load(client)
+            }
+            Message::ToastDownload(id) => {
+                self.toast = Some(Toast::Downloading(id));
+                let task = self.download(client, id);
+                if self.error.is_some() {
+                    self.toast = self.error.clone().map(Toast::Failed);
+                }
+                task
+            }
+            Message::CloseToast => {
+                self.toast = None;
+                Task::none()
+            }
         }
+    }
+
+    /// Hides the toast, as the Transfers page says all it would.
+    pub fn clear_toast(&mut self) {
+        self.toast = None;
+    }
+
+    /// The toast, while there is one.
+    pub fn toast(&self) -> Option<Element<'_, Message>> {
+        let (icon, tint, title, detail, actions): (_, _, String, Element<'_, Message>, Vec<_>) =
+            match self.toast.as_ref()? {
+                Toast::Received(transfer) => (
+                    Icon::Download,
+                    Tint::Accent,
+                    received_title(transfer, self.me),
+                    toast_detail(received_detail(transfer, OffsetDateTime::now_utc())),
+                    vec![
+                        small_outlined("Later", Some(Message::CloseToast)),
+                        small_outlined_icon(
+                            Icon::SaveToServer,
+                            "Save",
+                            Some(Message::Save(transfer.id)),
+                        ),
+                        small_primary(
+                            Icon::Download,
+                            "Download",
+                            Some(Message::ToastDownload(transfer.id)),
+                        ),
+                    ],
+                ),
+                Toast::Downloading(id) => {
+                    let download = self.downloads.get(id)?;
+                    let name = self
+                        .incoming(*id)
+                        .map_or_else(|| "transfer".to_owned(), transfer_name);
+                    let fraction = match download.total {
+                        0 => 0.0,
+                        total => download.done.min(total) as f32 / total as f32,
+                    };
+                    (
+                        Icon::Download,
+                        Tint::Accent,
+                        format!("Downloading {name}"),
+                        column![
+                            progress_bar(0.0..=1.0, fraction)
+                                .girth(TOAST_BAR)
+                                .style(theme::progress),
+                            text(format!(
+                                "{}% · to {}",
+                                percent(download.done, download.total),
+                                display_folder()
+                            ))
+                            .size(SECOND_LINE_SIZE)
+                            .style(theme::muted_text),
+                        ]
+                        .spacing(TOAST_TITLE_GAP)
+                        .into(),
+                        vec![
+                            small_outlined("Hide", Some(Message::CloseToast)),
+                            small_outlined("Stop", Some(Message::StopDownload(*id))),
+                        ],
+                    )
+                }
+                Toast::Downloaded(path) => (
+                    Icon::Synced,
+                    Tint::Success,
+                    format!("Downloaded to {}", display_download(path)),
+                    space().into(),
+                    vec![
+                        small_outlined("Close", Some(Message::CloseToast)),
+                        small_outlined("Show", Some(Message::ShowDownloads)),
+                        small_primary(
+                            Icon::Web,
+                            "Open",
+                            Some(Message::OpenDownloaded(path.clone())),
+                        ),
+                    ],
+                ),
+                Toast::Failed(message) => (
+                    Icon::Error,
+                    Tint::Danger,
+                    message.clone(),
+                    space().into(),
+                    vec![small_outlined("Close", Some(Message::CloseToast))],
+                ),
+            };
+        let head = row![
+            icon.view(ICON_SIZE, tint),
+            text(title).font(theme::SEMIBOLD).width(Length::Fill)
+        ]
+        .spacing(TOAST_TITLE_GAP)
+        .align_y(Alignment::Center);
+        let buttons = row![space::horizontal()]
+            .extend(actions)
+            .spacing(ACTION_GAP)
+            .align_y(Alignment::Center);
+        Some(
+            container(column![head, detail, buttons].spacing(TOAST_GAP))
+                .padding(TOAST_PADDING)
+                .width(TOAST_WIDTH)
+                .style(theme::panel)
+                .into(),
+        )
     }
 
     fn incoming(&self, id: Uuid) -> Option<&TransferSummary> {
@@ -333,6 +510,11 @@ impl TransferList {
         if let Some(path) = &self.downloaded {
             let actions = row![
                 small_outlined("Show", Some(Message::ShowDownloads)),
+                small_primary(
+                    Icon::Web,
+                    "Open",
+                    Some(Message::OpenDownloaded(path.clone())),
+                ),
                 button(Icon::Close.view(ICON_SIZE, Tint::Muted))
                     .padding(2)
                     .style(theme::tool)
@@ -465,6 +647,13 @@ fn display_download(path: &Path) -> String {
         Some(name) => format!("{}/{}", display_folder(), name.to_string_lossy()),
         None => display_folder(),
     }
+}
+
+/// The line under a toast's title, indented to line up with it.
+fn toast_detail<'a>(detail: String) -> Element<'a, Message> {
+    container(text(detail).size(SECOND_LINE_SIZE).style(theme::muted_text))
+        .padding(iced::Padding::ZERO.left(ICON_SIZE + TOAST_TITLE_GAP))
+        .into()
 }
 
 fn percent(done: u64, total: u64) -> u64 {
@@ -923,6 +1112,65 @@ mod tests {
 
         assert!(token.is_cancelled());
         assert!(list.downloads.is_empty());
+    }
+
+    #[test]
+    fn a_finished_download_offers_to_open_or_show_it() {
+        let mut list = loaded();
+        let _ = list.update(
+            &client(),
+            Message::Downloaded(Uuid::from_u128(1), Ok(PathBuf::from("/d/Home Space/a.pdf"))),
+        );
+        let mut ui = simulator(list.view());
+
+        assert!(ui.find("Downloaded to Downloads/Home Space/a.pdf").is_ok());
+        assert!(ui.find("Show").is_ok());
+        assert!(ui.find("Open").is_ok());
+    }
+
+    #[test]
+    fn a_received_transfer_is_announced_in_a_toast() {
+        let mut list = loaded();
+        let transfer = summary(1, TransferState::Ready, None, 3);
+        let _ = list.update(&client(), Message::Received(transfer));
+        let mut ui = simulator(list.toast().expect("a toast"));
+
+        assert!(ui.find("dana’s MacBook sent you 3 files").is_ok());
+        assert!(ui.find("Later").is_ok());
+        assert!(ui.find("Save").is_ok());
+        assert!(ui.find("Download").is_ok());
+    }
+
+    #[test]
+    fn the_toast_follows_its_download_to_the_end() {
+        let mut list = loaded();
+        let id = Uuid::from_u128(1);
+        list.toast = Some(Toast::Downloading(id));
+
+        let _ = list.update(
+            &client(),
+            Message::Downloaded(id, Ok(PathBuf::from("/d/Home Space/a.pdf"))),
+        );
+        let mut ui = simulator(list.toast().expect("a toast"));
+
+        assert!(ui.find("Downloaded to Downloads/Home Space/a.pdf").is_ok());
+        assert!(ui.find("Open").is_ok());
+    }
+
+    #[test]
+    fn a_toast_goes_once_its_transfer_was_dealt_with() {
+        let mut list = loaded();
+        let _ = list.update(
+            &client(),
+            Message::Received(summary(1, TransferState::Ready, None, 3)),
+        );
+        let lists = Lists {
+            incoming: vec![summary(1, TransferState::Declined, None, 3)],
+            sent: Vec::new(),
+        };
+        let _ = list.update(&client(), Message::Loaded(Ok(lists)));
+
+        assert!(list.toast().is_none());
     }
 
     #[test]

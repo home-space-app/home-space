@@ -93,6 +93,11 @@ impl Client {
         self
     }
 
+    /// The id of the device this client speaks for, if it names one.
+    pub fn device_id(&self) -> Option<uuid::Uuid> {
+        self.device.as_ref().map(|device| device.id)
+    }
+
     /// The hello to send first on the events websocket, naming this client's device so the
     /// server registers it and shows it online; `None` when the client names no device.
     pub fn hello(&self) -> Option<String> {

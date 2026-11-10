@@ -1,15 +1,15 @@
 //! Saving a received transfer into a folder of the user's tree.
 
-use iced::{
-    Alignment, Element, Length, Task,
-    widget::{button, column, container, operation, row, scrollable, text, text_input},
-};
-use iced::widget::Row;
 use api_client::{ApiError, Client};
 use client_core::{
     labels::{HOME, files},
     listing::{Sort, sort_nodes},
     transfers::transfer_size,
+};
+use iced::widget::Row;
+use iced::{
+    Alignment, Element, Length, Task,
+    widget::{button, column, container, operation, row, scrollable, text, text_input},
 };
 use protocol::{Node, NodeId, NodeKind, TransferSummary};
 
