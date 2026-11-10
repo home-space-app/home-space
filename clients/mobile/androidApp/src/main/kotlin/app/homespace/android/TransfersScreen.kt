@@ -59,6 +59,8 @@ private const val MIME_PDF = "application/pdf"
 private const val ACTION_ROW_MAX_LINES = 2
 /** How often the time left in each transfer's row is brought up to date. */
 private const val CLOCK_TICK_MILLIS = 60_000L
+/** The chip of a received transfer still waiting for the user; tapping its row offers what to do. */
+private const val RECEIVED_LABEL = "Received"
 
 /** Everything on its way between this phone and the server: picked files, then what syncs by itself. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -264,9 +266,11 @@ private fun TransferRowLayout(
     title: String,
     detail: String,
     progress: Float?,
+    onClick: (() -> Unit)? = null,
     trailing: @Composable () -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxWidth()) {
+    val tappable = onClick?.let { Modifier.clickable(onClick = it) } ?: Modifier
+    Column(modifier = Modifier.fillMaxWidth().then(tappable)) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -297,7 +301,7 @@ private fun TransferRowLayout(
     }
 }
 
-/** A transfer sent to the user: to save, download or decline while it waits. */
+/** A transfer sent to the user: tapped while it waits, it offers to save, download or decline it. */
 @Composable
 private fun ReceivedRow(row: TransferRow, progress: Float?, onActions: () -> Unit, onStop: () -> Unit) {
     val waiting = row.status == TransferStatus.READY
@@ -310,13 +314,14 @@ private fun ReceivedRow(row: TransferRow, progress: Float?, onActions: () -> Uni
         title = "${row.title} · ${row.sizeLabel}",
         detail = detail,
         progress = progress,
+        onClick = onActions.takeIf { waiting && progress == null },
     ) {
         when {
             progress != null -> IconButton(onClick = onStop) {
                 Icon(painterResource(R.drawable.ic_close), contentDescription = "Stop downloading ${row.title}")
             }
-            waiting -> IconButton(onClick = onActions) {
-                Icon(painterResource(R.drawable.ic_more_vert), contentDescription = "Actions for ${row.title}")
+            waiting -> Box(modifier = Modifier.padding(end = 12.dp)) {
+                StatusChip(RECEIVED_LABEL, ChipTone.NEUTRAL)
             }
             else -> Box(modifier = Modifier.padding(end = 12.dp)) { TransferChip(row) }
         }
