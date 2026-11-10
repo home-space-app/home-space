@@ -28,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -86,13 +87,17 @@ internal fun SendToDevice(
     var sending by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    LaunchedEffect(client) {
+    // Loaded again whenever a device comes online or goes offline, keeping the device picked.
+    val deviceChanges by TransferCenter.devices.collectAsState()
+    LaunchedEffect(client, deviceChanges) {
         try {
             val listed = client.sendTargets()
+            val first = targets == null
             targets = listed
-            chosen = listed.firstOrNull { it.preferred } ?: listed.firstOrNull { it.own }
+            val kept = chosen?.let { old -> listed.firstOrNull { it.deviceId == old.deviceId } }
+            chosen = kept ?: listed.firstOrNull { it.preferred } ?: listed.firstOrNull { it.own }
             // With no other device of one's own, the other users' are all there is to pick.
-            others = listed.isNotEmpty() && listed.none { it.own }
+            if (first) others = listed.isNotEmpty() && listed.none { it.own }
         } catch (_: CoreException.Unauthorized) {
             onSessionEnded()
         } catch (e: CoreException) {

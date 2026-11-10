@@ -10,6 +10,7 @@ use protocol::{Event, Me, Storage};
 use crate::{
     events,
     icon::Icon,
+    incoming::Incoming,
     load, route,
     session::{self, Auth},
 };
@@ -154,6 +155,8 @@ pub fn Sidebar(auth: Auth) -> impl IntoView {
     };
     let in_trash = move || location.pathname.get() == route::TRASH_PATH;
     let in_transfers = move || location.pathname.get().starts_with(route::TRANSFERS_PATH);
+    let incoming = expect_context::<Incoming>();
+    let waiting = Signal::derive(move || incoming.waiting.read().len());
 
     view! {
         <aside class="sidebar">
@@ -180,6 +183,7 @@ pub fn Sidebar(auth: Auth) -> impl IntoView {
                     icon="swap_vert"
                     label="Transfers"
                     active=Signal::derive(in_transfers)
+                    badge=waiting
                 />
             </nav>
             <div class="sidebar__footer">
@@ -190,13 +194,34 @@ pub fn Sidebar(auth: Auth) -> impl IntoView {
     }
 }
 
+/// The most a badge counts to; more shows as `99+`.
+const BADGE_MAX: usize = 99;
+
+/// The number in a badge.
+pub fn badge_text(count: usize) -> String {
+    if count > BADGE_MAX {
+        format!("{BADGE_MAX}+")
+    } else {
+        count.to_string()
+    }
+}
+
+/// What a badge says to a screen reader.
+fn waiting_label(count: usize) -> String {
+    format!("{count} waiting")
+}
+
 #[component]
 fn NavLink(
     href: String,
     icon: &'static str,
     label: &'static str,
     active: Signal<bool>,
+    /// How many things wait for the user there; nothing is shown for none.
+    #[prop(optional, into)]
+    badge: Option<Signal<usize>>,
 ) -> impl IntoView {
+    let count = move || badge.map_or(0, |badge| badge.get());
     view! {
         <a
             href=href
@@ -207,6 +232,11 @@ fn NavLink(
         >
             <Icon name=icon />
             <span class="sidebar__label">{label}</span>
+            <Show when=move || { count() > 0 }>
+                <span class="sidebar__badge" aria-label=move || waiting_label(count())>
+                    {move || badge_text(count())}
+                </span>
+            </Show>
         </a>
     }
 }
@@ -350,6 +380,13 @@ mod tests {
             is_admin,
             external,
         }
+    }
+
+    #[test]
+    fn a_badge_stops_counting_at_99() {
+        assert_eq!(badge_text(3), "3");
+        assert_eq!(badge_text(99), "99");
+        assert_eq!(badge_text(100), "99+");
     }
 
     #[test]

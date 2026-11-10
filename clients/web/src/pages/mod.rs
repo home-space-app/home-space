@@ -25,5 +25,6 @@ pub use oidc_callback::OidcCallback;
 pub use search::SearchPage;
 pub use settings::SettingsPage;
 pub use shell::Shell;
+pub use transfer_save::SaveTransferDialog;
 pub use transfers::{TransferList, TransfersPage};
 pub use trash::TrashPage;

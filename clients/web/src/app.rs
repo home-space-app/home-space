@@ -6,6 +6,7 @@ use leptos_router::{
 
 use crate::{
     events,
+    incoming::{self, IncomingToast},
     pages::{
         AdminPage, Browser, DevicesPage, Login, OidcCallback, SearchPage, SettingsPage, Shell,
         TransferList, TransfersPage, TrashPage,
@@ -20,6 +21,7 @@ pub fn App() -> impl IntoView {
     let uploads = RwSignal::new(Vec::<UploadItem>::new());
     provide_context(uploads);
     provide_context(Sending(RwSignal::new(Default::default())));
+    incoming::provide_incoming();
     let hub = events::provide_hub();
     Effect::new(move |_| {
         if auth.user.read().is_some() {
@@ -73,7 +75,10 @@ pub fn App() -> impl IntoView {
                 </Routes>
             </Show>
             <Show when=move || auth.user.read().is_some()>
-                <UploadPanel uploads />
+                <div class="corner">
+                    <IncomingToast auth />
+                    <UploadPanel uploads />
+                </div>
             </Show>
         </Router>
     }
