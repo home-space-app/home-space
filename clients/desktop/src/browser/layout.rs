@@ -12,7 +12,7 @@ use protocol::Node;
 
 use super::{
     Menu, Message, Page, State, anchor::Anchor, context_menu, context_menu::Placement, devices,
-    dialogs, grid, parts, search, sidebar, sync_queue, syncing, toolbar, toolbar::SyncChip,
+    dialogs, grid, parts, search, send, sidebar, sync_queue, syncing, toolbar, toolbar::SyncChip,
     transfer_list, transfer_save,
 };
 use crate::{
@@ -105,6 +105,12 @@ impl State {
             layers.push(modal(
                 dialog.view().map(Message::Dialog),
                 Message::Dialog(dialogs::Message::Cancel),
+            ));
+        }
+        if let Some(send) = &self.send {
+            layers.push(modal(
+                send.view().map(Message::Send),
+                Message::Send(send::Message::Cancel),
             ));
         }
         match &self.page {

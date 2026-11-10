@@ -93,6 +93,66 @@ impl Client {
         Fut: Future<Output = std::io::Result<Vec<u8>>>,
         P: Fn(u64),
     {
+        self.send_chunks(session, size, &read, &progress, Ends::WithNode)
+            .await?
+            .ok_or_else(|| ApiError::Transport("the upload ended without a file".to_owned()))
+    }
+
+    /// Uploads the `size` bytes of the file `item` of a transfer the user is sending, in chunks
+    /// retried like [`Client::upload_resumable`]. The file becomes part of the transfer, never
+    /// a node; a failed upload is cancelled.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn upload_transfer_item<R, Fut, P>(
+        &self,
+        item: Uuid,
+        name: &str,
+        size: u64,
+        read: R,
+        progress: P,
+    ) -> Result<(), ApiError>
+    where
+        R: Fn(u64, usize) -> Fut,
+        Fut: Future<Output = std::io::Result<Vec<u8>>>,
+        P: Fn(u64),
+    {
+        let request = CreateUpload {
+            parent_id: None,
+            name: name.to_owned(),
+            size,
+            modified_at: None,
+            mime: None,
+            node_id: None,
+            keep_both: false,
+            version_of: None,
+            auto_upload: false,
+            transfer_item_id: Some(item),
+        };
+        let session = self.create_upload(&request).await?;
+        let result = self
+            .send_chunks(session, size, &read, &progress, Ends::AtSize)
+            .await;
+        if result.is_err() {
+            let _ = self.cancel_upload(session.id).await;
+        }
+        result.map(drop)
+    }
+
+    /// Sends chunks of `session` from its offset until the upload ends as `ends` says: with
+    /// the stored node, or once the server has all `size` bytes (answering `None`).
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn send_chunks<R, Fut, P>(
+        &self,
+        session: UploadSession,
+        size: u64,
+        read: &R,
+        progress: &P,
+        ends: Ends,
+    ) -> Result<Option<Node>, ApiError>
+    where
+        R: Fn(u64, usize) -> Fut,
+        Fut: Future<Output = std::io::Result<Vec<u8>>>,
+        P: Fn(u64),
+    {
         let chunk_size = session.chunk_size.min(self.upload_chunk_bytes()).max(1);
         let mut offset = session.offset;
         let mut failures = 0;
@@ -107,7 +167,10 @@ impl Client {
                     failures = 0;
                     progress(result.offset);
                     if let Some(node) = result.node {
-                        return Ok(node);
+                        return Ok(Some(node));
+                    }
+                    if ends == Ends::AtSize && result.offset >= size {
+                        return Ok(None);
                     }
                     offset = result.offset;
                 }
@@ -123,6 +186,16 @@ impl Client {
             }
         }
     }
+}
+
+/// How the server says a chunked upload is complete.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ends {
+    /// The last chunk answers the stored node.
+    WithNode,
+    /// A file of a transfer never becomes a node: it is complete once all its bytes are in.
+    AtSize,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -358,6 +431,59 @@ mod tests {
 
         let fallback = usize::try_from(crate::FALLBACK_UPLOAD_CHUNK_BYTES).expect("fits");
         assert_eq!(*lengths.lock().expect("lock"), [fallback, 10]);
+    }
+
+    #[tokio::test]
+    async fn a_transfer_item_is_done_once_the_server_has_every_byte() {
+        const ITEM: &str = "0193a4a0-0000-7000-8000-0000000000bb";
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(paths::UPLOADS))
+            .and(wiremock::matchers::body_partial_json(
+                json!({ "transfer_item_id": ITEM, "size": 5 }),
+            ))
+            .respond_with(
+                ResponseTemplate::new(201)
+                    .set_body_json(json!({ "id": ID, "offset": 0, "size": 5, "chunk_size": 3 })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let offsets = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = offsets.clone();
+        Mock::given(method("PATCH"))
+            .and(path(format!("{}/{ID}", paths::UPLOADS)))
+            .respond_with(move |request: &Request| {
+                let offset: u64 = request.headers["upload-offset"]
+                    .to_str()
+                    .expect("header")
+                    .parse()
+                    .expect("offset");
+                seen.lock().expect("lock").push(offset);
+                let offset = offset + request.body.len() as u64;
+                ResponseTemplate::new(200).set_body_json(json!({ "offset": offset }))
+            })
+            .mount(&server)
+            .await;
+        let client = Client::new(server.uri());
+        client.store(TokenPair {
+            access_token: "token".to_owned(),
+            refresh_token: "refresh".to_owned(),
+            expires_in: 900,
+        });
+
+        client
+            .upload_transfer_item(
+                ITEM.parse().expect("id"),
+                "a.txt",
+                5,
+                |_, len| async move { Ok(vec![0; len]) },
+                |_| (),
+            )
+            .await
+            .expect("upload");
+
+        assert_eq!(*offsets.lock().expect("lock"), [0, 3]);
     }
 
     #[test]

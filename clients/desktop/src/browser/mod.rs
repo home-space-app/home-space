@@ -13,6 +13,7 @@ mod lost_and_found;
 pub(crate) mod parts;
 mod search;
 mod selection;
+mod send;
 mod sidebar;
 mod sync_queue;
 mod syncing;
@@ -22,7 +23,10 @@ mod transfer_save;
 mod trash;
 mod visibility;
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use iced::{
     Size, Subscription, Task, event,
@@ -52,7 +56,7 @@ use self::{
 };
 use crate::{
     events, sync,
-    transfers::{self, Batch, Direction, DownloadFile, Transfers, UploadPlan},
+    transfers::{self, Batch, Direction, DownloadFile, SendFile, Transfers, UploadPlan},
 };
 
 const DEFAULT_WINDOW: Size = Size::new(1280.0, 800.0);
@@ -87,6 +91,9 @@ pub enum Message {
     Act(Action),
     NewFolder,
     Upload,
+    /// Opens the dialog sending files of this computer to a device.
+    SendLocal,
+    Send(send::Message),
     UploadPlanned(Option<NodeId>, Result<UploadPlan, String>),
     DownloadPlanned(Result<Vec<DownloadFile>, String>),
     Dialog(dialogs::Message),
@@ -158,6 +165,8 @@ pub struct State {
     window: Size,
     menu: Option<Menu>,
     dialog: Option<Dialog>,
+    /// The dialog sending files to a device, while it is open.
+    send: Option<send::SendDialog>,
     details: Option<details::State>,
     page: Page,
     transfers: Transfers,
@@ -182,6 +191,7 @@ impl State {
             window: DEFAULT_WINDOW,
             menu: None,
             dialog: None,
+            send: None,
             details: None,
             page: Page::Folder,
             transfers: Transfers::default(),
@@ -312,6 +322,8 @@ impl State {
                 task.map(Message::Dialog)
             }
             Message::Upload => self.pick_upload(),
+            Message::SendLocal => self.open_send(send::Source::Local),
+            Message::Send(message) => self.send_update(message),
             Message::UploadPlanned(parent, Ok(plan)) if !plan.is_empty() => self
                 .transfers
                 .enqueue(&self.client, Batch::Upload { parent, plan })
@@ -377,7 +389,8 @@ impl State {
                 Task::none()
             }
             Message::FileHovered => {
-                self.dropping = self.dialog.is_none() && !self.in_lost_and_found();
+                self.dropping =
+                    self.dialog.is_none() && self.send.is_none() && !self.in_lost_and_found();
                 Task::none()
             }
             Message::FilesHoveredLeft => {
@@ -386,7 +399,9 @@ impl State {
             }
             Message::FileDropped(path) => {
                 self.dropping = false;
-                if self.dialog.is_none() && !self.in_lost_and_found() {
+                if let Some(send) = &self.send {
+                    send.add_paths(vec![path]).map(Message::Send)
+                } else if self.dialog.is_none() && !self.in_lost_and_found() {
                     files::plan_upload(self.folder.id, vec![path])
                 } else {
                     Task::none()
@@ -663,6 +678,7 @@ impl State {
             }
             (Action::Open | Action::OpenFile | Action::Rename | Action::Details, _) => Task::none(),
             (Action::Download, _) => files::download(&self.client, selected),
+            (Action::Send, _) => self.open_send(send::Source::Nodes(selected)),
             (Action::Move, _) => {
                 let (dialog, task) =
                     Dialog::move_nodes(&self.client, selected, self.me.lost_and_found_id);
@@ -765,8 +781,64 @@ impl State {
         }
     }
 
+    fn open_send(&mut self, source: send::Source) -> Task<Message> {
+        self.menu = None;
+        let (dialog, task) = send::SendDialog::open(&self.client, source);
+        self.send = Some(dialog);
+        task.map(Message::Send)
+    }
+
+    fn send_update(&mut self, message: send::Message) -> Task<Message> {
+        let Some(dialog) = &mut self.send else {
+            return Task::none();
+        };
+        match dialog.update(&self.client, message) {
+            send::Outcome::Task(task) => task.map(Message::Send),
+            send::Outcome::Closed => {
+                self.send = None;
+                Task::none()
+            }
+            send::Outcome::Sent {
+                created,
+                files,
+                label,
+            } => {
+                self.send = None;
+                let mut by_path: HashMap<String, SendFile> = files
+                    .into_iter()
+                    .map(|file| (file.path.clone(), file))
+                    .collect();
+                let uploads: Vec<_> = created
+                    .items
+                    .iter()
+                    .filter(|item| item.upload_needed)
+                    .filter_map(|item| Some((item.id, by_path.remove(&item.path)?)))
+                    .collect();
+                let upload = if uploads.is_empty() {
+                    self.transfers.note_sent(label);
+                    Task::none()
+                } else {
+                    self.transfers
+                        .enqueue(&self.client, Batch::Send(uploads))
+                        .map(Message::Transfer)
+                };
+                let listed = self
+                    .transfer_list
+                    .load(&self.client)
+                    .map(Message::Transfers);
+                Task::batch([upload, listed])
+            }
+        }
+    }
+
     fn shortcut(&mut self, shortcut: Shortcut) -> Task<Message> {
-        if self.dialog.is_some() {
+        if self.send.is_some() {
+            match shortcut {
+                Shortcut::Escape => self.send_update(send::Message::Cancel),
+                Shortcut::Activate => self.send_update(send::Message::Submit),
+                _ => Task::none(),
+            }
+        } else if self.dialog.is_some() {
             match shortcut {
                 Shortcut::Escape => self.dialog_update(dialogs::Message::Cancel),
                 Shortcut::Activate => self.dialog_update(dialogs::Message::Submit),
