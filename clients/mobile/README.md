@@ -192,6 +192,33 @@ with its progress, Retry and Cancel; each
 auto-upload source, with the file on its way and how far along it is; and how offline copies stand.
 Downloads aren't listed, since they show on their rows and run only while the app is open.
 
+### Send to device (Android)
+
+On Android, **Transfers** also lists what was sent to the user's devices (**Received**) and what the
+user sent (**Sent**); see [`docs/send-to-device.md`](../../docs/send-to-device.md). iOS does not
+have this yet. `mobile-core/src/transfers.rs` holds the calls, with the same words as the desktop
+and web clients.
+
+- **Receiving**: a waiting transfer's menu offers **Save** (the server moves it into a folder of
+  the user's tree), **Download** (to `Download/Home Space` on the phone, through MediaStore; each
+  file is checked against its hash before the server is told to drop its copy) and **Decline**.
+  Before Android 10 the download goes to the app's own folder on shared storage, since the public
+  one needs a permission the app does not ask for.
+- **Sending**: **Send to device…** in a row's menu and in the selection's More menu sends files and
+  folders of the server, which copies them itself. **New > Send files to a device** sends files
+  of the phone.
+- **Share sheet**: `ShareActivity` takes `SEND` and `SEND_MULTIPLE` from other apps, such as a mail
+  attachment, and offers **Save** (a folder picker; the files then go through the upload queue) and
+  **Send** (the device picker). The files are copied into the app first, because access to a shared
+  file ends with the screen it was shared to. Only `content:` URIs are accepted.
+- A send from the phone runs in the process, kept alive by `SendWorker`'s notification. It does
+  not resume if Android ends the process: the transfer then stays `uploading` until it is
+  cancelled from **Sent** or expires.
+- The server pushes `transfer_received` only while the app is open. A notification for a transfer
+  sent to this phone is shown then, after each reconnect, and from background sync when that is on.
+  There is no push service, so with the app closed and background sync off nothing is shown until
+  the app is next opened.
+
 ## Auto-upload
 
 Settings > Sync marks local folders that upload to a folder on the server. New and changed files go

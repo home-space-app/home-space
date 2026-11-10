@@ -63,6 +63,8 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                         delay(SETTLE_MILLIS)
                     }
                     session.client.offlinePass()
+                    // No socket is open in the background, so this is how a transfer gets noticed.
+                    runCatching { notifyIncoming(applicationContext, session.client.transfers().received) }
                     // Nothing watches the network once this job ends. An open app allows it again.
                     session.client.offlineAllow(false)
                 } finally {

@@ -693,7 +693,7 @@ final class SessionModel {
             changes.folders.insert(parentId)
         case .resync:
             changes.resync = true
-        case .trashChanged, .devicesChanged:
+        case .trashChanged, .devicesChanged, .transfersChanged:
             return
         }
         pendingChanges = changes
