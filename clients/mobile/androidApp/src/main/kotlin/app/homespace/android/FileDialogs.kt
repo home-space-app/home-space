@@ -1,5 +1,7 @@
 package app.homespace.android
 
+import android.net.Uri
+import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -42,6 +44,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -49,6 +52,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextRange
@@ -58,7 +62,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import uniffi.homespace_core.ConflictSide
 import uniffi.homespace_core.CoreClient
 import uniffi.homespace_core.CoreException
@@ -69,12 +75,15 @@ import uniffi.homespace_core.EntryKind
 import uniffi.homespace_core.MoveMode
 import uniffi.homespace_core.MoveResult
 import uniffi.homespace_core.alreadyIn
+import uniffi.homespace_core.sendSummary
 
 private val CONFLICTS_HEIGHT = 240.dp
 private val DETAILS_TILE_SIZE = 72.dp
 private val PICKER_ROW_HEIGHT = 56.dp
 private const val WORKING = "Working…"
 private const val HOME = "Home"
+/** How many names a summary of shared files spells out. */
+private const val SUMMARY_NAMES = 3
 
 /** The dialog the browser is showing. */
 sealed interface FileAction {
@@ -84,6 +93,10 @@ sealed interface FileAction {
     data class Delete(val entries: List<Entry>) : FileAction
     /** A new folder in the folder `parentId`, or Home when null. */
     data class NewFolder(val parentId: String?) : FileAction
+    /** Files and folders of the server, to send to a device. */
+    data class Send(val entries: List<Entry>) : FileAction
+    /** Files picked on this phone, to send to a device. */
+    data class SendLocal(val files: List<Uri>) : FileAction
 }
 
 /** Shows the dialog of `action`. `onDone` means something changed, so the folder is out of date. */
@@ -116,7 +129,112 @@ internal fun FileDialog(
         )
         is FileAction.Move -> MoveDialog(action.entries, client, onDismiss, onDone, onSessionEnded)
         is FileAction.Delete -> DeleteDialog(action.entries, client, onDismiss, onDone, onSessionEnded)
+        is FileAction.Send -> {
+            val context = LocalContext.current
+            SendToDeviceDialog(
+                summary = action.entries.joinToString(", ") { it.name },
+                client = client,
+                send = { target ->
+                    client.sendEntries(action.entries, target.userId, target.deviceId)
+                    TransferCenter.changed()
+                },
+                onDismiss = onDismiss,
+                onSent = { target ->
+                    Toast.makeText(context, "Sent to ${target.recipient}", Toast.LENGTH_LONG).show()
+                    onDone()
+                },
+                onSessionEnded = onSessionEnded,
+            )
+        }
+        is FileAction.SendLocal -> SendLocalDialog(action.files, client, onDismiss, onSessionEnded)
     }
+}
+
+/** Sends files picked on this phone, which go up in the background once a device is chosen. */
+@Composable
+private fun SendLocalDialog(
+    files: List<Uri>,
+    client: CoreClient,
+    onDismiss: () -> Unit,
+    onSessionEnded: () -> Unit,
+) {
+    val context = LocalContext.current
+    val shared by produceState<SharedFiles?>(null, files) {
+        value = withContext(Dispatchers.IO) { describeShared(context, files) }
+    }
+    val described = shared ?: return
+    SendToDeviceDialog(
+        summary = sharedSummary(described),
+        client = client,
+        send = { target ->
+            val prepared = withContext(Dispatchers.IO) { prepareSend(context, described) }
+            TransferCenter.send(context, client, prepared, target)
+        },
+        onDismiss = onDismiss,
+        onSent = { target ->
+            Toast.makeText(context, "Sending to ${target.recipient}", Toast.LENGTH_LONG).show()
+            onDismiss()
+        },
+        onSessionEnded = onSessionEnded,
+    )
+}
+
+/** What was picked or shared, counted and named: `3 files · 9.4 MB · a.jpg, b.jpg, c.jpg`. */
+internal fun sharedSummary(shared: SharedFiles): String {
+    val names = shared.names.take(SUMMARY_NAMES).joinToString(", ")
+    val more = (shared.names.size - SUMMARY_NAMES).takeIf { it > 0 }?.let { " and $it more" }.orEmpty()
+    val counted = sendSummary(shared.names.size.toUInt(), shared.bytes.toULong())
+    // Not every app that shares a file says how big it is.
+    val what = if (shared.bytes > 0) counted else counted.substringBefore(" · ")
+    return "$what · $names$more"
+}
+
+/**
+ * Chooses the folder on the server that something is saved into. `save` gets the folder's id, null
+ * for Home, and its name.
+ */
+@Composable
+internal fun SaveToFolderDialog(
+    summary: String,
+    client: CoreClient,
+    save: suspend (folder: String?, name: String) -> Unit,
+    onDismiss: () -> Unit,
+    onSaved: (name: String) -> Unit,
+    onSessionEnded: () -> Unit,
+) {
+    var trail by remember { mutableStateOf(emptyList<Crumb>()) }
+    var saving by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val folder = trail.lastOrNull()?.name ?: HOME
+    FolderPickerDialog(
+        title = "Save to",
+        summary = summary,
+        trail = trail,
+        onTrailChange = { trail = it },
+        client = client,
+        hidden = emptyList(),
+        confirm = if (saving) "Saving…" else "Save to $folder",
+        canConfirm = !saving,
+        error = error,
+        onConfirm = {
+            saving = true
+            error = null
+            scope.launch {
+                try {
+                    save(trail.lastOrNull()?.id, folder)
+                    onSaved(folder)
+                } catch (_: CoreException.Unauthorized) {
+                    onSessionEnded()
+                } catch (e: CoreException) {
+                    error = e.fileMessage()
+                    saving = false
+                }
+            }
+        },
+        onDismiss = onDismiss,
+        onSessionEnded = onSessionEnded,
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

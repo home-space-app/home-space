@@ -20,6 +20,7 @@ mod autoupload;
 mod events;
 mod files;
 mod offline;
+mod transfers;
 mod uploads;
 
 pub use autoupload::{
@@ -29,6 +30,7 @@ pub use autoupload::{
 pub use events::{EventStream, EventsListener, LiveEvent};
 pub use files::DownloadListener;
 pub use offline::{OfflineProblem, OfflineState, OfflineStatus};
+pub use transfers::{SendFile, SendTarget, TransferLists, TransferRow, TransferStatus};
 
 uniffi::setup_scaffolding!();
 
@@ -338,6 +340,9 @@ pub struct CoreClient {
     /// The signed-in user's Lost & Found, which Home leaves out while it is empty.
     lost_and_found: Mutex<Option<NodeId>>,
     files: Arc<files::LocalFiles>,
+    /// The device this client signs in as, if it names one.
+    device: Option<uuid::Uuid>,
+    transfers: Arc<transfers::Running>,
 }
 
 #[uniffi::export]
@@ -358,6 +363,7 @@ impl CoreClient {
         files_dir: String,
     ) -> Result<Self, CoreError> {
         let device = device_info(device)?;
+        let device_id = device.id;
         let inner = api_client::Client::with_listener(
             base_url.trim_end_matches('/'),
             Arc::new(move |token: Option<&str>| {
@@ -366,6 +372,7 @@ impl CoreClient {
         )
         .with_device(device);
         let mut client = Self::wrapping(inner);
+        client.device = Some(device_id);
         client.files = Arc::new(files::LocalFiles::new(PathBuf::from(files_dir)));
         Ok(client)
     }
@@ -632,6 +639,7 @@ impl CoreClient {
     pub async fn logout(&self) -> Result<(), CoreError> {
         let inner = self.inner.clone();
         let files = self.files.clone();
+        self.transfers.cancel_all();
         off_ui_thread(async move {
             files.cancel_all();
             let unfinished = files.wipe().await;
@@ -651,6 +659,8 @@ impl CoreClient {
             inner,
             lost_and_found: Mutex::new(None),
             files: Arc::default(),
+            device: None,
+            transfers: Arc::default(),
         }
     }
 

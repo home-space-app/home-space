@@ -53,6 +53,21 @@
                     android:scheme="app.homespace" />
             </intent-filter>
         </activity>
+        <!-- Offered when another app shares files: saves them to the server or sends them to a
+             device. Its own task, so it closes back to the app that shared. -->
+        <activity
+            android:name=".ShareActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:taskAffinity="">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
         <!-- WorkManager's service for a long upload; it declares no type of its own. -->
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"

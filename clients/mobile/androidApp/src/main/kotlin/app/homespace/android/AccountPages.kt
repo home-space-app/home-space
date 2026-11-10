@@ -34,6 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -47,6 +48,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import uniffi.homespace_core.CoreException
 import uniffi.homespace_core.QueuedUploadState
+import uniffi.homespace_core.TransferStatus
 import uniffi.homespace_core.UserDevice
 
 private const val PLATFORM_ANDROID = "android"
@@ -79,11 +81,21 @@ fun SignedInScreen(session: Session.SignedIn, model: SessionViewModel) {
     val navigationBar = @Composable {
         HomeSpaceNavigationBar(
             selected = tab,
-            failedUploads = model.uploads.count { it.state == QueuedUploadState.FAILED },
+            // What needs the user: uploads that failed, and transfers waiting to be received.
+            failedUploads = model.uploads.count { it.state == QueuedUploadState.FAILED } +
+                model.received.count { it.status == TransferStatus.READY && it.id !in TransferCenter.progress },
             onSelect = { tab = it },
         )
     }
     val closePage = { page = null }
+    // A transfer's notification opens the list it is in.
+    if (model.showTransfers) {
+        LaunchedEffect(Unit) {
+            page = null
+            tab = Tab.TRANSFERS
+            model.showTransfers = false
+        }
+    }
     when (page) {
         SubPage.PROFILE -> ProfileScreen(session, model, closePage)
         SubPage.UPLOAD_FOLDERS -> UploadFoldersScreen(session, model, closePage)
@@ -145,7 +157,6 @@ private fun HomeSpaceNavigationBar(selected: Tab, failedUploads: Int, onSelect: 
                             contentDescription = null,
                         )
                     }
-                    // Only failures: they are what needs the user, and uploads going fine don't.
                     if (tab == Tab.TRANSFERS && failedUploads > 0) {
                         BadgedBox(badge = { Badge { Text(failedUploads.toString()) } }) { icon() }
                     } else {
@@ -292,7 +303,7 @@ private fun platformLabel(platform: String): String = when (platform) {
     else -> platform
 }
 
-private fun platformIcon(platform: String): Int = when (platform) {
+internal fun platformIcon(platform: String): Int = when (platform) {
     PLATFORM_ANDROID, PLATFORM_IOS -> R.drawable.ic_smartphone
     PLATFORM_WEB -> R.drawable.ic_language
     else -> R.drawable.ic_laptop

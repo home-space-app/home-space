@@ -58,13 +58,14 @@ pub enum LiveEvent {
     TrashChanged,
     /// A device of the user came online, went offline, or was renamed or signed out.
     DevicesChanged,
+    /// A transfer arrived for the user, or one they sent or received changed: reload the lists.
+    TransfersChanged,
     /// Events may have been missed: reload whatever is shown.
     Resync,
 }
 
 impl LiveEvent {
-    /// The event the apps are told about; `None` for those they do not follow yet, such as
-    /// transfers to a device.
+    /// The event the apps are told about.
     fn from_event(event: Event) -> Option<Self> {
         Some(match event {
             Event::NodeCreated { node } | Event::NodeUpdated { node } => Self::NodeChanged {
@@ -78,7 +79,9 @@ impl LiveEvent {
             Event::TrashChanged => Self::TrashChanged,
             Event::DevicesChanged => Self::DevicesChanged,
             Event::Resync => Self::Resync,
-            Event::TransferReceived { .. } | Event::TransferChanged { .. } => return None,
+            Event::TransferReceived { .. } | Event::TransferChanged { .. } => {
+                Self::TransfersChanged
+            }
         })
     }
 }

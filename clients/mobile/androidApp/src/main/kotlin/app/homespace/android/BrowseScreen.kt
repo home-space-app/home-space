@@ -119,7 +119,7 @@ private const val ANY_FILE = "*/*"
 
 /** What a row's menu can ask for. */
 internal enum class RowAction {
-    OPEN, SHOW_IN_FOLDER, SAVE, EDIT, KEEP_OFFLINE, DETAILS, RENAME, MOVE, DELETE, REMOVE_OFFLINE, CANCEL_DOWNLOAD
+    OPEN, SHOW_IN_FOLDER, SAVE, SEND, EDIT, KEEP_OFFLINE, DETAILS, RENAME, MOVE, DELETE, REMOVE_OFFLINE, CANCEL_DOWNLOAD
 }
 
 /** Folder browsing through the Rust client (`clients/mobile-core`). */
@@ -156,6 +156,11 @@ fun BrowseScreen(
                 askNotifications.launch(android.Manifest.permission.POST_NOTIFICATIONS)
             }
         }
+    }
+    val pickToSend = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments(),
+    ) { files ->
+        if (files.isNotEmpty()) action = FileAction.SendLocal(files)
     }
     val saveTo = rememberLauncherForActivityResult(SaveDocument()) { destination ->
         val entry = model.pendingSave
@@ -243,6 +248,7 @@ fun BrowseScreen(
                 model.pendingSave = entry
                 saveTo.launch(entry)
             }
+            RowAction.SEND -> action = FileAction.Send(listOf(entry))
             RowAction.EDIT -> model.openFile(session, entry, edit = true)
             RowAction.KEEP_OFFLINE -> model.makeAvailableOffline(session, entry)
             RowAction.DETAILS -> action = FileAction.Details(entry)
@@ -374,6 +380,10 @@ fun BrowseScreen(
                     adding = false
                     pickFiles.launch(arrayOf(ANY_FILE))
                 },
+                onSend = {
+                    adding = false
+                    pickToSend.launch(arrayOf(ANY_FILE))
+                },
             )
         }
     }
@@ -477,10 +487,18 @@ private fun SelectionToolbar(
                 ToolbarItem(
                     "More",
                     R.drawable.ic_more_vert,
-                    enabled = single != null || kept.isNotEmpty(),
+                    enabled = true,
                     Modifier.fillMaxSize(),
                 ) { more = true }
                 DropdownMenu(expanded = more, onDismissRequest = { more = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Send to device…") },
+                        leadingIcon = { Icon(painterResource(R.drawable.ic_send), contentDescription = null) },
+                        onClick = {
+                            more = false
+                            onAction(FileAction.Send(chosen))
+                        },
+                    )
                     single?.let { entry ->
                         DropdownMenuItem(
                             text = { Text("Rename") },
@@ -532,7 +550,13 @@ private fun ToolbarItem(label: String, icon: Int, enabled: Boolean, modifier: Mo
 
 /** The FAB menu: what the New button adds to the folder on screen, over a scrim. */
 @Composable
-private fun AddMenu(visible: Boolean, onDismiss: () -> Unit, onNewFolder: () -> Unit, onUpload: () -> Unit) {
+private fun AddMenu(
+    visible: Boolean,
+    onDismiss: () -> Unit,
+    onNewFolder: () -> Unit,
+    onUpload: () -> Unit,
+    onSend: () -> Unit,
+) {
     BackHandler(enabled = visible, onBack = onDismiss)
     AnimatedVisibility(visible = visible, enter = fadeIn(), exit = fadeOut()) {
         val navigationBars = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
@@ -549,6 +573,13 @@ private fun AddMenu(visible: Boolean, onDismiss: () -> Unit, onNewFolder: () -> 
                 horizontalAlignment = Alignment.End,
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
+                ExtendedFloatingActionButton(
+                    onClick = onSend,
+                    icon = { Icon(painterResource(R.drawable.ic_send), contentDescription = null) },
+                    text = { Text("Send files to a device") },
+                    modifier = Modifier.semantics { contentDescription = "Send files to a device" },
+                    shape = CircleShape,
+                )
                 ExtendedFloatingActionButton(
                     onClick = onUpload,
                     icon = { Icon(painterResource(R.drawable.ic_upload_file), contentDescription = null) },
@@ -785,6 +816,7 @@ private fun RowMenu(
                 item("Edit in another app", R.drawable.ic_edit_document, RowAction.EDIT)
                 item("Save to…", R.drawable.ic_download, RowAction.SAVE)
             }
+            if (!downloading) item("Send to device…", R.drawable.ic_send, RowAction.SEND)
             if (entry.offlineKept && !downloading) {
                 item("Remove offline copy", R.drawable.ic_download_off, RowAction.REMOVE_OFFLINE)
             } else if (entry.offlineState == null && !downloading) {
@@ -843,8 +875,9 @@ internal fun OfflineChip(state: OfflineState?, kept: String) {
     }
 }
 
+/** An action of a bottom sheet; `hint` says at its end what it leads to. */
 @Composable
-private fun ActionItem(label: String, icon: Int, color: Color, onClick: () -> Unit) {
+internal fun ActionItem(label: String, icon: Int, color: Color, hint: String? = null, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -859,7 +892,14 @@ private fun ActionItem(label: String, icon: Int, color: Color, onClick: () -> Un
             contentDescription = null,
             tint = if (color == MaterialTheme.colorScheme.error) color else MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Text(label, style = MaterialTheme.typography.bodyLarge, color = color)
+        Text(label, style = MaterialTheme.typography.bodyLarge, color = color, modifier = Modifier.weight(1f))
+        hint?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 

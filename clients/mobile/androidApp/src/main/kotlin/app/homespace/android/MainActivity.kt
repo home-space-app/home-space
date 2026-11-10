@@ -101,5 +101,10 @@ class MainActivity : ComponentActivity() {
         if (intent?.action == Intent.ACTION_VIEW) {
             intent.dataString?.let(model::onSsoCallback)
         }
+        if (intent?.getBooleanExtra(EXTRA_SHOW_TRANSFERS, false) == true) {
+            // Once: turning the phone must not bring the tab back.
+            intent.removeExtra(EXTRA_SHOW_TRANSFERS)
+            model.showTransfers = true
+        }
     }
 }

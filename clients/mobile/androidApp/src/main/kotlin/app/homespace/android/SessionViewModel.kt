@@ -38,6 +38,7 @@ import uniffi.homespace_core.QueuedUpload
 import uniffi.homespace_core.SessionListener
 import uniffi.homespace_core.SignInOptions
 import uniffi.homespace_core.SignedInUser
+import uniffi.homespace_core.TransferRow
 import uniffi.homespace_core.normalizeServerUrl
 
 /** The server on the host machine, as seen from the emulator. */
@@ -110,6 +111,18 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
     /** The files picked to upload, in the order they go up. */
     val uploads = mutableStateListOf<QueuedUpload>()
     private var uploadWatch: Job? = null
+
+    /** What was sent to the user, and what the user sent, the newest first. */
+    val received = mutableStateListOf<TransferRow>()
+    val sent = mutableStateListOf<TransferRow>()
+
+    /** Why the transfers couldn't be listed, such as a server from before it had them. */
+    var transfersError by mutableStateOf<String?>(null)
+        private set
+
+    /** Set to bring the Transfers tab to the front, as a transfer's notification does. */
+    var showTransfers by mutableStateOf(false)
+    private var transferWatch: Job? = null
 
     /** The folder on screen is reloaded whenever this changes. */
     var reloadKey by mutableIntStateOf(0)
@@ -434,6 +447,75 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    /** Lists the transfers again, and tells the user about any new one for this phone. */
+    fun loadTransfers() {
+        val current = session as? Session.SignedIn ?: return
+        viewModelScope.launch {
+            try {
+                val lists = current.client.transfers()
+                if (session !== current) return@launch
+                received.clear()
+                received.addAll(lists.received)
+                sent.clear()
+                sent.addAll(lists.sent)
+                transfersError = null
+                notifyIncoming(getApplication(), lists.received)
+            } catch (_: CoreException.Unauthorized) {
+                if (session === current) onSessionEnded()
+            } catch (e: CoreException) {
+                transfersError = e.fileMessage()
+            }
+        }
+    }
+
+    /** Saves a received transfer to the phone's Download folder. */
+    fun downloadTransfer(session: Session.SignedIn, row: TransferRow) {
+        TransferCenter.download(getApplication(), session.client, row) {
+            if (this.session === session) onSessionEnded()
+        }
+    }
+
+    fun stopTransferDownload(session: Session.SignedIn, row: TransferRow) {
+        runCatching { session.client.stopTransferDownload(row.id) }
+    }
+
+    fun declineTransfer(session: Session.SignedIn, row: TransferRow) =
+        changeTransfer(session) { session.client.declineTransfer(row.id) }
+
+    /** Takes back a transfer the user sent. */
+    fun cancelTransfer(session: Session.SignedIn, row: TransferRow) =
+        changeTransfer(session) { session.client.cancelTransfer(row.id) }
+
+    private fun changeTransfer(current: Session.SignedIn, change: suspend () -> Unit) {
+        viewModelScope.launch {
+            try {
+                change()
+            } catch (_: CoreException.Unauthorized) {
+                if (session === current) onSessionEnded()
+            } catch (e: CoreException) {
+                toast("Failed: ${e.fileMessage()}")
+            }
+            loadTransfers()
+        }
+    }
+
+    private fun watchTransfers() {
+        transferWatch?.cancel()
+        // Collecting starts with the current value, which lists them for the first time.
+        transferWatch = viewModelScope.launch {
+            TransferCenter.changes.collect { loadTransfers() }
+        }
+    }
+
+    private fun forgetTransfers() {
+        transferWatch?.cancel()
+        transferWatch = null
+        received.clear()
+        sent.clear()
+        transfersError = null
+        forgetIncomingNotices(getApplication())
+    }
+
     /**
      * Adds the files to the uploads; they go up one at a time, whichever folder is on screen, and
      * carry on when the app next opens. Access to each is kept until it has been copied.
@@ -533,6 +615,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
         store.forgetSession()
         downloads.clear()
         forgetUploads()
+        forgetTransfers()
         endSync()
         backToForm()
         if (current is Session.SignedIn) {
@@ -558,6 +641,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
         store.forgetSession()
         downloads.clear()
         forgetUploads()
+        forgetTransfers()
         endSync()
         backToForm()
         if (current is Session.SignedIn) {
@@ -605,6 +689,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
             override fun event(event: LiveEvent) {
                 viewModelScope.launch {
                     if (event is LiveEvent.DevicesChanged || event is LiveEvent.Resync) devicesKey++
+                    if (event is LiveEvent.TransfersChanged || event is LiveEvent.Resync) loadTransfers()
                     _liveEvents.emit(event)
                 }
             }
@@ -662,6 +747,8 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
         }
         startEvents()
         watchUploads(active)
+        watchTransfers()
+        TransferCenter.sweep(getApplication())
         runCatching { applyBackgroundSetting(getApplication(), active.autoUpload.settings()) }
     }
 
