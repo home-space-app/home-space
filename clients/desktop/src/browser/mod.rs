@@ -86,6 +86,8 @@ pub enum Message {
     SortBy(SortKey),
     ContextMenu(NodeId, Placement),
     CrumbsMenu(Placement),
+    /// Opens the actions on the selection from the count in the selection bar.
+    SelectionMenu(Placement),
     AccountMenu(Placement),
     CloseMenu,
     Act(Action),
@@ -299,6 +301,10 @@ impl State {
                 self.menu = Some(Menu::Actions(placement));
                 Task::none()
             }
+            Message::SelectionMenu(placement) => {
+                self.menu = Some(Menu::Actions(placement));
+                Task::none()
+            }
             Message::CrumbsMenu(placement) => {
                 self.menu = Some(Menu::Crumbs(placement));
                 Task::none()
@@ -363,6 +369,17 @@ impl State {
                 self.devices_update(message)
             }
             Message::OpenTransfers => self.open_transfers(),
+            // Saving from the toast happens on the Transfers page, where the dialog opens.
+            Message::Transfers(transfer_list::Message::Save(id))
+                if !matches!(self.page, Page::Transfers) =>
+            {
+                let open = self.open_transfers();
+                let save = self
+                    .transfer_list
+                    .update(&self.client, transfer_list::Message::Save(id))
+                    .map(Message::Transfers);
+                Task::batch([open, save])
+            }
             Message::Transfers(message) => self
                 .transfer_list
                 .update(&self.client, message)
@@ -433,6 +450,15 @@ impl State {
                     _ => Task::none(),
                 };
                 let transfers = match event {
+                    // One for this computer is announced, unless the Transfers page shows it.
+                    protocol::Event::TransferReceived { transfer }
+                        if Some(transfer.recipient_device) == self.client.device_id()
+                            && !matches!(self.page, Page::Transfers) =>
+                    {
+                        self.transfer_list
+                            .update(&self.client, transfer_list::Message::Received(transfer))
+                            .map(Message::Transfers)
+                    }
                     protocol::Event::TransferReceived { .. }
                     | protocol::Event::TransferChanged { .. }
                     | protocol::Event::Resync => self
@@ -558,6 +584,7 @@ impl State {
         self.menu = None;
         self.folder.selection.clear();
         self.page = Page::Transfers;
+        self.transfer_list.clear_toast();
         self.transfer_list
             .load(&self.client)
             .map(Message::Transfers)

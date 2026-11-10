@@ -79,15 +79,28 @@ impl State {
         let page = row![self.sidebar(), main];
 
         let mut layers: Vec<Element<'_, Message>> = vec![page.into()];
-        if !self.transfers.is_empty() {
+        // The toast stands above the transfers panel, in the same corner.
+        let toast = (!matches!(self.page, Page::Transfers))
+            .then(|| self.transfer_list.toast())
+            .flatten()
+            .map(|toast| toast.map(Message::Transfers));
+        let panel =
+            (!self.transfers.is_empty()).then(|| self.transfers.view().map(Message::Transfer));
+        if toast.is_some() || panel.is_some() {
             layers.push(
-                container(self.transfers.view().map(Message::Transfer))
-                    .padding(OVERLAY_PADDING)
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .align_right(Length::Fill)
-                    .align_bottom(Length::Fill)
-                    .into(),
+                container(
+                    column![]
+                        .push(toast)
+                        .push(panel)
+                        .spacing(SPACING)
+                        .align_x(Horizontal::Right),
+                )
+                .padding(OVERLAY_PADDING)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_right(Length::Fill)
+                .align_bottom(Length::Fill)
+                .into(),
             );
         }
         // The people picker opens from a dialog, so it goes over it below.
@@ -212,7 +225,6 @@ impl State {
             top(self.breadcrumbs(), self.search_box()),
             toolbar::view(
                 selected,
-                self.me.lost_and_found_id,
                 !self.in_lost_and_found(),
                 self.folder.id,
                 self.sync_chip(),

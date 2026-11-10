@@ -1,11 +1,12 @@
 use iced::{
     Alignment, Element, Length, Padding,
+    alignment::Horizontal,
     widget::{button, container, row, space, text, tooltip},
 };
 
 use protocol::{Node, NodeId, NodeKind};
 
-use super::{Message, context_menu};
+use super::{Message, anchor::Anchor, context_menu, context_menu::Placement};
 use crate::{
     ellipsis::ellipsized,
     icons::{ICON_SIZE, Icon, Tint},
@@ -19,7 +20,6 @@ const BUTTON_PADDING_Y: f32 = 8.0;
 const BUTTON_PADDING_Y_X: [f32; 2] = [BUTTON_PADDING_Y, BUTTON_PADDING];
 const PRIMARY_PADDING: f32 = 16.0;
 const BAR_PADDING: f32 = 4.0;
-const COUNT_PADDING: f32 = 8.0;
 const KBD_SIZE: f32 = 11.0;
 const KBD_PADDING: [f32; 2] = [0.0, 5.0];
 const CHIP_HEIGHT: f32 = 28.0;
@@ -148,7 +148,6 @@ struct Tool<'a> {
 enum Look {
     Ghost,
     Primary,
-    Danger,
 }
 
 impl<'a> Tool<'a> {
@@ -169,26 +168,10 @@ impl<'a> Tool<'a> {
         }
     }
 
-    fn action(action: Action, enabled: bool) -> Self {
-        Self {
-            look: if action == Action::Delete {
-                Look::Danger
-            } else {
-                Look::Ghost
-            },
-            ..Self::new(
-                action.icon(),
-                action.label(),
-                action.shortcut(),
-                enabled.then_some(Message::Act(action)),
-            )
-        }
-    }
-
     fn padding(&self) -> f32 {
         match self.look {
             Look::Primary => PRIMARY_PADDING,
-            Look::Ghost | Look::Danger => BUTTON_PADDING,
+            Look::Ghost => BUTTON_PADDING,
         }
     }
 
@@ -204,19 +187,19 @@ impl<'a> Tool<'a> {
 }
 
 /// The toolbar, `width` wide. Normally it holds the folder commands; once several nodes
-/// are selected a tinted bar with the actions on them replaces it. When the labels do not fit,
+/// are selected a tinted bar replaces it, whose count opens the actions on them. When the labels
+/// do not fit,
 /// the buttons show only their icons and the label moves into the tooltip.
 /// `can_add` is false where nothing may be created, such as Lost & Found.
 pub fn view<'a>(
     selected: &[&Node],
-    lost_and_found: NodeId,
     can_add: bool,
     folder: Option<NodeId>,
     chip: Option<SyncChip>,
     width: f32,
 ) -> Element<'a, Message> {
     if client_core::selection::shows_bulk_actions(selected.len()) {
-        return selection_bar(selected, lost_and_found, width);
+        return selection_bar(selected.len(), width);
     }
     let tools = [
         Tool::new(
@@ -241,7 +224,7 @@ pub fn view<'a>(
             Some(Message::OpenInWeb(folder)),
         ),
     ];
-    let labelled = fits(None, tools.iter(), width);
+    let labelled = fits(tools.iter(), width);
     let used: f32 = tools.iter().map(|tool| tool.width(true) + SPACING).sum();
     let mut bar = row![]
         .spacing(SPACING)
@@ -292,21 +275,12 @@ fn text_width_at(label: &str) -> f32 {
     crate::ellipsis::text_width(label, CHIP_SIZE)
 }
 
-/// What replaces the toolbar while several nodes are selected: the count, the actions on them
-/// and the way out.
-fn selection_bar<'a>(
-    selected: &[&Node],
-    lost_and_found: NodeId,
-    width: f32,
-) -> Element<'a, Message> {
-    let tools: Vec<_> = actions(selected, lost_and_found)
-        .into_iter()
-        // Sending stays in the context menu, so the bar keeps its labels in a default window.
-        .filter(|(action, _)| !matches!(action, Action::Open | Action::OpenFile | Action::Send))
-        .map(|(action, enabled)| Tool::action(action, enabled))
-        .collect();
-    let count = selected.len();
-    let labelled = fits(Some(count), tools.iter(), width - BAR_PADDING * 2.0);
+/// What replaces the toolbar while several nodes are selected: the count, which opens a menu of
+/// the actions on them below it, and the way out. Only the way out folds to an icon, so the
+/// count always says what it counts.
+fn selection_bar<'a>(count: usize, width: f32) -> Element<'a, Message> {
+    let label = count_label(count);
+    let labelled = clear_fits(&label, width - BAR_PADDING * 2.0);
     let clear: Element<'a, Message> = if labelled {
         button(
             row![
@@ -327,19 +301,9 @@ fn selection_bar<'a>(
             .on_press(Message::ClearSelection);
         tip(clear.into(), CLEAR_SELECTION, CLEAR_SHORTCUT)
     };
-    let bar = row![
-        container(
-            text(count_label(count, labelled))
-                .font(theme::MEDIUM)
-                .style(theme::accent_text)
-        )
-        .padding(COUNT_PADDING)
-    ]
-    .spacing(SPACING)
-    .align_y(Alignment::Center)
-    .extend(tools.into_iter().map(|tool| tool.view(labelled)))
-    .push(space::horizontal())
-    .push(clear);
+    let bar = row![selection_menu(label), space::horizontal(), clear]
+        .spacing(SPACING)
+        .align_y(Alignment::Center);
     container(bar)
         .padding(BAR_PADDING)
         .width(Length::Fill)
@@ -347,33 +311,45 @@ fn selection_bar<'a>(
         .into()
 }
 
-/// Whether `tools`, after the selection count `lead` and its Clear selection, fit in `width`
-/// with their labels.
-fn fits<'t, 'a: 't>(
-    lead: Option<usize>,
-    tools: impl Iterator<Item = &'t Tool<'a>>,
-    width: f32,
-) -> bool {
-    let lead = lead.map_or(0.0, |count| {
-        COUNT_PADDING * 2.0
-            + text_width(&count_label(count, true))
-            + BUTTON_PADDING * 2.0
-            + text_width(CLEAR_SELECTION)
-            + LABEL_SPACING
-            + text_width(CLEAR_SHORTCUT)
-    });
+/// The count of the selection as a dropdown, whose menu hangs from its left edge.
+fn selection_menu<'a>(label: String) -> Element<'a, Message> {
+    let button = button(
+        row![
+            text(label).font(theme::MEDIUM).style(theme::accent_text),
+            Icon::ExpandMore.view(ICON_SIZE, Tint::Accent),
+        ]
+        .spacing(LABEL_SPACING)
+        .align_y(Alignment::Center),
+    )
+    .padding(BUTTON_PADDING_Y_X)
+    .style(theme::tool)
+    // Never sent: the anchor takes the press, and only needs the button to look enabled.
+    .on_press(Message::CloseMenu);
+    Anchor::new(button)
+        .on_press(|bounds| Message::SelectionMenu(Placement::hanging(bounds, Horizontal::Left)))
+        .into()
+}
+
+/// Whether the selection count, `label`, and Clear selection with its key fit in `width`.
+fn clear_fits(label: &str, width: f32) -> bool {
+    let menu = BUTTON_PADDING * 2.0 + text_width(label) + LABEL_SPACING + ICON_SIZE;
+    let clear = BUTTON_PADDING * 2.0
+        + text_width(CLEAR_SELECTION)
+        + LABEL_SPACING
+        + text_width(CLEAR_SHORTCUT);
+    menu + clear + SPACING + MIN_GAP <= width
+}
+
+/// Whether `tools` fit in `width` with their labels.
+fn fits<'t, 'a: 't>(tools: impl Iterator<Item = &'t Tool<'a>>, width: f32) -> bool {
     let (count, buttons) = tools.fold((0, 0.0), |(count, sum), tool| {
         (count + 1, sum + tool.width(true))
     });
-    lead + buttons + SPACING * count as f32 + MIN_GAP <= width
+    buttons + SPACING * count as f32 + MIN_GAP <= width
 }
 
-fn count_label(count: usize, labelled: bool) -> String {
-    if labelled {
-        format!("{count} selected")
-    } else {
-        count.to_string()
-    }
+fn count_label(count: usize) -> String {
+    format!("{count} selected")
 }
 
 /// An estimate of how wide `label` renders at the default text size.
@@ -446,7 +422,6 @@ impl<'a> Tool<'a> {
             match self.look {
                 Look::Ghost => (theme::tool, Tint::Text),
                 Look::Primary => (theme::primary, Tint::OnAccent),
-                Look::Danger => (theme::danger_tool, Tint::Danger),
             };
         let tint = if self.message.is_some() || self.look == Look::Primary {
             tint
@@ -597,21 +572,18 @@ mod tests {
         assert_eq!(first_action(&[&first, &second]), Some(Action::Download));
     }
 
-    fn selection_tools() -> Vec<Tool<'static>> {
-        let (first, second) = (file(1), file(2));
-        actions(&[&first, &second], LOST_AND_FOUND)
-            .into_iter()
-            .map(|(action, enabled)| Tool::action(action, enabled))
-            .collect()
+    #[test]
+    fn clear_selection_keeps_its_label_in_a_wide_window() {
+        assert!(clear_fits(&count_label(2), 1000.0));
     }
 
     #[test]
-    fn labels_show_in_a_wide_window() {
-        assert!(fits(Some(2), selection_tools().iter(), 1000.0));
+    fn clear_selection_folds_to_an_icon_in_a_narrow_window() {
+        assert!(!clear_fits(&count_label(2), 260.0));
     }
 
     #[test]
-    fn labels_drop_in_a_narrow_window() {
-        assert!(!fits(Some(2), selection_tools().iter(), 450.0));
+    fn the_count_says_what_it_counts_at_any_width() {
+        assert_eq!(count_label(3), "3 selected");
     }
 }
