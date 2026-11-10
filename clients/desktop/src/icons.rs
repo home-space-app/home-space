@@ -98,6 +98,11 @@ pub enum Icon {
     SwapVert,
     /// Saves a transfer on the server.
     SaveToServer,
+    /// Sends files to a device.
+    Send,
+    /// A user.
+    Person,
+    Add,
 }
 
 /// How an icon is tinted.
@@ -174,6 +179,9 @@ impl Icon {
             Self::PersonAdd => include_bytes!("../assets/icons/person_add.svg"),
             Self::SwapVert => include_bytes!("../assets/icons/swap_vert.svg"),
             Self::SaveToServer => include_bytes!("../assets/icons/drive_folder_upload.svg"),
+            Self::Send => include_bytes!("../assets/icons/send.svg"),
+            Self::Person => include_bytes!("../assets/icons/person.svg"),
+            Self::Add => include_bytes!("../assets/icons/add.svg"),
         }
     }
 

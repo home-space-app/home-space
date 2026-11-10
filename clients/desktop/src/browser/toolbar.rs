@@ -58,6 +58,8 @@ pub enum Action {
     /// Opens a file with the system's default app.
     OpenFile,
     Download,
+    /// Sends to a device.
+    Send,
     Rename,
     Move,
     Details,
@@ -70,6 +72,7 @@ impl Action {
             Self::Open => Icon::Folder,
             Self::OpenFile => Icon::Web,
             Self::Download => Icon::Download,
+            Self::Send => Icon::Send,
             Self::Rename => Icon::Rename,
             Self::Move => Icon::Move,
             Self::Details => Icon::Info,
@@ -81,6 +84,7 @@ impl Action {
         match self {
             Self::Open | Self::OpenFile => "Open",
             Self::Download => "Download",
+            Self::Send => "Send",
             Self::Rename => "Rename",
             Self::Move => "Move",
             Self::Details => "Details",
@@ -92,6 +96,7 @@ impl Action {
     fn menu_label(self) -> &'static str {
         match self {
             Self::Move => "Move…",
+            Self::Send => "Send to device…",
             Self::Delete => "Move to bin",
             _ => self.label(),
         }
@@ -101,7 +106,7 @@ impl Action {
         match self {
             Self::Open | Self::Download => "Enter",
             Self::Rename => "F2",
-            Self::OpenFile | Self::Move | Self::Details => "",
+            Self::OpenFile | Self::Send | Self::Move | Self::Details => "",
             Self::Delete => DELETE_SHORTCUT,
         }
     }
@@ -121,6 +126,7 @@ pub fn actions(selected: &[&Node], lost_and_found: NodeId) -> Vec<(Action, bool)
     open.into_iter()
         .chain([
             (Action::Download, any),
+            (Action::Send, any),
             (Action::Move, any),
             (Action::Rename, single),
             (Action::Details, single),
@@ -220,6 +226,7 @@ pub fn view<'a>(
             can_add.then_some(Message::Upload),
         )
         .primary(),
+        Tool::new(Icon::Send, "Send…", "", Some(Message::SendLocal)),
         Tool::new(
             Icon::NewFolder,
             "New folder",
@@ -294,7 +301,8 @@ fn selection_bar<'a>(
 ) -> Element<'a, Message> {
     let tools: Vec<_> = actions(selected, lost_and_found)
         .into_iter()
-        .filter(|(action, _)| !matches!(action, Action::Open | Action::OpenFile))
+        // Sending stays in the context menu, so the bar keeps its labels in a default window.
+        .filter(|(action, _)| !matches!(action, Action::Open | Action::OpenFile | Action::Send))
         .map(|(action, enabled)| Tool::action(action, enabled))
         .collect();
     let count = selected.len();

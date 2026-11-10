@@ -21,6 +21,7 @@ use api_client::{ApiError, Client};
 use client_core::format::sanitize_component;
 use client_core::listing::{Sort, sort_nodes};
 use protocol::{CreateUpload, ErrorCode, Node, NodeId, NodeKind};
+use uuid::Uuid;
 
 use crate::{
     ellipsis::ellipsized,
@@ -135,6 +136,29 @@ impl UploadPlan {
     }
 }
 
+/// A local file of a transfer to a device: its path in the transfer, `Trip/day 1/a.jpg`, and
+/// where it is on this computer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SendFile {
+    pub path: String,
+    pub local: PathBuf,
+    pub size: u64,
+}
+
+impl SendFile {
+    fn name(&self) -> &str {
+        self.path.rsplit('/').next().unwrap_or(&self.path)
+    }
+}
+
+/// What a picked file or folder holds for a transfer: its folders (by their paths in the
+/// transfer, parents first) and its files.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SendPlan {
+    pub folders: Vec<String>,
+    pub files: Vec<SendFile>,
+}
+
 /// What to do when a download target already exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Existing {
@@ -191,12 +215,14 @@ pub enum Batch {
         plan: UploadPlan,
     },
     Download(Vec<DownloadFile>),
+    /// The files of a transfer to a device, each with the item of the transfer it fills.
+    Send(Vec<(Uuid, SendFile)>),
 }
 
 impl Batch {
     fn direction(&self) -> Direction {
         match self {
-            Self::Upload { .. } => Direction::Upload,
+            Self::Upload { .. } | Self::Send(_) => Direction::Upload,
             Self::Download(_) => Direction::Download,
         }
     }
@@ -234,6 +260,14 @@ impl Batch {
                     .unzip();
                 (!files.is_empty()).then_some((Self::Download(files), kept))
             }
+            Self::Send(files) => {
+                let (files, kept): (Vec<(Uuid, SendFile)>, Vec<TransferId>) = files
+                    .into_iter()
+                    .zip(ids.iter().copied())
+                    .filter(|(_, id)| keep(*id))
+                    .unzip();
+                (!files.is_empty()).then_some((Self::Send(files), kept))
+            }
         }
     }
 
@@ -247,6 +281,10 @@ impl Batch {
             Self::Download(files) => files
                 .iter()
                 .map(|file| (file.name.clone(), file.size))
+                .collect(),
+            Self::Send(files) => files
+                .iter()
+                .map(|(_, file)| (file.name().to_owned(), file.size))
                 .collect(),
         }
     }
@@ -311,6 +349,20 @@ impl Transfers {
             .collect();
         self.pending.push_back((batch, ids));
         self.start_next(client)
+    }
+
+    /// Shows a send that uploads nothing, such as of files already on the server, as done.
+    pub fn note_sent(&mut self, name: String) {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.items.push(Transfer {
+            id,
+            name,
+            direction: Direction::Upload,
+            done: 0,
+            total: 0,
+            state: TransferState::Done,
+        });
     }
 
     /// Applies a progress or panel message.
@@ -741,6 +793,31 @@ async fn walk_local(paths: Vec<PathBuf>) -> io::Result<UploadPlan> {
     Ok(plan)
 }
 
+/// Walks the local file or folder at `path` into what sending it takes, named by its own name.
+pub async fn plan_send(path: PathBuf) -> Result<SendPlan, String> {
+    let plan = plan_upload(vec![path]).await?;
+    let folders = plan.folders.iter().map(|folder| folder.join("/")).collect();
+    let files = plan
+        .files
+        .into_iter()
+        .map(|file| {
+            let path = file
+                .folder
+                .iter()
+                .cloned()
+                .chain([display_name(&file.path)])
+                .collect::<Vec<_>>()
+                .join("/");
+            SendFile {
+                path,
+                local: file.path,
+                size: file.size,
+            }
+        })
+        .collect();
+    Ok(SendPlan { folders, files })
+}
+
 /// Creates local folders for `nodes` under `root` and lists every file to download.
 pub async fn plan_download(
     client: Client,
@@ -804,6 +881,9 @@ fn run_batch(
                 }
                 Batch::Download(files) => {
                     download_all(&client, files, &ids, &token, &mut output).await;
+                }
+                Batch::Send(files) => {
+                    send_all(&client, files, &ids, &token, &mut output).await;
                 }
             }
             let _ = output.send(Message::BatchDone(direction)).await;
@@ -941,6 +1021,36 @@ fn upload_body(path: &Path, id: TransferId, mut output: mpsc::Sender<Message>) -
         Err(err) => {
             reqwest::Body::wrap_stream(stream::once(async move { Err::<Vec<u8>, io::Error>(err) }))
         }
+    }
+}
+
+async fn send_all(
+    client: &Client,
+    files: Vec<(Uuid, SendFile)>,
+    ids: &[TransferId],
+    token: &CancellationToken,
+    output: &mut mpsc::Sender<Message>,
+) {
+    for ((item, file), id) in files.iter().zip(ids) {
+        if token.is_cancelled() {
+            return;
+        }
+        let _ = output.send(Message::Started(*id)).await;
+        let progress = output.clone();
+        let upload = client.upload_transfer_item(
+            *item,
+            file.name(),
+            file.size,
+            |offset, len| read_range(&file.local, offset, len),
+            move |done| {
+                let _ = progress.clone().try_send(Message::Progress(*id, done));
+            },
+        );
+        let Some(result) = token.run_until_cancelled(upload).await else {
+            return;
+        };
+        let result = result.map_err(|err| err.to_string());
+        let _ = output.send(Message::Finished(*id, result)).await;
     }
 }
 
@@ -1331,6 +1441,49 @@ mod tests {
             part_path(Path::new("/tmp/a.pdf")),
             PathBuf::from("/tmp/a.pdf.part")
         );
+    }
+
+    #[tokio::test]
+    async fn a_sent_folder_names_its_files_by_their_paths_in_it() {
+        let root = std::env::temp_dir().join(format!("home-space-send-{}", std::process::id()));
+        let inner = root.join("day 1");
+        fs::create_dir_all(&inner).await.expect("create dirs");
+        fs::write(inner.join("a.jpg"), b"hello")
+            .await
+            .expect("write file");
+
+        let plan = plan_send(root.clone()).await.expect("plan");
+        fs::remove_dir_all(&root).await.expect("cleanup");
+
+        let top = display_name(&root);
+        assert_eq!(plan.folders, [top.clone(), format!("{top}/day 1")]);
+        assert_eq!(
+            plan.files,
+            [SendFile {
+                path: format!("{top}/day 1/a.jpg"),
+                local: inner.join("a.jpg"),
+                size: 5,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_paused_send_keeps_the_items_left() {
+        let file = |path: &str| SendFile {
+            path: path.to_owned(),
+            local: PathBuf::from(path),
+            size: 1,
+        };
+        let batch = Batch::Send(vec![
+            (Uuid::from_u128(1), file("a")),
+            (Uuid::from_u128(2), file("b/c")),
+        ]);
+        assert_eq!(batch.entries()[1], ("c".to_owned(), 1));
+
+        let (rest, ids) = batch.remaining(&[0, 1], |id| id == 1).expect("rest");
+
+        assert_eq!(ids, [1]);
+        assert!(matches!(rest, Batch::Send(files) if files[0].0 == Uuid::from_u128(2)));
     }
 
     #[tokio::test]

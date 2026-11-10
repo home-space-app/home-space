@@ -338,7 +338,7 @@ fn header<'a>() -> Element<'a, Message> {
 }
 
 /// The icon of a device of `platform`.
-fn platform_icon(platform: &str) -> Icon {
+pub(super) fn platform_icon(platform: &str) -> Icon {
     match platform {
         PLATFORM_LINUX | PLATFORM_MACOS | PLATFORM_WINDOWS => Icon::Laptop,
         PLATFORM_WEB => Icon::Language,
