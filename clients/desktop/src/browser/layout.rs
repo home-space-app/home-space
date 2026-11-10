@@ -235,18 +235,24 @@ impl State {
         if let Some(error) = &self.folder.error {
             page = page.push(parts::alert_error(Icon::Error, error.as_str(), None));
         }
-        let grid = column![
-            grid::header(
-                self.folder.selection.coverage(&self.folder.listing.nodes),
-                self.folder.sort
-            ),
-            grid::rows(
-                &self.folder.listing.nodes,
-                self.folder.id,
-                &self.folder.selection,
-                self.syncing.status()
-            ),
-        ];
+        let grid = responsive(move |size| {
+            let columns = grid::Columns::fitting(size.width);
+            column![
+                grid::header(
+                    self.folder.selection.coverage(&self.folder.listing.nodes),
+                    self.folder.sort,
+                    columns,
+                ),
+                grid::rows(
+                    &self.folder.listing.nodes,
+                    self.folder.id,
+                    &self.folder.selection,
+                    self.syncing.status(),
+                    columns,
+                ),
+            ]
+            .into()
+        });
         let listing: Element<'a, Message> = if self.dropping {
             stack![parts::list_box(grid), self.drop_overlay()].into()
         } else {

@@ -49,28 +49,68 @@ const BADGE_BOTTOM: f32 = 3.0;
 const BADGE_DISC: f32 = 14.0;
 const BADGE_SIZE: f32 = 13.0;
 const NOT_SYNCED: &str = "Not synced";
+/// The least room the name gets before the grid drops the icons, then the size column, for it.
+const NAME_ROOM: f32 = 120.0;
+
+/// Which of the optional parts of a row fit the grid's width.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Columns {
+    pub icons: bool,
+    pub size: bool,
+}
+
+impl Columns {
+    /// What fits a grid `width` wide: the icons go first, then the size column, rather than
+    /// the name shrinking under [`NAME_ROOM`].
+    pub fn fitting(width: f32) -> Self {
+        let fixed = CHECK_LIST_PADDING.left
+            + CHECK_LIST_PADDING.right
+            + CHECK_WIDTH
+            + DATE_WIDTH
+            + MENU_WIDTH
+            + COLUMN_GAP * 3.0;
+        let name = width - fixed;
+        let icon = ICON_CELL + BADGE_RIGHT + NAME_GAP;
+        let size = SIZE_WIDTH + COLUMN_GAP;
+        if name - icon - size >= NAME_ROOM {
+            Self {
+                icons: true,
+                size: true,
+            }
+        } else {
+            Self {
+                icons: false,
+                size: name - size >= NAME_ROOM,
+            }
+        }
+    }
+}
 
 /// Column titles with the select-all checkbox, aligned with [`rows`].
-pub fn header<'a>(coverage: Coverage, sort: Sort) -> Element<'a, Message> {
+pub fn header<'a>(coverage: Coverage, sort: Sort, columns: Columns) -> Element<'a, Message> {
     let cells = row![
         check(coverage, Message::ToggleAll),
         sort_button("Name", SortKey::Name, sort, Length::Fill, Alignment::Start),
+    ]
+    .push(columns.size.then(|| {
         sort_button(
             "Size",
             SortKey::Size,
             sort,
             SIZE_WIDTH.into(),
-            Alignment::End
-        ),
+            Alignment::End,
+        )
+    }))
+    .extend([
         sort_button(
             "Modified",
             SortKey::Modified,
             sort,
             DATE_WIDTH.into(),
-            Alignment::End
+            Alignment::End,
         ),
-        space().width(MENU_WIDTH),
-    ];
+        space().width(MENU_WIDTH).into(),
+    ]);
     header_bar(cells, CHECK_LIST_PADDING)
 }
 
@@ -111,6 +151,7 @@ pub fn rows<'a>(
     folder: Option<NodeId>,
     selection: &Selection,
     sync: &'a Status,
+    columns: Columns,
 ) -> Element<'a, Message> {
     let listed: HashSet<&str> = nodes.iter().map(|node| node.name.as_str()).collect();
     // A file that just landed is listed before the sync reports it done.
@@ -132,9 +173,9 @@ pub fn rows<'a>(
                     sync.location(Some(node.id)),
                     sync.location(folder),
                 );
-                node_row(node, selection.contains(node.id), badge, line)
+                node_row(node, selection.contains(node.id), badge, line, columns)
             })
-            .chain(waiting.into_iter().map(pending_row));
+            .chain(waiting.into_iter().map(|item| pending_row(item, columns)));
         // The scrollbar floats over the padding right of the menu buttons.
         scrollable(column(rows.flat_map(|row| [row, divider()])))
             .id(ROWS)
@@ -179,6 +220,7 @@ fn node_row(
     selected: bool,
     badge: Option<Badge>,
     second_line: Option<String>,
+    columns: Columns,
 ) -> Element<'_, Message> {
     let icon = match (node_icon(node), badge) {
         (Icon::Folder, Some(Badge::Disabled)) => Icon::FolderOutline,
@@ -199,26 +241,36 @@ fn node_row(
         Coverage::None
     };
     let name: Element<'_, Message> = match node.kind {
-        NodeKind::Folder => folder_link(node, icon, tint, badge, second_line),
-        NodeKind::File => row![
-            badged(icon.view(ICON_SIZE, tint), badge),
-            name_cell(node.name.as_str(), second_line)
-        ]
-        .spacing(NAME_GAP)
-        .align_y(Alignment::Center)
-        .width(Length::Fill)
-        .into(),
+        NodeKind::Folder => folder_link(
+            node,
+            columns.icons.then_some((icon, tint, badge)),
+            second_line,
+        ),
+        NodeKind::File => row![]
+            .push(
+                columns
+                    .icons
+                    .then(|| badged(icon.view(ICON_SIZE, tint), badge)),
+            )
+            .push(name_cell(node.name.as_str(), second_line))
+            .spacing(NAME_GAP)
+            .align_y(Alignment::Center)
+            .width(Length::Fill)
+            .into(),
     };
-    let cells = row![
-        check(coverage, Message::Toggle(node.id)),
-        name,
-        muted_cell(size, SIZE_WIDTH, Alignment::End),
-        muted_cell(short_date(node.updated_at), DATE_WIDTH, Alignment::End),
-        menu_button(node.id),
-    ]
-    .spacing(COLUMN_GAP)
-    .height(Length::Fill)
-    .align_y(Alignment::Center);
+    let cells = row![check(coverage, Message::Toggle(node.id)), name,]
+        .push(
+            columns
+                .size
+                .then(|| muted_cell(size, SIZE_WIDTH, Alignment::End)),
+        )
+        .extend([
+            muted_cell(short_date(node.updated_at), DATE_WIDTH, Alignment::End),
+            menu_button(node.id),
+        ])
+        .spacing(COLUMN_GAP)
+        .height(Length::Fill)
+        .align_y(Alignment::Center);
     let row_button = button(cells)
         .width(Length::Fill)
         .height(ROW_HEIGHT)
@@ -232,18 +284,17 @@ fn node_row(
 }
 
 /// The icon and name of a folder as a link into it, only as wide as they are so that the rest of
-/// the row still selects.
+/// the row still selects. The icon is left out when there is no room for it.
 fn folder_link<'a>(
     node: &'a Node,
-    icon: Icon,
-    tint: Tint,
-    badge: Option<Badge>,
+    icon: Option<(Icon, Tint, Option<Badge>)>,
     second_line: Option<String>,
 ) -> Element<'a, Message> {
     let id = node.id;
     let name = node.name.as_str();
     responsive(move |bounds| {
-        let room = bounds.width - ICON_CELL - BADGE_RIGHT - NAME_GAP;
+        let icon_room = icon.map_or(0.0, |_| ICON_CELL + BADGE_RIGHT + NAME_GAP);
+        let room = bounds.width - icon_room;
         let second_width = second_line
             .as_deref()
             .map_or(0.0, |second| text_width(second, SECOND_LINE_SIZE));
@@ -252,12 +303,11 @@ fn folder_link<'a>(
             .ceil()
             .min(room)
             .max(0.0);
-        let content = row![
-            badged(icon.view(ICON_SIZE, tint), badge),
-            container(name_cell(name, second_line.clone())).width(width)
-        ]
-        .spacing(NAME_GAP)
-        .align_y(Alignment::Center);
+        let content = row![]
+            .push(icon.map(|(icon, tint, badge)| badged(icon.view(ICON_SIZE, tint), badge)))
+            .push(container(name_cell(name, second_line.clone())).width(width))
+            .spacing(NAME_GAP)
+            .align_y(Alignment::Center);
         button(content)
             .padding(0)
             .style(theme::name_link)
@@ -270,7 +320,7 @@ fn folder_link<'a>(
 
 /// A new file or folder waiting to be uploaded: grayed out and inert, with no menu to act on
 /// what is not on the server yet.
-fn pending_row(item: &Item) -> Element<'_, Message> {
+fn pending_row(item: &Item, columns: Columns) -> Element<'_, Message> {
     let icon = if item.is_folder() {
         Icon::Folder
     } else {
@@ -289,16 +339,23 @@ fn pending_row(item: &Item) -> Element<'_, Message> {
     .align_y(Alignment::Center);
     let cells = row![
         space().width(CHECK_WIDTH),
-        row![
-            badged(icon.view(ICON_SIZE, Tint::Disabled), None),
-            ellipsized(item.name.as_str(), ROW_SIZE, Alignment::Start).width(Length::Fill)
-        ]
-        .spacing(NAME_GAP)
-        .align_y(Alignment::Center)
-        .width(Length::Fill),
-        ellipsized(size, ROW_SIZE, Alignment::End).width(SIZE_WIDTH),
-        container(waiting).align_right(DATE_WIDTH + COLUMN_GAP + MENU_WIDTH),
+        row![]
+            .push(
+                columns
+                    .icons
+                    .then(|| badged(icon.view(ICON_SIZE, Tint::Disabled), None))
+            )
+            .push(ellipsized(item.name.as_str(), ROW_SIZE, Alignment::Start).width(Length::Fill))
+            .spacing(NAME_GAP)
+            .align_y(Alignment::Center)
+            .width(Length::Fill),
     ]
+    .push(
+        columns
+            .size
+            .then(|| ellipsized(size, ROW_SIZE, Alignment::End).width(SIZE_WIDTH)),
+    )
+    .push(container(waiting).align_right(DATE_WIDTH + COLUMN_GAP + MENU_WIDTH))
     .spacing(COLUMN_GAP)
     .height(Length::Fill)
     .align_y(Alignment::Center);
@@ -469,6 +526,34 @@ mod tests {
             Some(Path::new("/sync")),
         );
         assert_eq!(line.as_deref(), Some(NOT_SYNCED));
+    }
+
+    #[test]
+    fn a_wide_grid_shows_every_column() {
+        let columns = Columns::fitting(800.0);
+        assert!(columns.icons && columns.size);
+    }
+
+    #[test]
+    fn a_narrower_grid_drops_the_icons_before_the_size() {
+        assert_eq!(
+            Columns::fitting(550.0),
+            Columns {
+                icons: false,
+                size: true
+            }
+        );
+    }
+
+    #[test]
+    fn a_narrow_grid_drops_the_size_too() {
+        assert_eq!(
+            Columns::fitting(400.0),
+            Columns {
+                icons: false,
+                size: false
+            }
+        );
     }
 
     #[test]
