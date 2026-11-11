@@ -1224,3 +1224,51 @@ fn the_context_menu_of_a_file_offers_open() {
         [Message::Act(Action::OpenFile)]
     ));
 }
+
+#[tokio::test]
+async fn a_session_the_server_ended_returns_to_the_login() {
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
+
+    let server = MockServer::start().await;
+    let tokens = serde_json::json!({
+        "access_token": "access", "refresh_token": "refresh", "expires_in": 900
+    });
+    Mock::given(method("POST"))
+        .and(path("/api/v1/auth/login"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(tokens))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/me"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": Uuid::nil(), "username": "alice", "lost_and_found_id": Uuid::nil()
+        })))
+        .mount(&server)
+        .await;
+    // Both the access token and the refresh token have expired.
+    Mock::given(method("GET"))
+        .and(path("/api/v1/nodes"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/auth/refresh"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri());
+    let me = client.login("alice", "pw").await.expect("login");
+    let (mut state, _task) = State::open(client.clone(), me);
+
+    let result = client.list(None).await.map(|nodes| Listing {
+        path: Vec::new(),
+        nodes,
+    });
+    assert_eq!(result.as_ref().err(), Some(&ApiError::Unauthorized));
+    let update = state.update(Message::Loaded(None, result));
+
+    assert!(matches!(update, Update::SignedOut { server: url } if url == server.uri()));
+}

@@ -159,6 +159,7 @@ enum Page {
 
 pub struct State {
     client: Client,
+    had_session: bool,
     me: Me,
     folder: Folder,
     /// The folder a breadcrumb jump left, which going back returns to.
@@ -184,6 +185,7 @@ impl State {
     pub fn open(client: Client, me: Me) -> (Self, Task<Message>) {
         let mut state = Self {
             transfer_list: TransferList::new(me.id, me.lost_and_found_id),
+            had_session: client.access_token().is_some(),
             client,
             folder: Folder::new(me.lost_and_found_id),
             lost_and_found: LostAndFound::new(me.lost_and_found_id),
@@ -222,9 +224,18 @@ impl State {
             },
             message => {
                 let task = self.handle(message);
+                if self.session_ended() {
+                    return Update::SignedOut {
+                        server: self.client.base_url().to_owned(),
+                    };
+                }
                 Update::Task(Task::batch([task, self.follow_selection()]))
             }
         }
+    }
+
+    fn session_ended(&self) -> bool {
+        self.had_session && self.client.access_token().is_none()
     }
 
     fn follow_selection(&mut self) -> Task<Message> {
@@ -1010,7 +1021,10 @@ impl State {
         Subscription::batch([
             clock,
             event::listen_with(input),
-            events::subscription(&self.client).map(Message::Server),
+            events::subscription(&self.client).map(|live| match live {
+                events::Live::Event(event) => Message::Server(*event),
+                events::Live::SignedOut => Message::SignedOut,
+            }),
             sync::subscription(&self.client, self.me.id)
                 .map(|update| Message::Sync(syncing::Message::Engine(update))),
         ])
