@@ -14,6 +14,7 @@ macro_rules! visible {
     };
 }
 
+mod accounts;
 mod changes;
 mod devices;
 mod error;
@@ -31,6 +32,7 @@ mod uploads;
 mod users;
 mod versions;
 
+pub use accounts::{Account, DeletedAccount};
 pub use changes::{ChangeBatch, NodeChange};
 pub use devices::{Device, NewDevice, TargetDevice};
 pub use error::DbError;

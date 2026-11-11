@@ -80,6 +80,10 @@ pub struct ServerConfig {
     pub max_transfer_bytes: Option<u64>,
     /// `None` keeps the change journal for good.
     pub changes_retention_days: Option<i64>,
+    /// How long after an administrator deletes a user their account and files are removed
+    /// (`HOMESPACE_USER_DELETION_DELAY_MINUTES`); the deletion can be cancelled until then.
+    #[serde(default)]
+    pub user_deletion_delay_minutes: u64,
     pub password_login: bool,
     pub oidc: Option<OidcStatus>,
     pub access_ttl_secs: i64,
@@ -180,6 +184,7 @@ mod tests {
                 transfer_ttl_hours: 0,
                 max_transfer_bytes: None,
                 changes_retention_days: None,
+                user_deletion_delay_minutes: 10,
                 password_login: true,
                 oidc: None,
                 access_ttl_secs: 0,

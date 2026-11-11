@@ -180,7 +180,14 @@ impl FileService {
             auto_upload: options.auto_upload,
             transfer_item_id,
         };
-        self.db.create_upload(owner, new).await?;
+        match self.db.create_upload(owner, new).await {
+            Ok(_) => {}
+            // The transfer's recipient is disabled or marked for deletion.
+            Err(db::DbError::NotFound) if transfer_item_id.is_some() => {
+                return Err(FilesError::Gone);
+            }
+            Err(err) => return Err(err.into()),
+        }
         if let Err(err) = self.store.create_partial(id).await {
             self.forget_upload(id).await;
             return Err(err.into());

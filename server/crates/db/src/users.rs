@@ -5,7 +5,7 @@ use crate::{Db, DbError, FOLDER_MIME, LOST_AND_FOUND, NodeId, User, UserId};
 
 macro_rules! user_columns {
     () => {
-        "id, username, password_hash, created_at, is_admin"
+        "id, username, password_hash, created_at, is_admin, disabled_at, quota_bytes, delete_at"
     };
 }
 

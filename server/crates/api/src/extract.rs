@@ -113,7 +113,10 @@ impl FromRequestParts<AppState> for AuthUser {
 ///
 /// Checked against the database on every request, so revoking the role takes effect at once.
 #[derive(Clone, Copy, Debug)]
-pub struct AdminUser;
+pub struct AdminUser {
+    /// The administrator's own id.
+    pub id: UserId,
+}
 
 impl FromRequestParts<AppState> for AdminUser {
     type Rejection = ApiError;
@@ -130,7 +133,7 @@ impl FromRequestParts<AppState> for AdminUser {
             .map_err(|err| ApiError::Internal(err.to_string()))?
             .ok_or(ApiError::Unauthorized)?;
         if found.is_admin {
-            Ok(Self)
+            Ok(Self { id: found.id })
         } else {
             Err(ApiError::Forbidden)
         }

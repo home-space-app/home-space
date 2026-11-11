@@ -338,6 +338,40 @@ impl FileService {
         Ok(())
     }
 
+    /// Deletes every user whose deletion is due, with all their files, versions, transfers
+    /// and unfinished uploads. Returns the users deleted.
+    ///
+    /// The files go first and the user's rows last, so that a failure leaves the user in
+    /// place and the next run retries. One user failing does not hold up the others.
+    pub async fn delete_due_users(&self) -> Result<Vec<UserId>, FilesError> {
+        let mut deleted = Vec::new();
+        for user in self.db.due_deletions().await? {
+            match self.delete_user(user).await {
+                Ok(true) => deleted.push(user),
+                // The deletion was cancelled since it was listed.
+                Ok(false) => {}
+                Err(err) => {
+                    tracing::error!(%user, error = %err, "deleting a user failed; will retry");
+                }
+            }
+        }
+        Ok(deleted)
+    }
+
+    async fn delete_user(&self, user: UserId) -> Result<bool, FilesError> {
+        let Some(left) = self.db.due_user_leftovers(user).await? else {
+            return Ok(false);
+        };
+        self.store.remove_user(user).await?;
+        for transfer in left.transfers {
+            self.store.remove_transfer(transfer).await?;
+        }
+        for upload in left.uploads {
+            self.store.remove_partial(upload).await?;
+        }
+        Ok(self.db.delete_due_user(user).await?)
+    }
+
     async fn apply_blob_ops(&self, owner: UserId, ops: &[BlobOp]) {
         for op in ops {
             let result = match *op {

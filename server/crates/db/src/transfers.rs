@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use protocol::TransferState;
 
-use crate::{Db, DbError, Node, NodeId, NodeKind, UserId};
+use crate::{Db, DbError, Node, NodeId, NodeKind, UserId, accounts::lock_active_users};
 
 /// A transfer with the names of the users and devices it is between.
 #[derive(Clone, Debug, PartialEq, Eq, FromRow)]
@@ -103,6 +103,8 @@ macro_rules! transfer_query {
 
 impl Db {
     /// Records a transfer and its items. It is ready at once when every file has its bytes.
+    /// `NotFound` while the sender or the recipient is disabled or marked for
+    /// deletion.
     pub async fn create_transfer(&self, new: NewTransfer) -> Result<Transfer, DbError> {
         let total_bytes = new
             .items
@@ -120,6 +122,7 @@ impl Db {
             TransferState::Uploading
         };
         let mut tx = self.pool().begin().await?;
+        lock_active_users(&mut tx, &[new.sender, new.recipient]).await?;
         sqlx::query(
             "INSERT INTO transfers (id, sender_id, sender_device, recipient_id, \
              recipient_device, state, total_bytes, item_count, message, expires_at, ready_at) \

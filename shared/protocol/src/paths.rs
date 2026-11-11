@@ -41,12 +41,30 @@ pub const TRANSFERS_OUTGOING: &str = "/api/v1/transfers/outgoing";
 pub const CAPABILITIES: &str = "/api/v1/capabilities";
 pub const STORAGE: &str = "/api/v1/storage";
 pub const ADMIN_STATUS: &str = "/api/v1/admin/status";
+pub const ADMIN_USERS: &str = "/api/v1/admin/users";
 /// Header of `PATCH /uploads/{id}` naming where the chunk starts, and of upload responses
 /// naming how many bytes the server has.
 pub const UPLOAD_OFFSET: &str = "Upload-Offset";
 
 pub fn upload(id: uuid::Uuid) -> String {
     format!("{UPLOADS}/{id}")
+}
+
+pub fn admin_user(id: crate::UserId) -> String {
+    format!("{ADMIN_USERS}/{id}")
+}
+
+pub fn admin_user_password(id: crate::UserId) -> String {
+    format!("{ADMIN_USERS}/{id}/password")
+}
+
+pub fn admin_user_devices(id: crate::UserId) -> String {
+    format!("{ADMIN_USERS}/{id}/devices")
+}
+
+/// `DELETE` takes back a user's pending deletion.
+pub fn admin_user_deletion(id: crate::UserId) -> String {
+    format!("{ADMIN_USERS}/{id}/deletion")
 }
 
 pub fn device(id: uuid::Uuid) -> String {

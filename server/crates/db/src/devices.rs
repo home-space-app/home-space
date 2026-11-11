@@ -41,11 +41,14 @@ pub struct TargetDevice {
     pub signed_in: bool,
 }
 
-/// Whether `$viewer` may see the device `d` and send files to it.
+/// Whether `$viewer` may see the device `d` and send files to it. Devices of a disabled
+/// user, which includes one marked for deletion, are seen by nobody.
 macro_rules! can_see_device {
     ($viewer:literal) => {
         concat!(
-            "((d.user_id = ",
+            "EXISTS (SELECT 1 FROM users o WHERE o.id = d.user_id \
+                 AND o.disabled_at IS NULL) \
+             AND ((d.user_id = ",
             $viewer,
             " AND d.visibility <> 'hidden') OR d.visibility = 'everyone' \
              OR (d.visibility = 'users' AND EXISTS (SELECT 1 FROM device_viewers v \

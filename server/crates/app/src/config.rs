@@ -80,6 +80,15 @@ pub struct Config {
     #[arg(long, env = "HOMESPACE_UPLOAD_EXPIRY_HOURS", default_value_t = 24)]
     pub upload_expiry_hours: u64,
 
+    /// How long after an administrator deletes a user their account and all their files are
+    /// removed. The deletion can be cancelled until then.
+    #[arg(
+        long,
+        env = "HOMESPACE_USER_DELETION_DELAY_MINUTES",
+        default_value_t = 10
+    )]
+    pub user_deletion_delay_minutes: u64,
+
     /// How long files sent to a device are kept, whether they were received or not.
     #[arg(long, env = "HOMESPACE_TRANSFER_TTL_HOURS", default_value_t = 24)]
     pub transfer_ttl_hours: u64,
@@ -206,6 +215,7 @@ impl Config {
             transfer_ttl_hours: self.transfer_ttl_hours,
             max_transfer_bytes: self.max_transfer_bytes,
             changes_retention_days: self.changes_retention_days,
+            user_deletion_delay_minutes: self.user_deletion_delay_minutes,
             password_login: self.password_login,
             oidc,
             access_ttl_secs: self.access_ttl_secs,
