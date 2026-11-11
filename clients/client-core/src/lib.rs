@@ -1,5 +1,6 @@
 //! UI-agnostic logic shared by the web and desktop clients.
 
+pub mod accounts;
 pub mod format;
 pub mod icon;
 pub mod labels;
