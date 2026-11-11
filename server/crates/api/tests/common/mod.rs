@@ -87,6 +87,7 @@ pub async fn setup_with(
                 transfer_ttl_hours: 24,
                 max_transfer_bytes: None,
                 changes_retention_days: None,
+                user_deletion_delay_minutes: 10,
                 password_login: true,
                 oidc: None,
                 access_ttl_secs: 900,

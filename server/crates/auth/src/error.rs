@@ -19,6 +19,9 @@ pub enum AuthError {
     /// The account signs in through single sign-on and has no password to change.
     #[error("this account signs in through single sign-on and has no password")]
     NoPassword,
+    /// The account is disabled or marked for deletion, so it may not sign in.
+    #[error("this account is disabled")]
+    AccountDisabled,
     /// The username is already taken.
     #[error("username already exists")]
     UsernameTaken,

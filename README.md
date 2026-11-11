@@ -32,8 +32,9 @@ cargo run -p app -- serve       # http://127.0.0.1:8080/api/v1
 ```
 
 Administrators get the Administration page in the web client (server status, disk and storage
-per user), but no access to other users' files. Grant or revoke the role with
-`user admin <username> [--revoke]`; `user list` marks administrators.
+per user, and a Users tab to add, edit, disable and delete accounts), but no access to other
+users' files. Grant or revoke the role with `user admin <username> [--revoke]`; `user list` marks
+administrators, disabled users and users marked for deletion.
 
 | Variable | Default | |
 |---|---|---|
@@ -121,6 +122,7 @@ which stays below nginx's default limit of 1 MiB. Unfinished uploads are kept un
 | `HOMESPACE_MAX_UPLOAD_BYTES` | 10737418240 (10 GiB) | Largest file accepted, however it is uploaded. |
 | `HOMESPACE_UPLOAD_CHUNK_BYTES` | 33554432 (32 MiB) | Largest request of any upload, single or chunked. Keep it below the proxy's limit (Cloudflare: 100 MB). It does not limit the file size. |
 | `HOMESPACE_UPLOAD_EXPIRY_HOURS` | 24 | Unfinished uploads idle this long are deleted. |
+| `HOMESPACE_USER_DELETION_DELAY_MINUTES` | 10 | How long after an administrator deletes a user their account and files are removed. The user is signed out at once and the deletion can be cancelled until then. |
 | `HOMESPACE_TRANSFER_TTL_HOURS` | 24 | Files sent to a device are deleted this long after they were sent, received or not ([`docs/send-to-device.md`](docs/send-to-device.md)). |
 | `HOMESPACE_MAX_TRANSFER_BYTES` | unset | The most bytes one transfer to a device may hold. |
 
@@ -151,6 +153,13 @@ one.
 | POST | `/me/password` | `{current_password, new_password}` → 204; ends the user's other sessions, this one stays signed in. A wrong current password is 400 and counts towards the sign-in throttle (429). Not for single sign-on accounts (400) |
 | GET | `/storage` | the user's bytes `{usage: {files, versions, trash}, disk: {total, available}?}`; versions count binned files too |
 | GET | `/admin/status` | administrators only (403 `forbidden` otherwise): version, start time, the storage root's disk, every user's `usage`, the read-only configuration and the database version |
+| GET | `/admin/users` | administrators only: every account with its role, sign-in method, `disabled`, `quota_bytes`, `delete_at`, `usage`, device count and `last_seen_at` |
+| POST | `/admin/users` | `{username, password, is_admin?, quota_bytes?}`: creates a password account (201; 409 `conflict` if the name is taken) |
+| PATCH | `/admin/users/{id}` | `{is_admin?, disabled?, quota_bytes?}` (`null` removes the quota; it is recorded, not enforced). Disabling signs the user out and refuses sign-in (403 `forbidden`). Administrators cannot demote or disable themselves |
+| PUT | `/admin/users/{id}/password` | `{password}`: a new password for an account that has one (400 for single sign-on accounts); signs the user out everywhere |
+| GET | `/admin/users/{id}/devices` | the account's devices, most recently seen first |
+| DELETE | `/admin/users/{id}` | marks the account for deletion `HOMESPACE_USER_DELETION_DELAY_MINUTES` from now and signs it out; a background job then deletes it with all its files |
+| DELETE | `/admin/users/{id}/deletion` | cancels a pending deletion |
 | GET | `/capabilities` | what the server supports: `{upload_chunk_bytes}`, the largest request body of an upload |
 | GET | `/nodes?parent_id=` | list folder (root when omitted) |
 | GET / PATCH / DELETE | `/nodes/{id}` | metadata / rename or move / delete (to the recycle bin; 409 for Lost & Found) |

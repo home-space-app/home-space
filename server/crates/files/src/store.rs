@@ -156,6 +156,18 @@ impl BlobStore {
         }
     }
 
+    /// Removes the stored content of every file and version of `owner`; missing directories
+    /// are not an error.
+    pub async fn remove_user(&self, owner: UserId) -> io::Result<()> {
+        for dir in [BLOBS_DIR, VERSIONS_DIR] {
+            match fs::remove_dir_all(self.root.join(dir).join(owner.to_string())).await {
+                Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(err),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     /// Creates the empty file a resumable upload grows in.
     pub async fn create_partial(&self, upload: Uuid) -> io::Result<()> {
         fs::File::create(self.partial_path(upload)).await.map(drop)

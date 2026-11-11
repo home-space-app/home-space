@@ -16,6 +16,20 @@ pub struct User {
     pub created_at: OffsetDateTime,
     /// Sees the server status; gets no access to other users' files.
     pub is_admin: bool,
+    /// When an administrator disabled the account; a disabled user may not sign in.
+    pub disabled_at: Option<OffsetDateTime>,
+    /// The most the user should store, in bytes; `None` for no quota.
+    pub quota_bytes: Option<i64>,
+    /// When the account and all its files are deleted; it may not sign in meanwhile.
+    pub delete_at: Option<OffsetDateTime>,
+}
+
+impl User {
+    /// Whether the user may start a session: not disabled, which includes being marked for
+    /// deletion.
+    pub fn may_sign_in(&self) -> bool {
+        self.disabled_at.is_none()
+    }
 }
 
 /// A stored refresh token (only its hash is kept).

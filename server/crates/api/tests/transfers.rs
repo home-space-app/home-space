@@ -825,3 +825,66 @@ async fn expired_transfers_are_removed_with_their_bytes(pool: PgPool) {
         StatusCode::NOT_FOUND
     );
 }
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn nothing_is_sent_to_a_disabled_user_or_one_marked_for_deletion(pool: PgPool) {
+    let app = setup(pool).await;
+    let u = users(&app).await;
+    let (alice, bob) = (app.user_id("alice").await, app.user_id("bob").await);
+    set_visibility(
+        &app,
+        &u.alice,
+        u.alice_laptop,
+        json!({ "visibility": "users", "users": [bob] }),
+    )
+    .await;
+    let item = json!([{ "path": "a.txt", "kind": "file", "size": 3 }]);
+    let created = send(&app, &u.bob, "alice", u.alice_laptop, item.clone()).await;
+    assert_eq!(created.status, StatusCode::CREATED);
+    let waiting = item_id(&created.json(), "a.txt");
+
+    let later = time::OffsetDateTime::now_utc() + time::Duration::minutes(10);
+    app.state
+        .db
+        .mark_for_deletion(alice, later)
+        .await
+        .expect("mark");
+
+    // Alice's devices are no longer offered, and sending to one anyway is refused.
+    assert_eq!(targets(&app, &u.bob).await.len(), 1);
+    let refused = send(&app, &u.bob, "alice", u.alice_laptop, item.clone()).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    // Nor do the bytes of a transfer made before the mark still arrive.
+    let upload = app
+        .json(
+            Method::POST,
+            "/api/v1/uploads",
+            Some(&u.bob),
+            json!({ "transfer_item_id": waiting, "size": 3 }),
+        )
+        .await;
+    assert_eq!(upload.status, StatusCode::GONE);
+    assert!(
+        app.get("/api/v1/uploads", &u.bob)
+            .await
+            .json()
+            .as_array()
+            .expect("uploads")
+            .is_empty()
+    );
+
+    app.state.db.cancel_deletion(alice).await.expect("cancel");
+    assert_eq!(targets(&app, &u.bob).await.len(), 2);
+    let sent = send(&app, &u.bob, "alice", u.alice_laptop, item.clone()).await;
+    assert_eq!(sent.status, StatusCode::CREATED);
+
+    // A disabled user gets nothing either.
+    app.state
+        .db
+        .set_disabled(alice, true)
+        .await
+        .expect("disable");
+    assert_eq!(targets(&app, &u.bob).await.len(), 1);
+    let refused = send(&app, &u.bob, "alice", u.alice_laptop, item).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+}

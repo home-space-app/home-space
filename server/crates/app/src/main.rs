@@ -154,6 +154,7 @@ async fn serve(db: Db, config: &Config) -> Result<()> {
         std::time::Duration::from_secs(config.upload_expiry_hours.saturating_mul(3600)),
     ));
     tokio::spawn(expire_transfers(state.files.clone(), state.hub.clone()));
+    tokio::spawn(delete_users(state.files.clone()));
     let listener = tokio::net::TcpListener::bind(config.bind)
         .await
         .with_context(|| format!("binding {}", config.bind))?;
@@ -248,6 +249,25 @@ async fn expire_transfers(files: FileService, hub: Hub) {
     }
 }
 
+/// Deletes users whose deletion an administrator scheduled and did not take back, with all
+/// their files; once at start and then every minute, so a deletion happens close to the time
+/// the administration shows for it.
+async fn delete_users(files: FileService) {
+    let mut every_minute = tokio::time::interval(std::time::Duration::from_secs(60));
+    every_minute.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        every_minute.tick().await;
+        match files.delete_due_users().await {
+            Ok(deleted) => {
+                for user in deleted {
+                    tracing::info!(%user, "deleted user and their files");
+                }
+            }
+            Err(err) => tracing::error!(error = %err, "deleting users failed"),
+        }
+    }
+}
+
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
     tracing::info!("shutting down");
@@ -296,7 +316,12 @@ async fn run_user_command(command: UserCommand, db: &Db, config: &Config) -> Res
         UserCommand::List => {
             for user in db.list_users().await.context("listing users")? {
                 let role = if user.is_admin { "\tadmin" } else { "" };
-                println!("{}\t{}{role}", user.id, user.username);
+                let state = match (user.disabled_at, user.delete_at) {
+                    (_, Some(at)) => format!("\tdeleted at {at}"),
+                    (Some(_), None) => "\tdisabled".to_owned(),
+                    (None, None) => String::new(),
+                };
+                println!("{}\t{}{role}{state}", user.id, user.username);
             }
         }
         UserCommand::Admin { username, revoke } => {

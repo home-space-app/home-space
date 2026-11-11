@@ -55,7 +55,9 @@ impl ApiError {
             Self::Unauthorized | Self::Auth(AuthError::InvalidCredentials) => {
                 (StatusCode::UNAUTHORIZED, ErrorCode::Unauthorized)
             }
-            Self::Forbidden | Self::Files(FilesError::Forbidden) => {
+            Self::Forbidden
+            | Self::Files(FilesError::Forbidden)
+            | Self::Auth(AuthError::AccountDisabled) => {
                 (StatusCode::FORBIDDEN, ErrorCode::Forbidden)
             }
             Self::Auth(AuthError::UsernameTaken) => (StatusCode::CONFLICT, ErrorCode::Conflict),

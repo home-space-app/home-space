@@ -133,6 +133,8 @@ impl FileService {
                 self.remove_transfer_files(id).await;
                 Err(match err {
                     db::DbError::Invalid => invalid("the transfer is not valid".to_owned()),
+                    // The sender or the recipient is disabled or marked for deletion.
+                    db::DbError::NotFound => FilesError::Forbidden,
                     other => other.into(),
                 })
             }

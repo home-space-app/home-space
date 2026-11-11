@@ -1,5 +1,6 @@
 //! Wire types shared by the home-space server and its clients.
 
+mod admin;
 mod auth;
 mod capabilities;
 mod change;
@@ -17,6 +18,7 @@ mod transfer;
 mod trash;
 mod upload;
 
+pub use admin::{Account, AccountDevice, CreateAccount, SetPassword, UpdateAccount};
 pub use auth::{
     ChangePasswordRequest, LoginRequest, Me, OidcCallbackQuery, OidcExchangeRequest, OidcProvider,
     OidcStartQuery, Providers, RefreshRequest, TokenPair,

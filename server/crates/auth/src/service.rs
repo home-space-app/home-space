@@ -631,6 +631,7 @@ impl AuthService {
         let params = match outcome {
             Ok(code) => ("code", code),
             Err(AuthError::OidcDenied) => ("error", "access_denied".to_owned()),
+            Err(AuthError::AccountDisabled) => ("error", "account_disabled".to_owned()),
             Err(err) => {
                 tracing::warn!(error = %err, "single sign-on failed");
                 ("error", "login_failed".to_owned())
@@ -675,6 +676,7 @@ impl AuthService {
             .complete(code, &pending.nonce, &pending.idp_pkce_verifier)
             .await?;
         let user_id = self.user_for_identity(&identity).await?;
+        self.require_may_sign_in(user_id).await?;
         let login_code = random_token();
         self.db
             .insert_oidc_code(
@@ -729,6 +731,7 @@ impl AuthService {
         user_id: UserId,
         device: Option<&DeviceInfo>,
     ) -> Result<TokenPair, AuthError> {
+        self.require_may_sign_in(user_id).await?;
         let device = device.map(new_device).transpose()?;
         if let Some(device) = device {
             self.db.register_device(user_id, device).await?;
@@ -745,6 +748,20 @@ impl AuthService {
             )
             .await?;
         self.pair(user_id, session_id, refresh_token)
+    }
+
+    /// Refuses a user who is disabled or marked for deletion.
+    async fn require_may_sign_in(&self, user_id: UserId) -> Result<(), AuthError> {
+        let user = self
+            .db
+            .find_user(user_id)
+            .await?
+            .ok_or(AuthError::InvalidCredentials)?;
+        if user.may_sign_in() {
+            Ok(())
+        } else {
+            Err(AuthError::AccountDisabled)
+        }
     }
 
     /// Hands the next refresh token to a session; fails if the session has ended.

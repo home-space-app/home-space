@@ -2,7 +2,7 @@ use sqlx::FromRow;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{Db, DbError, NodeId, UserId};
+use crate::{Db, DbError, NodeId, UserId, accounts::lock_active_users};
 
 /// A resumable upload in progress.
 #[derive(Clone, Debug, PartialEq, FromRow)]
@@ -54,8 +54,23 @@ macro_rules! upload_columns {
 }
 
 impl Db {
-    /// Records a new upload.
+    /// Records a new upload. `NotFound` while the owner, or the recipient of the transfer it
+    /// is for, is disabled or marked for deletion.
     pub async fn create_upload(&self, owner: UserId, new: NewUpload) -> Result<Upload, DbError> {
+        let mut tx = self.pool().begin().await?;
+        let mut users = vec![owner];
+        if let Some(item) = new.transfer_item_id {
+            users.extend(
+                sqlx::query_scalar::<_, UserId>(
+                    "SELECT t.recipient_id FROM transfer_items i \
+                     JOIN transfers t ON t.id = i.transfer_id WHERE i.id = $1",
+                )
+                .bind(item)
+                .fetch_optional(&mut *tx)
+                .await?,
+            );
+        }
+        lock_active_users(&mut tx, &users).await?;
         let upload = sqlx::query_as::<_, Upload>(concat!(
             "INSERT INTO uploads \
              (id, owner_id, parent_id, node_id, name, size, mime, modified_at, device_id, \
@@ -76,8 +91,9 @@ impl Db {
         .bind(new.version_of)
         .bind(new.auto_upload)
         .bind(new.transfer_item_id)
-        .fetch_one(self.pool())
+        .fetch_one(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(upload)
     }
 
