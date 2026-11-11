@@ -536,7 +536,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
                 } catch (_: SecurityException) {
                     // Not every provider offers it. It works until the app ends.
                 }
-                active.uploads.add(folder.id, folder.name, displayName(uri), uri.toString())
+                active.uploads.add(folder.id, folder.name, displayName(uri), uri.toString(), null)
             }
         } catch (e: CoreException) {
             toast("The files can't be added: ${e.fileMessage()}")

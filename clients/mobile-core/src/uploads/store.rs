@@ -19,11 +19,12 @@ const SCHEMA: &str = "
         done     INTEGER NOT NULL,      -- bytes the server had when last heard
         session  TEXT,                  -- the server's upload session
         problem  TEXT,                  -- why it stopped, for the user; it waits for a retry
-        paused   INTEGER NOT NULL DEFAULT 0 -- it waits for the user to continue
+        paused   INTEGER NOT NULL DEFAULT 0, -- it waits for the user to continue
+        mime     TEXT                   -- the type the app gave; NULL for the server to guess
     );
 ";
 const COLUMNS: &str =
-    "key, parent, folder, name, source, ready, size, done, session, problem, paused";
+    "key, parent, folder, name, source, ready, size, done, session, problem, paused, mime";
 
 pub(super) type Result<T> = rusqlite::Result<T>;
 
@@ -40,6 +41,7 @@ pub(super) struct Row {
     pub session: Option<Uuid>,
     pub problem: Option<String>,
     pub paused: bool,
+    pub mime: Option<String>,
 }
 
 fn row_of(row: &rusqlite::Row<'_>) -> Result<Row> {
@@ -57,7 +59,16 @@ fn row_of(row: &rusqlite::Row<'_>) -> Result<Row> {
         session: session.and_then(|id| Uuid::parse_str(&id).ok()),
         problem: row.get(9)?,
         paused: row.get(10)?,
+        mime: row.get(11)?,
     })
+}
+
+fn has_column(db: &Connection, name: &str) -> Result<bool> {
+    db.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('queue') WHERE name = ?1)",
+        [name],
+        |row| row.get(0),
+    )
 }
 
 pub(super) struct Store {
@@ -70,13 +81,12 @@ impl Store {
         db.execute_batch("PRAGMA journal_mode = WAL;")?;
         db.execute_batch(SCHEMA)?;
         // A queue from before pausing keeps its files.
-        let has_paused: bool = db.query_row(
-            "SELECT EXISTS (SELECT 1 FROM pragma_table_info('queue') WHERE name = 'paused')",
-            [],
-            |row| row.get(0),
-        )?;
-        if !has_paused {
+        if !has_column(&db, "paused")? {
             db.execute_batch("ALTER TABLE queue ADD COLUMN paused INTEGER NOT NULL DEFAULT 0")?;
+        }
+        // A queue from before types were kept leaves them to the server, as it did.
+        if !has_column(&db, "mime")? {
+            db.execute_batch("ALTER TABLE queue ADD COLUMN mime TEXT")?;
         }
         Ok(Self { db: Mutex::new(db) })
     }
@@ -92,11 +102,12 @@ impl Store {
         folder: &str,
         name: &str,
         source: Option<&str>,
+        mime: Option<&str>,
     ) -> Result<()> {
         self.db().execute(
-            "INSERT INTO queue (key, parent, folder, name, source, ready, size, done)
-             VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, 0)",
-            params![key, parent, folder, name, source],
+            "INSERT INTO queue (key, parent, folder, name, source, ready, size, done, mime)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, 0, ?6)",
+            params![key, parent, folder, name, source, mime],
         )?;
         Ok(())
     }

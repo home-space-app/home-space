@@ -59,16 +59,22 @@ private sealed interface ShareSession {
 }
 
 /**
- * Takes files another app shares, such as a mail attachment: Save puts them into a folder of the
- * user's Home Space, Send sends them to a device.
+ * Takes files another app shares, such as a mail attachment, or text, such as a link to a video:
+ * Save puts them into a folder of the user's Home Space, Send sends them to a device. Text goes as
+ * a file of its own, named after this phone and the time.
  */
 class ShareActivity : ComponentActivity() {
+    /** The file shared text was written to; it goes with this screen. */
+    private var textFile: SharedFiles? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val uris = sharedUris(intent)
-        if (uris.isEmpty()) {
-            Toast.makeText(this, "There is no file to save or send.", Toast.LENGTH_LONG).show()
+        // A file wins over the text that comes with it, which is a caption at most.
+        val text = if (uris.isEmpty()) sharedText(intent) else null
+        if (uris.isEmpty() && text == null) {
+            Toast.makeText(this, "There is nothing to save or send.", Toast.LENGTH_LONG).show()
             finish()
             return
         }
@@ -80,19 +86,31 @@ class ShareActivity : ComponentActivity() {
                 ThemeMode.DARK -> true
             }
             HomeSpaceTheme(dark = dark, useSystemColours = store.useSystemColours) {
-                Surface { ShareScreen(uris) }
+                Surface { ShareScreen(uris, text) }
             }
         }
     }
 
+    override fun onDestroy() {
+        // Whatever goes up or out was copied by now.
+        forgetSharedText(textFile)
+        super.onDestroy()
+    }
+
     @Composable
-    private fun ShareScreen(uris: List<Uri>) {
+    private fun ShareScreen(uris: List<Uri>, text: String?) {
         var session by remember { mutableStateOf<ShareSession>(ShareSession.Loading) }
         var shared by remember { mutableStateOf<SharedFiles?>(null) }
         var step by rememberSaveable { mutableStateOf(ShareStep.CHOOSE) }
         LaunchedEffect(Unit) {
-            shared = withContext(Dispatchers.IO) { describeShared(applicationContext, uris) }
             session = try {
+                shared = withContext(Dispatchers.IO) {
+                    if (text != null) {
+                        writeSharedText(applicationContext, text, Build.MODEL).also { textFile = it }
+                    } else {
+                        describeShared(applicationContext, uris)
+                    }
+                }
                 ClientHolder.resume(applicationContext)?.let(ShareSession::Ready) ?: ShareSession.SignedOut
             } catch (_: CoreException.Unauthorized) {
                 ShareSession.SignedOut
@@ -131,7 +149,13 @@ class ShareActivity : ComponentActivity() {
                 save = { folder, name -> withContext(Dispatchers.IO) { queueUploads(ready.active, files, folder, name) } },
                 onDismiss = { step = ShareStep.CHOOSE },
                 onSaved = { folder ->
-                    toast(if (files.uris.size == 1) "Uploading to $folder" else "Uploading ${files.uris.size} files to $folder")
+                    toast(
+                        when {
+                            files.text != null -> "Saving the text to $folder"
+                            files.uris.size == 1 -> "Uploading to $folder"
+                            else -> "Uploading ${files.uris.size} files to $folder"
+                        },
+                    )
                     finish()
                 },
                 onSessionEnded = onSessionEnded,
@@ -148,7 +172,7 @@ class ShareActivity : ComponentActivity() {
         val added = mutableListOf<String>()
         try {
             files.uris.forEachIndexed { index, uri ->
-                val key = queue.add(folder, folderName, files.names[index], null)
+                val key = queue.add(folder, folderName, files.names[index], null, files.mimes[index])
                 added += key
                 copyShared(applicationContext, uri, java.io.File(queue.copyPath(key)))
                 queue.ready(key, null)
@@ -193,7 +217,10 @@ class ShareActivity : ComponentActivity() {
                         modifier = Modifier.fillMaxWidth().padding(32.dp),
                         contentAlignment = Alignment.Center,
                     ) { CircularProgressIndicator() }
-                    ShareSession.SignedOut -> Notice("Sign in to Home Space to save or send files.", "Open Home Space") {
+                    ShareSession.SignedOut -> Notice(
+                        "Sign in to Home Space to save or send ${if (shared?.text != null) "it" else "files"}.",
+                        "Open Home Space",
+                    ) {
                         startActivity(Intent(this@ShareActivity, MainActivity::class.java))
                         finish()
                     }
@@ -234,7 +261,7 @@ class ShareActivity : ComponentActivity() {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(
-                    painterResource(R.drawable.ic_upload_file),
+                    painterResource(if (shared.text != null) R.drawable.ic_node_description else R.drawable.ic_upload_file),
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -305,4 +332,10 @@ private fun sharedUris(intent: Intent?): List<Uri> {
     }
     // Only content the sharing app hands over; a file path could point into this app's own data.
     return uris.filter { it.scheme == "content" }
+}
+
+/** The text of a `SEND` share, such as a link or a note, if it has any. */
+private fun sharedText(intent: Intent?): String? {
+    if (intent?.action != Intent.ACTION_SEND) return null
+    return intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.takeIf { it.isNotBlank() }
 }

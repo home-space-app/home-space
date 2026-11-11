@@ -95,7 +95,7 @@ impl Setup {
     fn add(&self, queue: &UploadQueue, name: &str, source: &str, content: &[u8]) -> String {
         self.original(source, content);
         queue
-            .add(None, "Home".into(), name.into(), Some(source.into()))
+            .add(None, "Home".into(), name.into(), Some(source.into()), None)
             .unwrap()
     }
 
@@ -337,6 +337,7 @@ fn a_queue_from_before_pausing_keeps_its_files() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].key, "old");
     assert!(!rows[0].paused);
+    assert_eq!(rows[0].mime, None);
 }
 
 #[tokio::test]
@@ -470,7 +471,7 @@ async fn an_original_that_cant_be_read_can_be_tried_again() {
         .await;
     let queue = setup.open();
     let key = queue
-        .add(None, "Home".into(), "a.txt".into(), Some("picked".into()))
+        .add(None, "Home".into(), "a.txt".into(), Some("picked".into()), None)
         .unwrap();
 
     assert_eq!(queue.run().await.unwrap().failed, 1);
@@ -547,7 +548,7 @@ async fn a_file_the_app_was_still_preparing_when_it_ended_must_be_picked_again()
     let setup = Setup::new().await;
     let queue = setup.open();
     let key = queue
-        .add(None, "Home".into(), "Photo".into(), None)
+        .add(None, "Home".into(), "Photo".into(), None, None)
         .unwrap();
     assert_eq!(only(&queue).state, QueuedUploadState::Preparing);
     // Nothing can go while the app makes the copy.
@@ -573,7 +574,7 @@ async fn a_file_the_app_prepared_goes_under_the_name_it_gives() {
         .await;
     let queue = setup.open();
     let key = queue
-        .add(None, "Home".into(), "Photo".into(), None)
+        .add(None, "Home".into(), "Photo".into(), None, None)
         .unwrap();
     std::fs::write(queue.copy_path(key.clone()), b"abcdef").unwrap();
     queue.ready(key, Some("a.txt".into())).unwrap();
@@ -583,11 +584,43 @@ async fn a_file_the_app_prepared_goes_under_the_name_it_gives() {
 }
 
 #[tokio::test]
+async fn a_type_the_app_gives_goes_to_the_server() {
+    let setup = Setup::new().await;
+    Mock::given(method("POST"))
+        .and(path(protocol::paths::UPLOADS))
+        .and(body_partial_json(
+            serde_json::json!({ "name": "Pixel_2026-11-11_10-00-00", "mime": "text/plain" }),
+        ))
+        .respond_with(upload_session(0, 6, 6))
+        .expect(1)
+        .mount(&setup.server)
+        .await;
+    chunk_at("0", chunk_stored(6))
+        .expect(1)
+        .mount(&setup.server)
+        .await;
+    let queue = setup.open();
+    let key = queue
+        .add(
+            None,
+            "Home".into(),
+            "Pixel_2026-11-11_10-00-00".into(),
+            None,
+            Some("text/plain".into()),
+        )
+        .unwrap();
+    std::fs::write(queue.copy_path(key.clone()), b"abcdef").unwrap();
+    queue.ready(key, None).unwrap();
+
+    assert_eq!(queue.run().await.unwrap(), QueueSummary::default());
+}
+
+#[tokio::test]
 async fn a_copy_that_has_gone_asks_for_the_file_again() {
     let setup = Setup::new().await;
     let queue = setup.open();
     let key = queue
-        .add(None, "Home".into(), "a.txt".into(), None)
+        .add(None, "Home".into(), "a.txt".into(), None, None)
         .unwrap();
     let copy = queue.copy_path(key.clone());
     std::fs::write(&copy, b"abcdef").unwrap();
@@ -619,7 +652,7 @@ async fn adding_during_a_run_is_picked_up_by_that_run() {
     let adding = queue.clone();
     *setup.changes.0.lock().unwrap() = Some(Box::new(move || {
         adding
-            .add(None, "Home".into(), "b.txt".into(), Some("two".into()))
+            .add(None, "Home".into(), "b.txt".into(), Some("two".into()), None)
             .unwrap();
         true
     }));
@@ -644,7 +677,7 @@ async fn wiping_ends_uploads_on_the_server_and_deletes_the_queue() {
     setup.original("other", b"x");
     queue.run().await.unwrap();
     let waiting = queue
-        .add(None, "Home".into(), "b.txt".into(), Some("other".into()))
+        .add(None, "Home".into(), "b.txt".into(), Some("other".into()), None)
         .unwrap();
     queue.stop();
 
