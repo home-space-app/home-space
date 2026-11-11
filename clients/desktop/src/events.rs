@@ -28,6 +28,14 @@ type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 struct Connection(Client);
 
+/// What the live connection reports.
+#[derive(Debug, Clone)]
+pub enum Live {
+    Event(Box<Event>),
+    /// The server no longer accepts the session, so the stream has ended.
+    SignedOut,
+}
+
 impl Hash for Connection {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.url("").hash(state);
@@ -37,15 +45,16 @@ impl Hash for Connection {
 /// Live events from the server of `client`, reconnecting with backoff.
 ///
 /// Every connection after the first attempt is preceded by [`Event::Resync`], since events
-/// may have been missed meanwhile. The stream ends once the session is no longer valid.
-pub fn subscription(client: &Client) -> Subscription<Event> {
+/// may have been missed meanwhile. The stream ends with [`Live::SignedOut`] once the session
+/// is no longer valid.
+pub fn subscription(client: &Client) -> Subscription<Live> {
     Subscription::run_with(Connection(client.clone()), |connection| {
         listen(connection.0.clone())
     })
 }
 
-fn listen(client: Client) -> impl Stream<Item = Event> {
-    iced::stream::channel(BUFFER, async move |mut output: Sender<Event>| {
+fn listen(client: Client) -> impl Stream<Item = Live> {
+    iced::stream::channel(BUFFER, async move |mut output: Sender<Live>| {
         let mut delay = MIN_RETRY;
         let mut reconnecting = false;
         loop {
@@ -56,7 +65,11 @@ fn listen(client: Client) -> impl Stream<Item = Event> {
                         && greet(&client, &mut socket).await
                     {
                         let opened = Instant::now();
-                        let resynced = !reconnecting || output.send(Event::Resync).await.is_ok();
+                        let resynced = !reconnecting
+                            || output
+                                .send(Live::Event(Box::new(Event::Resync)))
+                                .await
+                                .is_ok();
                         if !resynced || !forward(socket, &mut output).await {
                             break;
                         }
@@ -66,7 +79,10 @@ fn listen(client: Client) -> impl Stream<Item = Event> {
                         }
                     }
                 }
-                Err(ApiError::Unauthorized) => break,
+                Err(ApiError::Unauthorized) => {
+                    let _ = output.send(Live::SignedOut).await;
+                    break;
+                }
                 Err(_) => {}
             }
             reconnecting = true;
@@ -92,12 +108,12 @@ async fn greet(client: &Client, socket: &mut Socket) -> bool {
 }
 
 /// Passes events on until the socket closes or goes quiet; `false` once nobody listens anymore.
-async fn forward(mut socket: Socket, output: &mut Sender<Event>) -> bool {
+async fn forward(mut socket: Socket, output: &mut Sender<Live>) -> bool {
     // Any frame, pings included, shows the connection is alive.
     while let Ok(Some(Ok(message))) = timeout(IDLE_TIMEOUT, socket.next()).await {
         if let tungstenite::Message::Text(text) = message
             && let Ok(event) = serde_json::from_str::<Event>(&text)
-            && output.send(event).await.is_err()
+            && output.send(Live::Event(Box::new(event))).await.is_err()
         {
             return false;
         }
