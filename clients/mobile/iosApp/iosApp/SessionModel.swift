@@ -348,7 +348,7 @@ final class SessionModel {
         for file in files {
             do {
                 let key = try queue.add(
-                    parentId: parentId, folderName: folderName, name: file.lastPathComponent, source: nil)
+                    parentId: parentId, folderName: folderName, name: file.lastPathComponent, source: nil, mime: nil)
                 do {
                     try FileManager.default.moveItem(at: file, to: URL(fileURLWithPath: queue.copyPath(key: key)))
                     try queue.ready(key: key, name: nil)
@@ -368,7 +368,7 @@ final class SessionModel {
     func uploadPhotos(photos: [PhotosPickerItem], parentId: String?, folderName: String) {
         guard let queue = uploadQueue() else { return }
         for photo in photos {
-            guard let key = try? queue.add(parentId: parentId, folderName: folderName, name: "Photo", source: nil)
+            guard let key = try? queue.add(parentId: parentId, folderName: folderName, name: "Photo", source: nil, mime: nil)
             else {
                 notice = "Could not add the photo."
                 continue

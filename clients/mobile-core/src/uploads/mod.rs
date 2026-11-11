@@ -168,13 +168,15 @@ impl UploadQueue {
     /// has this name. With a `source`, [`PickedFiles::copy_file`] copies it when its turn comes.
     /// Otherwise the app puts the file at [`UploadQueue::copy_path`] and calls
     /// [`UploadQueue::ready`]; if the app ends before that, the user is asked to pick it again.
-    /// Returns its key. Nothing goes up until [`UploadQueue::run`].
+    /// Returns its key. Nothing goes up until [`UploadQueue::run`]. `mime` is the file's type when
+    /// the app knows it better than its name says, such as shared text saved without an extension.
     pub fn add(
         &self,
         parent_id: Option<String>,
         folder_name: String,
         name: String,
         source: Option<String>,
+        mime: Option<String>,
     ) -> Result<String, CoreError> {
         if let Some(parent) = &parent_id {
             parse_id(parent)?;
@@ -188,6 +190,7 @@ impl UploadQueue {
                 &folder_name,
                 &name,
                 source.as_deref(),
+                mime.as_deref().filter(|mime| !mime.is_empty()),
             )
             .map_err(storage_error)?;
         self.inner.listener.changed();
@@ -593,7 +596,7 @@ impl Inner {
                 name: row.name.clone(),
                 size: row.size,
                 modified_at: None,
-                mime: None,
+                mime: row.mime.clone(),
                 node_id: None,
                 keep_both: false,
                 version_of: None,

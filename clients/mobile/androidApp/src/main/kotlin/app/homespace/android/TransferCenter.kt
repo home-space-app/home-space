@@ -48,6 +48,9 @@ import uniffi.homespace_core.TransferRow
 import uniffi.homespace_core.TransferStatus
 
 private const val SEND_DIR = "send"
+/** Text shared from another app, written out so it goes like a file. */
+private const val SHARED_TEXT_DIR = "shared-text"
+private const val TEXT_PLAIN = "text/plain"
 private const val RECEIVE_DIR = "transfers"
 /** The folder under Download that received files go to. */
 private const val DOWNLOADS_FOLDER = "Home Space"
@@ -69,8 +72,18 @@ private const val ASKED_NOTIFICATIONS = "asked_notifications"
 /** Set on the intent that opens the app from a transfer's notification. */
 const val EXTRA_SHOW_TRANSFERS = "app.homespace.android.SHOW_TRANSFERS"
 
-/** Files handed to the app to save or send, as far as their provider describes them. */
-data class SharedFiles(val uris: List<Uri>, val names: List<String>, val bytes: Long)
+/**
+ * Files handed to the app to save or send, as far as their provider describes them. `mimes` holds
+ * each one's type, null where it isn't known. `text` is set when what was shared is text, such as
+ * a link, written out to the one file.
+ */
+data class SharedFiles(
+    val uris: List<Uri>,
+    val names: List<String>,
+    val bytes: Long,
+    val mimes: List<String?> = uris.map { null },
+    val text: String? = null,
+)
 
 /** Copies of files to send, in a folder of their own that goes once they are sent. */
 class PreparedSend(val files: List<SendFile>, val dir: File)
@@ -187,6 +200,7 @@ object TransferCenter {
         Thread {
             File(cache, SEND_DIR).deleteRecursively()
             File(cache, RECEIVE_DIR).deleteRecursively()
+            File(cache, SHARED_TEXT_DIR).deleteRecursively()
         }.start()
     }
 
@@ -216,7 +230,35 @@ fun describeShared(context: Context, uris: List<Uri>): SharedFiles {
             ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
             ?: "file ${index + 1}"
     }
-    return SharedFiles(uris, names, bytes)
+    val mimes = uris.map { uri -> runCatching { resolver.getType(uri) }.getOrNull() }
+    return SharedFiles(uris, names, bytes, mimes)
+}
+
+/**
+ * Writes shared `text` to a file named `{device}_{date and time}`, with no extension: its type,
+ * text/plain, goes with it instead. Call it off the main thread, and [forgetSharedText] when the
+ * screen it was shared to closes.
+ */
+fun writeSharedText(context: Context, text: String, device: String, now: java.util.Date = java.util.Date()): SharedFiles {
+    val stamp = java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", java.util.Locale.US).format(now)
+    // Not a folder, and nothing a computer the file syncs to would refuse.
+    val from = device.replace(Regex("""[\\/:*?"<>|\p{Cntrl}]"""), "-").trim().ifEmpty { "Android" }
+    val name = "${from}_$stamp"
+    val file = File(context.cacheDir, "$SHARED_TEXT_DIR/${UUID.randomUUID()}")
+    try {
+        file.parentFile?.mkdirs()
+        file.writeText(text, Charsets.UTF_8)
+    } catch (e: IOException) {
+        file.delete()
+        throw CoreException.Failed("file", "The text can't be saved: ${e.message}")
+    }
+    return SharedFiles(listOf(Uri.fromFile(file)), listOf(name), file.length(), listOf(TEXT_PLAIN), text)
+}
+
+/** Deletes the file [writeSharedText] made for `shared`, if it made one. */
+fun forgetSharedText(shared: SharedFiles?) {
+    if (shared?.text == null) return
+    shared.uris.forEach { uri -> uri.path?.let { File(it).delete() } }
 }
 
 /** Copies `source` to `dest`. Access to a shared file ends with the screen it was shared to. */
@@ -240,7 +282,7 @@ fun prepareSend(context: Context, shared: SharedFiles): PreparedSend {
         val files = shared.uris.mapIndexed { index, uri ->
             val copy = File(dir, index.toString())
             copyShared(context, uri, copy)
-            SendFile(shared.names[index], copy.path, context.contentResolver.getType(uri))
+            SendFile(shared.names[index], copy.path, shared.mimes[index])
         }
         return PreparedSend(files, dir)
     } catch (e: CoreException) {
