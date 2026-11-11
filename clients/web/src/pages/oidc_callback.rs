@@ -10,6 +10,7 @@ use crate::{
 };
 
 const ACCESS_DENIED_MESSAGE: &str = "You are not allowed to sign in with this account.";
+const DISABLED_MESSAGE: &str = "This account is disabled. Ask an administrator to enable it.";
 const FAILED_MESSAGE: &str = "Signing in failed. Please try again.";
 const EXPIRED_MESSAGE: &str = "This sign-in has expired or was already used. Please sign in again.";
 
@@ -34,6 +35,7 @@ pub fn OidcCallback(auth: Auth) -> impl IntoView {
                 match reason.as_str() {
                     "access_denied" => ACCESS_DENIED_MESSAGE,
                     "login_expired" => EXPIRED_MESSAGE,
+                    "account_disabled" => DISABLED_MESSAGE,
                     _ => FAILED_MESSAGE,
                 }
                 .to_owned(),

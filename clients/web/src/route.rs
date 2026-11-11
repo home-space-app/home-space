@@ -25,6 +25,8 @@ pub const TRANSFERS_SENT_PATH: &str = "/transfers/sent";
 
 /// The administration pages, for administrators only.
 pub const ADMIN_PATH: &str = "/admin";
+/// The administration tab listing the accounts.
+pub const ADMIN_USERS_PATH: &str = "/admin/users";
 
 pub const SEARCH_PATH: &str = "/search";
 pub const SEARCH_PARAM: &str = "q";

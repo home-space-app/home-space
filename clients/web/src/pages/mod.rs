@@ -1,4 +1,5 @@
 mod admin;
+mod admin_users;
 mod browser;
 mod conflict_dialog;
 mod delete_dialog;
@@ -17,7 +18,7 @@ mod transfers;
 mod trash;
 mod visibility_dialog;
 
-pub use admin::AdminPage;
+pub use admin::{AdminPage, AdminTab};
 pub use browser::Browser;
 pub use devices::DevicesPage;
 pub use login::Login;

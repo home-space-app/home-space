@@ -8,8 +8,8 @@ use crate::{
     events,
     incoming::{self, IncomingToast},
     pages::{
-        AdminPage, Browser, DevicesPage, Login, OidcCallback, SearchPage, SettingsPage, Shell,
-        TransferList, TransfersPage, TrashPage,
+        AdminPage, AdminTab, Browser, DevicesPage, Login, OidcCallback, SearchPage, SettingsPage,
+        Shell, TransferList, TransfersPage, TrashPage,
     },
     session::Auth,
     uploads::{Sending, UploadItem, UploadPanel},
@@ -70,7 +70,14 @@ pub fn App() -> impl IntoView {
                             path=path!("/transfers/sent")
                             view=move || view! { <TransfersPage auth list=TransferList::Sent /> }
                         />
-                        <Route path=path!("/admin") view=move || view! { <AdminPage auth /> } />
+                        <Route
+                            path=path!("/admin")
+                            view=move || view! { <AdminPage auth tab=AdminTab::Status /> }
+                        />
+                        <Route
+                            path=path!("/admin/users")
+                            view=move || view! { <AdminPage auth tab=AdminTab::Users /> }
+                        />
                     </ParentRoute>
                 </Routes>
             </Show>

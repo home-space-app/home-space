@@ -1,4 +1,4 @@
-//! Administration: the server's status, disk and the storage of every user.
+//! Administration: the server's status, disk and the storage of every user, and the accounts.
 
 use leptos::prelude::*;
 use time::{Duration, OffsetDateTime};
@@ -11,6 +11,7 @@ use client_core::storage::{
 use protocol::{ErrorCode, ServerConfig, ServerStatus, StorageBackend, UserStorage};
 
 use super::{
+    admin_users::UsersTab,
     shell::{Tab, Tabs},
     sidebar::initial,
 };
@@ -127,6 +128,19 @@ pub fn config_groups(
                 ),
                 row("Storage root", storage_root, "HOMESPACE_STORAGE_ROOT"),
                 row(
+                    "Deleted users are removed",
+                    match config.user_deletion_delay_minutes {
+                        0 => "At once".to_owned(),
+                        minutes => format!(
+                            "After {}",
+                            duration(Duration::minutes(
+                                i64::try_from(minutes).unwrap_or(i64::MAX)
+                            ))
+                        ),
+                    },
+                    "HOMESPACE_USER_DELETION_DELAY_MINUTES",
+                ),
+                row(
                     "Change history kept",
                     retention,
                     "HOMESPACE_CHANGES_RETENTION_DAYS",
@@ -172,8 +186,15 @@ fn now() -> OffsetDateTime {
     OffsetDateTime::from_unix_timestamp_nanos(nanos).unwrap_or(OffsetDateTime::UNIX_EPOCH)
 }
 
+/// The tabs of the administration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AdminTab {
+    Status,
+    Users,
+}
+
 #[component]
-pub fn AdminPage(auth: Auth) -> impl IntoView {
+pub fn AdminPage(auth: Auth, tab: AdminTab) -> impl IntoView {
     let status = RwSignal::new(None::<ServerStatus>);
     let error = RwSignal::new(None::<String>);
     let resource = load::load(
@@ -213,25 +234,39 @@ pub fn AdminPage(auth: Auth) -> impl IntoView {
                         })
                 }}
                 <span class="page-header__spacer"></span>
-                <button class="button" on:click=move |_| resource.refetch()>
-                    <Icon name="refresh" />
-                    <span class="label">"Refresh"</span>
-                </button>
+                {(tab == AdminTab::Status)
+                    .then(|| {
+                        view! {
+                            <button class="button" on:click=move |_| resource.refetch()>
+                                <Icon name="refresh" />
+                                <span class="label">"Refresh"</span>
+                            </button>
+                        }
+                    })}
             </header>
             <Tabs>
                 <Tab href=route::ADMIN_PATH icon="dns" label="Server status" />
+                <Tab href=route::ADMIN_USERS_PATH icon="group" label="Users" />
             </Tabs>
             <ErrorAlert message=error />
-            {move || {
-                status
-                    .get()
-                    .map(|status| {
-                        view! {
-                            <DiskCard status=status.clone() />
-                            <UsersCard status=status.clone() me=me() />
-                            <ConfigCard status />
-                        }
-                    })
+            {match tab {
+                AdminTab::Status => {
+                    view! {
+                        {move || {
+                            status
+                                .get()
+                                .map(|status| {
+                                    view! {
+                                        <DiskCard status=status.clone() />
+                                        <UsersCard status=status.clone() me=me() />
+                                        <ConfigCard status />
+                                    }
+                                })
+                        }}
+                    }
+                        .into_any()
+                }
+                AdminTab::Users => view! { <UsersTab auth status /> }.into_any(),
             }}
         </main>
     }
@@ -495,6 +530,7 @@ mod tests {
             transfer_ttl_hours: 24,
             max_transfer_bytes: None,
             changes_retention_days: None,
+            user_deletion_delay_minutes: 10,
             password_login: true,
             oidc: None,
             access_ttl_secs: 900,

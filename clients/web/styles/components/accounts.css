@@ -1,0 +1,473 @@
+/* Administration › Users: the account list, the add-user dialog and the edit sheet. */
+
+.admin-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+
+.search-field {
+  display: flex;
+  flex: 0 1 280px;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 180px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-muted);
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.search-field:focus-within {
+  border-color: var(--color-accent);
+  box-shadow: var(--focus-ring);
+}
+
+.search-field__input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-2) 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+}
+
+.filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 999px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.filter-chip:hover {
+  background: var(--color-surface-hover);
+}
+
+.filter-chip:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.filter-chip--active,
+.filter-chip--active:hover {
+  border-color: transparent;
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+.filter-chip__count {
+  color: var(--color-muted);
+  font-size: 0.75rem;
+}
+
+.filter-chip--active .filter-chip__count {
+  color: inherit;
+}
+
+.pill--danger {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}
+
+.meter__fill--danger {
+  background: var(--color-danger);
+}
+
+.meter--large {
+  height: 6px;
+  border-radius: 3px;
+}
+
+/* Keeps the visually hidden column heading inside the scroller, so it cannot widen the page. */
+.accounts-table {
+  position: relative;
+}
+
+.accounts-table td {
+  vertical-align: middle;
+}
+
+.accounts-table__row--inactive .user-cell .avatar {
+  background: var(--color-border-strong);
+}
+
+.accounts-table__seen {
+  white-space: nowrap;
+}
+
+.accounts-table__actions {
+  width: 1%;
+  text-align: right;
+}
+
+.accounts-table__buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.accounts-table__empty {
+  padding: var(--space-6) var(--space-4);
+  color: var(--color-muted);
+  text-align: center;
+}
+
+.user-cell--button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.user-cell--button:hover .user-cell__name {
+  color: var(--color-accent);
+}
+
+.user-cell--button:focus-visible {
+  outline: none;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--focus-ring);
+}
+
+.account-state {
+  display: grid;
+  justify-items: start;
+  gap: 2px;
+}
+
+.account-state__note {
+  color: var(--color-danger);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+/* A yes/no switch. */
+.switch {
+  position: relative;
+  flex: none;
+  width: 36px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--color-border-strong);
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.switch[aria-checked="true"] {
+  background: var(--color-accent);
+}
+
+.switch:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.switch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.switch__thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--transition);
+}
+
+.switch[aria-checked="true"] .switch__thumb {
+  transform: translateX(16px);
+}
+
+/* A row of buttons where one is chosen, such as GB / TB. */
+.segmented {
+  display: inline-flex;
+  flex: none;
+  overflow: hidden;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+}
+
+.segmented__option {
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.segmented__option + .segmented__option {
+  border-left: 1px solid var(--color-border-strong);
+}
+
+.segmented__option--active {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+.segmented__option:focus-visible {
+  outline: none;
+  box-shadow: inset var(--focus-ring);
+}
+
+.quota-field {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.quota-field__input {
+  flex: 1;
+  min-width: 0;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.quota-field__input::-webkit-inner-spin-button,
+.quota-field__input::-webkit-outer-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+.field__hint {
+  color: var(--color-muted);
+  font-size: 0.8125rem;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.setting-row__text {
+  display: grid;
+  gap: 2px;
+}
+
+.setting-row__title {
+  font-weight: 500;
+}
+
+.setting-row__detail {
+  color: var(--color-muted);
+  font-size: 0.8125rem;
+}
+
+.modal__panel--form {
+  width: min(480px, 100%);
+  max-height: calc(100dvh - 2 * var(--space-4));
+  overflow: auto;
+}
+
+.modal__header--close {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+}
+
+.modal__header--close .modal__subtitle {
+  grid-column: 1 / -1;
+}
+
+/* Above the edit sheet, which it is opened from. */
+.modal--top {
+  z-index: 110;
+}
+
+/* A panel that slides in from the right, for editing one account. */
+.sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  justify-content: flex-end;
+  background: var(--color-backdrop);
+  animation: modal-fade var(--transition);
+}
+
+.sheet__panel {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  grid-template-columns: minmax(0, 1fr);
+  width: min(440px, 100%);
+  min-width: 0;
+  height: 100%;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-lg);
+  animation: sheet-slide 200ms ease;
+}
+
+.sheet__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.sheet__who {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sheet__title {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.sheet__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-muted);
+  font-size: 0.8125rem;
+}
+
+.sheet__body {
+  display: grid;
+  align-content: start;
+  gap: 0;
+  padding: 0 var(--space-5);
+  overflow-y: auto;
+}
+
+.sheet__section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+  padding: var(--space-4) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.sheet__section:last-of-type {
+  border-bottom: 0;
+}
+
+.sheet__heading {
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.sheet__text {
+  color: var(--color-muted);
+  font-size: 0.8125rem;
+}
+
+.sheet__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.sheet__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5);
+  padding-bottom: calc(var(--space-3) + var(--safe-bottom, 0px));
+  border-top: 1px solid var(--color-border);
+  background: var(--color-bg);
+}
+
+.sheet__body > .alert {
+  margin-bottom: var(--space-4);
+}
+
+.account-deletion {
+  margin: 0;
+}
+
+.device-list {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.device-list__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.device-list__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes sheet-slide {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet,
+  .sheet__panel {
+    animation: none;
+  }
+}
+
+@media (width < 640px) {
+  .search-field {
+    flex: 1 1 100%;
+  }
+
+  .admin-toolbar .page-header__spacer {
+    display: none;
+  }
+
+  .admin-toolbar .filter-chips {
+    flex: 1;
+  }
+
+  .sheet__panel {
+    width: 100%;
+  }
+}
+
+.accounts-table .user-cell__name,
+.accounts-table .user-cell__detail {
+  white-space: nowrap;
+}
