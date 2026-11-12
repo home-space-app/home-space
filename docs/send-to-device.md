@@ -104,10 +104,41 @@ The sender lists their transfers with `GET /transfers/outgoing` and cancels one 
 
 Summaries in the lists and events carry `item_count` (files and folders), `file_count`, and
 `name`: the path of the one file or folder at the top of the transfer, when there is only one.
+`mime`: the type of that file, when the transfer is a single file, so a client can tell a list
+of links from a file without fetching the items.
 
 Lookups by anyone other than the sender or the recipient answer 404. A sender that calls a
 recipient's action, or a recipient that cancels, gets 403. Content, save and received answer 409
 while the transfer is still uploading, and 410 once it is finished or expired.
+
+## Links
+
+A link goes as a single file of type `text/uri-list` (RFC 2483: one link per line, CRLF, `#`
+lines are comments), named `{device}_{date and time}.uris`. The server stores it like any other
+file; old clients see a file to download.
+
+- **Sending.** Android sends shared text as a list of links when every non-blank line is an
+  absolute link (`scheme:…`, no spaces). Text with anything else in it, such as words around a
+  link, goes as `text/plain` so nothing is lost.
+- **Open.** A received transfer offers Open (on the row, and in the toast or notification) when it
+  is one file of a type the client can open (today `text/uri-list`) and at most 50 MB
+  (`client_core::uri_list::OPEN_MAX_BYTES`). The client reads it into memory, never more than
+  that, and takes the first link that may be opened. The cap is for later viewers too (text,
+  images); they should render with their own smaller limits rather than raise it.
+- **Blocked schemes.** Any scheme may open except those that run script, read local or
+  app-private files or start programs: `javascript`, `vbscript`, `data`, `blob`, `file`,
+  `filesystem`, `about`, `jar`, `view-source`, `content`, `intent`, `android-app`, `chrome`,
+  `chrome-extension`, `moz-extension`, `resource`, `search`, `search-ms`, `shell` and anything
+  starting with `ms-`. App links such as `spotify:` work.
+- **Confirmation.** Nothing opens without the user's yes. The dialog shows the host in ASCII, so a
+  look-alike name reads `xn--…`, the whole link, and how many more the list holds; only the first
+  opens. The page itself is never fetched for a preview.
+- **Afterwards.** Opening confirms the transfer (`POST /transfers/{id}/received`), as a download
+  does. Cancel leaves it waiting.
+
+Each client hands the link to the system: the web client opens a web page in a new tab
+(`noopener`) and other schemes through the browser's protocol handlers, the desktop client uses
+the default handler (`open` crate), and Android an `ACTION_VIEW` intent.
 
 ## Events
 

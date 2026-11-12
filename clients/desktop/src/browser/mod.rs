@@ -870,6 +870,15 @@ impl State {
     }
 
     fn shortcut(&mut self, shortcut: Shortcut) -> Task<Message> {
+        // Escape refuses a link; nothing opens it but the button, so a stray Enter can't.
+        if self.transfer_list.is_confirming_link() {
+            return match shortcut {
+                Shortcut::Escape => {
+                    self.handle(Message::Transfers(transfer_list::Message::CancelOpen))
+                }
+                _ => Task::none(),
+            };
+        }
         if self.send.is_some() {
             match shortcut {
                 Shortcut::Escape => self.send_update(send::Message::Cancel),

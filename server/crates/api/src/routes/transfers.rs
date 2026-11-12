@@ -81,6 +81,7 @@ pub(crate) fn summary(transfer: db::Transfer) -> TransferSummary {
         item_count: u32::try_from(transfer.item_count).unwrap_or_default(),
         file_count: u32::try_from(transfer.file_count).unwrap_or_default(),
         name: transfer.name,
+        mime: transfer.mime,
         message: transfer.message,
         created_at: transfer.created_at,
         expires_at: transfer.expires_at,

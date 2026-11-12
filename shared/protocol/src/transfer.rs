@@ -122,6 +122,10 @@ pub struct TransferSummary {
     /// The path of the one file or folder at the top of the transfer, when there is only one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The media type of the only item, when the transfer is a single file: a client can tell a
+    /// list of links (`text/uri-list`) from a file without fetching the items.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     #[serde(with = "time::serde::rfc3339")]

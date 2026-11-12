@@ -261,7 +261,13 @@ class ShareActivity : ComponentActivity() {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(
-                    painterResource(if (shared.text != null) R.drawable.ic_node_description else R.drawable.ic_upload_file),
+                    painterResource(
+                        when {
+                            shared.links != null -> R.drawable.ic_language
+                            shared.text != null -> R.drawable.ic_node_description
+                            else -> R.drawable.ic_upload_file
+                        },
+                    ),
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

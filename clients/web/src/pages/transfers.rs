@@ -7,6 +7,7 @@ use client_core::transfers::{
     is_single_file, time_left, transfer_from, transfer_name, transfer_size, transfer_state,
     transfer_to,
 };
+use client_core::uri_list::{can_open, is_uri_list};
 use protocol::{Event, TransferState, TransferSummary, UserId};
 
 use super::{
@@ -37,7 +38,9 @@ pub enum TransferList {
 
 /// The icon of a transfer: a file, or a folder for several items.
 fn transfer_icon(transfer: &TransferSummary) -> &'static str {
-    if is_single_file(transfer) {
+    if is_uri_list(transfer) {
+        "language"
+    } else if is_single_file(transfer) {
         "description"
     } else {
         "folder"
@@ -192,7 +195,7 @@ pub fn TransfersPage(auth: Auth, list: TransferList) -> impl IntoView {
                                 each=move || transfers.get()
                                 key=|transfer| (transfer.id, transfer.state)
                                 children=move |transfer| {
-                                    view! { <TransferRow transfer list me now act saving sending incoming /> }
+                                    view! { <TransferRow transfer list me now act saving sending incoming auth /> }
                                 }
                             />
                         </tbody>
@@ -249,8 +252,11 @@ fn TransferRow(
     saving: RwSignal<Option<TransferSummary>>,
     sending: Sending,
     incoming: Incoming,
+    auth: Auth,
 ) -> impl IntoView {
     let title = match list {
+        // A link's size says nothing.
+        TransferList::Incoming if is_uri_list(&transfer) => transfer_name(&transfer),
         TransferList::Incoming => {
             format!(
                 "{} · {}",
@@ -283,13 +289,19 @@ fn TransferRow(
         let progress = Memo::new(move |_| incoming.downloading.read().get(&id).copied());
         // Once the browser has the download, the transfer is only in the way: it can go.
         let handed_over = Memo::new(move |_| incoming.handed_over.read().contains(&id));
+        let opening = Memo::new(move |_| incoming.opening.get() == Some(id));
+        let openable = can_open(&transfer);
         let waiting = transfer.clone();
         (move || {
             if let Some(fraction) = progress.get() {
                 return view! { <span class="pill pill--accent">{downloading_label(fraction)}</span> }
                     .into_any();
             }
+            if opening.get() {
+                return view! { <span class="pill pill--accent">"Opening…"</span> }.into_any();
+            }
             let (save, download, last) = (waiting.clone(), waiting.clone(), waiting.clone());
+            let open = waiting.clone();
             let (last_action, last_label) = if handed_over.get() {
                 (Action::Delete, "Delete")
             } else {
@@ -302,12 +314,25 @@ fn TransferRow(
                         "Save"
                     </button>
                     <button
-                        class="button button--primary"
+                        class="button"
+                        class:button--primary=!openable
                         on:click=move |_| act.run((Action::Download, download.clone()))
                     >
                         <Icon name="download" />
                         "Download"
                     </button>
+                    <Show when=move || openable>
+                        <button
+                            class="button button--primary"
+                            on:click={
+                                let open = open.clone();
+                                move |_| incoming.open(auth, &open)
+                            }
+                        >
+                            <Icon name="language" />
+                            "Open"
+                        </button>
+                    </Show>
                     <button
                         class="button"
                         on:click=move |_| act.run((last_action, last.clone()))
@@ -400,6 +425,7 @@ mod tests {
             item_count: items,
             file_count: files,
             name: None,
+            mime: None,
             message: None,
             created_at: OffsetDateTime::UNIX_EPOCH,
             expires_at: OffsetDateTime::UNIX_EPOCH,
