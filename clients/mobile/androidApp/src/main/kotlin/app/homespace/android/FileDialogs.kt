@@ -186,10 +186,12 @@ private fun SendLocalDialog(
 internal fun sharedSummary(shared: SharedFiles): String {
     // Text is shown as what it says, not as the file it goes in.
     shared.text?.let { text ->
-        val trimmed = text.trim()
-        // Any scheme, as RFC 3986 spells one: https, ftp, git+ssh, …
-        val kind = if (trimmed.matches(Regex("""[A-Za-z][A-Za-z0-9+.-]*://\S+"""))) "Link" else "Text"
-        return "$kind · ${trimmed.lineSequence().first()}"
+        val kind = when (val links = shared.links?.size) {
+            null -> "Text"
+            1 -> "Link"
+            else -> "$links links"
+        }
+        return "$kind · ${text.trim().lineSequence().first()}"
     }
     val names = shared.names.take(SUMMARY_NAMES).joinToString(", ")
     val more = (shared.names.size - SUMMARY_NAMES).takeIf { it > 0 }?.let { " and $it more" }.orEmpty()

@@ -137,6 +137,7 @@ fun TransfersScreen(
                     ReceivedRow(
                         row = row,
                         progress = TransferCenter.progress[row.id],
+                        opening = model.fetchingLink == row.id,
                         onActions = { acting = row },
                         onStop = { model.stopTransferDownload(session, row) },
                     )
@@ -197,10 +198,28 @@ fun TransfersScreen(
         }
     }
 
+    // Asked for from a notification: the list may not have the row yet, but the id is enough.
+    LaunchedEffect(model.transferToOpen) {
+        model.transferToOpen?.let { id ->
+            model.transferToOpen = null
+            model.openTransfer(id)
+        }
+    }
+    model.linkToOpen?.let { pending ->
+        OpenLinkDialog(
+            pending = pending,
+            onOpen = { model.openPendingLink(context) },
+            onDismiss = { model.linkToOpen = null },
+        )
+    }
     acting?.let { row ->
         IncomingSheet(
             row = row,
             onDismiss = { acting = null },
+            onOpen = {
+                acting = null
+                model.openTransfer(row.id)
+            },
             onSave = {
                 acting = null
                 saving = row
@@ -236,6 +255,11 @@ fun TransfersScreen(
 @Composable
 private fun TransferTile(row: TransferRow, waiting: Boolean) {
     when {
+        row.canOpen -> IconTile(
+            R.drawable.ic_language,
+            MaterialTheme.colorScheme.secondaryContainer,
+            MaterialTheme.colorScheme.onSecondaryContainer,
+        )
         row.singleFile -> NodeTile(iconOfName(row.title))
         // The one that waits for the user stands out.
         waiting -> IconTile(
@@ -303,18 +327,25 @@ private fun TransferRowLayout(
 
 /** A transfer sent to the user: tapped while it waits, it offers to save, download or decline it. */
 @Composable
-private fun ReceivedRow(row: TransferRow, progress: Float?, onActions: () -> Unit, onStop: () -> Unit) {
+private fun ReceivedRow(
+    row: TransferRow,
+    progress: Float?,
+    opening: Boolean,
+    onActions: () -> Unit,
+    onStop: () -> Unit,
+) {
     val waiting = row.status == TransferStatus.READY
     val detail = when {
+        opening -> "${row.party} · opening…"
         progress != null -> "${row.party} · saving to Download${percentOf(progress)}"
         else -> listOfNotNull(row.party, row.timeLeft).joinToString(" · ")
     }
     TransferRowLayout(
         tile = { TransferTile(row, waiting && progress == null) },
-        title = "${row.title} · ${row.sizeLabel}",
+        title = receivedTitle(row),
         detail = detail,
         progress = progress,
-        onClick = onActions.takeIf { waiting && progress == null },
+        onClick = onActions.takeIf { waiting && progress == null && !opening },
     ) {
         when {
             progress != null -> IconButton(onClick = onStop) {
@@ -327,6 +358,10 @@ private fun ReceivedRow(row: TransferRow, progress: Float?, onActions: () -> Uni
         }
     }
 }
+
+/** A received transfer's headline: what it is and its size, or just `Link` for a link. */
+private fun receivedTitle(row: TransferRow): String =
+    if (row.canOpen) row.title else "${row.title} · ${row.sizeLabel}"
 
 /** A transfer the user sent: to take back until the other side has dealt with it. */
 @Composable
@@ -360,6 +395,7 @@ private fun IncomingSheet(
     row: TransferRow,
     onDismiss: () -> Unit,
     onSave: () -> Unit,
+    onOpen: () -> Unit,
     onDownload: () -> Unit,
     onDecline: () -> Unit,
 ) {
@@ -377,7 +413,7 @@ private fun IncomingSheet(
                 TransferTile(row, waiting = false)
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        "${row.title} · ${row.sizeLabel}",
+                        receivedTitle(row),
                         style = MaterialTheme.typography.titleMedium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -400,6 +436,9 @@ private fun IncomingSheet(
             }
             HorizontalDivider()
             val plain = MaterialTheme.colorScheme.onSurface
+            if (row.canOpen) {
+                ActionItem("Open", R.drawable.ic_open_in_new, plain, "See the link, then open it", onOpen)
+            }
             ActionItem("Save", R.drawable.ic_drive_file_move, plain, "Pick a folder on the server", onSave)
             ActionItem("Download", R.drawable.ic_download, plain, "To this phone", onDownload)
             HorizontalDivider()

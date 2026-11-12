@@ -429,6 +429,7 @@ mod tests {
             item_count: 3,
             file_count: 3,
             name: None,
+            mime: None,
             message: None,
             created_at: OffsetDateTime::UNIX_EPOCH,
             expires_at: OffsetDateTime::UNIX_EPOCH,

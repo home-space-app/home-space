@@ -248,3 +248,115 @@ async fn changes_after_a_pruned_cursor_are_gone() {
         })
     ));
 }
+
+const TRANSFER_ID: &str = "0193a4a0-0000-7000-8000-0000000000aa";
+const ITEM_ID: &str = "0193a4a0-0000-7000-8000-0000000000bb";
+
+/// `GET /transfers/{id}` for a transfer of one file of `size` bytes.
+async fn one_file_transfer(server: &MockServer, size: u64) {
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/transfers/{TRANSFER_ID}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": TRANSFER_ID,
+            "sender": { "id": USER_ID, "username": "alice" },
+            "recipient": { "id": USER_ID, "username": "alice" },
+            "recipient_device": "00000000-0000-0000-0000-0000000000d1",
+            "recipient_device_name": "Laptop",
+            "state": "ready",
+            "total_bytes": size,
+            "item_count": 1,
+            "file_count": 1,
+            "name": "link.uris",
+            "mime": "text/uri-list",
+            "created_at": "2026-01-01T00:00:00Z",
+            "expires_at": "2026-01-02T00:00:00Z",
+            "items": [{
+                "id": ITEM_ID,
+                "path": "link.uris",
+                "kind": "file",
+                "size": size,
+                "mime": "text/uri-list",
+            }],
+        })))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn a_one_file_transfer_is_read_into_memory() {
+    let server = MockServer::start().await;
+    let client = logged_in(&server).await;
+    one_file_transfer(&server, 21).await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/api/v1/transfers/{TRANSFER_ID}/items/{ITEM_ID}/content"
+        )))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_bytes(b"https://example.com\r\n".to_vec()),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let body = client
+        .transfer_file_bytes(TRANSFER_ID.parse().expect("uuid"), 100)
+        .await
+        .expect("bytes");
+
+    assert_eq!(body, b"https://example.com\r\n");
+}
+
+#[tokio::test]
+async fn a_file_over_the_limit_is_not_downloaded() {
+    let server = MockServer::start().await;
+    let client = logged_in(&server).await;
+    one_file_transfer(&server, 101).await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/api/v1/transfers/{TRANSFER_ID}/items/{ITEM_ID}/content"
+        )))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let err = client
+        .transfer_file_bytes(TRANSFER_ID.parse().expect("uuid"), 100)
+        .await
+        .expect_err("too large");
+
+    assert!(matches!(
+        err,
+        ApiError::Api {
+            code: ErrorCode::PayloadTooLarge,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn a_body_longer_than_announced_is_cut_off() {
+    let server = MockServer::start().await;
+    let client = logged_in(&server).await;
+    one_file_transfer(&server, 10).await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/api/v1/transfers/{TRANSFER_ID}/items/{ITEM_ID}/content"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b'x'; 200]))
+        .mount(&server)
+        .await;
+
+    let err = client
+        .transfer_file_bytes(TRANSFER_ID.parse().expect("uuid"), 100)
+        .await
+        .expect_err("too large");
+
+    assert!(matches!(
+        err,
+        ApiError::Api {
+            code: ErrorCode::PayloadTooLarge,
+            ..
+        }
+    ));
+}

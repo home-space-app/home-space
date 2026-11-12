@@ -90,3 +90,23 @@
   color: var(--color-muted);
   font-size: 0.8125rem;
 }
+
+/* A received link, before it opens: where it goes, then the whole of it. */
+.open-link__place {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.open-link__uri {
+  max-height: 10rem;
+  overflow: auto;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-muted);
+  font-family: ui-monospace, monospace;
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+  user-select: text;
+}

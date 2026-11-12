@@ -123,6 +123,15 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
     /** Set to bring the Transfers tab to the front, as a transfer's notification does. */
     var showTransfers by mutableStateOf(false)
 
+    /** A received transfer to open, asked for from its notification before the list was shown. */
+    var transferToOpen by mutableStateOf<String?>(null)
+
+    /** The received transfer whose link is being read, to open it. */
+    var fetchingLink by mutableStateOf<String?>(null)
+
+    /** A received link the user is asked about before it opens. */
+    var linkToOpen by mutableStateOf<PendingLink?>(null)
+
     /**
      * Set by the signed-in screen while its Transfers tab is the one shown. A transfer that arrives
      * then, with the app in front, is in plain sight and gets no notification.
@@ -483,6 +492,37 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
 
     fun stopTransferDownload(session: Session.SignedIn, row: TransferRow) {
         runCatching { session.client.stopTransferDownload(row.id) }
+    }
+
+    /** Reads the link a received transfer holds, then asks the user whether to open it. */
+    fun openTransfer(id: String) {
+        val current = session as? Session.SignedIn ?: return
+        if (fetchingLink != null) return
+        fetchingLink = id
+        viewModelScope.launch {
+            try {
+                val link = current.client.transferLink(id)
+                if (session === current) linkToOpen = PendingLink(id, link)
+            } catch (_: CoreException.Unauthorized) {
+                if (session === current) onSessionEnded()
+            } catch (e: CoreException) {
+                toast("Could not open it: ${e.fileMessage()}")
+            } finally {
+                fetchingLink = null
+            }
+        }
+    }
+
+    /** The user said yes: the link opens, and the transfer counts as received. */
+    fun openPendingLink(context: android.content.Context) {
+        val pending = linkToOpen ?: return
+        linkToOpen = null
+        if (!openLink(context, pending.link.uri)) {
+            toast("No app on this phone opens “${pending.link.scheme}:” links.")
+            return
+        }
+        val current = session as? Session.SignedIn ?: return
+        changeTransfer(current) { current.client.confirmTransfer(pending.transferId) }
     }
 
     fun declineTransfer(session: Session.SignedIn, row: TransferRow) =

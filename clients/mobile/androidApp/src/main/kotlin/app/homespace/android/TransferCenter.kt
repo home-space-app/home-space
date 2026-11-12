@@ -46,11 +46,16 @@ import uniffi.homespace_core.SendFile
 import uniffi.homespace_core.SendTarget
 import uniffi.homespace_core.TransferRow
 import uniffi.homespace_core.TransferStatus
+import uniffi.homespace_core.encodeUriList
+import uniffi.homespace_core.uriListFromText
 
 private const val SEND_DIR = "send"
 /** Text shared from another app, written out so it goes like a file. */
 private const val SHARED_TEXT_DIR = "shared-text"
 private const val TEXT_PLAIN = "text/plain"
+/** A list of links, one per line (RFC 2483): the receiving device offers to open it. */
+private const val URI_LIST = "text/uri-list"
+private const val URI_LIST_EXTENSION = "uris"
 private const val RECEIVE_DIR = "transfers"
 /** The folder under Download that received files go to. */
 private const val DOWNLOADS_FOLDER = "Home Space"
@@ -72,6 +77,9 @@ private const val ASKED_NOTIFICATIONS = "asked_notifications"
 /** Set on the intent that opens the app from a transfer's notification. */
 const val EXTRA_SHOW_TRANSFERS = "app.homespace.android.SHOW_TRANSFERS"
 
+/** The id of a received transfer to open, from the Open action of its notification. */
+const val EXTRA_OPEN_TRANSFER = "app.homespace.android.OPEN_TRANSFER"
+
 /**
  * Files handed to the app to save or send, as far as their provider describes them. `mimes` holds
  * each one's type, null where it isn't known. `text` is set when what was shared is text, such as
@@ -83,6 +91,8 @@ data class SharedFiles(
     val bytes: Long,
     val mimes: List<String?> = uris.map { null },
     val text: String? = null,
+    /** The links of `text` when it is nothing but links, which then go as a list of links. */
+    val links: List<String>? = null,
 )
 
 /** Copies of files to send, in a folder of their own that goes once they are sent. */
@@ -235,24 +245,27 @@ fun describeShared(context: Context, uris: List<Uri>): SharedFiles {
 }
 
 /**
- * Writes shared `text` to a file named `{device}_{date and time}`, with no extension: its type,
- * text/plain, goes with it instead. Call it off the main thread, and [forgetSharedText] when the
- * screen it was shared to closes.
+ * Writes shared `text` to a file named `{device}_{date and time}`. Text that is nothing but links
+ * goes as a list of links (text/uri-list, `.uris`), which the receiving device offers to open; any
+ * other text has no extension, its type, text/plain, going with it instead. Call it off the main
+ * thread, and [forgetSharedText] when the screen it was shared to closes.
  */
 fun writeSharedText(context: Context, text: String, device: String, now: java.util.Date = java.util.Date()): SharedFiles {
     val stamp = java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", java.util.Locale.US).format(now)
     // Not a folder, and nothing a computer the file syncs to would refuse.
     val from = device.replace(Regex("""[\\/:*?"<>|\p{Cntrl}]"""), "-").trim().ifEmpty { "Android" }
-    val name = "${from}_$stamp"
+    val links = uriListFromText(text)
+    val name = if (links != null) "${from}_$stamp.$URI_LIST_EXTENSION" else "${from}_$stamp"
     val file = File(context.cacheDir, "$SHARED_TEXT_DIR/${UUID.randomUUID()}")
     try {
         file.parentFile?.mkdirs()
-        file.writeText(text, Charsets.UTF_8)
+        file.writeText(links?.let(::encodeUriList) ?: text, Charsets.UTF_8)
     } catch (e: IOException) {
         file.delete()
         throw CoreException.Failed("file", "The text can't be saved: ${e.message}")
     }
-    return SharedFiles(listOf(Uri.fromFile(file)), listOf(name), file.length(), listOf(TEXT_PLAIN), text)
+    val mime = if (links != null) URI_LIST else TEXT_PLAIN
+    return SharedFiles(listOf(Uri.fromFile(file)), listOf(name), file.length(), listOf(mime), text, links)
 }
 
 /** Deletes the file [writeSharedText] made for `shared`, if it made one. */
@@ -383,9 +396,26 @@ fun notifyIncoming(context: Context, received: List<TransferRow>, quiet: Boolean
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(tap)
             .setAutoCancel(true)
+            .apply { if (row.canOpen) addAction(openAction(context, row)) }
             .build()
         manager.notify(row.id, INCOMING_NOTIFICATION, notification)
     }
+}
+
+/**
+ * "Open" on a received link's notification. It goes through the app, which shows the link and asks
+ * before anything opens; a notification can't start another app's activity on its own anyway.
+ */
+private fun openAction(context: Context, row: TransferRow): NotificationCompat.Action {
+    val open = Intent(context, MainActivity::class.java)
+        .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        .putExtra(EXTRA_SHOW_TRANSFERS, true)
+        .putExtra(EXTRA_OPEN_TRANSFER, row.id)
+    // One per transfer, told apart by the request code: the extras alone don't make them differ.
+    val intent = PendingIntent.getActivity(
+        context, row.id.hashCode(), open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+    )
+    return NotificationCompat.Action.Builder(R.drawable.ic_open_in_new, "Open", intent).build()
 }
 
 /** Takes down the notifications of received transfers and forgets them, as on signing out. */

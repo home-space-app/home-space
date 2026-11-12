@@ -3,7 +3,7 @@
 use protocol::{Device, DeviceVisibility, TransferState, TransferSummary, UserId};
 use time::{Duration, OffsetDateTime};
 
-use crate::{format::human_size, labels::files};
+use crate::{format::human_size, labels::files, uri_list::is_uri_list};
 
 /// The visibilities in the order the clients offer them.
 pub const VISIBILITIES: [DeviceVisibility; 4] = [
@@ -49,8 +49,11 @@ pub fn visible_to(device: &Device) -> String {
     }
 }
 
-/// What a transfer holds: `report.pdf`, `Photos — 124 files` or `3 files`.
+/// What a transfer holds: `report.pdf`, `Photos — 124 files`, `3 files` or `Link`.
 pub fn transfer_name(transfer: &TransferSummary) -> String {
+    if is_uri_list(transfer) {
+        return "Link".to_owned();
+    }
     match &transfer.name {
         Some(name) if transfer.item_count == 1 => name.clone(),
         Some(name) => format!("{name} — {}", files(transfer.file_count as usize)),
@@ -101,7 +104,11 @@ pub fn time_left(at: OffsetDateTime, now: OffsetDateTime) -> String {
 
 /// The headline of a transfer that just arrived: `dana’s MacBook sent you 3 files`.
 pub fn received_title(transfer: &TransferSummary, me: UserId) -> String {
-    let what = transfer_name(transfer);
+    let what = if is_uri_list(transfer) {
+        "a link".to_owned()
+    } else {
+        transfer_name(transfer)
+    };
     let device = transfer.sender_device_name.as_deref();
     match (transfer.sender.id == me, device) {
         (true, Some(device)) => format!("{device} sent you {what}"),
@@ -117,7 +124,9 @@ pub fn received_title(transfer: &TransferSummary, me: UserId) -> String {
 pub fn received_detail(transfer: &TransferSummary, now: OffsetDateTime) -> String {
     let size = transfer_size(transfer);
     let left = time_left(transfer.expires_at, now);
-    if is_single_file(transfer) {
+    if is_uri_list(transfer) {
+        format!("Open it here · expires {left}")
+    } else if is_single_file(transfer) {
         format!("{size} · expires {left}")
     } else {
         format!("{size} · downloads as one zip · expires {left}")
@@ -194,6 +203,7 @@ mod tests {
             item_count: items,
             file_count: files,
             name: name.map(str::to_owned),
+            mime: None,
             message: None,
             created_at: OffsetDateTime::UNIX_EPOCH,
             expires_at: OffsetDateTime::UNIX_EPOCH,
@@ -208,6 +218,12 @@ mod tests {
             "Photos — 124 files"
         );
         assert_eq!(transfer_name(&summary(None, 3, 3)), "3 files");
+        let link = TransferSummary {
+            mime: Some("text/uri-list".to_owned()),
+            ..summary(Some("Pixel_2026-11-12.uris"), 1, 1)
+        };
+        assert_eq!(transfer_name(&link), "Link");
+        assert!(received_title(&link, link.sender.id).ends_with("sent you a link"));
         assert_eq!(transfer_size(&summary(None, 3, 3)), "1.5 KB");
     }
 

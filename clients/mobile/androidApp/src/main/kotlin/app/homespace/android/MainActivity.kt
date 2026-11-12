@@ -133,5 +133,10 @@ class MainActivity : ComponentActivity() {
             intent.removeExtra(EXTRA_SHOW_TRANSFERS)
             model.showTransfers = true
         }
+        intent?.getStringExtra(EXTRA_OPEN_TRANSFER)?.let { id ->
+            intent.removeExtra(EXTRA_OPEN_TRANSFER)
+            // The Transfers tab asks before the link opens, once the session is there.
+            model.transferToOpen = id
+        }
     }
 }

@@ -26,6 +26,8 @@ pub struct Transfer {
     pub file_count: i64,
     /// The path of the only top-level item, when there is one.
     pub name: Option<String>,
+    /// The media type of the only item, when the transfer is a single file.
+    pub mime: Option<String>,
     pub message: Option<String>,
     pub created_at: OffsetDateTime,
     pub ready_at: Option<OffsetDateTime>,
@@ -89,7 +91,9 @@ macro_rules! transfer_query {
              (SELECT count(*) FROM transfer_items i \
               WHERE i.transfer_id = t.id AND i.kind = 'file') AS file_count, \
              (SELECT CASE WHEN count(*) = 1 THEN min(i.path) END FROM transfer_items i \
-              WHERE i.transfer_id = t.id AND strpos(i.path, '/') = 0) AS name \
+              WHERE i.transfer_id = t.id AND strpos(i.path, '/') = 0) AS name, \
+             (SELECT i.mime FROM transfer_items i \
+              WHERE i.transfer_id = t.id AND i.kind = 'file' AND t.item_count = 1) AS mime \
              FROM transfers t \
              JOIN users s ON s.id = t.sender_id \
              JOIN users r ON r.id = t.recipient_id \
@@ -467,6 +471,10 @@ mod tests {
         let created = f.db.create_transfer(new).await.expect("create");
         assert_eq!(created.state, TransferState::Uploading);
         assert_eq!(created.total_bytes, 6);
+        assert_eq!(
+            created.mime, None,
+            "only a single file has a type of its own"
+        );
         assert_eq!(created.recipient_device_name, "Phone");
         assert!(
             f.db.incoming_transfers(f.bob, None)
@@ -494,6 +502,20 @@ mod tests {
                 .expect("other device")
                 .is_empty()
         );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_single_file_carries_its_type(pool: sqlx::PgPool) {
+        let f = fixture(pool).await;
+        let link = TransferItem {
+            mime: Some("text/uri-list".to_owned()),
+            ..item("link.uris", NodeKind::File, None)
+        };
+        let created =
+            f.db.create_transfer(transfer(&f, vec![link], time::Duration::hours(1)))
+                .await
+                .expect("create");
+        assert_eq!(created.mime.as_deref(), Some("text/uri-list"));
     }
 
     #[sqlx::test(migrations = "../../migrations")]

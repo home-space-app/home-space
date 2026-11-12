@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use api_client::Client;
 use client_core::format::sanitize_component;
-use client_core::{send, transfers as words};
+use client_core::{send, transfers as words, uri_list};
 use protocol::{
     CreateTransfer, CreateUpload, NewTransferItem, NodeKind, TransferState, TransferSummary,
     TransferTarget, UserId,
@@ -82,6 +82,35 @@ pub struct TransferRow {
     pub notice_title: String,
     /// The line under `notice_title`: `12.0 MB · expires in 23 h`.
     pub notice_detail: String,
+    /// Whether it can be opened here, read into memory: today a list of links.
+    pub can_open: bool,
+}
+
+/// A received link about to be opened, as the confirmation shows it.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct TransferLink {
+    /// The link as it will be opened.
+    pub uri: String,
+    /// Lowercase, e.g. `https` or `spotify`.
+    pub scheme: String,
+    /// The host in ASCII, so a look-alike name shows as `xn--…`.
+    pub host: Option<String>,
+    /// Whether a browser opens it, rather than another app.
+    pub web: bool,
+    /// How many more links the list holds; only the first one opens.
+    pub others: u32,
+}
+
+impl From<uri_list::LinkPreview> for TransferLink {
+    fn from(link: uri_list::LinkPreview) -> Self {
+        Self {
+            uri: link.uri,
+            scheme: link.scheme,
+            host: link.host,
+            web: link.web,
+            others: u32::try_from(link.others).unwrap_or(u32::MAX),
+        }
+    }
 }
 
 /// What was sent to the user and what the user sent, the newest first.
@@ -391,6 +420,26 @@ impl CoreClient {
         Ok(())
     }
 
+    /// The link a received list of links opens, read into memory, for the user to confirm before
+    /// it opens. Fails with code `no_link` when it holds none that may be opened. The transfer
+    /// stays as it is; [`Self::confirm_transfer`] once the user has opened it.
+    pub async fn transfer_link(&self, id: String) -> Result<TransferLink, CoreError> {
+        let id = transfer_id(&id)?;
+        let inner = self.inner.clone();
+        let body = off_ui_thread(async move {
+            inner
+                .transfer_file_bytes(id, uri_list::OPEN_MAX_BYTES)
+                .await
+        })
+        .await?;
+        uri_list::first_openable(&body)
+            .map(TransferLink::from)
+            .ok_or_else(|| CoreError::Failed {
+                code: "no_link".to_owned(),
+                detail: "There is no link in it that can be opened.".to_owned(),
+            })
+    }
+
     /// The recipient declines a transfer.
     pub async fn decline_transfer(&self, id: String) -> Result<(), CoreError> {
         let id = transfer_id(&id)?;
@@ -457,6 +506,7 @@ fn row(
         note: transfer.message.clone().filter(|note| !note.is_empty()),
         notice_title: words::received_title(transfer, me),
         notice_detail: words::received_detail(transfer, now),
+        can_open: incoming && uri_list::can_open(transfer),
     }
 }
 
@@ -487,6 +537,25 @@ fn send_targets(targets: &[TransferTarget]) -> Vec<SendTarget> {
             })
         })
         .collect()
+}
+
+/// The links of shared text that is nothing but links, one per line, to send as a list of
+/// links; `None` for any other text, which goes as text.
+#[uniffi::export]
+pub fn uri_list_from_text(text: String) -> Option<Vec<String>> {
+    uri_list::as_uri_list(&text)
+}
+
+/// The body of a `text/uri-list` file holding `uris`.
+#[uniffi::export]
+pub fn encode_uri_list(uris: Vec<String>) -> String {
+    uri_list::encode(&uris)
+}
+
+/// Whether text is a single link, for how a share is described.
+#[uniffi::export]
+pub fn is_link(text: String) -> bool {
+    uri_list::as_uri_list(&text).is_some_and(|uris| uris.len() == 1)
 }
 
 /// What is being sent from this phone, counted: `3 files · 9.4 MB`.
@@ -710,6 +779,7 @@ mod tests {
         assert_eq!(received.status, TransferStatus::Ready);
         assert!(received.time_left.as_deref().unwrap().ends_with(" left"));
         assert!(!received.single_file);
+        assert!(!received.can_open, "only a list of links opens here");
         assert_eq!(received.notice_title, "dana’s MacBook sent you 3 files");
         assert!(received.notice_detail.contains(" · expires in "));
         let sent = &lists.sent[0];

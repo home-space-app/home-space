@@ -28,14 +28,15 @@ use client_core::{
         received_detail, received_title, time_left, transfer_from, transfer_name, transfer_size,
         transfer_to,
     },
+    uri_list::{LinkPreview, OPEN_MAX_BYTES, can_open, first_openable, is_uri_list},
 };
 use protocol::{ErrorCode, NodeId, NodeKind, TransferState, TransferSummary, UserId};
 
 use super::{
     parts::{
         COLUMN_GAP, DATE_WIDTH, LIST_PADDING, MENU_WIDTH, ROW_SIZE, SECOND_LINE_SIZE, alert_error,
-        alert_info, divider, empty, ghost, header_bar, muted_cell, small_outlined,
-        small_outlined_icon, small_primary, title,
+        alert_info, dialog, dialog_head, divider, empty, ghost, header_bar, muted_cell, outlined,
+        primary, small_outlined, small_outlined_icon, small_primary, title,
     },
     transfer_save,
 };
@@ -76,6 +77,9 @@ const TOAST_PADDING: f32 = 16.0;
 const TOAST_GAP: f32 = 10.0;
 const TOAST_TITLE_GAP: f32 = 8.0;
 const TOAST_BAR: f32 = 6.0;
+const LINK_DIALOG_WIDTH: f32 = 460.0;
+const LINK_HOST_SIZE: f32 = 18.0;
+const LINK_URI_PADDING: f32 = 10.0;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -109,6 +113,14 @@ pub enum Message {
     ToastDownload(Uuid),
     /// Hides the toast.
     CloseToast,
+    /// Reads the link a received transfer holds, to ask whether to open it.
+    Open(Uuid),
+    /// The body of a transfer read to open it.
+    LinkRead(Uuid, Result<Vec<u8>, ApiError>),
+    /// The user said yes to the link shown.
+    ConfirmOpen,
+    /// The user said no: nothing opens and the transfer stays.
+    CancelOpen,
 }
 
 /// The toast in the corner of the window, over pages other than Transfers.
@@ -149,6 +161,10 @@ pub struct TransferList {
     downloaded: Option<PathBuf>,
     saving: Option<transfer_save::TransferSave>,
     toast: Option<Toast>,
+    /// The transfer whose link is being read, to open it.
+    opening: Option<Uuid>,
+    /// A received link shown to the user before it opens, with its transfer.
+    link: Option<(Uuid, LinkPreview)>,
     now: OffsetDateTime,
 }
 
@@ -164,6 +180,8 @@ impl TransferList {
             downloaded: None,
             saving: None,
             toast: None,
+            opening: None,
+            link: None,
             now: OffsetDateTime::now_utc(),
         }
     }
@@ -195,6 +213,11 @@ impl TransferList {
     /// Whether the save dialog is open, which Escape leaves first.
     pub fn is_asking(&self) -> bool {
         self.saving.is_some()
+    }
+
+    /// Whether a received link waits for the user to say it may open; over any page.
+    pub fn is_confirming_link(&self) -> bool {
+        self.link.is_some()
     }
 
     pub fn update(&mut self, client: &Client, message: Message) -> Task<Message> {
@@ -346,7 +369,98 @@ impl TransferList {
                 self.toast = None;
                 Task::none()
             }
+            Message::Open(id) => {
+                if self.opening.is_some() {
+                    return Task::none();
+                }
+                self.opening = Some(id);
+                self.error = None;
+                if matches!(&self.toast, Some(Toast::Received(shown)) if shown.id == id) {
+                    self.toast = None;
+                }
+                let client = client.clone();
+                Task::perform(
+                    async move { client.transfer_file_bytes(id, OPEN_MAX_BYTES).await },
+                    move |read| Message::LinkRead(id, read),
+                )
+            }
+            Message::LinkRead(id, read) => {
+                self.opening = None;
+                match read.map(|body| first_openable(&body)) {
+                    Ok(Some(link)) => self.link = Some((id, link)),
+                    Ok(None) => self.fail("There is no link in it that can be opened.".to_owned()),
+                    Err(err) => self.fail(err.to_string()),
+                }
+                Task::none()
+            }
+            Message::ConfirmOpen => {
+                let Some((id, link)) = self.link.take() else {
+                    return Task::none();
+                };
+                if let Err(err) = open::that_detached(&link.uri) {
+                    self.fail(format!("Could not open the {} link: {err}", link.scheme));
+                    return Task::none();
+                }
+                let client = client.clone();
+                Task::perform(
+                    async move { client.confirm_transfer(id).await },
+                    Message::Done,
+                )
+            }
+            Message::CancelOpen => {
+                self.link = None;
+                Task::none()
+            }
         }
+    }
+
+    /// Says why something failed: on the page, and in the toast for the other pages.
+    fn fail(&mut self, message: String) {
+        self.toast = Some(Toast::Failed(message.clone()));
+        self.error = Some(message);
+    }
+
+    /// Asks before a received link opens, so that the user can refuse one that looks wrong:
+    /// where it goes, with the host as the system will see it (a look-alike name shows as
+    /// `xn--…`), and the whole link.
+    pub fn link_dialog(&self) -> Option<Element<'_, Message>> {
+        let (_, link) = self.link.as_ref()?;
+        let (lead, place) = match (&link.host, link.web) {
+            (Some(host), true) => ("It opens in your browser at", host.clone()),
+            (Some(host), false) => ("It opens in the app for these links, at", host.clone()),
+            (None, _) => ("It opens in the app for", format!("{}: links", link.scheme)),
+        };
+        let mut lines = column![
+            dialog_head("Open this link?", lead),
+            text(place).size(LINK_HOST_SIZE).font(theme::SEMIBOLD),
+            container(text(link.uri.as_str()).size(SECOND_LINE_SIZE))
+                .padding(LINK_URI_PADDING)
+                .width(Length::Fill)
+                .style(theme::card),
+        ];
+        if link.others > 0 {
+            lines = lines.push(
+                text(format!(
+                    "Only the first opens; the list has {} more. Download it to see them all.",
+                    link.others
+                ))
+                .size(SECOND_LINE_SIZE)
+                .style(theme::muted_text),
+            );
+        }
+        lines = lines.push(
+            text("Open it only if you expected it and it looks right.")
+                .size(SECOND_LINE_SIZE)
+                .style(theme::muted_text),
+        );
+        Some(dialog(
+            LINK_DIALOG_WIDTH,
+            lines,
+            [
+                outlined(None, "Cancel", Some(Message::CancelOpen)),
+                primary(Some(Icon::Web), "Open", Some(Message::ConfirmOpen)),
+            ],
+        ))
     }
 
     /// Hides the toast, as the Transfers page says all it would.
@@ -370,11 +484,16 @@ impl TransferList {
                             "Save",
                             Some(Message::Save(transfer.id)),
                         ),
-                        small_primary(
-                            Icon::Download,
-                            "Download",
-                            Some(Message::ToastDownload(transfer.id)),
-                        ),
+                        // A link is for opening; there is no room for both in the toast.
+                        if can_open(transfer) {
+                            small_primary(Icon::Web, "Open", Some(Message::Open(transfer.id)))
+                        } else {
+                            small_primary(
+                                Icon::Download,
+                                "Download",
+                                Some(Message::ToastDownload(transfer.id)),
+                            )
+                        },
                     ],
                 ),
                 Toast::Downloading(id) => {
@@ -555,11 +674,13 @@ impl TransferList {
 
     fn incoming_row<'a>(&'a self, transfer: &'a TransferSummary) -> Element<'a, Message> {
         let id = transfer.id;
-        let name = name_cell(
-            transfer,
-            format!("{} · {}", transfer_name(transfer), transfer_size(transfer)),
-            transfer_from(transfer, self.me),
-        );
+        let first = if is_uri_list(transfer) {
+            transfer_name(transfer)
+        } else {
+            format!("{} · {}", transfer_name(transfer), transfer_size(transfer))
+        };
+        let name = name_cell(transfer, first, transfer_from(transfer, self.me));
+        let openable = can_open(transfer);
         let (state, stop): (Element<'a, Message>, Option<Message>) =
             match (self.downloads.get(&id), transfer.state) {
                 (Some(download), _) => (
@@ -574,12 +695,26 @@ impl TransferList {
                     ),
                     Some(Message::StopDownload(id)),
                 ),
+                (None, TransferState::Ready) if self.opening == Some(id) => {
+                    (state_cell("Opening", Tone::Accent, None), None)
+                }
                 (None, TransferState::Ready) => (
                     row![
                         small_outlined_icon(Icon::SaveToServer, "Save", Some(Message::Save(id))),
-                        small_primary(Icon::Download, "Download", Some(Message::Download(id))),
-                        small_outlined("Decline", Some(Message::Decline(id))),
+                        if openable {
+                            small_outlined_icon(
+                                Icon::Download,
+                                "Download",
+                                Some(Message::Download(id)),
+                            )
+                        } else {
+                            small_primary(Icon::Download, "Download", Some(Message::Download(id)))
+                        },
                     ]
+                    .push(
+                        openable.then(|| small_primary(Icon::Web, "Open", Some(Message::Open(id)))),
+                    )
+                    .push(small_outlined("Decline", Some(Message::Decline(id))))
                     .spacing(ACTION_GAP)
                     .align_y(Alignment::Center)
                     .width(Length::FillPortion(1))
@@ -690,6 +825,9 @@ fn state_words(
 
 /// The icon of what a transfer holds: a file's kind, or a folder for anything more.
 fn transfer_icon(transfer: &TransferSummary) -> (Icon, Tint) {
+    if is_uri_list(transfer) {
+        return (Icon::Language, Tint::Accent);
+    }
     let Some(name) = transfer
         .name
         .as_deref()
@@ -1010,6 +1148,7 @@ mod tests {
             item_count: items,
             file_count: items,
             name: name.map(str::to_owned),
+            mime: None,
             message: None,
             created_at: now,
             expires_at: now + TimeDuration::hours(5) + TimeDuration::minutes(1),
@@ -1050,6 +1189,73 @@ mod tests {
         assert!(ui.find("Decline").is_ok());
         assert!(ui.find("in 5 h").is_ok());
         assert!(ui.find("Declined").is_ok());
+    }
+
+    fn link(raw: u128) -> TransferSummary {
+        TransferSummary {
+            total_bytes: 21,
+            mime: Some("text/uri-list".to_owned()),
+            ..summary(raw, TransferState::Ready, Some("Pixel_2026-11-12.uris"), 1)
+        }
+    }
+
+    #[test]
+    fn a_received_link_offers_to_open_it() {
+        let mut list = loaded();
+        let _ = list.update(
+            &client(),
+            Message::Loaded(Ok(Lists {
+                incoming: vec![link(4)],
+                sent: Vec::new(),
+            })),
+        );
+        {
+            let mut ui = simulator(list.view());
+            assert!(ui.find("Link").is_ok());
+            assert!(ui.find("Open").is_ok());
+            assert!(ui.find("Download").is_ok());
+        }
+
+        let _ = list.update(&client(), Message::Received(link(4)));
+        let toast = list.toast().expect("toast");
+        let mut ui = simulator(toast);
+        assert!(ui.find("Open").is_ok());
+        assert!(ui.find("dana’s MacBook sent you a link").is_ok());
+    }
+
+    #[test]
+    fn a_link_is_shown_before_it_opens_and_cancel_opens_nothing() {
+        let mut list = loaded();
+        let id = Uuid::from_u128(4);
+        let body = b"javascript:alert(1)\r\nhttps://\xd0\xb5xample.com/a\r\n".to_vec();
+        let _ = list.update(&client(), Message::LinkRead(id, Ok(body)));
+
+        {
+            let mut ui = simulator(list.link_dialog().expect("asks first"));
+            assert!(ui.find("Open this link?").is_ok());
+            assert!(ui.find("xn--xample-2of.com").is_ok());
+            assert!(
+                ui.find("Only the first opens; the list has 1 more. Download it to see them all.")
+                    .is_ok()
+            );
+        }
+
+        let _ = list.update(&client(), Message::CancelOpen);
+        assert!(list.link_dialog().is_none());
+        assert!(list.error.is_none());
+    }
+
+    #[test]
+    fn a_list_without_a_safe_link_says_so() {
+        let mut list = loaded();
+        let body = b"# nothing\r\nfile:///etc/passwd\r\n".to_vec();
+        let _ = list.update(&client(), Message::LinkRead(Uuid::from_u128(4), Ok(body)));
+
+        assert!(list.link_dialog().is_none());
+        assert_eq!(
+            list.error.as_deref(),
+            Some("There is no link in it that can be opened.")
+        );
     }
 
     #[test]

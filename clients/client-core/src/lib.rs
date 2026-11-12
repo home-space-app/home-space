@@ -10,3 +10,4 @@ pub mod selection;
 pub mod send;
 pub mod storage;
 pub mod transfers;
+pub mod uri_list;

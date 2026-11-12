@@ -1,8 +1,8 @@
 //! Sending files to a device (`/transfers`), and who can see a device.
 
 use protocol::{
-    CreateTransfer, CreatedTransfer, IncomingQuery, Node, NodeId, SaveTransfer,
-    SetDeviceVisibility, Transfer, TransferSummary, TransferTarget, UserRef, paths,
+    CreateTransfer, CreatedTransfer, ErrorCode, IncomingQuery, Node, NodeId, NodeKind,
+    SaveTransfer, SetDeviceVisibility, Transfer, TransferSummary, TransferTarget, UserRef, paths,
 };
 use uuid::Uuid;
 
@@ -144,8 +144,78 @@ impl Client {
         }
     }
 
+    /// The bytes of a transfer that is one file, read into memory, for opening it rather than
+    /// saving it. Refused with `PayloadTooLarge` when the file is, or turns out to be, over
+    /// `max` bytes, and with `BadRequest` when the transfer isn't a single file.
+    pub async fn transfer_file_bytes(&self, id: Uuid, max: u64) -> Result<Vec<u8>, ApiError> {
+        let transfer = self.transfer(id).await?;
+        let [item] = transfer.items.as_slice() else {
+            return Err(not_one_file());
+        };
+        if item.kind != NodeKind::File {
+            return Err(not_one_file());
+        }
+        if item.size > max {
+            return Err(too_large(max));
+        }
+        let response = self
+            .send(|| {
+                self.http()
+                    .get(self.url(&paths::transfer_item_content(id, item.id)))
+            })
+            .await?;
+        if !response.status().is_success() {
+            return Err(crate::client::error_from(response).await);
+        }
+        if response.content_length().is_some_and(|length| length > max) {
+            return Err(too_large(max));
+        }
+        read_capped(response, max).await
+    }
+
     async fn post_empty(&self, path: &str) -> Result<(), ApiError> {
         let response = self.send(|| self.http().post(self.url(path))).await?;
         expect_success(response).await
+    }
+}
+
+/// Reads a body, stopping as soon as it is over `max` bytes.
+#[cfg(not(target_arch = "wasm32"))]
+async fn read_capped(mut response: reqwest::Response, max: u64) -> Result<Vec<u8>, ApiError> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        body.extend_from_slice(&chunk);
+        if body.len() as u64 > max {
+            return Err(too_large(max));
+        }
+    }
+    Ok(body)
+}
+
+/// The browser hands the body over whole; the size was checked against the item and the
+/// `Content-Length` before this.
+#[cfg(target_arch = "wasm32")]
+async fn read_capped(response: reqwest::Response, max: u64) -> Result<Vec<u8>, ApiError> {
+    let body = response.bytes().await?;
+    if body.len() as u64 > max {
+        return Err(too_large(max));
+    }
+    Ok(body.to_vec())
+}
+
+fn not_one_file() -> ApiError {
+    ApiError::Api {
+        code: ErrorCode::BadRequest,
+        message: "This transfer isn't a single file.".to_owned(),
+    }
+}
+
+fn too_large(max: u64) -> ApiError {
+    ApiError::Api {
+        code: ErrorCode::PayloadTooLarge,
+        message: format!(
+            "The file is over {} MB, too large to open here.",
+            max / (1024 * 1024)
+        ),
     }
 }

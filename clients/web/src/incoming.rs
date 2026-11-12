@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use api_client::ApiError;
 use client_core::transfers::{download_name, is_single_file, received_detail, received_title};
+use client_core::uri_list::{LinkPreview, OPEN_MAX_BYTES, can_open, first_openable};
 use protocol::{Event, NodeKind, TicketRequest, TransferState, TransferSummary};
 
 use crate::{
@@ -30,6 +31,10 @@ pub struct Incoming {
     pub downloading: RwSignal<HashMap<Uuid, f64>>,
     /// Downloads handed to the browser, which does not say whether they finished.
     pub handed_over: RwSignal<HashSet<Uuid>>,
+    /// The transfer whose link is being read, to open it.
+    pub opening: RwSignal<Option<Uuid>>,
+    /// A received link shown to the user before it opens, with its transfer.
+    link: RwSignal<Option<(Uuid, LinkPreview)>>,
     /// The transfer that just arrived for this browser, until the user answers.
     toast: RwSignal<Option<TransferSummary>>,
     /// Why the last download failed.
@@ -42,6 +47,8 @@ pub fn provide_incoming() -> Incoming {
         waiting: RwSignal::new(Vec::new()),
         downloading: RwSignal::new(HashMap::new()),
         handed_over: RwSignal::new(HashSet::new()),
+        opening: RwSignal::new(None),
+        link: RwSignal::new(None),
         toast: RwSignal::new(None),
         error: RwSignal::new(None),
     };
@@ -61,6 +68,49 @@ impl Incoming {
         spawn_local(async move {
             if let Err(message) = self.run(auth, &transfer).await {
                 self.error.set(Some(message));
+            }
+        });
+    }
+
+    /// Reads the link a received transfer holds, then asks the user whether to open it.
+    pub fn open(self, auth: Auth, transfer: &TransferSummary) {
+        if self.opening.read_untracked().is_some() {
+            return;
+        }
+        let id = transfer.id;
+        self.error.set(None);
+        self.opening.set(Some(id));
+        spawn_local(async move {
+            let read = session::client()
+                .transfer_file_bytes(id, OPEN_MAX_BYTES)
+                .await;
+            self.opening.set(None);
+            match read.map(|body| first_openable(&body)) {
+                Ok(Some(link)) => self.link.set(Some((id, link))),
+                Ok(None) => self.error.set(Some(
+                    "There is no link in it that can be opened.".to_owned(),
+                )),
+                Err(err) => self.error.set(Some(auth.fail(&err))),
+            }
+        });
+    }
+
+    /// The user said yes: the link opens, and the transfer counts as received.
+    fn open_confirmed(self, auth: Auth) {
+        let Some((id, link)) = self.link.get_untracked() else {
+            return;
+        };
+        self.link.set(None);
+        if let Err(message) = hand_to_browser(&link) {
+            self.error.set(Some(message));
+            return;
+        }
+        spawn_local(async move {
+            match session::client().confirm_transfer(id).await {
+                Ok(()) => self
+                    .waiting
+                    .update(|waiting| waiting.retain(|transfer| transfer.id != id)),
+                Err(err) => self.error.set(Some(auth.fail(&err))),
             }
         });
     }
@@ -118,6 +168,20 @@ impl Incoming {
 /// A fraction as whole percent, rounded down.
 pub fn percent(fraction: f64) -> u32 {
     (fraction.clamp(0.0, 1.0) * 100.0).floor() as u32
+}
+
+/// Opens a link: a web page in a new tab, cut off from this one; any other link through the
+/// browser, which hands it to the app registered for its scheme without leaving this page.
+fn hand_to_browser(link: &LinkPreview) -> Result<(), String> {
+    let window = web_sys::window().ok_or_else(|| "There is no browser window.".to_owned())?;
+    let opened = if link.web {
+        window
+            .open_with_url_and_target_and_features(&link.uri, "_blank", "noopener,noreferrer")
+            .map(drop)
+    } else {
+        window.location().assign(&link.uri)
+    };
+    opened.map_err(|_| format!("The browser didn’t open the {} link.", link.scheme))
 }
 
 /// Where a transfer downloads from: its one file, or a zip of everything. `None` when it
@@ -212,7 +276,8 @@ pub fn IncomingToast(auth: Auth) -> impl IntoView {
             let transfer = incoming.toast.get()?;
             let title = received_title(&transfer, me?);
             let detail = received_detail(&transfer, locale::now());
-            let (save, download) = (transfer.clone(), transfer);
+            let openable = can_open(&transfer);
+            let (save, download, open) = (transfer.clone(), transfer.clone(), transfer);
             Some(
                 view! {
                     <section class="toast" role="region" aria-label="Incoming transfer" aria-live="polite">
@@ -235,16 +300,37 @@ pub fn IncomingToast(auth: Auth) -> impl IntoView {
                                 <Icon name="drive_folder_upload" />
                                 "Save"
                             </button>
-                            <button
-                                class="button button--primary"
-                                on:click=move |_| {
-                                    incoming.toast.set(None);
-                                    incoming.download(auth, download.clone());
-                                }
-                            >
-                                <Icon name="download" />
-                                "Download"
-                            </button>
+                            // A link is for opening; the list still offers Download.
+                            <Show when=move || !openable>
+                                <button
+                                    class="button button--primary"
+                                    on:click={
+                                        let download = download.clone();
+                                        move |_| {
+                                            incoming.toast.set(None);
+                                            incoming.download(auth, download.clone());
+                                        }
+                                    }
+                                >
+                                    <Icon name="download" />
+                                    "Download"
+                                </button>
+                            </Show>
+                            <Show when=move || openable>
+                                <button
+                                    class="button button--primary"
+                                    on:click={
+                                        let open = open.clone();
+                                        move |_| {
+                                            incoming.toast.set(None);
+                                            incoming.open(auth, &open);
+                                        }
+                                    }
+                                >
+                                    <Icon name="language" />
+                                    "Open"
+                                </button>
+                            </Show>
                         </div>
                     </section>
                 },
@@ -272,6 +358,71 @@ pub fn IncomingToast(auth: Auth) -> impl IntoView {
                 .get()
                 .map(|transfer| view! { <SaveTransferDialog transfer auth on_close=close_save /> })
         }}
+        {move || {
+            incoming
+                .link
+                .get()
+                .map(|(_, link)| {
+                    view! {
+                        <OpenLinkDialog
+                            link
+                            on_open=Callback::new(move |()| incoming.open_confirmed(auth))
+                            on_cancel=Callback::new(move |()| incoming.link.set(None))
+                        />
+                    }
+                })
+        }}
+    }
+}
+
+/// Shows a received link before it opens, so that the user can refuse one that looks wrong:
+/// where it goes, with the host as the browser will see it (a look-alike name shows as
+/// `xn--…`), and the whole link.
+#[component]
+fn OpenLinkDialog(
+    link: LinkPreview,
+    on_open: Callback<()>,
+    on_cancel: Callback<()>,
+) -> impl IntoView {
+    let (lead, place) = match (&link.host, link.web) {
+        (Some(host), true) => ("It opens in a new tab at", host.clone()),
+        (Some(host), false) => ("It opens in the app for these links, at", host.clone()),
+        (None, _) => ("It opens in the app for", format!("{}: links", link.scheme)),
+    };
+    let others = (link.others > 0).then(|| {
+        format!(
+            "Only the first opens; the list has {} more. Download it to see them all.",
+            link.others
+        )
+    });
+    view! {
+        <div class="modal" on:click=move |_| on_cancel.run(())>
+            <div
+                class="modal__panel"
+                role="alertdialog"
+                aria-modal="true"
+                aria-labelledby="open-link-title"
+                on:click=|event| event.stop_propagation()
+            >
+                <header class="modal__header">
+                    <h2 class="modal__title" id="open-link-title">"Open this link?"</h2>
+                    <p class="modal__subtitle">{lead}</p>
+                </header>
+                <p class="open-link__place">{place}</p>
+                <p class="open-link__uri">{link.uri}</p>
+                {others.map(|others| view! { <p class="modal__note">{others}</p> })}
+                <p class="modal__note">"Open it only if you expected it and it looks right."</p>
+                <div class="modal__actions">
+                    <button class="button" on:click=move |_| on_cancel.run(())>
+                        "Cancel"
+                    </button>
+                    <button class="button button--primary" on:click=move |_| on_open.run(())>
+                        <Icon name="language" />
+                        "Open"
+                    </button>
+                </div>
+            </div>
+        </div>
     }
 }
 

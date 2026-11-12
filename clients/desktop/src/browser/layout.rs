@@ -151,6 +151,13 @@ impl State {
             }
             _ => {}
         }
+        // Over every page: Open starts from the toast as well as from the list.
+        if let Some(confirm) = self.transfer_list.link_dialog() {
+            layers.push(modal(
+                confirm.map(Message::Transfers),
+                Message::Transfers(transfer_list::Message::CancelOpen),
+            ));
+        }
         stack(layers).into()
     }
 
