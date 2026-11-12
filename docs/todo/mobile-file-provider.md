@@ -130,8 +130,31 @@ This builds on the mobile data sync work (auto-upload and two-way offline sync, 
 
 1. **Done:** the upload calls in `mobile-core`, the process-wide client holder, WorkManager, and
    two-way offline sync.
-2. **Android provider:** can ship now.
+2. **Android provider, open and save:** done (2026-11-12), see below.
 3. **iOS extension:** the storage it sits beside is now settled.
+
+### Android: what shipped
+
+`HomeSpaceDocuments` (`clients/mobile/androidApp`) at `${applicationId}.documents`. Checked on an
+emulator with the system picker: browse, open, new folder, save, and saving a name again.
+
+- **Open:** `saveCopy` into `cacheDir/documents`, then the descriptor is opened and the file
+  deleted, so nothing is pinned or left behind. Online only. Blocks with no size limit; the
+  `CancellationSignal` calls `cancel_download`. While the app downloads the same file
+  (`already_downloading`), it waits and tries again.
+- **Save:** `createDocument` adds to the app's upload queue (`UploadQueue.add`) and returns
+  `upload:<queue key>`. The caller writes the queue's copy; on close it is made ready, started, and
+  `scheduleUploads` carries it on. It shows in Transfers. A name that exists becomes a new version;
+  the system picker doesn't ask first. Each key's folder, name and type are kept for 7 days in
+  `provider_uploads` preferences, so the id still resolves after the upload.
+- **Folders:** `createDocument` with the directory type calls `create_folder`.
+- **Sign-out:** `SessionStore` notifies the roots URI when a session is saved or forgotten, and
+  clears the cache and the saved-file records.
+- **Known:** the upload worker's foreground notification is refused when it starts with another app
+  in front. WorkManager logs a warning, and the upload still runs as plain work.
+- **Still open:** editing an existing file in place (`FLAG_SUPPORTS_WRITE` on files), delete,
+  rename and move, offline reads, thumbnails, search, recents and tree access
+  (`FLAG_SUPPORTS_IS_CHILD`).
 
 Editing by other apps:
 
