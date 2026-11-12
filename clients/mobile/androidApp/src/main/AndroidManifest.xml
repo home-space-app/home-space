@@ -73,6 +73,18 @@
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             android:foregroundServiceType="dataSync"
             tools:node="merge" />
+        <!-- Home Space in the system file picker: pick a file, for example to attach it to an
+             email, or save one into a folder. Only the system's picker may call it. -->
+        <provider
+            android:name=".HomeSpaceDocuments"
+            android:authorities="${applicationId}.documents"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
         <!-- Hands downloaded files to viewer apps, read-only; see res/xml/file_paths.xml. -->
         <provider
             android:name="androidx.core.content.FileProvider"

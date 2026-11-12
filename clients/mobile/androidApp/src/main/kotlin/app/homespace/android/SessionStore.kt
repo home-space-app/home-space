@@ -46,7 +46,8 @@ data class PendingSso(val server: String, val verifier: String, val name: String
  * would sign the user out on the next start. Nothing here throws, since Rust calls into it.
  */
 class SessionStore(context: Context) {
-    private val prefs = context.getSharedPreferences("session", Context.MODE_PRIVATE)
+    private val appContext = context.applicationContext
+    private val prefs = appContext.getSharedPreferences("session", Context.MODE_PRIVATE)
 
     /** Identifies this install to the server; survives signing out. */
     val deviceId: String
@@ -84,15 +85,20 @@ class SessionStore(context: Context) {
 
     fun saveSession(server: String, refreshToken: String) {
         val token = encrypt(refreshToken) ?: return
+        val signingIn = !prefs.contains(SESSION_SERVER)
         prefs.edit()
             .putString(SESSION_SERVER, server)
             .putString(SESSION_TOKEN, token)
             .putString(LAST_SERVER, server)
             .commit()
+        if (signingIn) HomeSpaceDocuments.sessionChanged(appContext, signedIn = true)
     }
 
+    /** Also takes Home Space out of the system file picker. */
     fun forgetSession() {
+        val signingOut = prefs.contains(SESSION_SERVER)
         prefs.edit().remove(SESSION_SERVER).remove(SESSION_TOKEN).commit()
+        if (signingOut) HomeSpaceDocuments.sessionChanged(appContext, signedIn = false)
     }
 
     /** The sign-in in progress, if it can still finish. */
