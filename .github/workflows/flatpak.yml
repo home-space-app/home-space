@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 env:
-  APP_ID: app.home_space.home-space-client
+  APP_ID: app.home_space.HomeSpace
 
 jobs:
   # flatpak-builder has no network, so the crates are listed for it to fetch beforehand.

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>app.home_space.home-space-client</id>
+  <id>app.home_space.HomeSpace</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>AGPL-3.0-only</project_license>
   <name>Home Space</name>
@@ -20,7 +20,7 @@
     </ul>
   </description>
 
-  <launchable type="desktop-id">app.home_space.home-space-client.desktop</launchable>
+  <launchable type="desktop-id">app.home_space.HomeSpace.desktop</launchable>
 
   <url type="homepage">https://home-space.app</url>
   <url type="bugtracker">https://github.com/home-space-app/home-space/issues</url>
