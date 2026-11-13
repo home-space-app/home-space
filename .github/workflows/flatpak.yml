@@ -69,7 +69,10 @@ jobs:
         with:
           manifest-path: clients/desktop/packaging/flatpak/${{ env.APP_ID }}.yml
           bundle: ${{ env.BUNDLE }}
-          cache-key: flatpak-builder-${{ hashFiles('clients/Cargo.lock') }}
+          # A restored .flatpak-builder cache breaks the SDK update ("Invalid cross-device link"
+          # inside the container), so every run starts clean.
+          restore-cache: false
+          save-cache: false
           upload-artifact: false
       - uses: actions/upload-artifact@v4
         with:
