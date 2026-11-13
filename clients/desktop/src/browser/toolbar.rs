@@ -55,8 +55,10 @@ const DELETE_SHORTCUT: &str = "Del";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Open,
-    /// Opens a file with the system's default app.
+    /// Opens a file in its built-in viewer, or else with the system's default app.
     OpenFile,
+    /// Opens a file with the system's default app, though it has a built-in viewer.
+    OpenWith,
     Download,
     /// Sends to a device.
     Send,
@@ -70,7 +72,7 @@ impl Action {
     fn icon(self) -> Icon {
         match self {
             Self::Open => Icon::Folder,
-            Self::OpenFile => Icon::Web,
+            Self::OpenFile | Self::OpenWith => Icon::Web,
             Self::Download => Icon::Download,
             Self::Send => Icon::Send,
             Self::Rename => Icon::Rename,
@@ -83,6 +85,7 @@ impl Action {
     fn label(self) -> &'static str {
         match self {
             Self::Open | Self::OpenFile => "Open",
+            Self::OpenWith => "Open with system app",
             Self::Download => "Download",
             Self::Send => "Send",
             Self::Rename => "Rename",
@@ -93,7 +96,7 @@ impl Action {
     }
 
     /// The label in a menu, which spells out what a toolbar's room leaves out.
-    fn menu_label(self) -> &'static str {
+    pub(super) fn menu_label(self) -> &'static str {
         match self {
             Self::Move => "Move…",
             Self::Send => "Send to device…",
@@ -106,7 +109,7 @@ impl Action {
         match self {
             Self::Open | Self::Download => "Enter",
             Self::Rename => "F2",
-            Self::OpenFile | Self::Send | Self::Move | Self::Details => "",
+            Self::OpenFile | Self::OpenWith | Self::Send | Self::Move | Self::Details => "",
             Self::Delete => DELETE_SHORTCUT,
         }
     }

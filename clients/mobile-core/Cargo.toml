@@ -27,6 +27,7 @@ futures = "0.3"
 hex = "0.4.3"
 protocol.workspace = true
 rand = "0.10.3"
+reqwest.workspace = true
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 rustls-platform-verifier = "0.7.1"

@@ -40,6 +40,7 @@ import uniffi.homespace_core.SignInOptions
 import uniffi.homespace_core.SignedInUser
 import uniffi.homespace_core.TransferRow
 import uniffi.homespace_core.normalizeServerUrl
+import uniffi.homespace_core.viewerFor
 
 /** The server on the host machine, as seen from the emulator. */
 private const val DEFAULT_SERVER = "http://10.0.2.2:8080"
@@ -349,8 +350,37 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
         pendingOpen = null
     }
 
-    /** Shows a file: at once if the copy here is current, else after downloading it. */
+    /** The file open in a built-in viewer, which covers the other screens. */
+    var viewer by mutableStateOf<OpenViewer?>(null)
+        private set
+
+    /**
+     * Shows a file: in its built-in viewer when it has one, else in another app. `edit` always
+     * hands it to another app for editing.
+     */
     fun openFile(session: Session.SignedIn, entry: Entry, edit: Boolean = false) {
+        val info = if (edit) null else viewerFor(entry.mime, entry.size)
+        if (info == null) {
+            openInAnotherApp(session, entry, edit)
+        } else {
+            lastTapped = entry.id
+            viewer = OpenViewer.of(entry, info).also {
+                it.load(viewModelScope, session.client, ::onSessionEnded)
+            }
+        }
+    }
+
+    fun closeViewer() {
+        viewer = null
+    }
+
+    /** Saves the text viewer's edits as a new version of its file. */
+    fun saveText(session: Session.SignedIn, state: TextViewerState) {
+        state.save(viewModelScope, session.client, ::reloadSoon, ::onSessionEnded)
+    }
+
+    /** Shows a file in another app: at once if the copy here is current, else after downloading it. */
+    fun openInAnotherApp(session: Session.SignedIn, entry: Entry, edit: Boolean = false) {
         lastTapped = entry.id
         if (entry.id in downloads) return
         downloads[entry.id] = 0f

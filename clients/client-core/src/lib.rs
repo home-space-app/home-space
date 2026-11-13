@@ -9,5 +9,7 @@ pub mod search;
 pub mod selection;
 pub mod send;
 pub mod storage;
+pub mod text;
 pub mod transfers;
 pub mod uri_list;
+pub mod viewers;

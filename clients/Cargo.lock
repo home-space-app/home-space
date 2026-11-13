@@ -3502,6 +3502,7 @@ dependencies = [
  "jni",
  "protocol",
  "rand",
+ "reqwest",
  "rusqlite",
  "rustls",
  "rustls-platform-verifier",

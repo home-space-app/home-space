@@ -7,9 +7,10 @@ use leptos_router::{
 use crate::{
     events,
     incoming::{self, IncomingToast},
+    leave_guard,
     pages::{
         AdminPage, AdminTab, Browser, DevicesPage, Login, OidcCallback, SearchPage, SettingsPage,
-        Shell, TransferList, TransfersPage, TrashPage,
+        Shell, TransferList, TransfersPage, TrashPage, ViewerPage,
     },
     session::Auth,
     uploads::{Sending, UploadItem, UploadPanel},
@@ -22,6 +23,7 @@ pub fn App() -> impl IntoView {
     provide_context(uploads);
     provide_context(Sending(RwSignal::new(Default::default())));
     incoming::provide_incoming();
+    leave_guard::provide();
     let hub = events::provide_hub();
     Effect::new(move |_| {
         if auth.user.read().is_some() {
@@ -45,6 +47,10 @@ pub fn App() -> impl IntoView {
                     <ParentRoute path=path!("") view=move || view! { <Shell auth /> }>
                         <Route path=path!("/") view=move || view! { <Browser auth /> } />
                         <Route path=path!("/folder/:id") view=move || view! { <Browser auth /> } />
+                        <Route
+                            path=path!("/files/:id/view")
+                            view=move || view! { <ViewerPage auth /> }
+                        />
                         <Route path=path!("/search") view=move || view! { <SearchPage auth /> } />
                         <Route path=path!("/trash") view=move || view! { <TrashPage auth /> } />
                         <Route

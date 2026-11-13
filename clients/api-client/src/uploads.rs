@@ -50,6 +50,51 @@ impl Client {
         .await
     }
 
+    /// Stores `bytes` as the content of file `id`, changed now; the previous content becomes a
+    /// version. Content up to the server's chunk size goes in one request, larger content in
+    /// resumable chunks, so no request outgrows what a proxy in front of the server accepts.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn replace_with_bytes(
+        &self,
+        id: protocol::NodeId,
+        mime: Option<&str>,
+        bytes: Vec<u8>,
+    ) -> Result<Node, ApiError> {
+        let size = u64::try_from(bytes.len())
+            .map_err(|_| ApiError::Transport("the content is too large".to_owned()))?;
+        if size <= self.upload_chunk_bytes() {
+            return self
+                .replace_content(id, None, || reqwest::Body::from(bytes.clone()))
+                .await;
+        }
+        let request = CreateUpload {
+            parent_id: None,
+            name: String::new(),
+            size,
+            modified_at: None,
+            mime: mime.map(str::to_owned),
+            node_id: Some(id),
+            keep_both: false,
+            version_of: None,
+            auto_upload: false,
+            transfer_item_id: None,
+        };
+        let bytes = &bytes;
+        self.upload_resumable(
+            &request,
+            |offset, len| async move {
+                let start = usize::try_from(offset).map_err(std::io::Error::other)?;
+                let end = start.saturating_add(len).min(bytes.len());
+                bytes
+                    .get(start..end)
+                    .map(<[u8]>::to_vec)
+                    .ok_or_else(|| std::io::Error::other("chunk outside the content"))
+            },
+            |_| {},
+        )
+        .await
+    }
+
     /// Uploads `request.size` bytes in chunks, retrying each chunk from the server's offset
     /// after a failure, and returns the stored file.
     ///

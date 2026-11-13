@@ -17,14 +17,28 @@ import uniffi.homespace_core.LocalItem
 import uniffi.homespace_core.LocalSources
 import uniffi.homespace_core.SessionListener
 import uniffi.homespace_core.SourceKind
+import uniffi.homespace_core.ViewerKind
 import uniffi.homespace_core.humanSize
 import uniffi.homespace_core.normalizeServerUrl
+import uniffi.homespace_core.viewerFor
 
 /** The generated Kotlin bindings against the host build of the Rust library. */
 class CoreClientTest {
     @Test
     fun formatsSizesInRust() {
         assertEquals("1.5 MB", humanSize(1_572_864))
+    }
+
+    @Test
+    fun textFilesOpenInTheEditableTextViewer() {
+        val info = viewerFor("text/markdown", 10)
+        assertEquals(ViewerKind.TEXT, info?.kind)
+        assertTrue(info?.editable == true)
+    }
+
+    @Test
+    fun otherFilesHaveNoViewer() {
+        assertEquals(null, viewerFor("application/zip", 10))
     }
 
     @Test

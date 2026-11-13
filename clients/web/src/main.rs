@@ -3,6 +3,7 @@ mod components;
 mod events;
 mod icon;
 mod incoming;
+mod leave_guard;
 mod load;
 mod local_files;
 mod locale;

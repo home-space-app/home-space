@@ -100,7 +100,7 @@ pub struct SyncedCopy {
 impl SyncedCopy {
     /// Whether the server is known to have moved on from this copy. A copy with edits, or one
     /// nothing is recorded about, is left for the sync to sort out and still counts as current.
-    fn is_behind(&self, node: &Node) -> bool {
+    pub(super) fn is_behind(&self, node: &Node) -> bool {
         self.base
             .as_ref()
             .filter(|base| base.path == self.path && !base.is_edited())

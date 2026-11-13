@@ -13,7 +13,7 @@ use protocol::Node;
 use super::{
     Menu, Message, Page, State, anchor::Anchor, context_menu, context_menu::Placement, devices,
     dialogs, grid, parts, search, send, sidebar, sync_queue, syncing, toolbar, toolbar::SyncChip,
-    transfer_list, transfer_save,
+    transfer_list, transfer_save, viewer,
 };
 use crate::{
     icons::{ICON_SIZE, Icon, Tint},
@@ -188,6 +188,21 @@ impl State {
                 .spacing(SPACING)
                 .into();
         }
+        if let Page::Viewer(viewer) = &self.page {
+            let back = button(Icon::Back.view(ICON_SIZE, Tint::Muted))
+                .padding(BACK_PADDING)
+                .style(theme::tool)
+                .on_press(Message::Viewer(viewer::Message::Close));
+            let title = row![back, heading(viewer.name())]
+                .spacing(BACK_GAP)
+                .align_y(Alignment::Center);
+            return column![
+                top(title, viewer.action().map(Message::Viewer)),
+                viewer.view().map(Message::Viewer)
+            ]
+            .spacing(SPACING)
+            .into();
+        }
         let status = self.syncing.status();
         let (title, action, content): (_, Element<'a, Message>, Element<'a, Message>) =
             match &self.page {
@@ -220,7 +235,7 @@ impl State {
                     self.transfer_list.action().map(Message::Transfers),
                     self.transfer_list.view().map(Message::Transfers),
                 ),
-                Page::Folder => return self.folder_page(selected),
+                Page::Folder | Page::Viewer(_) => return self.folder_page(selected),
             };
         column![top(heading(title), action), content]
             .spacing(SPACING)

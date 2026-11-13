@@ -22,6 +22,7 @@ mod files;
 mod offline;
 mod transfers;
 mod uploads;
+mod viewers;
 
 pub use autoupload::{
     AutoUpload, AutoUploadListener, LocalItem, LocalSources, PassSummary, SourceKind, SyncSettings,
@@ -31,6 +32,7 @@ pub use events::{EventStream, EventsListener, LiveEvent};
 pub use files::DownloadListener;
 pub use offline::{OfflineProblem, OfflineState, OfflineStatus};
 pub use transfers::{SendFile, SendTarget, TransferLists, TransferRow, TransferStatus};
+pub use viewers::{TextFile, TextFormat, ViewerInfo, ViewerKind};
 
 uniffi::setup_scaffolding!();
 

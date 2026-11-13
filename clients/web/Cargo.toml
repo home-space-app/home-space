@@ -39,6 +39,7 @@ features = [
     "DragEvent",
     "File",
     "FileList",
+    "FilePropertyBag",
     "FileSystemDirectoryEntry",
     "FileSystemDirectoryReader",
     "FileSystemEntry",

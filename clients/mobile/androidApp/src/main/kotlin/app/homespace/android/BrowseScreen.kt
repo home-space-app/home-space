@@ -99,6 +99,7 @@ import uniffi.homespace_core.LiveEvent
 import uniffi.homespace_core.OfflineState
 import uniffi.homespace_core.QueuedUpload
 import uniffi.homespace_core.QueuedUploadState
+import uniffi.homespace_core.viewerFor
 
 private val BADGE_SIZE = 14.dp
 private val BADGE_PADDING = 1.dp
@@ -119,7 +120,7 @@ private const val ANY_FILE = "*/*"
 
 /** What a row's menu can ask for. */
 internal enum class RowAction {
-    OPEN, SHOW_IN_FOLDER, SAVE, SEND, EDIT, KEEP_OFFLINE, DETAILS, RENAME, MOVE, DELETE, REMOVE_OFFLINE, CANCEL_DOWNLOAD
+    OPEN, OPEN_WITH, SHOW_IN_FOLDER, SAVE, SEND, EDIT, KEEP_OFFLINE, DETAILS, RENAME, MOVE, DELETE, REMOVE_OFFLINE, CANCEL_DOWNLOAD
 }
 
 /** Folder browsing through the Rust client (`clients/mobile-core`). */
@@ -249,6 +250,7 @@ fun BrowseScreen(
                 saveTo.launch(entry)
             }
             RowAction.SEND -> action = FileAction.Send(listOf(entry))
+            RowAction.OPEN_WITH -> model.openInAnotherApp(session, entry)
             RowAction.EDIT -> model.openFile(session, entry, edit = true)
             RowAction.KEEP_OFFLINE -> model.makeAvailableOffline(session, entry)
             RowAction.DETAILS -> action = FileAction.Details(entry)
@@ -813,6 +815,9 @@ private fun RowMenu(
             if (inSearch) item("Show in folder", R.drawable.ic_folder, RowAction.SHOW_IN_FOLDER)
             if (downloading) item("Cancel download", R.drawable.ic_close, RowAction.CANCEL_DOWNLOAD)
             if (entry.kind == EntryKind.FILE && !downloading) {
+                if (viewerFor(entry.mime, entry.size) != null) {
+                    item("Open in another app", R.drawable.ic_open_in_new, RowAction.OPEN_WITH)
+                }
                 item("Edit in another app", R.drawable.ic_edit_document, RowAction.EDIT)
                 item("Save to…", R.drawable.ic_download, RowAction.SAVE)
             }
