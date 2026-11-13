@@ -270,14 +270,14 @@ builds with `--features keyring` for the current CPU and writes to `clients/targ
   builds have no console window.
 The icons in `clients/desktop/packaging` are rendered from `home-space.svg`.
 
-The Linux client is also packaged as a Flatpak (`app.home_space.home-space-client`, on the
+The Linux client is also packaged as a Flatpak (`app.home_space.HomeSpace`, on the
 `org.freedesktop.Platform` runtime). With `flatpak` and `flatpak-builder` installed,
 `clients/desktop/scripts/build-flatpak.sh` builds `clients/target/dist/flatpak/HomeSpace-<version>-linux-<arch>.flatpak`
 (`--install` also installs it for the current user). The build is offline, so the script first lists
 the crates from `Cargo.lock` in `packaging/flatpak/cargo-sources.json` with
 `scripts/generate-flatpak-sources.sh` (git and python3). The sandbox can reach the network, the home
 folder (sync folders are changed in place) and the Secret Service keyring; sync folders outside home
-need an override (`flatpak override --user --filesystem=/mnt/data app.home_space.home-space-client`).
+need an override (`flatpak override --user --filesystem=/mnt/data app.home_space.HomeSpace`).
 CI builds the bundle on pull requests that touch the desktop client, and tagged releases attach it.
 
 ## Single sign-on
