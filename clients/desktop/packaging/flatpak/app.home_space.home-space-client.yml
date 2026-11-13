@@ -3,7 +3,7 @@
 # cargo-sources.json lists the crates from clients/Cargo.lock, because flatpak-builder builds
 # offline. It is generated, not committed: build-flatpak.sh and CI run
 # clients/desktop/scripts/generate-flatpak-sources.sh first.
-app-id: app.home-space.home-space-client
+app-id: app.home_space.home-space-client
 runtime: org.freedesktop.Platform
 runtime-version: '26.08'
 sdk: org.freedesktop.Sdk
@@ -37,18 +37,18 @@ modules:
       # The shared desktop entry, renamed to the app id and pointed at the launcher and the
       # Flatpak icon; the window reports the app id inside Flatpak, hence StartupWMClass.
       - install -Dm644 clients/desktop/packaging/home-space.desktop
-        /app/share/applications/app.home-space.home-space-client.desktop
+        /app/share/applications/app.home_space.home-space-client.desktop
       - desktop-file-edit
         --set-key=Exec --set-value=home-space
-        --set-icon=app.home-space.home-space-client
-        --set-key=StartupWMClass --set-value=app.home-space.home-space-client
-        /app/share/applications/app.home-space.home-space-client.desktop
-      - install -Dm644 clients/desktop/packaging/flatpak/app.home-space.home-space-client.metainfo.xml
+        --set-icon=app.home_space.home-space-client
+        --set-key=StartupWMClass --set-value=app.home_space.home-space-client
+        /app/share/applications/app.home_space.home-space-client.desktop
+      - install -Dm644 clients/desktop/packaging/flatpak/app.home_space.home-space-client.metainfo.xml
         -t /app/share/metainfo/
       - install -Dm644 clients/desktop/packaging/home-space.svg
-        /app/share/icons/hicolor/scalable/apps/app.home-space.home-space-client.svg
+        /app/share/icons/hicolor/scalable/apps/app.home_space.home-space-client.svg
       - install -Dm644 clients/desktop/packaging/home-space.png
-        /app/share/icons/hicolor/256x256/apps/app.home-space.home-space-client.png
+        /app/share/icons/hicolor/256x256/apps/app.home_space.home-space-client.png
     sources:
       - type: dir
         path: ../../../..
