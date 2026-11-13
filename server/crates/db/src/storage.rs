@@ -1,6 +1,7 @@
 //! How much each user stores, and facts about the database for the server status.
 
 use sqlx::FromRow;
+use uuid::Uuid;
 
 use crate::{Db, DbError, UserId};
 
@@ -34,6 +35,24 @@ pub struct UserStorage {
     pub usage: StorageUsage,
 }
 
+/// A user's quota and what counts against it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, FromRow)]
+pub struct QuotaUsage {
+    /// The most the user may store, in bytes.
+    pub quota: i64,
+    /// Everything the user stores: live files, versions and the recycle bin.
+    pub stored: i64,
+    /// Bytes reserved by the user's unfinished uploads into their own files.
+    pub reserved: i64,
+}
+
+impl QuotaUsage {
+    /// Bytes still free under the quota; zero once it is reached or passed.
+    pub fn room(&self) -> u64 {
+        u64::try_from(self.quota - self.stored - self.reserved).unwrap_or(0)
+    }
+}
+
 /// The database server, for the administration status.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DatabaseInfo {
@@ -53,6 +72,15 @@ macro_rules! usage_select {
     };
 }
 
+/// Everything the user aliased `u` stores, as one sum.
+macro_rules! stored_select {
+    () => {
+        "COALESCE((SELECT SUM(n.size) FROM nodes n \
+            WHERE n.owner_id = u.id AND n.kind = 'file'), 0)::BIGINT \
+         + COALESCE((SELECT SUM(v.size) FROM file_versions v WHERE v.owner_id = u.id), 0)::BIGINT"
+    };
+}
+
 impl Db {
     /// What `user` stores; zeros for an unknown user.
     pub async fn storage_usage(&self, user: UserId) -> Result<StorageUsage, DbError> {
@@ -65,6 +93,32 @@ impl Db {
         .fetch_optional(self.pool())
         .await?;
         Ok(usage.unwrap_or_default())
+    }
+
+    /// The quota of `user` and what counts against it, leaving out the unfinished upload
+    /// `except`; `None` when the user has no quota (or does not exist).
+    ///
+    /// Uploads into a transfer are not counted: those bytes belong to the transfer until the
+    /// recipient saves it.
+    pub async fn quota_usage(
+        &self,
+        user: UserId,
+        except: Option<Uuid>,
+    ) -> Result<Option<QuotaUsage>, DbError> {
+        let usage = sqlx::query_as::<_, QuotaUsage>(concat!(
+            "SELECT u.quota_bytes AS quota, (",
+            stored_select!(),
+            ") AS stored, \
+             COALESCE((SELECT SUM(up.size) FROM uploads up \
+                WHERE up.owner_id = u.id AND up.transfer_item_id IS NULL \
+                AND ($2::uuid IS NULL OR up.id <> $2)), 0)::BIGINT AS reserved \
+             FROM users u WHERE u.id = $1 AND u.quota_bytes IS NOT NULL"
+        ))
+        .bind(user)
+        .bind(except)
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(usage)
     }
 
     /// What every user stores, ordered by username.

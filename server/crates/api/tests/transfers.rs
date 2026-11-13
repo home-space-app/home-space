@@ -888,3 +888,48 @@ async fn nothing_is_sent_to_a_disabled_user_or_one_marked_for_deletion(pool: PgP
     let refused = send(&app, &u.bob, "alice", u.alice_laptop, item).await;
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
 }
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn saving_a_transfer_counts_against_the_recipients_quota(pool: PgPool) {
+    let app = setup(pool).await;
+    let u = users(&app).await;
+    set_visibility(
+        &app,
+        &u.alice,
+        u.alice_laptop,
+        json!({ "visibility": "everyone" }),
+    )
+    .await;
+    let alice = app.user_id("alice").await;
+    app.state.db.set_quota(alice, Some(3)).await.expect("quota");
+    let created = send(
+        &app,
+        &u.bob,
+        "alice",
+        u.alice_laptop,
+        json!([{ "path": "a.txt", "kind": "file", "size": 5 }]),
+    )
+    .await
+    .json();
+    let id = created["id"].as_str().expect("id");
+    // The bytes belong to the transfer until it is saved, so the sender is not charged.
+    let uploaded = upload_item(&app, &u.bob, &item_id(&created, "a.txt"), "hello").await;
+    assert!(uploaded.status.is_success(), "{}", uploaded.status);
+
+    let refused = app
+        .send(
+            Method::POST,
+            &format!("{TRANSFERS}/{id}/save"),
+            Some(&u.alice),
+            Body::empty(),
+            None,
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::INSUFFICIENT_STORAGE);
+    assert_eq!(refused.json()["error"], "quota_exceeded");
+
+    // Still ready: once there is room, it saves.
+    app.state.db.set_quota(alice, Some(5)).await.expect("quota");
+    let saved = post(&app, &format!("{TRANSFERS}/{id}/save"), &u.alice).await;
+    assert_eq!(saved, StatusCode::OK);
+}

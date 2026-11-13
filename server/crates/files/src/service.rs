@@ -8,11 +8,18 @@ use uuid::Uuid;
 
 use db::{
     BlobOp, Db, DeletedNodes, FOLDER_MIME, FileVersion, MoveBatch, MoveOutcome, NewContent,
-    NewNode, Node, NodeId, NodeKind, NodeProperties, NodeUpdate, OnConflict, StoreOutcome,
-    TrashOutcome, TrashedNode, UserId,
+    NewNode, Node, NodeId, NodeKind, NodeProperties, NodeUpdate, OnConflict, QuotaUsage,
+    StoreOutcome, TrashOutcome, TrashedNode, UserId,
 };
 
 use crate::{BlobStore, FilesError, store::StagedBlob, uploads::Uploads};
+
+fn quota_exceeded(usage: QuotaUsage) -> FilesError {
+    FilesError::QuotaExceeded {
+        quota: u64::try_from(usage.quota).unwrap_or(0),
+        available: usage.room(),
+    }
+}
 
 const FALLBACK_MIME: &str = "application/octet-stream";
 /// Default size of one chunk of a resumable upload, well under the 100 MB request limit of
@@ -114,7 +121,7 @@ impl FileService {
         if let Some(parent) = parent {
             self.db.get_node(owner, parent).await?;
         }
-        let staged = self.store.stage(body, self.max_upload_bytes).await?;
+        let staged = self.stage_within_quota(owner, body).await?;
         let stored = self
             .db
             .store_file(
@@ -144,7 +151,7 @@ impl FileService {
         if current.kind != NodeKind::File {
             return Err(FilesError::NotAFile);
         }
-        let staged = self.store.stage(body, self.max_upload_bytes).await?;
+        let staged = self.stage_within_quota(owner, body).await?;
         let stored = self
             .db
             .replace_file_content(
@@ -154,6 +161,36 @@ impl FileService {
             )
             .await;
         self.finish_store(owner, staged, stored).await
+    }
+
+    /// Fails with [`FilesError::QuotaExceeded`] when `owner` has a quota and `needed` more
+    /// bytes do not fit in it. The unfinished upload `except` is not counted as reserved.
+    pub(crate) async fn check_quota(
+        &self,
+        owner: UserId,
+        except: Option<Uuid>,
+        needed: u64,
+    ) -> Result<(), FilesError> {
+        match self.db.quota_usage(owner, except).await? {
+            Some(usage) if needed > usage.room() => Err(quota_exceeded(usage)),
+            _ => Ok(()),
+        }
+    }
+
+    /// Stages `body`, stopping it as soon as it outgrows the upload limit or what is left of
+    /// `owner`'s quota.
+    async fn stage_within_quota<S>(&self, owner: UserId, body: S) -> Result<StagedBlob, FilesError>
+    where
+        S: Stream<Item = io::Result<Bytes>>,
+    {
+        let usage = match self.db.quota_usage(owner, None).await? {
+            Some(usage) if usage.room() < self.max_upload_bytes => usage,
+            _ => return self.store.stage(body, self.max_upload_bytes).await,
+        };
+        match self.store.stage(body, usage.room()).await {
+            Err(FilesError::TooLarge { .. }) => Err(quota_exceeded(usage)),
+            staged => staged,
+        }
     }
 
     pub(crate) async fn finish_store(

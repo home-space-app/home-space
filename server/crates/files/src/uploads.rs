@@ -165,6 +165,9 @@ impl FileService {
                 (None, None, name, StoreOptions::default())
             }
         };
+        if transfer_item_id.is_none() {
+            self.check_quota(owner, None, size).await?;
+        }
         let id = Uuid::now_v7();
         let new = NewUpload {
             id,
@@ -344,6 +347,9 @@ impl FileService {
         size: u64,
         sha256: Vec<u8>,
     ) -> Result<StoreOutcome, FilesError> {
+        // Checked again because what the owner stores may have grown, or their quota shrunk,
+        // since the upload started.
+        self.check_quota(owner, Some(upload.id), size).await?;
         let staged = self.store.adopt_partial(upload.id, size, sha256);
         let content = |name: &str| -> NewContent {
             new_content(&staged, upload.mime.as_deref(), name, upload.modified_at)

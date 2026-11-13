@@ -43,6 +43,8 @@ administrator, no quotas and no groups.
   `storage-limits.md`. Build both on one per-user usage counter.
 - Enforce the quota where the free-space check runs: `POST /uploads` (claimed `size`), streaming
   single-request uploads, and new versions. Return a dedicated `QuotaExceeded` error code (413).
+  Done: enforced with 507 `quota_exceeded`, also when saving a received transfer; usage is
+  summed per request, not kept in a counter yet.
 - Clients show "used / quota" instead of "used / disk free" when a quota is set.
 
 ### Groups

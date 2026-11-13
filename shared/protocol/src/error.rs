@@ -16,6 +16,9 @@ pub enum ErrorCode {
     /// Too many attempts, such as wrong passwords; the `Retry-After` header says when to try
     /// again.
     TooManyRequests,
+    /// Storing this would take the user past their storage quota (HTTP 507); freeing space,
+    /// such as emptying the recycle bin, or a larger quota lets it through.
+    QuotaExceeded,
     Internal,
 }
 
@@ -35,6 +38,10 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&ErrorCode::PayloadTooLarge).expect("json"),
             r#""payload_too_large""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ErrorCode::QuotaExceeded).expect("json"),
+            r#""quota_exceeded""#
         );
     }
 }
