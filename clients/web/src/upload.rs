@@ -4,7 +4,7 @@ use gloo_timers::future::TimeoutFuture;
 use serde::de::DeserializeOwned;
 use tokio::sync::oneshot;
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
-use web_sys::{Blob, File, ProgressEvent, XmlHttpRequest};
+use web_sys::{Blob, File, FilePropertyBag, ProgressEvent, XmlHttpRequest};
 
 use api_client::{ApiError, Client};
 use protocol::{ChunkResult, CreateUpload, ErrorBody, ErrorCode, Node, NodeId, paths};
@@ -58,6 +58,8 @@ struct Request<'a> {
 enum Target {
     Folder(Option<NodeId>),
     TransferItem(uuid::Uuid),
+    /// The content of an existing file.
+    Replace(NodeId),
 }
 
 /// Uploads `file` into `parent` with progress. Files larger than one chunk go up in
@@ -90,6 +92,38 @@ pub async fn upload(
     decode(&outcome)
 }
 
+/// Stores `bytes` of type `mime` as the content of file `id`, named `name`; the previous content
+/// becomes a version of it. Content larger than one chunk goes up in chunks.
+pub async fn replace_content(
+    client: &Client,
+    id: NodeId,
+    name: &str,
+    mime: &str,
+    bytes: &[u8],
+) -> Result<Node, ApiError> {
+    let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes));
+    if u64::try_from(bytes.len()).map_or(true, |len| len > client.upload_chunk_bytes()) {
+        let options = FilePropertyBag::new();
+        options.set_type(mime);
+        let file = File::new_with_u8_array_sequence_and_options(&parts, name, &options)
+            .map_err(transport)?;
+        let ignore: OnProgress = Rc::new(|_| {});
+        return upload_chunked(client, &file, Target::Replace(id), &ignore)
+            .await?
+            .ok_or_else(|| ApiError::Decode("the upload ended without a file".to_owned()));
+    }
+    let body = Blob::new_with_u8_array_sequence(&parts).map_err(transport)?;
+    let request = Request {
+        method: "PUT",
+        url: client.url(&paths::file_content(id)),
+        headers: vec![(CONTENT_TYPE, mime.to_owned())],
+        body: &body,
+    };
+    let ignore: OnBytes = Rc::new(|_, _| {});
+    let outcome = send_authed(client, &request, &ignore).await?;
+    decode(&outcome)
+}
+
 /// Uploads the bytes of a transfer's file item with progress, always in resumable chunks.
 pub async fn upload_transfer_item(
     client: &Client,
@@ -111,9 +145,10 @@ async fn upload_chunked(
 ) -> Result<Option<Node>, ApiError> {
     let size = file_size(file);
     let key = resume_key(file, target);
-    let (parent, transfer_item_id) = match target {
-        Target::Folder(parent) => (parent, None),
-        Target::TransferItem(item) => (None, Some(item)),
+    let (parent, transfer_item_id, node_id) = match target {
+        Target::Folder(parent) => (parent, None, None),
+        Target::TransferItem(item) => (None, Some(item), None),
+        Target::Replace(id) => (None, None, Some(id)),
     };
     let session = match resumable(client, &key, size).await? {
         Some(session) => session,
@@ -124,7 +159,7 @@ async fn upload_chunked(
                 size,
                 modified_at: None,
                 mime: Some(mime_of(file)),
-                node_id: None,
+                node_id,
                 keep_both: false,
                 version_of: None,
                 auto_upload: false,
@@ -220,6 +255,7 @@ fn resume_key(file: &File, target: Target) -> String {
     let folder = match target {
         Target::Folder(parent) => parent.map_or_else(|| "root".to_owned(), |id| id.to_string()),
         Target::TransferItem(item) => format!("transfer-{item}"),
+        Target::Replace(id) => format!("replace-{id}"),
     };
     format!(
         "{RESUME_KEY_PREFIX}{folder}:{}:{}:{}",

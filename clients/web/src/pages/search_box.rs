@@ -8,7 +8,7 @@ use leptos_router::{
 };
 use web_sys::KeyboardEvent;
 
-use crate::route;
+use crate::{leave_guard, route};
 
 const KEY_ENTER: &str = "Enter";
 const KEY_ESCAPE: &str = "Escape";
@@ -19,6 +19,7 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
 #[component]
 pub fn SearchBox() -> impl IntoView {
     let navigate = use_navigate();
+    let guard = leave_guard::use_leave_guard();
     let location = use_location();
     let query = use_query_map();
     let text = RwSignal::new(String::new());
@@ -46,12 +47,16 @@ pub fn SearchBox() -> impl IntoView {
         let value = value.trim().to_owned();
         pushed.set_value(value.clone());
         if !value.is_empty() {
+            let target = route::search(&value);
+            if !guard.allows(&target) {
+                return;
+            }
             let options = NavigateOptions {
                 replace: on_search_page(),
                 ..NavigateOptions::default()
             };
-            navigate(&route::search(&value), options);
-        } else if on_search_page() {
+            navigate(&target, options);
+        } else if on_search_page() && guard.allows(HOME_PATH) {
             navigate(HOME_PATH, NavigateOptions::default());
         }
     });

@@ -7,8 +7,21 @@ use uuid::Uuid;
 
 pub use protocol::paths::short_id;
 
+const HOME_PATH: &str = "/";
+const FOLDER_PREFIX: &str = "/folder/";
+
 pub fn folder(id: NodeId) -> String {
     protocol::paths::web_folder(Some(id))
+}
+
+/// Whether `path` is Home or a folder's page.
+pub fn is_folder_path(path: &str) -> bool {
+    path == HOME_PATH || path.starts_with(FOLDER_PREFIX)
+}
+
+/// The built-in viewer of file `id`.
+pub fn file_view(id: NodeId) -> String {
+    format!("/files/{}/view", short_id(id))
 }
 
 pub const TRASH_PATH: &str = "/trash";
@@ -69,6 +82,22 @@ mod tests {
         let path = folder(id());
         assert_eq!(path.len(), "/folder/".len() + 22);
         assert_eq!(parse_id(path.strip_prefix("/folder/").unwrap()), Some(id()));
+    }
+
+    #[test]
+    fn file_view_path_uses_the_short_form() {
+        let path = file_view(id());
+        let short = path
+            .strip_prefix("/files/")
+            .and_then(|rest| rest.strip_suffix("/view"));
+        assert_eq!(short.and_then(parse_id), Some(id()));
+    }
+
+    #[test]
+    fn only_home_and_folders_are_folder_paths() {
+        assert!(is_folder_path("/"));
+        assert!(is_folder_path(&folder(id())));
+        assert!(!is_folder_path(&file_view(id())));
     }
 
     #[test]

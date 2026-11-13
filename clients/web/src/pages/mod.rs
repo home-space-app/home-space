@@ -16,6 +16,7 @@ mod sidebar;
 mod transfer_save;
 mod transfers;
 mod trash;
+mod viewer;
 mod visibility_dialog;
 
 pub use admin::{AdminPage, AdminTab};
@@ -29,3 +30,4 @@ pub use shell::Shell;
 pub use transfer_save::SaveTransferDialog;
 pub use transfers::{TransferList, TransfersPage};
 pub use trash::TrashPage;
+pub use viewer::ViewerPage;

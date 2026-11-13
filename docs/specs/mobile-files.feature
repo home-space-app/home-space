@@ -19,9 +19,14 @@ Feature: Search, new folders and uploads on mobile
       Then the app says there are no results
 
     Scenario: Tapping a file opens it
-      Given a file "holiday-plan.txt" in "Docs/Nested"
+      Given a file "holiday-plan.pdf" in "Docs/Nested"
       When alice searches for "hol" and taps the file
       Then it opens, and stays on the phone as an offline copy
+
+    Scenario: Tapping a text file opens it in the built-in viewer
+      Given a file "holiday-plan.txt" in "Docs/Nested"
+      When alice searches for "hol" and taps the file
+      Then it opens in the text viewer (see file-viewers.feature)
 
     Scenario: Tapping a folder goes there
       Given a folder "Nested" in "Docs"

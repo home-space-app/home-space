@@ -103,7 +103,10 @@ fun SignedInScreen(session: Session.SignedIn, model: SessionViewModel) {
             model.showTransfers = false
         }
     }
-    when (page) {
+    val viewer = model.viewer
+    if (viewer != null) {
+        ViewerScreen(session, model, viewer)
+    } else when (page) {
         SubPage.PROFILE -> ProfileScreen(session, model, closePage)
         SubPage.UPLOAD_FOLDERS -> UploadFoldersScreen(session, model, closePage)
         SubPage.OFFLINE_FILES -> OfflineFilesScreen(session, model, closePage)

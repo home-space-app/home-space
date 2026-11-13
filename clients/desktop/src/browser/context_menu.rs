@@ -11,7 +11,7 @@ use super::{
     Message, devices,
     fit_column::fit_column,
     parts::divider,
-    toolbar::{actions, menu_item, menu_row},
+    toolbar::{Action, actions, menu_item, menu_row},
 };
 use crate::{
     icons::{ICON_SIZE, Icon, Tint},
@@ -44,7 +44,19 @@ pub fn web_entry(selected: &[&Node]) -> Option<Entry> {
     }
 }
 
-/// The context menu for `selected`: the actions with the web entry after Open, the sync `entries`,
+/// The entry opening a file with the system's app when Open shows it in a built-in viewer.
+fn open_with_entry(selected: &[&Node]) -> Option<Entry> {
+    match selected {
+        [node] if client_core::viewers::viewer_for_node(node).is_some() => Some(Entry {
+            icon: Icon::Web,
+            label: Action::OpenWith.menu_label(),
+            message: Message::Act(Action::OpenWith),
+        }),
+        _ => None,
+    }
+}
+
+/// The context menu for `selected`: the actions with the web or system app entry after Open, the sync `entries`,
 /// and last, set apart, moving to the bin.
 pub fn view<'a>(
     selected: &[&Node],
@@ -58,8 +70,8 @@ pub fn view<'a>(
         .map(|(action, enabled)| menu_item(action, enabled))
         .collect();
     // Only a single folder has a web entry, and Open is then the first item.
-    if let Some(web) = web_entry(selected) {
-        items.insert(1, entry(web));
+    if let Some(extra) = web_entry(selected).or_else(|| open_with_entry(selected)) {
+        items.insert(1, entry(extra));
     }
     items.extend(entries.into_iter().map(entry));
     if let Some((action, enabled)) = last {

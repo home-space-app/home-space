@@ -1,11 +1,12 @@
 use protocol::{Node, NodeKind};
 
+use crate::viewers::TEXT_LIKE_TYPES;
+
 const IMAGE_PREFIX: &str = "image/";
 const TEXT_PREFIX: &str = "text/";
 const DOCUMENT_TYPES: &[&str] = &[
     "application/pdf",
     "application/rtf",
-    "application/json",
     "application/msword",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "application/vnd.oasis.opendocument.text",
@@ -25,7 +26,11 @@ pub fn node_icon(node: &Node) -> NodeIcon {
     match (node.kind, node.mime.as_str()) {
         (NodeKind::Folder, _) => NodeIcon::Folder,
         (_, mime) if mime.starts_with(IMAGE_PREFIX) => NodeIcon::Image,
-        (_, mime) if mime.starts_with(TEXT_PREFIX) || DOCUMENT_TYPES.contains(&mime) => {
+        (_, mime)
+            if mime.starts_with(TEXT_PREFIX)
+                || DOCUMENT_TYPES.contains(&mime)
+                || TEXT_LIKE_TYPES.contains(&mime) =>
+        {
             NodeIcon::Document
         }
         _ => NodeIcon::Other,

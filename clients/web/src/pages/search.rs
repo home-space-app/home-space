@@ -1,7 +1,9 @@
 use leptos::prelude::*;
 use leptos_router::{components::A, hooks::use_query_map};
 
-use client_core::{format::human_size, labels::location_label, search::destination};
+use client_core::{
+    format::human_size, labels::location_label, search::destination, viewers::viewer_for_node,
+};
 use protocol::{NodeKind, SearchHit};
 
 use super::search_box::SearchBox;
@@ -24,8 +26,13 @@ enum Status {
     Failed(String),
 }
 
+/// Where a hit leads: a file with a built-in viewer opens in it, anything else in its folder.
 fn target(hit: &SearchHit) -> String {
-    destination(hit).map_or_else(|| HOME_PATH.to_owned(), route::folder)
+    if viewer_for_node(&hit.node).is_some() {
+        route::file_view(hit.node.id)
+    } else {
+        destination(hit).map_or_else(|| HOME_PATH.to_owned(), route::folder)
+    }
 }
 
 #[component]

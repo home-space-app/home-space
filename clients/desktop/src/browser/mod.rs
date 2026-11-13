@@ -21,6 +21,7 @@ mod toolbar;
 mod transfer_list;
 mod transfer_save;
 mod trash;
+mod viewer;
 mod visibility;
 
 use std::{
@@ -39,7 +40,7 @@ use iced::{
 };
 
 use api_client::{ApiError, Client};
-use client_core::{labels::HOME, listing::SortKey};
+use client_core::{labels::HOME, listing::SortKey, viewers};
 use protocol::{Me, Node, NodeId, NodeKind, paths};
 use uuid::Uuid;
 
@@ -121,6 +122,7 @@ pub enum Message {
     SignedOut,
     Sync(syncing::Message),
     OpenInWeb(Option<NodeId>),
+    Viewer(viewer::Message),
 }
 
 pub enum Update {
@@ -155,6 +157,8 @@ enum Page {
     Devices(Box<devices::State>),
     /// What was sent to this device and what the user sent.
     Transfers,
+    /// A file in a built-in viewer.
+    Viewer(Box<viewer::State>),
 }
 
 pub struct State {
@@ -179,6 +183,8 @@ pub struct State {
     lost_and_found: LostAndFound,
     /// The Transfers page, kept while elsewhere so downloads go on and the sidebar counts.
     transfer_list: TransferList,
+    /// Where the user went from unsaved edits in the viewer, while asked whether to drop them.
+    leave_to: Option<Box<Message>>,
 }
 
 impl State {
@@ -202,6 +208,7 @@ impl State {
             dropping: false,
             search: Search::default(),
             syncing: Syncing::default(),
+            leave_to: None,
         };
         // The window may have been resized before the browser opened.
         let size = window::latest()
@@ -253,6 +260,15 @@ impl State {
     }
 
     fn handle(&mut self, message: Message) -> Task<Message> {
+        if let Page::Viewer(viewer) = &self.page
+            && viewer.has_unsaved_edits()
+            && leaves_page(&message)
+        {
+            self.menu = None;
+            self.dialog = Some(Dialog::discard_edits(viewer.name().to_owned()));
+            self.leave_to = Some(Box::new(message));
+            return Task::none();
+        }
         match message {
             Message::Jump(folder) => {
                 let from = self.folder.id;
@@ -439,6 +455,7 @@ impl State {
                 self.syncing
                     .send(sync::Command::RemoteChanged(event.clone()));
                 let details = self.sync_details(&event);
+                let viewer = self.sync_viewer(&event);
                 let found = if self.lost_and_found.apply(&event) {
                     self.load_lost_and_found()
                 } else {
@@ -478,7 +495,7 @@ impl State {
                         .map(Message::Transfers),
                     _ => Task::none(),
                 };
-                Task::batch([details, found, listing, trash, transfers])
+                Task::batch([details, viewer, found, listing, trash, transfers])
             }
             Message::Sync(message) => {
                 if matches!(
@@ -524,6 +541,33 @@ impl State {
                 )
             }
             Message::SignedOut => Task::none(),
+            Message::Viewer(message) => self.viewer_update(message),
+        }
+    }
+
+    fn viewer_update(&mut self, message: viewer::Message) -> Task<Message> {
+        let Page::Viewer(viewer) = &mut self.page else {
+            return Task::none();
+        };
+        match viewer.update(&self.client, message) {
+            viewer::Outcome::Task(task) => task.map(Message::Viewer),
+            viewer::Outcome::Closed => self.open_folder(self.folder.id),
+        }
+    }
+
+    /// Follows changes to the file the viewer shows; it closes when the file goes.
+    fn sync_viewer(&mut self, event: &protocol::Event) -> Task<Message> {
+        let Page::Viewer(viewer) = &mut self.page else {
+            return Task::none();
+        };
+        match event {
+            protocol::Event::NodeUpdated { node } if node.id == viewer.node_id() => {
+                viewer.changed(&self.client, node).map(Message::Viewer)
+            }
+            protocol::Event::NodeDeleted { id, .. } if *id == viewer.node_id() => {
+                self.open_folder(self.folder.id)
+            }
+            _ => Task::none(),
         }
     }
 
@@ -635,7 +679,9 @@ impl State {
                 .transfer_list
                 .load(&self.client)
                 .map(Message::Transfers),
-            Page::Folder | Page::SyncQueue | Page::SyncSettings => self.folder.reload(&self.client),
+            Page::Folder | Page::SyncQueue | Page::SyncSettings | Page::Viewer(_) => {
+                self.folder.reload(&self.client)
+            }
         }
     }
 
@@ -679,14 +725,36 @@ impl State {
         }
     }
 
+    /// Opens the file `node` in its built-in viewer, or with the default app when it has none.
+    fn open_file(&mut self, node: &Node) -> Task<Message> {
+        match viewers::viewer_for_node(node) {
+            Some(viewer) => self.open_viewer(node, *viewer),
+            None => self.open_externally(node),
+        }
+    }
+
+    fn open_viewer(&mut self, node: &Node, viewer: viewers::Viewer) -> Task<Message> {
+        self.search.clear();
+        self.folder.error = None;
+        self.details = None;
+        self.menu = None;
+        let synced = self.synced_copy(node);
+        let (state, task) = viewer::State::open(&self.client, node.clone(), viewer, synced);
+        self.page = Page::Viewer(Box::new(state));
+        task.map(Message::Viewer)
+    }
+
     /// Opens the file `node` with the default app, from a local copy that is the server's version
     /// or else from a fresh download.
-    fn open_file(&self, node: &Node) -> Task<Message> {
-        let synced = self.local_copy(node).map(|path| files::SyncedCopy {
+    fn open_externally(&self, node: &Node) -> Task<Message> {
+        files::open(&self.client, node.clone(), self.synced_copy(node))
+    }
+
+    fn synced_copy(&self, node: &Node) -> Option<files::SyncedCopy> {
+        self.local_copy(node).map(|path| files::SyncedCopy {
             path,
             base: self.syncing.status().base(node.id).cloned(),
-        });
-        files::open(&self.client, node.clone(), synced)
+        })
     }
 
     /// Where the synced file `node` is on disk, once it is there.
@@ -703,7 +771,11 @@ impl State {
         match (action, selected.as_slice()) {
             (_, []) => Task::none(),
             (Action::Open, [node]) => self.activate(node.id),
-            (Action::OpenFile, [node]) => self.open_file(node),
+            (Action::OpenFile, [node]) => {
+                let node = node.clone();
+                self.open_file(&node)
+            }
+            (Action::OpenWith, [node]) => self.open_externally(node),
             (Action::Rename, [node]) => {
                 let (dialog, task) = Dialog::rename(node.clone());
                 self.dialog = Some(dialog);
@@ -714,7 +786,14 @@ impl State {
                 self.details = Some(details);
                 task.map(Message::Details)
             }
-            (Action::Open | Action::OpenFile | Action::Rename | Action::Details, _) => Task::none(),
+            (
+                Action::Open
+                | Action::OpenFile
+                | Action::OpenWith
+                | Action::Rename
+                | Action::Details,
+                _,
+            ) => Task::none(),
             (Action::Download, _) => files::download(&self.client, selected),
             (Action::Send, _) => self.open_send(send::Source::Nodes(selected)),
             (Action::Move, _) => {
@@ -798,7 +877,18 @@ impl State {
             Outcome::Task(task) => task.map(Message::Dialog),
             Outcome::Closed => {
                 self.dialog = None;
+                self.leave_to = None;
                 Task::none()
+            }
+            Outcome::Discarded => {
+                self.dialog = None;
+                let Some(leave_to) = self.leave_to.take() else {
+                    return Task::none();
+                };
+                if let Page::Viewer(viewer) = &mut self.page {
+                    viewer.discard();
+                }
+                self.handle(*leave_to)
             }
             Outcome::Done => {
                 self.dialog = None;
@@ -946,6 +1036,13 @@ impl State {
                 }
                 _ => Task::none(),
             }
+        } else if matches!(self.page, Page::Viewer(_)) {
+            match shortcut {
+                Shortcut::Escape | Shortcut::Back | Shortcut::Parent => {
+                    self.handle(Message::Viewer(viewer::Message::Close))
+                }
+                _ => Task::none(),
+            }
         } else if matches!(self.page, Page::SyncQueue | Page::SyncSettings) {
             match shortcut {
                 Shortcut::Escape | Shortcut::Back | Shortcut::Parent => {
@@ -1053,5 +1150,24 @@ fn scroll_rows_to(offset: Option<f32>) -> Task<Message> {
         None => Task::none(),
     }
 }
+
+/// Whether `message` takes the browser away from the page it shows.
+fn leaves_page(message: &Message) -> bool {
+    matches!(
+        message,
+        Message::Jump(_)
+            | Message::OpenFiles
+            | Message::OpenLostAndFound
+            | Message::OpenTrash
+            | Message::OpenSyncQueue
+            | Message::OpenSyncSettings
+            | Message::OpenDevices
+            | Message::OpenTransfers
+            | Message::Transfers(transfer_list::Message::Save(_))
+            | Message::SignOut
+            | Message::Viewer(viewer::Message::Close)
+    )
+}
+
 #[cfg(test)]
 mod tests;

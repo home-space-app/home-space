@@ -1272,3 +1272,157 @@ async fn a_session_the_server_ended_returns_to_the_login() {
 
     assert!(matches!(update, Update::SignedOut { server: url } if url == server.uri()));
 }
+
+fn state_with_text_file() -> State {
+    let mut state = state_with_listing();
+    let text = Node {
+        mime: "text/plain".to_owned(),
+        ..node(OTHER_FILE_NAME, NodeKind::File, OTHER_FILE_ID)
+    };
+    let listing = Listing {
+        path: Vec::new(),
+        nodes: vec![node(FILE_NAME, NodeKind::File, FILE_ID), text],
+    };
+    let _ = state.update(Message::Loaded(None, Ok(listing)));
+    state
+}
+
+#[test]
+fn double_clicking_a_text_file_opens_the_viewer() {
+    let mut state = state_with_text_file();
+
+    let _ = state.update(Message::Click(id(OTHER_FILE_ID)));
+    let _ = state.update(Message::Click(id(OTHER_FILE_ID)));
+
+    assert!(matches!(&state.page, Page::Viewer(viewer) if viewer.node_id() == id(OTHER_FILE_ID)));
+}
+
+#[test]
+fn escape_leaves_the_viewer() {
+    let mut state = state_with_text_file();
+    let _ = state.update(Message::Click(id(OTHER_FILE_ID)));
+    let _ = state.update(Message::Click(id(OTHER_FILE_ID)));
+
+    let _ = state.update(Message::Shortcut(Shortcut::Escape));
+
+    assert!(matches!(state.page, Page::Folder));
+}
+
+/// The browser with the text file open in the viewer, its content loaded and being edited.
+fn state_editing_text(changed: bool) -> State {
+    let mut state = state_with_text_file();
+    let _ = state.update(Message::Click(id(OTHER_FILE_ID)));
+    let _ = state.update(Message::Click(id(OTHER_FILE_ID)));
+    let text = Node {
+        mime: "text/plain".to_owned(),
+        ..node(OTHER_FILE_NAME, NodeKind::File, OTHER_FILE_ID)
+    };
+    let _ = state.update(Message::Viewer(viewer::Message::Loaded(Ok(
+        viewer::Loaded::new(text, b"hello"),
+    ))));
+    let _ = state.update(Message::Viewer(viewer::Message::Edit));
+    if changed {
+        let _ = state.update(Message::Viewer(viewer::Message::typed('x')));
+    }
+    state
+}
+
+#[test]
+fn leaving_unsaved_edits_asks_first() {
+    let mut state = state_editing_text(true);
+
+    let _ = state.update(Message::Shortcut(Shortcut::Escape));
+
+    assert!(matches!(state.page, Page::Viewer(_)));
+    assert!(state.dialog.is_some());
+}
+
+#[test]
+fn the_sidebar_asks_before_leaving_unsaved_edits() {
+    let mut state = state_editing_text(true);
+
+    let _ = state.update(Message::OpenTrash);
+
+    assert!(matches!(state.page, Page::Viewer(_)));
+    assert!(state.dialog.is_some());
+}
+
+#[test]
+fn discarding_unsaved_edits_goes_where_the_user_went() {
+    let mut state = state_editing_text(true);
+    let _ = state.update(Message::OpenTrash);
+
+    let _ = state.update(Message::Dialog(dialogs::Message::Submit));
+
+    assert!(matches!(state.page, Page::Trash(_)));
+    assert!(state.dialog.is_none());
+}
+
+#[test]
+fn keeping_unsaved_edits_stays_in_the_editor() {
+    let mut state = state_editing_text(true);
+    let _ = state.update(Message::Shortcut(Shortcut::Escape));
+
+    let _ = state.update(Message::Dialog(dialogs::Message::Cancel));
+
+    assert!(matches!(&state.page, Page::Viewer(viewer) if viewer.has_unsaved_edits()));
+    assert!(state.dialog.is_none());
+}
+
+#[test]
+fn leaving_the_editor_without_changes_does_not_ask() {
+    let mut state = state_editing_text(false);
+
+    let _ = state.update(Message::Shortcut(Shortcut::Escape));
+
+    assert!(matches!(state.page, Page::Folder));
+    assert!(state.dialog.is_none());
+}
+
+#[test]
+fn the_viewer_closes_when_its_file_is_deleted() {
+    let mut state = state_with_text_file();
+    let _ = state.update(Message::Click(id(OTHER_FILE_ID)));
+    let _ = state.update(Message::Click(id(OTHER_FILE_ID)));
+
+    let _ = state.update(Message::Server(protocol::Event::NodeDeleted {
+        id: id(OTHER_FILE_ID),
+        parent_id: None,
+    }));
+
+    assert!(matches!(state.page, Page::Folder));
+}
+
+#[test]
+fn the_context_menu_of_a_text_file_offers_the_system_app() {
+    let mut state = state_with_text_file();
+    let _ = state.update(Message::ContextMenu(
+        id(OTHER_FILE_ID),
+        context_menu::Placement::cursor(Point::ORIGIN),
+    ));
+    let mut ui = simulator(state.view());
+
+    ui.click("Open with system app")
+        .expect("the entry is shown");
+
+    let messages: Vec<_> = ui.into_messages().collect();
+    assert!(matches!(
+        messages.as_slice(),
+        [Message::Act(Action::OpenWith)]
+    ));
+}
+
+#[test]
+fn the_context_menu_of_a_file_without_a_viewer_leaves_out_the_system_app() {
+    let mut state = state_with_listing();
+    let _ = state.update(Message::ContextMenu(
+        id(FILE_ID),
+        context_menu::Placement::cursor(Point::ORIGIN),
+    ));
+
+    assert!(
+        simulator(state.view())
+            .find("Open with system app")
+            .is_err()
+    );
+}

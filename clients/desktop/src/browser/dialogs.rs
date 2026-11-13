@@ -24,6 +24,10 @@ use crate::{
 
 const NAME_INPUT: &str = "dialog-name";
 const WORKING: &str = "Working…";
+const CANCEL: &str = "Cancel";
+const KEEP_EDITING: &str = "Keep editing";
+const DISCARD: &str = "Discard";
+const DISCARD_TITLE: &str = "Discard changes?";
 const MOVE_WIDTH: f32 = 520.0;
 /// What the destination's name may take on the move button, which leaves room for Cancel.
 const MOVE_ACTION_WIDTH: f32 = 280.0;
@@ -78,6 +82,8 @@ pub enum Outcome {
     /// A restore went through; the response says what came back and where to.
     Restored(Box<MoveResponse>),
     Failed,
+    /// The user chose to drop the viewer's unsaved edits.
+    Discarded,
 }
 
 #[derive(Clone)]
@@ -103,6 +109,10 @@ enum Kind {
     /// Confirms permanently deleting the `count` files in the recycle bin.
     EmptyTrash {
         count: usize,
+    },
+    /// Asks before leaving the viewer's unsaved edits to file `name`.
+    DiscardEdits {
+        name: String,
     },
     /// Files that clash at a destination; the user decides how to go on.
     Conflicts {
@@ -204,6 +214,11 @@ impl Dialog {
         Self::with(Kind::EmptyTrash { count })
     }
 
+    /// Asks whether to drop the unsaved edits to file `name`.
+    pub fn discard_edits(name: String) -> Self {
+        Self::with(Kind::DiscardEdits { name })
+    }
+
     /// Lists the files that a restore of `ids` could not put back, as `response` reports.
     pub fn restore_conflicts(ids: Vec<NodeId>, response: MoveResponse) -> Self {
         let title = conflicts_title(response.conflicts.len(), LOST_AND_FOUND);
@@ -224,6 +239,7 @@ impl Dialog {
                     Kind::Move { .. }
                     | Kind::Delete { .. }
                     | Kind::EmptyTrash { .. }
+                    | Kind::DiscardEdits { .. }
                     | Kind::Conflicts { .. } => {}
                 }
                 Outcome::Task(Task::none())
@@ -249,6 +265,7 @@ impl Dialog {
                 }
                 _ => Outcome::Task(Task::none()),
             },
+            Message::Submit if matches!(self.kind, Kind::DiscardEdits { .. }) => Outcome::Discarded,
             Message::Submit if self.saving || self.in_place() => Outcome::Task(Task::none()),
             Message::Submit => self.submit(client, folder),
             Message::Enter(target) => self.navigate(client, |trail| trail.push(target)),
@@ -359,7 +376,7 @@ impl Dialog {
                 let destination = trail.last().map(|folder| folder.id);
                 Some(Retry::Move { ids, destination }.send(&client, OnConflict::Abort))
             }
-            Kind::Conflicts { .. } => None,
+            Kind::Conflicts { .. } | Kind::DiscardEdits { .. } => None,
             Kind::EmptyTrash { .. } => Some(perform(async move { client.empty_trash().await })),
             Kind::Delete { nodes } => {
                 let ids = ids_of(nodes);
@@ -452,9 +469,22 @@ impl Dialog {
                 )],
                 self.danger("Empty recycle bin"),
             ),
+            Kind::DiscardEdits { name } => (
+                parts::DIALOG_WIDTH,
+                column![warning(
+                    DISCARD_TITLE.to_owned(),
+                    format!("Your edits to “{name}” will be lost."),
+                )],
+                self.danger(DISCARD),
+            ),
             Kind::Conflicts {
                 title, conflicts, ..
             } => return self.conflicts_view(title, conflicts),
+        };
+        let cancel = if matches!(self.kind, Kind::DiscardEdits { .. }) {
+            KEEP_EDITING
+        } else {
+            CANCEL
         };
         if let Some(error) = &self.error {
             lines = lines.push(parts::alert_error(Icon::Error, error.as_str(), None));
@@ -462,10 +492,7 @@ impl Dialog {
         parts::dialog(
             width,
             lines,
-            [
-                parts::outlined(None, "Cancel", Some(Message::Cancel)),
-                action,
-            ],
+            [parts::outlined(None, cancel, Some(Message::Cancel)), action],
         )
     }
 
@@ -550,7 +577,7 @@ impl Dialog {
             CONFLICTS_WIDTH,
             lines,
             [
-                parts::outlined(None, "Cancel", Some(Message::Cancel)),
+                parts::outlined(None, CANCEL, Some(Message::Cancel)),
                 parts::outlined(None, "Skip these files", choose(OnConflict::Skip)),
                 parts::danger(
                     if self.saving { WORKING } else { "Override" },

@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use leptos_router::hooks::use_params_map;
+use leptos_router::hooks::{use_location, use_params_map};
 
 use api_client::ApiError;
 use client_core::listing::{Sort, affects_path, apply_event, reveals_lost_and_found, sort_nodes};
@@ -46,8 +46,14 @@ pub(super) struct Listing {
 impl Listing {
     pub fn new(auth: Auth) -> Self {
         let params = use_params_map();
-        let folder =
-            Memo::new(move |_| params.read().get("id").and_then(|id| route::parse_id(&id)));
+        let location = use_location();
+        let folder = Memo::new(move |previous: Option<&Option<NodeId>>| {
+            if location.pathname.with(|path| route::is_folder_path(path)) {
+                params.read().get("id").and_then(|id| route::parse_id(&id))
+            } else {
+                previous.copied().flatten()
+            }
+        });
         let nodes = RwSignal::new(Vec::<Node>::new());
         let crumbs = RwSignal::new(Vec::<Node>::new());
         let sort = RwSignal::new(Sort::default());
