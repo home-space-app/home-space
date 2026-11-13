@@ -15,6 +15,8 @@ mod theme;
 mod transfers;
 
 const APP_TITLE: &str = "Home Space";
+/// Window class (X11) and app id (Wayland) that desktop environments match against the `.desktop`
+/// file. Inside Flatpak the desktop file is named after the Flatpak app id, so that wins.
 const APP_ID: &str = "home-space";
 const WINDOW: iced::Size = iced::Size::new(1280.0, 800.0);
 const MIN_WINDOW: iced::Size = iced::Size::new(480.0, 360.0);
@@ -30,7 +32,7 @@ fn main() -> iced::Result {
         .subscription(app::App::subscription)
         .theme(app::App::theme)
         .settings(iced::Settings {
-            id: Some(APP_ID.to_owned()),
+            id: Some(std::env::var("FLATPAK_ID").unwrap_or_else(|_| APP_ID.to_owned())),
             default_font: theme::FONT,
             default_text_size: iced::Pixels(theme::TEXT_SIZE),
             ..iced::Settings::default()

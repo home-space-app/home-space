@@ -1,0 +1,78 @@
+# Builds the desktop client as a Flatpak bundle (x86_64).
+#
+# Runs on pull requests that touch the desktop client or its packaging, by hand from the Actions
+# tab, and from release.yml, which passes the version and attaches the bundle to the release.
+name: Flatpak
+
+on:
+  pull_request:
+    paths:
+      - clients/Cargo.lock
+      - clients/desktop/**
+      - .github/workflows/flatpak.yml
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: Version for the bundle name and the metainfo release entry
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  APP_ID: io.github.indomitable.home-space
+
+jobs:
+  # flatpak-builder has no network, so the crates are listed for it to fetch beforehand.
+  cargo-sources:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: clients/desktop/scripts/generate-flatpak-sources.sh "$RUNNER_TEMP/cargo-sources.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak-cargo-sources
+          path: ${{ runner.temp }}/cargo-sources.json
+          if-no-files-found: error
+          retention-days: 1
+
+  bundle:
+    needs: cargo-sources
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-26.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: flatpak-cargo-sources
+          path: clients/desktop/packaging/flatpak
+      - name: Version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="$INPUT_VERSION"
+          if [ -z "$version" ]; then
+            version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' clients/Cargo.toml)
+          else
+            sed -i "s|<release version=\"[^\"]*\" date=\"[^\"]*\" />|<release version=\"$version\" date=\"$(date -u +%F)\" />|" \
+              "clients/desktop/packaging/flatpak/$APP_ID.metainfo.xml"
+          fi
+          echo "BUNDLE=HomeSpace-$version-linux-x86_64.flatpak" >> "$GITHUB_ENV"
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: clients/desktop/packaging/flatpak/${{ env.APP_ID }}.yml
+          bundle: ${{ env.BUNDLE }}
+          cache-key: flatpak-builder-${{ hashFiles('clients/Cargo.lock') }}
+          upload-artifact: false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-flatpak-x86_64
+          path: ${{ env.BUNDLE }}
+          if-no-files-found: error

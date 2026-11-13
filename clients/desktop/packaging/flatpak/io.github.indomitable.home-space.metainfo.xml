@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.indomitable.home-space</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-only</project_license>
+  <name>Home Space</name>
+  <summary>Browse, sync and transfer files on your own server</summary>
+
+  <description>
+    <p>
+      Home Space is the desktop client for a self-hosted Home Space server. It lets you work with
+      the files on your server as if they were on your computer.
+    </p>
+    <ul>
+      <li>Browse, upload, download, move and rename files and folders.</li>
+      <li>Keep local folders in sync with folders on the server.</li>
+      <li>Send files and links to your other devices.</li>
+      <li>Restore deleted files from the recycle bin.</li>
+      <li>Sign in with a password or through your single sign-on provider.</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">io.github.indomitable.home-space.desktop</launchable>
+
+  <url type="homepage">https://home-space.app</url>
+  <url type="bugtracker">https://github.com/home-space-app/home-space/issues</url>
+  <url type="vcs-browser">https://github.com/home-space-app/home-space</url>
+
+  <developer id="io.github.indomitable">
+    <name>Indomitable</name>
+  </developer>
+
+  <content_rating type="oars-1.1" />
+
+  <requires>
+    <display_length compare="ge">480</display_length>
+  </requires>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+
+  <releases>
+    <!-- The release workflow replaces this entry with the tag it builds. -->
+    <release version="0.1.0" date="2026-11-13" />
+  </releases>
+
+  <provides>
+    <binary>home-space</binary>
+  </provides>
+</component>

@@ -3,7 +3,7 @@
 #   git tag v0.2.0 && git push origin v0.2.0
 #
 # - server: Docker image (server + web client) pushed to ghcr.io/<owner>/<repo>
-# - desktop: macOS .dmg (Apple Silicon and Intel) and Linux .tar.gz (x86_64)
+# - desktop: macOS .dmg (Apple Silicon and Intel), Linux .tar.gz and .flatpak (x86_64)
 # - android: .apk
 #
 # All packages are attached to a GitHub release for the tag. A tag with a suffix (v0.2.0-rc.1)
@@ -163,6 +163,12 @@ jobs:
           path: ${{ env.TARBALL }}
           if-no-files-found: error
 
+  desktop-flatpak:
+    needs: version
+    uses: ./.github/workflows/flatpak.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+
   android:
     needs: version
     runs-on: ubuntu-latest
@@ -230,7 +236,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: [version, server-image, desktop-macos, desktop-linux, android]
+    needs: [version, server-image, desktop-macos, desktop-linux, desktop-flatpak, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -238,6 +244,7 @@ jobs:
       - uses: actions/download-artifact@v5
         with:
           path: dist
+          pattern: "{android,desktop-*}"
           merge-multiple: true
       - name: Checksums
         working-directory: dist
