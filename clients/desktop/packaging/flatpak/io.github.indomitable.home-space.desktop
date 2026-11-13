@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Home Space
+GenericName=File Sync
+Comment=Browse and transfer your Home Space files
+Exec=home-space
+Icon=io.github.indomitable.home-space
+Terminal=false
+StartupNotify=true
+StartupWMClass=io.github.indomitable.home-space
+Categories=Network;FileTransfer;
+Keywords=files;sync;cloud;storage;self-hosted;
