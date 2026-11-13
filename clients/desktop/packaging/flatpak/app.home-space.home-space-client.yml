@@ -3,7 +3,7 @@
 # cargo-sources.json lists the crates from clients/Cargo.lock, because flatpak-builder builds
 # offline. It is generated, not committed: build-flatpak.sh and CI run
 # clients/desktop/scripts/generate-flatpak-sources.sh first.
-app-id: io.github.indomitable.home-space
+app-id: app.home-space.home-space-client
 runtime: org.freedesktop.Platform
 runtime-version: '26.08'
 sdk: org.freedesktop.Sdk
@@ -34,14 +34,21 @@ modules:
       - cd clients && cargo build --release --locked --offline -p desktop --features keyring
       - install -Dm755 clients/target/release/HomeSpace -t /app/bin/
       - install -Dm755 clients/desktop/packaging/flatpak/home-space.sh /app/bin/home-space
-      - install -Dm644 clients/desktop/packaging/flatpak/io.github.indomitable.home-space.desktop
-        -t /app/share/applications/
-      - install -Dm644 clients/desktop/packaging/flatpak/io.github.indomitable.home-space.metainfo.xml
+      # The shared desktop entry, renamed to the app id and pointed at the launcher and the
+      # Flatpak icon; the window reports the app id inside Flatpak, hence StartupWMClass.
+      - install -Dm644 clients/desktop/packaging/home-space.desktop
+        /app/share/applications/app.home-space.home-space-client.desktop
+      - desktop-file-edit
+        --set-key=Exec --set-value=home-space
+        --set-icon=app.home-space.home-space-client
+        --set-key=StartupWMClass --set-value=app.home-space.home-space-client
+        /app/share/applications/app.home-space.home-space-client.desktop
+      - install -Dm644 clients/desktop/packaging/flatpak/app.home-space.home-space-client.metainfo.xml
         -t /app/share/metainfo/
       - install -Dm644 clients/desktop/packaging/home-space.svg
-        /app/share/icons/hicolor/scalable/apps/io.github.indomitable.home-space.svg
+        /app/share/icons/hicolor/scalable/apps/app.home-space.home-space-client.svg
       - install -Dm644 clients/desktop/packaging/home-space.png
-        /app/share/icons/hicolor/256x256/apps/io.github.indomitable.home-space.png
+        /app/share/icons/hicolor/256x256/apps/app.home-space.home-space-client.png
     sources:
       - type: dir
         path: ../../../..

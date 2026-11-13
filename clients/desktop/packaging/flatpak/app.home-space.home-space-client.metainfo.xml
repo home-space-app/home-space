@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>io.github.indomitable.home-space</id>
+  <id>app.home-space.home-space-client</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>AGPL-3.0-only</project_license>
   <name>Home Space</name>
@@ -20,13 +20,13 @@
     </ul>
   </description>
 
-  <launchable type="desktop-id">io.github.indomitable.home-space.desktop</launchable>
+  <launchable type="desktop-id">app.home-space.home-space-client.desktop</launchable>
 
   <url type="homepage">https://home-space.app</url>
   <url type="bugtracker">https://github.com/home-space-app/home-space/issues</url>
   <url type="vcs-browser">https://github.com/home-space-app/home-space</url>
 
-  <developer id="io.github.indomitable">
+  <developer id="app.home-space">
     <name>Indomitable</name>
   </developer>
 

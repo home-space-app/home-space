@@ -1,19 +1,11 @@
 [Desktop Entry]
-Categories=Network;FileTransfer;
-Comment[en_US]=Browse and transfer your Home Space files
+Type=Application
+Name=Home Space
 Comment=Browse and transfer your Home Space files
 Exec=HomeSpace
-GenericName[en_US]=
-GenericName=
 Icon=home-space
-MimeType=
-Name[en_US]=Home Space
-Name=Home Space
-Path=
+Terminal=false
 StartupNotify=true
 StartupWMClass=home-space
-Terminal=false
-TerminalOptions=
-Type=Application
-X-KDE-SubstituteUID=false
-X-KDE-Username=
+Categories=Network;FileTransfer;
+Keywords=files;sync;cloud;storage;self-hosted;

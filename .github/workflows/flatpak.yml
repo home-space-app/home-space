@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 env:
-  APP_ID: io.github.indomitable.home-space
+  APP_ID: app.home-space.home-space-client
 
 jobs:
   # flatpak-builder has no network, so the crates are listed for it to fetch beforehand.
