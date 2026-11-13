@@ -24,6 +24,10 @@ pub enum FilesError {
     /// The upload exceeded the configured size limit.
     #[error("upload exceeds the maximum size of {limit} bytes")]
     TooLarge { limit: u64 },
+    /// Storing the content would take the owner past their storage quota of `quota` bytes, of
+    /// which `available` are left once their unfinished uploads are counted.
+    #[error("not enough storage: {available} of your {quota} bytes are left")]
+    QuotaExceeded { quota: u64, available: u64 },
     /// A chunk of a resumable upload does not start where the received bytes end.
     #[error("upload has {current} bytes; the chunk must start there")]
     OffsetMismatch { current: u64 },

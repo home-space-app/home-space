@@ -132,6 +132,13 @@ script, say) are then refused by the proxy and have to go through `/uploads`. Wi
 location for `/api/v1/files/{id}/content` (such as one that turns off buffering for downloads)
 takes over replacements too, so give it the same limit. See [`docs/nginx/example.domain.com.conf`](docs/nginx/example.domain.com.conf).
 
+A user with a quota (`quota_bytes`, set by an administrator) cannot store more than that. Their
+files, previous versions and recycle bin all count, and so do the declared sizes of their
+unfinished uploads. Uploads, new versions and saving a received transfer that would go past it
+are refused with 507 `quota_exceeded`: a chunked upload when it starts (and again when its last
+chunk arrives), a single-request upload as soon as it outgrows the space left. Emptying the
+recycle bin or deleting versions frees space. Users without a quota are not limited.
+
 Sync clients catch up through a journal of changes (`GET /changes?since=<cursor>`). Every day the
 server compacts it to the latest entry of each file and folder, which is all a client reads, so a
 client can catch up however long it was away. It does not grow with every edit. Each entry names
@@ -155,7 +162,7 @@ one.
 | GET | `/admin/status` | administrators only (403 `forbidden` otherwise): version, start time, the storage root's disk, every user's `usage`, the read-only configuration and the database version |
 | GET | `/admin/users` | administrators only: every account with its role, sign-in method, `disabled`, `quota_bytes`, `delete_at`, `usage`, device count and `last_seen_at` |
 | POST | `/admin/users` | `{username, password, is_admin?, quota_bytes?}`: creates a password account (201; 409 `conflict` if the name is taken) |
-| PATCH | `/admin/users/{id}` | `{is_admin?, disabled?, quota_bytes?}` (`null` removes the quota; it is recorded, not enforced). Disabling signs the user out and refuses sign-in (403 `forbidden`). Administrators cannot demote or disable themselves |
+| PATCH | `/admin/users/{id}` | `{is_admin?, disabled?, quota_bytes?}` (`null` removes the quota; see [Uploads](#uploads) for how it is enforced). Disabling signs the user out and refuses sign-in (403 `forbidden`). Administrators cannot demote or disable themselves |
 | PUT | `/admin/users/{id}/password` | `{password}`: a new password for an account that has one (400 for single sign-on accounts); signs the user out everywhere |
 | GET | `/admin/users/{id}/devices` | the account's devices, most recently seen first |
 | DELETE | `/admin/users/{id}` | marks the account for deletion `HOMESPACE_USER_DELETION_DELAY_MINUTES` from now and signs it out; a background job then deletes it with all its files |

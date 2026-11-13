@@ -88,6 +88,9 @@ impl ApiError {
             Self::Files(FilesError::TooLarge { .. }) => {
                 (StatusCode::PAYLOAD_TOO_LARGE, ErrorCode::PayloadTooLarge)
             }
+            Self::Files(FilesError::QuotaExceeded { .. }) => {
+                (StatusCode::INSUFFICIENT_STORAGE, ErrorCode::QuotaExceeded)
+            }
             Self::Auth(_) | Self::Files(_) | Self::Search(_) | Self::Internal(_) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, ErrorCode::Internal)
             }
@@ -152,6 +155,18 @@ mod tests {
         assert_eq!(
             response.headers().get(RETRY_AFTER),
             Some(&HeaderValue::from_static("5"))
+        );
+    }
+
+    #[test]
+    fn a_full_quota_is_insufficient_storage() {
+        let error = ApiError::Files(FilesError::QuotaExceeded {
+            quota: 10,
+            available: 2,
+        });
+        assert_eq!(
+            error.status_and_code(),
+            (StatusCode::INSUFFICIENT_STORAGE, ErrorCode::QuotaExceeded)
         );
     }
 

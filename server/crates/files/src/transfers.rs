@@ -266,6 +266,13 @@ impl FileService {
             return Err(FilesError::NotAFile);
         }
         let mut items = self.db.transfer_items(id).await?;
+        let bytes = items
+            .iter()
+            .filter(|item| item.kind == NodeKind::File)
+            .map(|item| u64::try_from(item.size).unwrap_or(0))
+            .sum();
+        // The transfer stays ready, so the recipient can free space and save it then.
+        self.check_quota(caller, None, bytes).await?;
         items.sort_by(|a, b| {
             depth(&a.path)
                 .cmp(&depth(&b.path))

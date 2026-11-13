@@ -46,7 +46,7 @@ pub use protocol::{NodeId, NodeKind, OnConflict, UserId};
 pub use search::{ContentState, RankedNode};
 pub use sessions::LiveSession;
 pub use sqlx::PgPool;
-pub use storage::{DatabaseInfo, StorageUsage, UserStorage};
+pub use storage::{DatabaseInfo, QuotaUsage, StorageUsage, UserStorage};
 pub use transfers::{ExpiredTransfer, NewTransfer, SubtreeNode, Transfer, TransferItem};
 pub use trash::{LOST_AND_FOUND, SpecialFolders, TrashOutcome, TrashedNode};
 pub use uploads::{NewUpload, Upload};
