@@ -5,7 +5,7 @@
 #
 # Needs flatpak and flatpak-builder; the runtime, SDK and Rust extension come from Flathub
 # (added as a user remote if missing). --install also installs the app for the current user,
-# so `flatpak run app.home-space.home-space-client` starts it.
+# so `flatpak run app.home_space.home-space-client` starts it.
 # Output: clients/target/dist/flatpak/HomeSpace-<version>-linux-<arch>.flatpak
 set -euo pipefail
 
@@ -17,7 +17,7 @@ for arg in "$@"; do
     esac
 done
 
-app_id=app.home-space.home-space-client
+app_id=app.home_space.home-space-client
 desktop_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 clients_dir=$(dirname "$desktop_dir")
 manifest=$desktop_dir/packaging/flatpak/$app_id.yml
