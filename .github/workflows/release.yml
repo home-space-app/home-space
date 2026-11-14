@@ -1,12 +1,15 @@
-# Builds the release packages when a version tag is pushed:
+# Builds the release packages when a version tag is pushed, either by creating a GitHub release
+# with a new tag in the UI or from the command line:
 #
 #   git tag v0.2.0 && git push origin v0.2.0
 #
-# - server: Docker image (server + web client) pushed to ghcr.io/<owner>/<repo>
-# - desktop: macOS .dmg (Apple Silicon and Intel), Linux .tar.gz and .flatpak (x86_64)
+# - server: Docker image (server + web client) pushed to Docker Hub as homespaceapp/home-space
+# - desktop: macOS .dmg (Apple Silicon), Linux .tar.gz and .flatpak (x86_64)
 # - android: .apk
 #
-# All packages are attached to a GitHub release for the tag. A tag with a suffix (v0.2.0-rc.1)
+# All packages are attached to the GitHub release for the tag. An existing release (made in the
+# UI) keeps its title and notes, and the server image line is appended to them; otherwise the
+# release is created with generated notes. A tag with a suffix (v0.2.0-rc.1)
 # makes a pre-release and does not move the image's `latest` tag.
 #
 # The APK is signed only when these repository secrets are set; otherwise the release gets an
@@ -55,26 +58,28 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
     steps:
-      - uses: actions/checkout@v5
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository }}
-          # semver tags: 1.2.3, 1.2 and latest; pre-releases only get their full version.
+          images: homespaceapp/home-space
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
           flavor: |
             latest=auto
-      - uses: docker/build-push-action@v6
+
+      - uses: docker/build-push-action@v7
         with:
           context: .
           target: runtime
@@ -94,25 +99,28 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             arch: arm64
-          - target: x86_64-apple-darwin
-            arch: x86_64
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: clients
           key: ${{ matrix.target }}
+
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-bundle
+
       - name: Build Home Space.app
         working-directory: clients/desktop
         env:
           MACOSX_DEPLOYMENT_TARGET: "12.0"
         run: cargo bundle --release --features keyring --target ${{ matrix.target }}
+
       - name: Make the .dmg
         run: |
           app="clients/target/${{ matrix.target }}/release/bundle/osx/Home Space.app"
@@ -123,6 +131,7 @@ jobs:
           ln -s /Applications "$staging/Applications"
           hdiutil create -volname "Home Space" -srcfolder "$staging" -fs HFS+ -format UDZO -ov "$dmg"
           echo "DMG=$dmg" >> "$GITHUB_ENV"
+
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-macos-${{ matrix.arch }}
@@ -133,7 +142,7 @@ jobs:
     needs: version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install system libraries
         run: |
           sudo apt-get update
@@ -142,9 +151,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: clients
+
       - name: Build
         working-directory: clients
         run: cargo build --release --locked -p desktop --features keyring
+
       - name: Make the .tar.gz
         run: |
           name="HomeSpace-${{ needs.version.outputs.version }}-linux-x86_64"
@@ -157,6 +168,7 @@ jobs:
              LICENSE "$dir/"
           tar -C "$RUNNER_TEMP" -czf "$name.tar.gz" "$name"
           echo "TARBALL=$name.tar.gz" >> "$GITHUB_ENV"
+
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-linux-x86_64
@@ -175,14 +187,14 @@ jobs:
     env:
       NDK_VERSION: "30.0.16248370"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
       - uses: android-actions/setup-android@v3
         with:
-          packages: "platforms;android-37 ndk;${{ env.NDK_VERSION }}"
+          packages: "platforms;android-37.0 ndk;${{ env.NDK_VERSION }}"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,x86_64-linux-android
@@ -251,9 +263,9 @@ jobs:
         run: sha256sum * > SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
-          name: Home Space ${{ needs.version.outputs.version }}
+          append_body: true
           prerelease: ${{ needs.version.outputs.prerelease == 'true' }}
           generate_release_notes: true
           body: |
-            Server image: `docker pull ghcr.io/${{ github.repository }}:${{ needs.version.outputs.version }}`
+            Server image: `docker pull homespaceapp/home-space:${{ needs.version.outputs.version }}`
           files: dist/*

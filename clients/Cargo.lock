@@ -125,7 +125,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "api-client"
-version = "0.1.0"
+version = "0.8.1"
 dependencies = [
  "base64 0.23.1",
  "protocol",
@@ -812,7 +812,7 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "client-core"
-version = "0.1.0"
+version = "0.8.1"
 dependencies = [
  "protocol",
  "time",
@@ -1263,7 +1263,7 @@ dependencies = [
 
 [[package]]
 name = "desktop"
-version = "0.1.0"
+version = "0.8.1"
 dependencies = [
  "api-client",
  "block2 0.6.2",
@@ -3541,7 +3541,7 @@ dependencies = [
 
 [[package]]
 name = "mobile-core"
-version = "0.1.0"
+version = "0.8.1"
 dependencies = [
  "api-client",
  "client-core",
@@ -4536,7 +4536,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "protocol"
-version = "0.1.0"
+version = "0.8.1"
 dependencies = [
  "base64 0.23.1",
  "serde",
@@ -5774,7 +5774,7 @@ dependencies = [
 
 [[package]]
 name = "sync-core"
-version = "0.1.0"
+version = "0.8.1"
 dependencies = [
  "api-client",
  "client-core",
@@ -6869,7 +6869,7 @@ dependencies = [
 
 [[package]]
 name = "web"
-version = "0.1.0"
+version = "0.8.1"
 dependencies = [
  "api-client",
  "base64 0.23.1",

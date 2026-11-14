@@ -11,7 +11,13 @@ updates:
       - "/clients"
     schedule:
       interval: "weekly"
+
   - package-ecosystem: "gradle"
     directory: "/clients/mobile"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
     schedule:
       interval: "weekly"
