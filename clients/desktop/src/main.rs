@@ -19,6 +19,7 @@ const APP_TITLE: &str = "Home Space";
 /// Window class (X11) and app id (Wayland) that desktop environments match against the `.desktop`
 /// file. Inside Flatpak the desktop file is named after the Flatpak app id, so that wins.
 const APP_ID: &str = "home-space";
+const FLATPAK_ID_VAR: &str = "FLATPAK_ID";
 const WINDOW: iced::Size = iced::Size::new(1280.0, 800.0);
 const MIN_WINDOW: iced::Size = iced::Size::new(480.0, 360.0);
 const APP_ICON: &[u8] = include_bytes!("../packaging/home-space.png");
@@ -28,12 +29,13 @@ const APP_ICNS: &[u8] = include_bytes!("../packaging/home-space.icns");
 fn main() -> iced::Result {
     #[cfg(target_os = "macos")]
     set_dock_icon();
+    let app_id = std::env::var(FLATPAK_ID_VAR).unwrap_or_else(|_| APP_ID.to_owned());
     iced::application(app::App::new, app::App::update, app::App::view)
         .title(APP_TITLE)
         .subscription(app::App::subscription)
         .theme(app::App::theme)
         .settings(iced::Settings {
-            id: Some(std::env::var("FLATPAK_ID").unwrap_or_else(|_| APP_ID.to_owned())),
+            id: Some(app_id.clone()),
             default_font: theme::FONT,
             default_text_size: iced::Pixels(theme::TEXT_SIZE),
             ..iced::Settings::default()
@@ -42,9 +44,24 @@ fn main() -> iced::Result {
             size: WINDOW,
             icon: window_icon(),
             min_size: Some(MIN_WINDOW),
+            platform_specific: platform_specific(app_id),
             ..iced::window::Settings::default()
         })
         .run()
+}
+
+/// iced reads the Linux window class and Wayland app id from here, not from `Settings::id`.
+#[cfg(target_os = "linux")]
+fn platform_specific(app_id: String) -> iced::window::settings::PlatformSpecific {
+    iced::window::settings::PlatformSpecific {
+        application_id: app_id,
+        ..iced::window::settings::PlatformSpecific::default()
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn platform_specific(_app_id: String) -> iced::window::settings::PlatformSpecific {
+    iced::window::settings::PlatformSpecific::default()
 }
 
 /// Taskbar/title-bar icon for Windows and Linux. macOS ignores it and takes

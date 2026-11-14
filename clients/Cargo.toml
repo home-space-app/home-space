@@ -23,8 +23,6 @@ thiserror = "2.0.21"
 time = "0.3.55"
 tokio = { version = "1.54.1", default-features = false, features = ["sync"] }
 
-# The mobile library (mobile-core): smaller rather than faster, since it ships inside the apps.
-# Panics stay `unwind`: UniFFI turns a panic into an error for the caller instead of a crash.
 [profile.mobile]
 inherits = "release"
 opt-level = "s"
