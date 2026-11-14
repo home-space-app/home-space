@@ -192,7 +192,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
         with:
           packages: "platforms;android-37.0 ndk;${{ env.NDK_VERSION }}"
       - uses: dtolnay/rust-toolchain@stable
