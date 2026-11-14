@@ -7,7 +7,6 @@ use web_sys::KeyboardEvent;
 use client_core::{
     format::human_size,
     listing::{Sort, SortKey},
-    viewers::viewer_for_node,
 };
 use protocol::{Node, NodeId, NodeKind};
 
@@ -17,6 +16,7 @@ use crate::{
     icon::{Icon, node_icon},
     locale::short_date,
     route,
+    viewers::viewers,
 };
 
 const KEY_ENTER: &str = "Enter";
@@ -216,7 +216,7 @@ fn NodeRow(node: Node, actions: TableActions) -> impl IntoView {
     } else {
         format!("{size} \u{b7} {modified}")
     };
-    let viewable = viewer_for_node(&node).is_some();
+    let viewable = viewers().viewer_for_node(&node).is_some();
     let href = if is_folder {
         route::folder(node.id)
     } else {

@@ -40,7 +40,12 @@ use iced::{
 };
 
 use api_client::{ApiError, Client};
-use client_core::{labels::HOME, listing::SortKey, viewers};
+use client_core::{
+    gallery::Gallery,
+    labels::HOME,
+    listing::{Sort, SortKey},
+    viewers,
+};
 use protocol::{Me, Node, NodeId, NodeKind, paths};
 use uuid::Uuid;
 
@@ -58,6 +63,7 @@ use self::{
 use crate::{
     events, sync,
     transfers::{self, Batch, Direction, DownloadFile, SendFile, Transfers, UploadPlan},
+    viewers::viewers,
 };
 
 const DEFAULT_WINDOW: Size = Size::new(1280.0, 800.0);
@@ -551,6 +557,16 @@ impl State {
         };
         match viewer.update(&self.client, message) {
             viewer::Outcome::Task(task) => task.map(Message::Viewer),
+            viewer::Outcome::Open(node) => {
+                let gallery = viewer.take_gallery().map(|mut gallery| {
+                    gallery.move_to(node.id);
+                    gallery
+                });
+                match viewers().viewer_for_node(&node) {
+                    Some(found) => self.show_in_viewer(&node, found, gallery),
+                    None => self.open_externally(&node),
+                }
+            }
             viewer::Outcome::Closed => self.open_folder(self.folder.id),
         }
     }
@@ -560,6 +576,7 @@ impl State {
         let Page::Viewer(viewer) = &mut self.page else {
             return Task::none();
         };
+        viewer.gallery_changed(event);
         match event {
             protocol::Event::NodeUpdated { node } if node.id == viewer.node_id() => {
                 viewer.changed(&self.client, node).map(Message::Viewer)
@@ -727,19 +744,47 @@ impl State {
 
     /// Opens the file `node` in its built-in viewer, or with the default app when it has none.
     fn open_file(&mut self, node: &Node) -> Task<Message> {
-        match viewers::viewer_for_node(node) {
-            Some(viewer) => self.open_viewer(node, *viewer),
+        match viewers().viewer_for_node(node) {
+            Some(viewer) => self.open_viewer(node, viewer),
             None => self.open_externally(node),
         }
     }
 
+    /// Opens `node` in `viewer`. A viewer that steps through its folder gets the folder's files
+    /// from the listing shown when it is that folder, and lists the folder otherwise.
     fn open_viewer(&mut self, node: &Node, viewer: viewers::Viewer) -> Task<Message> {
+        if !viewer.kind.navigates() {
+            return self.show_in_viewer(node, viewer, None);
+        }
+        let listed = !self.folder.loading && node.parent_id == self.folder.id;
+        if listed {
+            let gallery = Gallery::new(
+                viewers(),
+                &self.folder.listing.nodes,
+                node,
+                self.folder.sort,
+            );
+            self.show_in_viewer(node, viewer, gallery)
+        } else {
+            let show = self.show_in_viewer(node, viewer, None);
+            let list = list_gallery(&self.client, node.clone(), self.folder.sort);
+            Task::batch([show, list])
+        }
+    }
+
+    fn show_in_viewer(
+        &mut self,
+        node: &Node,
+        viewer: viewers::Viewer,
+        gallery: Option<Gallery>,
+    ) -> Task<Message> {
         self.search.clear();
         self.folder.error = None;
         self.details = None;
         self.menu = None;
         let synced = self.synced_copy(node);
-        let (state, task) = viewer::State::open(&self.client, node.clone(), viewer, synced);
+        let (state, task) =
+            viewer::State::open(&self.client, node.clone(), viewer, synced, gallery);
         self.page = Page::Viewer(Box::new(state));
         task.map(Message::Viewer)
     }
@@ -1041,6 +1086,10 @@ impl State {
                 Shortcut::Escape | Shortcut::Back | Shortcut::Parent => {
                     self.handle(Message::Viewer(viewer::Message::Close))
                 }
+                Shortcut::Open | Shortcut::Next => {
+                    self.handle(Message::Viewer(viewer::Message::Next))
+                }
+                Shortcut::Previous => self.handle(Message::Viewer(viewer::Message::Previous)),
                 _ => Task::none(),
             }
         } else if matches!(self.page, Page::SyncQueue | Page::SyncSettings) {
@@ -1074,7 +1123,7 @@ impl State {
                 Shortcut::NewFolder => self.handle(Message::NewFolder),
                 Shortcut::Upload => self.pick_upload(),
                 Shortcut::Refresh => self.handle(Message::Refresh),
-                Shortcut::Search => Task::none(),
+                Shortcut::Search | Shortcut::Next | Shortcut::Previous => Task::none(),
                 Shortcut::SelectPrevious => self.step_selection(false),
                 Shortcut::SelectNext => self.step_selection(true),
                 Shortcut::ExtendPrevious => self.extend_selection(false),
@@ -1166,6 +1215,22 @@ fn leaves_page(message: &Message) -> bool {
             | Message::Transfers(transfer_list::Message::Save(_))
             | Message::SignOut
             | Message::Viewer(viewer::Message::Close)
+    )
+}
+
+/// Lists the folder of `node` for the viewer to step through, in `sort` order.
+fn list_gallery(client: &Client, node: Node, sort: Sort) -> Task<Message> {
+    let client = client.clone();
+    Task::perform(
+        async move {
+            let listing = client
+                .list(node.parent_id)
+                .await
+                .map_err(|err| err.to_string())?;
+            Gallery::new(viewers(), &listing, &node, sort)
+                .ok_or_else(|| format!("{} has no viewer to step through", node.name))
+        },
+        |gallery| Message::Viewer(viewer::Message::Gallery(gallery)),
     )
 }
 

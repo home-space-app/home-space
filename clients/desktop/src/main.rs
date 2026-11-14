@@ -13,6 +13,7 @@ mod sso;
 mod sync;
 mod theme;
 mod transfers;
+mod viewers;
 
 const APP_TITLE: &str = "Home Space";
 /// Window class (X11) and app id (Wayland) that desktop environments match against the `.desktop`

@@ -61,6 +61,8 @@ pub enum Icon {
     ExpandLess,
     /// Goes into a folder.
     Chevron,
+    /// Goes to the previous item.
+    ChevronLeft,
     /// Sync badge: syncing failed.
     Error,
     More,
@@ -158,6 +160,7 @@ impl Icon {
             Self::ExpandMore => include_bytes!("../assets/icons/expand_more.svg"),
             Self::ExpandLess => include_bytes!("../assets/icons/expand_less.svg"),
             Self::Chevron => include_bytes!("../assets/icons/chevron_right.svg"),
+            Self::ChevronLeft => include_bytes!("../assets/icons/chevron_left.svg"),
             Self::Error => include_bytes!("../assets/icons/error.svg"),
             Self::More => include_bytes!("../assets/icons/more_horiz.svg"),
             Self::Sync => include_bytes!("../assets/icons/sync.svg"),

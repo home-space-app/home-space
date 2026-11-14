@@ -1,6 +1,7 @@
 //! The page showing a file in its built-in viewer, picked by MIME type in
 //! [`client_core::viewers`]. Each [`ViewerKind`] has its own component here.
 
+mod image;
 mod text;
 
 use leptos::prelude::*;
@@ -9,16 +10,17 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::Response;
 
-use client_core::viewers::{ViewerKind, viewer_for_node};
+use client_core::viewers::ViewerKind;
 use protocol::{Event, Node, NodeId, TicketRequest};
 
-use self::text::TextViewer;
+use self::{image::ImageViewer, text::TextViewer};
 use crate::{
     components::ErrorAlert,
     events,
     icon::Icon,
     load, route,
     session::{self, Auth},
+    viewers::viewers,
 };
 
 const HOME_PATH: &str = "/";
@@ -64,7 +66,11 @@ pub fn ViewerPage(auth: Auth) -> impl IntoView {
         _ => {}
     });
 
-    let viewer = Memo::new(move |_| node.read().as_ref().and_then(viewer_for_node).copied());
+    let viewer = Memo::new(move |_| {
+        node.read()
+            .as_ref()
+            .and_then(|node| viewers().viewer_for_node(node))
+    });
     let loaded = Memo::new(move |_| node.read().is_some());
     let back = Memo::new(move |_| {
         node.read()
@@ -91,6 +97,7 @@ pub fn ViewerPage(auth: Auth) -> impl IntoView {
         match (viewer.get(), loaded.get()) {
             (Some(viewer), _) => match viewer.kind {
                 ViewerKind::Text => view! { <TextViewer auth node viewer header /> }.into_any(),
+                ViewerKind::Image => view! { <ImageViewer auth node viewer header /> }.into_any(),
             },
             (None, true) => view! {
                 {header.view(None)}

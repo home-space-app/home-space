@@ -37,6 +37,20 @@ class CoreClientTest {
     }
 
     @Test
+    fun imagesOpenInTheReadOnlyImageViewer() {
+        val info = viewerFor("image/png", 10)
+        assertEquals(ViewerKind.IMAGE, info?.kind)
+        assertTrue(info?.editable == false)
+    }
+
+    @Test
+    fun imageSamplingKeepsTheScreenSize() {
+        assertEquals(1, sampleSize(1000, 2000))
+        assertEquals(2, sampleSize(4000, 2000))
+        assertEquals(4, sampleSize(8100, 2000))
+    }
+
+    @Test
     fun otherFilesHaveNoViewer() {
         assertEquals(null, viewerFor("application/zip", 10))
     }

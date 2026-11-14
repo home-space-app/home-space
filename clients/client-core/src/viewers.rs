@@ -1,8 +1,11 @@
 //! The built-in viewers, registered per MIME type.
 //!
-//! Every client looks a file up here and renders the [`ViewerKind`] it gets back with its own
-//! widget. Adding a viewer means adding a [`ViewerKind`], a row in [`REGISTRY`] and one match
-//! arm per client.
+//! Every client keeps one [`Viewers`], looks a file up in it and renders the [`ViewerKind`] it
+//! gets back with its own widget. [`Viewers::shared`] holds the types every client shows; a
+//! client extends it with the types only it can show. Adding a viewer means adding a
+//! [`ViewerKind`], a registration in [`Viewers::shared`] and one match arm per client.
+
+use std::borrow::Cow;
 
 use protocol::{Node, NodeKind};
 
@@ -10,6 +13,7 @@ const WILDCARD: &str = "/*";
 const PARAMETER_SEPARATOR: char = ';';
 const MIB: u64 = 1024 * 1024;
 const TEXT_MAX_BYTES: u64 = 2 * MIB;
+const IMAGE_MAX_BYTES: u64 = 50 * MIB;
 
 /// `application/*` types whose content is plain text.
 pub const TEXT_LIKE_TYPES: &[&str] = &[
@@ -47,6 +51,18 @@ pub const TEXT_LIKE_TYPES: &[&str] = &[
 pub enum ViewerKind {
     /// Plain text, shown read-only with an Edit button.
     Text,
+    /// A picture, shown read-only; the other pictures of its folder are a step away.
+    Image,
+}
+
+impl ViewerKind {
+    /// Whether the viewer steps to the previous and next file of the same kind in a folder.
+    pub fn navigates(self) -> bool {
+        match self {
+            Self::Text => false,
+            Self::Image => true,
+        }
+    }
 }
 
 /// Whether a viewer can change the file it shows.
@@ -72,47 +88,117 @@ impl Viewer {
     }
 }
 
+#[derive(Debug, Clone)]
 struct Registration {
-    patterns: &'static [&'static [&'static str]],
+    patterns: Vec<Cow<'static, str>>,
     viewer: Viewer,
 }
 
 const TEXT_PATTERNS: &[&str] = &["text/*"];
 
-static REGISTRY: &[Registration] = &[Registration {
-    patterns: &[TEXT_PATTERNS, TEXT_LIKE_TYPES],
-    viewer: Viewer {
-        kind: ViewerKind::Text,
-        editing: Editing::Editable,
-        max_bytes: TEXT_MAX_BYTES,
-    },
-}];
+/// The image types every client decodes; a client adds the ones only it can show with
+/// [`Viewers::with_types`].
+pub const IMAGE_TYPES: &[&str] = &[
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
+];
 
-/// The viewer for content of type `mime` that is `size` bytes long, if any.
+/// The built-in viewers of a client and the MIME types each accepts.
 ///
-/// The first registration whose pattern matches wins. A pattern is either an exact type
-/// (`application/json`) or a whole top-level type (`text/*`); case and parameters such as
-/// `; charset=utf-8` are ignored. Content larger than the viewer's limit gets no viewer.
-pub fn viewer_for(mime: &str, size: i64) -> Option<&'static Viewer> {
-    let essence = essence(mime);
-    REGISTRY
-        .iter()
-        .find(|registration| {
-            registration
-                .patterns
-                .iter()
-                .flat_map(|patterns| patterns.iter())
-                .any(|pattern| matches(pattern, &essence))
-        })
-        .map(|registration| &registration.viewer)
-        .filter(|viewer| u64::try_from(size).is_ok_and(|size| size <= viewer.max_bytes))
+/// [`Viewers::shared`] holds the types every client can show. A client that can show more,
+/// such as an image format its platform decodes, adds them with [`Viewers::with_types`].
+#[derive(Debug, Clone)]
+pub struct Viewers {
+    registrations: Vec<Registration>,
 }
 
-/// The viewer for `node`; folders have none.
-pub fn viewer_for_node(node: &Node) -> Option<&'static Viewer> {
-    match node.kind {
-        NodeKind::Folder => None,
-        NodeKind::File => viewer_for(&node.mime, node.size),
+impl Default for Viewers {
+    fn default() -> Self {
+        Self::shared()
+    }
+}
+
+impl Viewers {
+    /// The viewers and types every client supports.
+    pub fn shared() -> Self {
+        let text = Registration {
+            patterns: TEXT_PATTERNS
+                .iter()
+                .chain(TEXT_LIKE_TYPES)
+                .map(|pattern| Cow::Borrowed(*pattern))
+                .collect(),
+            viewer: Viewer {
+                kind: ViewerKind::Text,
+                editing: Editing::Editable,
+                max_bytes: TEXT_MAX_BYTES,
+            },
+        };
+        let image = Registration {
+            patterns: IMAGE_TYPES
+                .iter()
+                .map(|pattern| Cow::Borrowed(*pattern))
+                .collect(),
+            viewer: Viewer {
+                kind: ViewerKind::Image,
+                editing: Editing::ReadOnly,
+                max_bytes: IMAGE_MAX_BYTES,
+            },
+        };
+        Self {
+            registrations: vec![text, image],
+        }
+    }
+
+    /// These viewers with `types` also shown in the viewer of `kind`, with its editing mode and
+    /// size limit. A type is an exact type (`image/tiff`) or a whole top-level type (`image/*`);
+    /// the types already registered are matched first.
+    pub fn with_types<I, S>(mut self, kind: ViewerKind, types: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<Cow<'static, str>>,
+    {
+        if let Some(registration) = self
+            .registrations
+            .iter_mut()
+            .find(|registration| registration.viewer.kind == kind)
+        {
+            registration.patterns.extend(
+                types
+                    .into_iter()
+                    .map(|pattern| Cow::Owned(pattern.into().to_ascii_lowercase())),
+            );
+        }
+        self
+    }
+
+    /// The viewer for content of type `mime` that is `size` bytes long, if any.
+    ///
+    /// The first registration whose pattern matches wins. A pattern is either an exact type
+    /// (`application/json`) or a whole top-level type (`text/*`); case and parameters such as
+    /// `; charset=utf-8` are ignored. Content larger than the viewer's limit gets no viewer.
+    pub fn viewer_for(&self, mime: &str, size: i64) -> Option<Viewer> {
+        let essence = essence(mime);
+        self.registrations
+            .iter()
+            .find(|registration| {
+                registration
+                    .patterns
+                    .iter()
+                    .any(|pattern| matches(pattern, &essence))
+            })
+            .map(|registration| registration.viewer)
+            .filter(|viewer| u64::try_from(size).is_ok_and(|size| size <= viewer.max_bytes))
+    }
+
+    /// The viewer for `node`; folders have none.
+    pub fn viewer_for_node(&self, node: &Node) -> Option<Viewer> {
+        match node.kind {
+            NodeKind::Folder => None,
+            NodeKind::File => self.viewer_for(&node.mime, node.size),
+        }
     }
 }
 
@@ -158,7 +244,9 @@ mod tests {
     }
 
     fn kind(mime: &str) -> Option<ViewerKind> {
-        viewer_for(mime, 10).map(|viewer| viewer.kind)
+        Viewers::shared()
+            .viewer_for(mime, 10)
+            .map(|viewer| viewer.kind)
     }
 
     #[test]
@@ -184,7 +272,7 @@ mod tests {
     fn other_types_have_no_viewer() {
         let kinds: Vec<_> = [
             "application/zip",
-            "image/png",
+            "image/tiff",
             "",
             "text",
             "text/",
@@ -199,28 +287,87 @@ mod tests {
     #[test]
     fn content_over_the_limit_has_no_viewer() {
         let limit = i64::try_from(TEXT_MAX_BYTES).unwrap();
-        assert!(viewer_for("text/plain", limit).is_some());
-        assert!(viewer_for("text/plain", limit + 1).is_none());
+        assert!(Viewers::shared().viewer_for("text/plain", limit).is_some());
+        assert!(
+            Viewers::shared()
+                .viewer_for("text/plain", limit + 1)
+                .is_none()
+        );
     }
 
     #[test]
     fn negative_sizes_have_no_viewer() {
-        assert!(viewer_for("text/plain", -1).is_none());
+        assert!(Viewers::shared().viewer_for("text/plain", -1).is_none());
     }
 
     #[test]
     fn the_text_viewer_is_editable() {
-        assert!(viewer_for("text/plain", 0).unwrap().is_editable());
+        assert!(
+            Viewers::shared()
+                .viewer_for("text/plain", 0)
+                .unwrap()
+                .is_editable()
+        );
     }
 
     #[test]
     fn folders_have_no_viewer() {
-        assert!(viewer_for_node(&node(NodeKind::Folder, "text/plain", 0)).is_none());
+        assert!(
+            Viewers::shared()
+                .viewer_for_node(&node(NodeKind::Folder, "text/plain", 0))
+                .is_none()
+        );
     }
 
     #[test]
     fn files_use_their_mime_type() {
-        let viewer = viewer_for_node(&node(NodeKind::File, "text/csv", 3));
+        let viewer = Viewers::shared().viewer_for_node(&node(NodeKind::File, "text/csv", 3));
         assert_eq!(viewer.map(|viewer| viewer.kind), Some(ViewerKind::Text));
+    }
+
+    #[test]
+    fn shared_image_types_use_the_image_viewer() {
+        let kinds: Vec<_> = IMAGE_TYPES.iter().map(|mime| kind(mime)).collect();
+        assert_eq!(kinds, vec![Some(ViewerKind::Image); IMAGE_TYPES.len()]);
+    }
+
+    #[test]
+    fn the_image_viewer_is_read_only() {
+        let viewer = Viewers::shared().viewer_for("image/png", 0).unwrap();
+        assert!(!viewer.is_editable());
+    }
+
+    #[test]
+    fn only_images_navigate() {
+        assert!(ViewerKind::Image.navigates());
+        assert!(!ViewerKind::Text.navigates());
+    }
+
+    #[test]
+    fn an_extra_type_uses_its_viewer() {
+        let viewers = Viewers::shared().with_types(ViewerKind::Image, ["image/tiff"]);
+        let viewer = viewers.viewer_for("image/tiff", 10);
+        assert_eq!(viewer.map(|viewer| viewer.kind), Some(ViewerKind::Image));
+    }
+
+    #[test]
+    fn an_extra_type_is_matched_without_case() {
+        let viewers =
+            Viewers::shared().with_types(ViewerKind::Image, [String::from("Image/X-Canon-CR2")]);
+        assert!(viewers.viewer_for("image/x-canon-cr2", 10).is_some());
+    }
+
+    #[test]
+    fn an_extra_type_keeps_the_viewers_limit() {
+        let viewers = Viewers::shared().with_types(ViewerKind::Image, ["image/tiff"]);
+        let limit = i64::try_from(IMAGE_MAX_BYTES).unwrap();
+        assert!(viewers.viewer_for("image/tiff", limit).is_some());
+        assert!(viewers.viewer_for("image/tiff", limit + 1).is_none());
+    }
+
+    #[test]
+    fn extra_types_stay_with_the_instance_that_added_them() {
+        let _extended = Viewers::shared().with_types(ViewerKind::Image, ["image/tiff"]);
+        assert!(Viewers::shared().viewer_for("image/tiff", 10).is_none());
     }
 }

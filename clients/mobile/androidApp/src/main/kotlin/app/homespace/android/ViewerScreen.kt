@@ -58,6 +58,7 @@ sealed interface OpenViewer {
         /** The state of the viewer `info` names, for `entry`. */
         fun of(entry: Entry, info: ViewerInfo): OpenViewer = when (info.kind) {
             ViewerKind.TEXT -> TextViewerState(entry, info.editable)
+            ViewerKind.IMAGE -> ImageViewerState(entry)
         }
     }
 }
@@ -135,6 +136,7 @@ class TextViewerState(override val entry: Entry, private val viewerEditable: Boo
 fun ViewerScreen(session: Session.SignedIn, model: SessionViewModel, viewer: OpenViewer) {
     when (viewer) {
         is TextViewerState -> TextViewerScreen(session, model, viewer)
+        is ImageViewerState -> ImageViewerScreen(session, model, viewer)
     }
 }
 

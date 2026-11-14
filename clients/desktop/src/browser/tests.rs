@@ -1426,3 +1426,89 @@ fn the_context_menu_of_a_file_without_a_viewer_leaves_out_the_system_app() {
             .is_err()
     );
 }
+
+const IMAGE_IDS: [u128; 3] = [41, 42, 43];
+
+fn image(name: &str, raw: u128) -> Node {
+    Node {
+        mime: "image/png".to_owned(),
+        ..node(name, NodeKind::File, raw)
+    }
+}
+
+/// A folder of three images and a text file, with the image `raw` open in the viewer.
+fn viewing_image(raw: u128) -> State {
+    let mut state = state_with_listing();
+    let listing = Listing {
+        path: Vec::new(),
+        nodes: vec![
+            image("a.png", IMAGE_IDS[0]),
+            Node {
+                mime: "text/plain".to_owned(),
+                ..node("b.txt", NodeKind::File, 50)
+            },
+            image("c.png", IMAGE_IDS[1]),
+            image("d.png", IMAGE_IDS[2]),
+        ],
+    };
+    let _ = state.update(Message::Loaded(None, Ok(listing)));
+    let _ = state.update(Message::Click(id(raw)));
+    let _ = state.update(Message::Shortcut(Shortcut::Activate));
+    state
+}
+
+fn viewed(state: &State) -> Option<NodeId> {
+    match &state.page {
+        Page::Viewer(viewer) => Some(viewer.node_id()),
+        _ => None,
+    }
+}
+
+#[test]
+fn an_image_opens_in_the_viewer() {
+    let state = viewing_image(IMAGE_IDS[0]);
+    assert_eq!(viewed(&state), Some(id(IMAGE_IDS[0])));
+}
+
+#[test]
+fn the_right_arrow_shows_the_next_image_skipping_other_files() {
+    let mut state = viewing_image(IMAGE_IDS[0]);
+    let _ = state.update(Message::Shortcut(Shortcut::Next));
+    assert_eq!(viewed(&state), Some(id(IMAGE_IDS[1])));
+}
+
+#[test]
+fn space_shows_the_next_image() {
+    let mut state = viewing_image(IMAGE_IDS[1]);
+    let _ = state.update(Message::Shortcut(Shortcut::Open));
+    assert_eq!(viewed(&state), Some(id(IMAGE_IDS[2])));
+}
+
+#[test]
+fn the_left_arrow_shows_the_previous_image() {
+    let mut state = viewing_image(IMAGE_IDS[2]);
+    let _ = state.update(Message::Shortcut(Shortcut::Previous));
+    assert_eq!(viewed(&state), Some(id(IMAGE_IDS[1])));
+}
+
+#[test]
+fn stepping_twice_keeps_the_gallery() {
+    let mut state = viewing_image(IMAGE_IDS[0]);
+    let _ = state.update(Message::Shortcut(Shortcut::Next));
+    let _ = state.update(Message::Shortcut(Shortcut::Next));
+    assert_eq!(viewed(&state), Some(id(IMAGE_IDS[2])));
+}
+
+#[test]
+fn the_last_image_has_no_next() {
+    let mut state = viewing_image(IMAGE_IDS[2]);
+    let _ = state.update(Message::Shortcut(Shortcut::Next));
+    assert_eq!(viewed(&state), Some(id(IMAGE_IDS[2])));
+}
+
+#[test]
+fn the_first_image_has_no_previous() {
+    let mut state = viewing_image(IMAGE_IDS[0]);
+    let _ = state.update(Message::Shortcut(Shortcut::Previous));
+    assert_eq!(viewed(&state), Some(id(IMAGE_IDS[0])));
+}

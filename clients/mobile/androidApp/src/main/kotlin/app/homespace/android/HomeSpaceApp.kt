@@ -7,5 +7,6 @@ class HomeSpaceApp : Application() {
     override fun onCreate() {
         super.onCreate()
         PlatformVerifier.init(this)
+        registerPlatformImageTypes()
     }
 }

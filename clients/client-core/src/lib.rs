@@ -2,6 +2,7 @@
 
 pub mod accounts;
 pub mod format;
+pub mod gallery;
 pub mod icon;
 pub mod labels;
 pub mod listing;
