@@ -5,11 +5,6 @@
 name: Flatpak
 
 on:
-  pull_request:
-    paths:
-      - clients/Cargo.lock
-      - clients/desktop/**
-      - .github/workflows/flatpak.yml
   workflow_dispatch:
   workflow_call:
     inputs:
