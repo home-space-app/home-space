@@ -32,7 +32,7 @@ pub use events::{EventStream, EventsListener, LiveEvent};
 pub use files::DownloadListener;
 pub use offline::{OfflineProblem, OfflineState, OfflineStatus};
 pub use transfers::{SendFile, SendTarget, TransferLists, TransferRow, TransferStatus};
-pub use viewers::{TextFile, TextFormat, ViewerInfo, ViewerKind};
+pub use viewers::{Gallery, ImageFile, TextFile, TextFormat, ViewerInfo, ViewerKind};
 
 uniffi::setup_scaffolding!();
 

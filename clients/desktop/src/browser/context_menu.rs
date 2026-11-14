@@ -16,6 +16,7 @@ use super::{
 use crate::{
     icons::{ICON_SIZE, Icon, Tint},
     theme,
+    viewers::viewers,
 };
 
 pub(super) const ITEM_HEIGHT: f32 = 34.0;
@@ -47,7 +48,7 @@ pub fn web_entry(selected: &[&Node]) -> Option<Entry> {
 /// The entry opening a file with the system's app when Open shows it in a built-in viewer.
 fn open_with_entry(selected: &[&Node]) -> Option<Entry> {
     match selected {
-        [node] if client_core::viewers::viewer_for_node(node).is_some() => Some(Entry {
+        [node] if viewers().viewer_for_node(node).is_some() => Some(Entry {
             icon: Icon::Web,
             label: Action::OpenWith.menu_label(),
             message: Message::Act(Action::OpenWith),

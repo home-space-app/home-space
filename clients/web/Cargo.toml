@@ -28,6 +28,7 @@ wasm-bindgen-futures = "0.4.80"
 version = "0.3.107"
 features = [
     "Blob",
+    "BlobPropertyBag",
     "CloseEvent",
     "Crypto",
     "CssStyleDeclaration",
@@ -54,6 +55,7 @@ features = [
     "ReadableStreamDefaultReader",
     "Response",
     "Storage",
+    "Url",
     "ValidityState",
     "VisibilityState",
     "WebSocket",

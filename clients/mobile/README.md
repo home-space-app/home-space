@@ -15,7 +15,8 @@ Both apps sign in with a password or single sign-on, whichever the server offers
 between runs, browse folders, and select several rows. They also manage files: details, rename,
 move, delete (to the recycle bin), save to a chosen location, create folders, upload files and search
 by name. On Android, tapping a text file shows it in the built-in text viewer, where it can be
-edited and saved as a new version (see `docs/viewers.md`). Tapping any other file, or choosing
+edited and saved as a new version. Tapping an image shows it in the image viewer, which swipes
+through the other images of its folder (see `docs/viewers.md`). Tapping any other file, or choosing
 **Open in another app**, downloads it and opens it in the system's viewer.
 
 Routes, JSON, session refresh, error mapping, sorting and size labels all come from the Rust crates,

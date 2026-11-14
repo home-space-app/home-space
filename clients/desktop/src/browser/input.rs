@@ -32,8 +32,12 @@ pub enum Shortcut {
     ExtendPrevious,
     /// Shift+Down: grows or shrinks the selection one row downwards.
     ExtendNext,
-    /// Space: opens the single selected folder or file.
+    /// Space: opens the single selected folder or file; in the image viewer, shows the next one.
     Open,
+    /// Right arrow: in the image viewer, shows the next image.
+    Next,
+    /// Left arrow: in the image viewer, shows the previous image.
+    Previous,
 }
 
 pub fn input(event: Event, status: event::Status, _window: window::Id) -> Option<Message> {
@@ -74,6 +78,8 @@ fn shortcut(key: &Key, modifiers: Modifiers) -> Option<Shortcut> {
         }
         Key::Named(Named::ArrowDown) if modifiers == Modifiers::SHIFT => Some(Shortcut::ExtendNext),
         Key::Named(Named::Space) if modifiers.is_empty() => Some(Shortcut::Open),
+        Key::Named(Named::ArrowRight) if modifiers.is_empty() => Some(Shortcut::Next),
+        Key::Named(Named::ArrowLeft) if modifiers.is_empty() => Some(Shortcut::Previous),
         Key::Character(KEY_BACK) if modifiers.command() => Some(Shortcut::Back),
         Key::Character(KEY_SELECT_ALL) if modifiers.command() => Some(Shortcut::SelectAll),
         Key::Character(KEY_NEW_FOLDER) if modifiers.command() => Some(Shortcut::NewFolder),
@@ -146,5 +152,16 @@ mod tests {
         let space = Key::Named(Named::Space);
         assert_eq!(shortcut(&space, Modifiers::empty()), Some(Shortcut::Open));
         assert_eq!(shortcut(&space, Modifiers::SHIFT), None);
+    }
+
+    #[test]
+    fn plain_left_and_right_arrows_step_between_items() {
+        let left = Key::Named(Named::ArrowLeft);
+        let right = Key::Named(Named::ArrowRight);
+        assert_eq!(
+            shortcut(&left, Modifiers::empty()),
+            Some(Shortcut::Previous)
+        );
+        assert_eq!(shortcut(&right, Modifiers::empty()), Some(Shortcut::Next));
     }
 }

@@ -1,24 +1,26 @@
 //! The page showing a file in a built-in viewer, picked by its MIME type in
 //! [`client_core::viewers`].
 
+mod image;
 mod text;
 
 use std::{path::PathBuf, sync::Arc};
 
 use iced::{
-    Element, Length, Task,
+    Alignment, Element, Length, Task,
     widget::{column, row},
 };
 
 use api_client::Client;
 use client_core::{
+    gallery::Gallery,
     text::TextDoc,
     viewers::{Viewer, ViewerKind},
 };
 use protocol::{Node, NodeId};
 
 use super::{files::SyncedCopy, parts};
-use crate::icons::Icon;
+use crate::{icons::Icon, theme, viewers::viewers};
 
 pub use self::text::Mode;
 
@@ -33,6 +35,9 @@ const CHANGED_ELSEWHERE: &str = "This file was changed elsewhere. Reload drops y
                                  shows the latest version; Save keeps your edits and the other \
                                  change as a previous version.";
 const RELOAD: &str = "Reload";
+const PREVIOUS: &str = "Previous";
+const NEXT: &str = "Next";
+const NOT_LISTED: &str = "The other images of this folder could not be listed";
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -44,6 +49,10 @@ pub enum Message {
     Reload,
     Save,
     Saved(Result<(Node, String), String>),
+    /// The files of the folder that the viewer steps through.
+    Gallery(Result<Gallery, String>),
+    Previous,
+    Next,
     Close,
 }
 
@@ -75,6 +84,8 @@ impl Message {
 
 pub enum Outcome {
     Task(Task<Message>),
+    /// Shows this file of the gallery instead.
+    Open(Box<Node>),
     Closed,
 }
 
@@ -82,6 +93,7 @@ enum Body {
     Loading,
     Failed(String),
     Text(text::State),
+    Image(image::State),
 }
 
 pub struct State {
@@ -91,15 +103,19 @@ pub struct State {
     saving: bool,
     error: Option<String>,
     changed_elsewhere: bool,
+    /// The files of the folder that the viewer steps through, once they are listed.
+    gallery: Option<Gallery>,
 }
 
 impl State {
     /// Opens `node` in `viewer`, reading the synced copy when it is the server's version.
+    /// `gallery` holds the files to step through, when they are already listed.
     pub fn open(
         client: &Client,
         node: Node,
         viewer: Viewer,
         synced: Option<SyncedCopy>,
+        gallery: Option<Gallery>,
     ) -> (Self, Task<Message>) {
         let task = load(client, node.clone(), viewer, synced);
         let state = Self {
@@ -109,6 +125,7 @@ impl State {
             saving: false,
             error: None,
             changed_elsewhere: false,
+            gallery,
         };
         (state, task)
     }
@@ -119,6 +136,18 @@ impl State {
 
     pub fn name(&self) -> &str {
         &self.node.name
+    }
+
+    /// Hands over the gallery, for the viewer of the next file to step through.
+    pub fn take_gallery(&mut self) -> Option<Gallery> {
+        self.gallery.take()
+    }
+
+    /// Applies a live event to the files the viewer steps through.
+    pub fn gallery_changed(&mut self, event: &protocol::Event) {
+        if let Some(gallery) = &mut self.gallery {
+            gallery.apply_event(viewers(), event);
+        }
     }
 
     /// Whether the editor is open.
@@ -139,6 +168,7 @@ impl State {
                     ViewerKind::Text => {
                         Body::Text(text::State::new(TextDoc::decode(&loaded.bytes)))
                     }
+                    ViewerKind::Image => Body::Image(image::State::new(&loaded.bytes)),
                 };
                 self.changed_elsewhere = false;
             }
@@ -193,6 +223,18 @@ impl State {
                 self.saving = false;
                 self.error = Some(err);
             }
+            Message::Gallery(Ok(gallery)) => self.gallery = Some(gallery),
+            Message::Gallery(Err(err)) => self.error = Some(format!("{NOT_LISTED}: {err}")),
+            Message::Previous => {
+                if let Some(node) = self.gallery.as_ref().and_then(Gallery::previous) {
+                    return Outcome::Open(Box::new(node.clone()));
+                }
+            }
+            Message::Next => {
+                if let Some(node) = self.gallery.as_ref().and_then(Gallery::next) {
+                    return Outcome::Open(Box::new(node.clone()));
+                }
+            }
             Message::Close => return Outcome::Closed,
         }
         Outcome::Task(Task::none())
@@ -227,6 +269,9 @@ impl State {
 
     /// The buttons at the top right of the page.
     pub fn action(&self) -> Element<'_, Message> {
+        if self.viewer.kind.navigates() {
+            return self.steps();
+        }
         let Body::Text(text) = &self.body else {
             return row![].into();
         };
@@ -251,11 +296,38 @@ impl State {
         }
     }
 
+    /// Previous, where the file is in the gallery, and Next; nothing for a single file.
+    fn steps(&self) -> Element<'_, Message> {
+        let Some(gallery) = &self.gallery else {
+            return row![].into();
+        };
+        let Some((index, total)) = gallery.position().filter(|(_, total)| *total > 1) else {
+            return row![].into();
+        };
+        row![
+            parts::ghost(
+                Some(Icon::ChevronLeft),
+                PREVIOUS,
+                gallery.previous().map(|_| Message::Previous),
+            ),
+            iced::widget::text(format!("{index} / {total}")).style(theme::muted_text),
+            parts::ghost(
+                Some(Icon::Chevron),
+                NEXT,
+                gallery.next().map(|_| Message::Next),
+            ),
+        ]
+        .spacing(SPACING)
+        .align_y(Alignment::Center)
+        .into()
+    }
+
     pub fn view(&self) -> Element<'_, Message> {
         let content: Element<'_, Message> = match &self.body {
             Body::Loading => parts::empty(LOADING),
             Body::Failed(err) => parts::alert_error(Icon::Error, err.as_str(), None),
             Body::Text(text) => text.view().map(Message::Text),
+            Body::Image(image) => image.view(),
         };
         let not_utf8 = match &self.body {
             Body::Text(text) if !text.is_editable() => {
@@ -392,11 +464,13 @@ mod tests {
     }
 
     fn text_viewer() -> Viewer {
-        *client_core::viewers::viewer_for("text/plain", 0).expect("text has a viewer")
+        viewers()
+            .viewer_for("text/plain", 0)
+            .expect("text has a viewer")
     }
 
     fn loaded(client: &Client, bytes: &[u8]) -> State {
-        let (mut state, _task) = State::open(client, node(1, "a"), text_viewer(), None);
+        let (mut state, _task) = State::open(client, node(1, "a"), text_viewer(), None, None);
         let _ = state.update(
             client,
             Message::Loaded(Ok(Loaded {
@@ -590,5 +664,89 @@ mod tests {
             .expect("downloaded");
 
         assert_eq!(loaded.bytes.as_slice(), TEXT.as_bytes());
+    }
+
+    fn image(raw: u128, name: &str) -> Node {
+        Node {
+            id: NodeId(Uuid::from_u128(raw)),
+            name: name.to_owned(),
+            mime: "image/png".to_owned(),
+            ..node(1, "a")
+        }
+    }
+
+    fn viewing_image(raw: u128) -> (Client, State) {
+        let client = client();
+        let listing = [image(1, "a.png"), image(2, "b.png"), image(3, "c.png")];
+        let current = listing
+            .iter()
+            .find(|node| node.id == NodeId(Uuid::from_u128(raw)));
+        let current = current.expect("the image is listed").clone();
+        let viewer = viewers()
+            .viewer_for_node(&current)
+            .expect("images have a viewer");
+        let gallery = Gallery::new(viewers(), &listing, &current, Default::default());
+        let (state, _task) = State::open(&client, current, viewer, None, gallery);
+        (client, state)
+    }
+
+    #[test]
+    fn an_image_offers_previous_and_next_with_its_position() {
+        let (_client, state) = viewing_image(2);
+        let mut ui = simulator(state.action());
+        assert!(ui.find("2 / 3").is_ok());
+        ui.click(NEXT).expect("Next is offered");
+        ui.click(PREVIOUS).expect("Previous is offered");
+        let messages: Vec<_> = ui.into_messages().collect();
+        assert!(matches!(
+            messages.as_slice(),
+            [Message::Next, Message::Previous]
+        ));
+    }
+
+    #[test]
+    fn next_opens_the_following_image() {
+        let (client, mut state) = viewing_image(2);
+        let outcome = state.update(&client, Message::Next);
+        assert!(matches!(outcome, Outcome::Open(node) if node.name == "c.png"));
+    }
+
+    #[test]
+    fn next_at_the_last_image_stays() {
+        let (client, mut state) = viewing_image(3);
+        let outcome = state.update(&client, Message::Next);
+        assert!(matches!(outcome, Outcome::Task(_)));
+    }
+
+    #[test]
+    fn previous_at_the_first_image_stays() {
+        let (client, mut state) = viewing_image(1);
+        let outcome = state.update(&client, Message::Previous);
+        assert!(matches!(outcome, Outcome::Task(_)));
+    }
+
+    #[test]
+    fn a_single_image_offers_no_steps() {
+        let client = client();
+        let current = image(1, "a.png");
+        let viewer = viewers().viewer_for_node(&current).expect("image viewer");
+        let gallery = Gallery::new(
+            viewers(),
+            std::slice::from_ref(&current),
+            &current,
+            Default::default(),
+        );
+        let (state, _task) = State::open(&client, current, viewer, None, gallery);
+        assert!(simulator(state.action()).find(NEXT).is_err());
+    }
+
+    #[test]
+    fn a_failed_listing_is_reported() {
+        let (client, mut state) = viewing_image(1);
+        let _ = state.update(&client, Message::Gallery(Err("offline".to_owned())));
+        assert_eq!(
+            state.error.as_deref(),
+            Some("The other images of this folder could not be listed: offline")
+        );
     }
 }

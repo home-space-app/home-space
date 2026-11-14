@@ -1,6 +1,7 @@
 Feature: Built-in file viewers
   The web, desktop and Android clients show a file whose MIME type has a built-in viewer instead
-  of downloading it or handing it to another app. The first viewer shows and edits text.
+  of downloading it or handing it to another app. One viewer shows and edits text; another shows
+  images and steps through the images of their folder.
 
   Background:
     Given alice is signed in
@@ -85,3 +86,61 @@ Feature: Built-in file viewers
       Given "notes.txt" is being edited on Android, with changes
       When alice goes back
       Then the app asks whether to discard the changes
+
+  Rule: Images open in the image viewer, which steps through the folder
+
+    Background:
+      Given a folder holding "a.png", "b.txt", "c.jpg" and "d.png"
+
+    Scenario: An image opens in the image viewer
+      When alice opens "a.png"
+      Then the image viewer shows "a.png"
+      And it says "1 / 3"
+      And it offers no "Edit"
+
+    Scenario Outline: Space and the right arrow show the next image
+      Given "a.png" is open in the image viewer
+      When alice presses <key>
+      Then the image viewer shows "c.jpg"
+
+      Examples:
+        | key         |
+        | Space       |
+        | Right arrow |
+
+    Scenario: The left arrow shows the previous image
+      Given "d.png" is open in the image viewer
+      When alice presses Left arrow
+      Then the image viewer shows "c.jpg"
+
+    Scenario: Stepping stops at the last image
+      Given "d.png" is open in the image viewer
+      When alice presses Right arrow
+      Then the image viewer still shows "d.png"
+      And "Next" is disabled
+
+    Scenario: Stepping stops at the first image
+      Given "a.png" is open in the image viewer
+      When alice presses Left arrow
+      Then the image viewer still shows "a.png"
+      And "Previous" is disabled
+
+    Scenario: An image opened from search steps through its folder
+      When alice opens "c.jpg" from the search results
+      And alice presses Right arrow
+      Then the image viewer shows "d.png"
+
+    Scenario: Android swipes between images
+      Given "a.png" is open in the image viewer on Android
+      When alice swipes left
+      Then the image viewer shows "c.jpg"
+
+    Scenario: An image over the limit opens as before
+      Given an image of 60 MiB
+      When alice opens it
+      Then it is downloaded or opened in another app
+
+    Scenario: A client shows the extra types it decodes
+      Given a file "logo.svg" of type "image/svg+xml"
+      When alice opens "logo.svg" on the web
+      Then the image viewer shows "logo.svg"

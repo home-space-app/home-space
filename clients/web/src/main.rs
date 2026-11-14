@@ -13,6 +13,7 @@ mod save_file;
 mod session;
 mod upload;
 mod uploads;
+mod viewers;
 
 fn main() {
     console_error_panic_hook::set_once();
