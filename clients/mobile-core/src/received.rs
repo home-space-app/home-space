@@ -13,14 +13,15 @@ use uuid::Uuid;
 use client_core::{
     format::human_size,
     icon,
-    received::{SharedItem, shared_items},
+    received::{SharedItem, shared_items, shared_viewer},
     shared_link::sort_shared,
+    text::TextDoc,
 };
 use protocol::{NodeKind, SharedNode};
 
 use crate::{
     CoreClient, CoreError, EntryIcon, EntryKind, files::DownloadListener, files::storage,
-    off_ui_thread, parse_id,
+    off_ui_thread, parse_id, viewers::app_viewers,
 };
 
 /// A file or folder shared with the user, at the top of a share or inside one of its folders.
@@ -142,6 +143,17 @@ impl CoreClient {
         Ok(())
     }
 
+    /// The text of shared `file`, for the read-only text viewer.
+    pub async fn read_shared_text(&self, file: SharedEntry) -> Result<String, CoreError> {
+        let bytes = self.read_shared(file).await?;
+        Ok(TextDoc::decode(&bytes).text)
+    }
+
+    /// The encoded picture of shared `file`, for the image viewer.
+    pub async fn read_shared_image(&self, file: SharedEntry) -> Result<Vec<u8>, CoreError> {
+        self.read_shared(file).await
+    }
+
     /// Downloads a shared file to `dest_path`, which ends up complete or not at all.
     pub async fn save_shared_copy(
         &self,
@@ -170,6 +182,58 @@ impl CoreClient {
     }
 }
 
+impl CoreClient {
+    /// The content of shared `file`, refused when it has no viewer or is over its limit.
+    async fn read_shared(&self, file: SharedEntry) -> Result<Vec<u8>, CoreError> {
+        let share = share_id(&file.share_id)?;
+        let id = parse_id(&file.id)?;
+        let inner = self.inner.clone();
+        off_ui_thread(async move {
+            let limit = shared_viewer(&app_viewers(), &shared_node(&file, id))
+                .map(|viewer| viewer.max_bytes)
+                .ok_or_else(|| unviewable(&file, NO_VIEWER))?;
+            let bytes = inner
+                .download_shared(share, id)
+                .await?
+                .bytes()
+                .await
+                .map_err(|err| CoreError::Unreachable {
+                    detail: crate::last_cause(&err.to_string()).to_owned(),
+                })?;
+            if u64::try_from(bytes.len()).is_ok_and(|len| len <= limit) {
+                Ok(bytes.to_vec())
+            } else {
+                Err(unviewable(&file, TOO_LARGE))
+            }
+        })
+        .await
+    }
+}
+
+const NO_VIEWER: (&str, &str) = ("no_viewer", "cannot be shown here");
+const TOO_LARGE: (&str, &str) = ("too_large", "is too large to show here");
+
+fn unviewable(file: &SharedEntry, (code, reason): (&str, &str)) -> CoreError {
+    CoreError::Failed {
+        code: code.to_owned(),
+        detail: format!("“{}” {reason}", file.name),
+    }
+}
+
+fn shared_node(file: &SharedEntry, id: protocol::NodeId) -> SharedNode {
+    SharedNode {
+        id,
+        kind: match file.kind {
+            EntryKind::Folder => NodeKind::Folder,
+            EntryKind::File => NodeKind::File,
+        },
+        name: file.name.clone(),
+        size: file.size,
+        mime: file.mime.clone(),
+        updated_at: file.updated_at.into(),
+    }
+}
+
 async fn write(
     client: &api_client::Client,
     share: Uuid,
@@ -195,20 +259,63 @@ async fn write(
     out.flush().await.map_err(storage)
 }
 
-/// "Shared by alex · View only. You can open and download, but not change anything.", with
-/// "Available until <until>." when the share ends; `until` as the app formats it.
-#[uniffi::export]
-pub fn shared_note(owner: String, until: Option<String>) -> String {
-    client_core::received::view_only_note(&owner, until.as_deref())
-}
-
 #[cfg(test)]
 mod tests {
     use time::OffsetDateTime;
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
 
-    use protocol::NodeId;
+    use protocol::{NodeId, paths};
 
     use super::*;
+    use crate::tests::signed_in;
+
+    fn shared_file(mime: &str, size: i64) -> SharedEntry {
+        let node = SharedNode {
+            id: NodeId(Uuid::from_u128(1)),
+            kind: NodeKind::File,
+            name: "notes.txt".to_owned(),
+            size,
+            mime: mime.to_owned(),
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+        };
+        entry(Uuid::from_u128(2), "alex", None, node)
+    }
+
+    #[tokio::test]
+    async fn a_shared_text_file_reads_through_its_share() {
+        let server = MockServer::start().await;
+        let client = signed_in(&server).await;
+        Mock::given(method("GET"))
+            .and(path(paths::shared_file_content(
+                Uuid::from_u128(2),
+                NodeId(Uuid::from_u128(1)),
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"a\r\nb".to_vec()))
+            .mount(&server)
+            .await;
+
+        let text = client
+            .read_shared_text(shared_file("text/plain", 4))
+            .await
+            .expect("the text");
+
+        assert_eq!(text, "a\nb");
+    }
+
+    #[tokio::test]
+    async fn a_shared_file_without_a_viewer_is_refused() {
+        let server = MockServer::start().await;
+        let client = signed_in(&server).await;
+
+        let result = client
+            .read_shared_image(shared_file("application/zip", 4))
+            .await;
+
+        assert!(matches!(result, Err(CoreError::Failed { code, .. }) if code == "no_viewer"));
+    }
 
     #[test]
     fn a_shared_file_reads_as_an_entry_with_its_owner() {

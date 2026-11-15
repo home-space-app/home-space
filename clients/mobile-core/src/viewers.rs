@@ -106,7 +106,7 @@ pub fn viewer_for(mime: String, size: i64) -> Option<ViewerInfo> {
         })
 }
 
-fn app_viewers() -> Viewers {
+pub(crate) fn app_viewers() -> Viewers {
     VIEWERS
         .read()
         .unwrap_or_else(PoisonError::into_inner)

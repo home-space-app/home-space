@@ -2,6 +2,7 @@
 //! [`client_core::viewers`]. Each [`ViewerKind`] has its own component here.
 
 mod image;
+mod shared;
 mod text;
 
 use leptos::prelude::*;
@@ -13,6 +14,7 @@ use web_sys::Response;
 use client_core::viewers::ViewerKind;
 use protocol::{Event, Node, NodeId, TicketRequest};
 
+pub use self::shared::SharedViewer;
 use self::{image::ImageViewer, text::TextViewer};
 use crate::{
     components::ErrorAlert,
@@ -25,7 +27,8 @@ use crate::{
 
 const HOME_PATH: &str = "/";
 const LOADING: &str = "Loading…";
-const NO_VIEWER: &str = "This file cannot be shown here. Download it to open it.";
+pub(super) const NO_VIEWER: &str = "This file cannot be shown here. Download it to open it.";
+const UNREACHABLE: &str = "could not reach the server";
 const DELETED: &str = "This file was deleted.";
 
 #[component]
@@ -151,10 +154,17 @@ pub(super) async fn fetch_content(auth: Auth, id: NodeId) -> Result<Vec<u8>, Str
         .map_err(|err| auth.fail(&err))?;
     fetch_bytes(&client.download_url(id, &ticket.ticket))
         .await
-        .map_err(|err| format!("the download failed: {err:?}"))
+        .map_err(|err| download_failed(&err))
 }
 
-async fn fetch_bytes(url: &str) -> Result<Vec<u8>, JsValue> {
+/// "the download failed: …" with the server's answer, or that it could not be reached; the
+/// browser's own error text is a stack trace, not a message.
+pub(super) fn download_failed(err: &JsValue) -> String {
+    let reason = err.as_string().unwrap_or_else(|| UNREACHABLE.to_owned());
+    format!("the download failed: {reason}")
+}
+
+pub(super) async fn fetch_bytes(url: &str) -> Result<Vec<u8>, JsValue> {
     let window = web_sys::window().ok_or(JsValue::NULL)?;
     let response: Response = JsFuture::from(window.fetch_with_str(url))
         .await?

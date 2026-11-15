@@ -1,6 +1,6 @@
-//! "Shared with me": what other users shared with the user, read-only. Folders open in place;
-//! files and folders download into the downloads folder, or are saved as copies into the
-//! user's own files.
+//! "Shared with me": what other users shared with the user, read-only. Folders open in place
+//! and files in their built-in viewer; files and folders download into the downloads folder,
+//! or are saved as copies into the user's own files.
 
 use std::path::{Path, PathBuf};
 
@@ -17,9 +17,12 @@ use client_core::{
     format::{human_size, sanitize_component},
     received::{
         ACCESS, EXPIRES, NEVER, NOTHING_SHARED_WITH_ME, SAVE_TO_MY_FILES, SHARED_BY,
-        SHARED_WITH_ME, SharedItem, VIEW_ONLY, find_share, shared_items, view_only_note,
+        SHARED_WITH_ME, SharedGallery, SharedItem, VIEW_ONLY, find_share, shared_items,
+        shared_viewer,
     },
     shared_link::{DOWNLOAD, EMPTY_FOLDER, initial, sort_shared},
+    text::TextDoc,
+    viewers::{Viewer, ViewerKind},
 };
 use protocol::{NodeKind, ReceivedShare, SharedNode};
 
@@ -31,12 +34,14 @@ use super::{
     },
     transfer_list::{display_download, downloads_folder, free_path, io_error},
     transfer_save::{self, SaveSource, TransferSave},
+    viewer::{image, text as text_viewer},
 };
 use crate::{
     ellipsis::ellipsized,
     icons::{ICON_SIZE, Icon, Tint, kind_icon},
     locale::short_date,
     theme,
+    viewers::viewers,
 };
 
 const SPACING: f32 = 12.0;
@@ -55,6 +60,9 @@ const STAGING_SUFFIX: &str = ".part";
 const ACCESS_BELOW: f32 = 760.0;
 /// The most files and folders one download walks, so a huge share cannot run forever.
 const MAX_DOWNLOAD_ENTRIES: usize = 10_000;
+const LOADING: &str = "Loading…";
+const PREVIOUS: &str = "Previous";
+const NEXT: &str = "Next";
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -72,6 +80,31 @@ pub enum Message {
     Dismiss,
     Save(Uuid, SharedNode),
     SaveDialog(transfer_save::Message),
+    /// Opens a file of a share in its built-in viewer.
+    View(Uuid, SharedNode),
+    /// The content of the file being viewed, for the load that asked.
+    Viewed(u64, Result<Vec<u8>, String>),
+    ViewText(text_viewer::Message),
+    Previous,
+    Next,
+    CloseView,
+}
+
+/// A shared file open in its built-in viewer, read-only.
+struct Viewing {
+    share: Uuid,
+    item: SharedNode,
+    viewer: Viewer,
+    body: ViewBody,
+    /// The files beside it that the viewer steps through.
+    gallery: Option<SharedGallery>,
+}
+
+enum ViewBody {
+    Loading,
+    Failed(String),
+    Text(text_viewer::State),
+    Image(image::State),
 }
 
 /// A share opened at one of its folders.
@@ -94,6 +127,9 @@ pub struct State {
     downloaded: Option<PathBuf>,
     saving: Option<TransferSave>,
     saved: bool,
+    viewing: Option<Viewing>,
+    /// Counts the viewer loads, so content overtaken by a later step is dropped.
+    views: u64,
 }
 
 impl State {
@@ -109,6 +145,90 @@ impl State {
             downloaded: None,
             saving: None,
             saved: false,
+            viewing: None,
+            views: 0,
+        }
+    }
+
+    /// The name of the file open in the viewer, if one is.
+    pub fn viewing(&self) -> Option<&str> {
+        self.viewing
+            .as_ref()
+            .map(|viewing| viewing.item.name.as_str())
+    }
+
+    /// The items beside `item`: the open folder's, or else its share's shared items.
+    fn siblings(&self, share: Uuid) -> Vec<SharedNode> {
+        match &self.opened {
+            Some(opened) if opened.share.id == share => opened.items.clone().unwrap_or_default(),
+            _ => {
+                let mut items = find_share(&self.shares, share)
+                    .map(|share| share.items.clone())
+                    .unwrap_or_default();
+                sort_shared(&mut items);
+                items
+            }
+        }
+    }
+
+    fn view_file(&mut self, client: &Client, share: Uuid, item: SharedNode) -> Task<Message> {
+        let Some(viewer) = shared_viewer(viewers(), &item) else {
+            return Task::none();
+        };
+        let gallery = match self.viewing.take() {
+            Some(Viewing {
+                share: open,
+                gallery: Some(mut gallery),
+                ..
+            }) if open == share => {
+                gallery.move_to(item.id);
+                Some(gallery)
+            }
+            _ => SharedGallery::new(viewers(), &self.siblings(share), &item),
+        };
+        self.views += 1;
+        let (client, load, id, name) = (client.clone(), self.views, item.id, item.name.clone());
+        self.viewing = Some(Viewing {
+            share,
+            item,
+            viewer,
+            body: ViewBody::Loading,
+            gallery,
+        });
+        Task::perform(
+            async move {
+                let bytes = client
+                    .download_shared(share, id)
+                    .await
+                    .map_err(|err| err.to_string())?
+                    .bytes()
+                    .await
+                    .map_err(|err| err.to_string())?;
+                if u64::try_from(bytes.len()).is_ok_and(|len| len <= viewer.max_bytes) {
+                    Ok(bytes.to_vec())
+                } else {
+                    Err(format!(
+                        "{name} is too large to show here; download it to open it."
+                    ))
+                }
+            },
+            move |result| Message::Viewed(load, result),
+        )
+    }
+
+    fn step(&mut self, client: &Client, forward: bool) -> Task<Message> {
+        let target = self.viewing.as_ref().and_then(|viewing| {
+            let gallery = viewing.gallery.as_ref()?;
+            let target = if forward {
+                gallery.next()
+            } else {
+                gallery.previous()
+            };
+            target.cloned().map(|target| (viewing.share, target))
+        });
+        match target {
+            Some((share, target)) => self.view_file(client, share, target),
+            None => Task::none(),
         }
     }
 
@@ -252,6 +372,41 @@ impl State {
                 self.saved = false;
                 task.map(Message::SaveDialog)
             }
+            Message::View(share, item) => {
+                self.error = None;
+                self.view_file(client, share, item)
+            }
+            Message::Viewed(load, result) if load == self.views => {
+                if let Some(viewing) = &mut self.viewing {
+                    viewing.body = match result {
+                        Ok(bytes) => match viewing.viewer.kind {
+                            ViewerKind::Text => {
+                                ViewBody::Text(text_viewer::State::new(TextDoc::decode(&bytes)))
+                            }
+                            ViewerKind::Image => ViewBody::Image(image::State::new(&bytes)),
+                        },
+                        Err(err) => ViewBody::Failed(err),
+                    };
+                }
+                Task::none()
+            }
+            Message::Viewed(..) => Task::none(),
+            Message::ViewText(message) => {
+                if let Some(Viewing {
+                    body: ViewBody::Text(text),
+                    ..
+                }) = &mut self.viewing
+                {
+                    text.update(message);
+                }
+                Task::none()
+            }
+            Message::Previous => self.step(client, false),
+            Message::Next => self.step(client, true),
+            Message::CloseView => {
+                self.viewing = None;
+                Task::none()
+            }
             Message::SaveDialog(message) => {
                 let Some(dialog) = &mut self.saving else {
                     return Task::none();
@@ -286,6 +441,9 @@ impl State {
 
     /// What the page's top line offers.
     pub fn action(&self) -> Element<'_, Message> {
+        if let Some(viewing) = &self.viewing {
+            return viewer_actions(viewing, self.downloading > 0);
+        }
         let busy = if self.loading {
             "Loading…".to_owned()
         } else if self.downloading > 0 {
@@ -304,8 +462,10 @@ impl State {
 
     pub fn view(&self, width: f32) -> Element<'_, Message> {
         let mut page = column![].spacing(SPACING);
-        if let Some(opened) = &self.opened {
-            page = page.push(crumbs(&opened.trail)).push(banner(&opened.share));
+        if self.viewing.is_none()
+            && let Some(opened) = &self.opened
+        {
+            page = page.push(crumbs(&opened.trail));
         }
         if let Some(error) = &self.error {
             page = page.push(alert_error(Icon::Error, error.as_str(), None));
@@ -334,11 +494,53 @@ impl State {
                 Some(close_button()),
             ));
         }
+        if let Some(viewing) = &self.viewing {
+            return page.push(viewer_body(viewing)).height(Length::Fill).into();
+        }
         let list = match &self.opened {
             Some(opened) => folder_list(opened),
             None => top_list(&self.shares, self.loading, width >= ACCESS_BELOW),
         };
         page.push(list_box(list)).into()
+    }
+}
+
+/// Previous, where the file is among its pictures, Next, and Download.
+fn viewer_actions(viewing: &Viewing, downloading: bool) -> Element<'_, Message> {
+    let mut line = row![].spacing(SPACING).align_y(Alignment::Center);
+    if downloading {
+        line = line.push(text("Downloading…").style(theme::muted_text));
+    }
+    if let Some(gallery) = &viewing.gallery
+        && let Some((index, total)) = gallery.position().filter(|(_, total)| *total > 1)
+    {
+        line = line
+            .push(ghost(
+                Some(Icon::ChevronLeft),
+                PREVIOUS,
+                gallery.previous().map(|_| Message::Previous),
+            ))
+            .push(text(format!("{index} / {total}")).style(theme::muted_text))
+            .push(ghost(
+                Some(Icon::Chevron),
+                NEXT,
+                gallery.next().map(|_| Message::Next),
+            ));
+    }
+    line.push(ghost(
+        Some(Icon::Download),
+        DOWNLOAD,
+        Some(Message::Download(viewing.share, viewing.item.clone())),
+    ))
+    .into()
+}
+
+fn viewer_body(viewing: &Viewing) -> Element<'_, Message> {
+    match &viewing.body {
+        ViewBody::Loading => empty(LOADING),
+        ViewBody::Failed(err) => alert_error(Icon::Error, err.as_str(), None),
+        ViewBody::Text(text) => text.view().map(Message::ViewText),
+        ViewBody::Image(image) => image.view(),
     }
 }
 
@@ -365,25 +567,6 @@ fn crumbs(trail: &[SharedNode]) -> Element<'_, Message> {
         ));
     }
     line.into()
-}
-
-/// Who shared the open share, and that it can only be read.
-fn banner(share: &ReceivedShare) -> Element<'_, Message> {
-    let until = share.expires_at.map(short_date);
-    let note = view_only_note(&share.owner.username, until.as_deref());
-    container(
-        row![
-            avatar(&share.owner.username),
-            text(note).size(ROW_SIZE).width(Length::Fill),
-            view_only(),
-        ]
-        .spacing(SPACING)
-        .align_y(Alignment::Center),
-    )
-    .padding([8.0, 12.0])
-    .width(Length::Fill)
-    .style(theme::card)
-    .into()
 }
 
 fn top_list(shares: &[ReceivedShare], loading: bool, with_access: bool) -> Element<'_, Message> {
@@ -483,19 +666,22 @@ fn folder_row<'a>(share: Uuid, item: SharedNode) -> Element<'a, Message> {
     item_button(cells, share, item)
 }
 
-/// A row; a folder's opens it.
+/// A row; a folder's opens it, and a file's opens its viewer when it has one.
 fn item_button<'a>(
     cells: iced::widget::Row<'a, Message>,
     share: Uuid,
     item: SharedNode,
 ) -> Element<'a, Message> {
-    let is_folder = item.kind == NodeKind::Folder;
+    let press = match item.kind {
+        NodeKind::Folder => Some(Message::Open(share, item)),
+        NodeKind::File => shared_viewer(viewers(), &item).map(|_| Message::View(share, item)),
+    };
     button(cells)
         .width(Length::Fill)
         .height(ROW_HEIGHT)
         .padding(LIST_PADDING_WIDE)
         .style(theme::row(false))
-        .on_press_maybe(is_folder.then_some(Message::Open(share, item)))
+        .on_press_maybe(press)
         .into()
 }
 
@@ -728,7 +914,6 @@ mod tests {
         let mut ui = simulator(state.view(1000.0));
 
         assert!(ui.find("tram.txt").is_ok());
-        assert!(ui.find(view_only_note("alex", None)).is_ok());
         ui.click(SHARED_WITH_ME).expect("way back");
         let messages: Vec<_> = ui.into_messages().collect();
         assert!(matches!(messages.as_slice(), [Message::Crumb(0)]));
@@ -770,5 +955,86 @@ mod tests {
         let mut ui = simulator(dialog);
         assert!(ui.find("Save “tax.pdf” to my files").is_ok());
         assert!(ui.find("Shared by alex").is_ok());
+    }
+
+    fn file(raw: u128, name: &str, mime: &str) -> SharedNode {
+        SharedNode {
+            mime: mime.to_owned(),
+            ..node(raw, NodeKind::File, name)
+        }
+    }
+
+    fn opened_with(items: Vec<SharedNode>) -> State {
+        let mut state = loaded();
+        let _ = state.update(
+            &client(),
+            Message::Open(share().id, node(2, NodeKind::Folder, "Holiday")),
+        );
+        let load = state.loads;
+        let _ = state.update(&client(), Message::Listed(load, Ok(items)));
+        state
+    }
+
+    #[test]
+    fn a_text_file_row_opens_its_viewer() {
+        let state = opened_with(vec![file(3, "tram.txt", "text/plain")]);
+        let mut ui = simulator(state.view(1000.0));
+
+        ui.click("tram.txt").expect("the row");
+
+        let messages: Vec<_> = ui.into_messages().collect();
+        assert!(matches!(messages.as_slice(), [Message::View(_, item)] if item.name == "tram.txt"));
+    }
+
+    #[test]
+    fn the_viewer_shows_the_text_read_only() {
+        let mut state = opened_with(vec![file(3, "tram.txt", "text/plain")]);
+        let _ = state.update(
+            &client(),
+            Message::View(share().id, file(3, "tram.txt", "text/plain")),
+        );
+        let _ = state.update(
+            &client(),
+            Message::Viewed(state.views, Ok(b"line one".to_vec())),
+        );
+
+        assert_eq!(state.viewing(), Some("tram.txt"));
+        assert!(matches!(
+            state.viewing.as_ref().map(|viewing| &viewing.body),
+            Some(ViewBody::Text(text))
+                if text.text() == "line one" && text.mode() == text_viewer::Mode::Read
+        ));
+    }
+
+    #[test]
+    fn content_for_an_earlier_file_is_dropped() {
+        let pictures = vec![file(3, "a.png", "image/png"), file(4, "b.png", "image/png")];
+        let mut state = opened_with(pictures.clone());
+        let _ = state.update(&client(), Message::View(share().id, pictures[0].clone()));
+        let stale = state.views;
+        let _ = state.update(&client(), Message::Next);
+
+        let _ = state.update(&client(), Message::Viewed(stale, Ok(Vec::new())));
+
+        assert_eq!(state.viewing(), Some("b.png"));
+        assert!(matches!(
+            state.viewing.as_ref().map(|viewing| &viewing.body),
+            Some(ViewBody::Loading)
+        ));
+    }
+
+    #[test]
+    fn closing_the_viewer_goes_back_to_the_folder() {
+        let mut state = opened_with(vec![file(3, "tram.txt", "text/plain")]);
+        let _ = state.update(
+            &client(),
+            Message::View(share().id, file(3, "tram.txt", "text/plain")),
+        );
+
+        let _ = state.update(&client(), Message::CloseView);
+
+        assert_eq!(state.viewing(), None);
+        let mut ui = simulator(state.view(1000.0));
+        assert!(ui.find("tram.txt").is_ok());
     }
 }

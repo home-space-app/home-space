@@ -4,9 +4,12 @@
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use protocol::{ReceivedShare, SharedNode, UserRef};
+use protocol::{NodeId, NodeKind, ReceivedShare, SharedNode, UserRef};
 
-use crate::shared_link::shared_order;
+use crate::{
+    shared_link::shared_order,
+    viewers::{Editing, Viewer, Viewers},
+};
 
 pub const SHARED_WITH_ME: &str = "Shared with me";
 pub const SHARED_BY: &str = "Shared by";
@@ -50,15 +53,72 @@ pub fn find_share(shares: &[ReceivedShare], share_id: Uuid) -> Option<&ReceivedS
     shares.iter().find(|share| share.id == share_id)
 }
 
-/// "Shared by alex · View only. You can open and download, but not change anything.
-/// Available until 30 Nov 2026.", with the date as the client formats it.
-pub fn view_only_note(owner: &str, until: Option<&str>) -> String {
-    let note = format!(
-        "Shared by {owner} · View only. You can open and download, but not change anything."
-    );
-    match until {
-        Some(date) => format!("{note} Available until {date}."),
-        None => note,
+/// The built-in viewer for a shared `item`, read-only since shares cannot be changed; folders
+/// and files no viewer shows have none.
+pub fn shared_viewer(viewers: &Viewers, item: &SharedNode) -> Option<Viewer> {
+    match item.kind {
+        NodeKind::Folder => None,
+        NodeKind::File => viewers
+            .viewer_for(&item.mime, item.size)
+            .map(|viewer| Viewer {
+                editing: Editing::ReadOnly,
+                ..viewer
+            }),
+    }
+}
+
+/// The shared files beside the one shown that open in the same viewer, such as the pictures
+/// of a shared folder, in listing order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedGallery {
+    items: Vec<SharedNode>,
+    current: NodeId,
+}
+
+impl SharedGallery {
+    /// The gallery of `current` among `listing`, the items beside it. `None` when `current`
+    /// has no viewer, or its viewer does not step between files.
+    pub fn new(viewers: &Viewers, listing: &[SharedNode], current: &SharedNode) -> Option<Self> {
+        let kind = shared_viewer(viewers, current)
+            .map(|viewer| viewer.kind)
+            .filter(|kind| kind.navigates())?;
+        let items = listing
+            .iter()
+            .filter(|item| shared_viewer(viewers, item).is_some_and(|viewer| viewer.kind == kind))
+            .cloned()
+            .collect();
+        Some(Self {
+            items,
+            current: current.id,
+        })
+    }
+
+    /// The file before the one shown; none at the first file.
+    pub fn previous(&self) -> Option<&SharedNode> {
+        self.index()
+            .and_then(|index| index.checked_sub(1))
+            .and_then(|index| self.items.get(index))
+    }
+
+    /// The file after the one shown; none at the last file.
+    pub fn next(&self) -> Option<&SharedNode> {
+        self.index()
+            .and_then(|index| index.checked_add(1))
+            .and_then(|index| self.items.get(index))
+    }
+
+    /// Where the file shown is, counting from 1, and how many files there are.
+    pub fn position(&self) -> Option<(usize, usize)> {
+        self.index().map(|index| (index + 1, self.items.len()))
+    }
+
+    /// Shows file `id` instead.
+    pub fn move_to(&mut self, id: NodeId) {
+        self.current = id;
+    }
+
+    fn index(&self) -> Option<usize> {
+        self.items.iter().position(|item| item.id == self.current)
     }
 }
 
@@ -122,14 +182,55 @@ mod tests {
         assert_eq!(rows[1].share_id, shares[0].id);
     }
 
+    fn file(raw: u128, name: &str, mime: &str) -> SharedNode {
+        SharedNode {
+            id: NodeId(Uuid::from_u128(raw)),
+            kind: NodeKind::File,
+            name: name.to_owned(),
+            size: 10,
+            mime: mime.to_owned(),
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
     #[test]
-    fn the_note_names_the_owner_and_the_end_date() {
-        assert_eq!(
-            view_only_note("alex", Some("30 Nov 2026")),
-            "Shared by alex · View only. You can open and download, but not change anything. \
-             Available until 30 Nov 2026."
-        );
-        assert!(!view_only_note("alex", None).contains("Available"));
+    fn a_shared_text_file_opens_read_only() {
+        let viewer = shared_viewer(&Viewers::shared(), &file(1, "a.txt", "text/plain"));
+
+        assert!(viewer.is_some_and(|viewer| !viewer.is_editable()));
+    }
+
+    #[test]
+    fn folders_and_unknown_types_have_no_shared_viewer() {
+        let viewers = Viewers::shared();
+
+        assert!(shared_viewer(&viewers, &node(NodeKind::Folder, "Holiday")).is_none());
+        assert!(shared_viewer(&viewers, &file(1, "a.zip", "application/zip")).is_none());
+    }
+
+    #[test]
+    fn the_gallery_steps_through_the_pictures_only() {
+        let listing = [
+            file(1, "a.png", "image/png"),
+            file(2, "notes.txt", "text/plain"),
+            file(3, "b.jpg", "image/jpeg"),
+        ];
+
+        let mut gallery =
+            SharedGallery::new(&Viewers::shared(), &listing, &listing[0]).expect("a gallery");
+
+        assert_eq!(gallery.position(), Some((1, 2)));
+        assert_eq!(gallery.next().map(|item| item.id), Some(listing[2].id));
+        gallery.move_to(listing[2].id);
+        assert_eq!(gallery.previous().map(|item| item.id), Some(listing[0].id));
+        assert!(gallery.next().is_none());
+    }
+
+    #[test]
+    fn text_files_have_no_gallery() {
+        let listing = [file(1, "a.txt", "text/plain")];
+
+        assert!(SharedGallery::new(&Viewers::shared(), &listing, &listing[0]).is_none());
     }
 
     #[test]
