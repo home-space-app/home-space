@@ -12,6 +12,7 @@ mod ids;
 mod node;
 pub mod paths;
 mod search;
+mod share;
 mod storage;
 mod ticket;
 mod transfer;
@@ -39,6 +40,10 @@ pub use node::{
     Node, NodeKind, NodeProperties, OnConflict, UpdateRequest, UploadQuery,
 };
 pub use search::{SearchHit, SearchQuery};
+pub use share::{
+    CreateShare, PublicShare, Share, ShareAccess, ShareAccessQuery, SharePermission,
+    SharedFolderQuery, SharedNode, SharesQuery, UnlockShare, UpdateShare,
+};
 pub use storage::{
     DatabaseStatus, DiskSpace, DiskStatus, OidcStatus, ServerConfig, ServerStatus, Storage,
     StorageBackend, StorageUsage, UserStorage,

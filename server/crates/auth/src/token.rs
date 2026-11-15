@@ -15,6 +15,8 @@ const KEY_ID_BYTES: usize = 6;
 /// each names what it is and is refused when presented as the other.
 const TYPE_ACCESS: &str = "access";
 const TYPE_TICKET: &str = "ticket";
+/// The `typ` claim of the access token of an unlocked share link.
+const TYPE_SHARE: &str = "share";
 
 /// Signing keys: tokens are signed with the current secret and verified against the current
 /// and any previous secrets, so the secret can be rotated without ending sessions.
@@ -108,7 +110,7 @@ pub fn encode_access(
     Ok(encode(
         &keys.header(),
         &claims,
-        &EncodingKey::from_secret(&keys.current),
+        &EncodingKey::from_secret(&keys.current)?,
     )?)
 }
 
@@ -119,7 +121,7 @@ pub fn decode_access(keys: &Keys, token: &str) -> Result<Claims, AuthError> {
         ..Validation::default()
     };
     let secret = keys.secret_for(token)?;
-    let claims = decode::<AccessClaims>(token, &DecodingKey::from_secret(secret), &validation)
+    let claims = decode::<AccessClaims>(token, &DecodingKey::from_secret(secret)?, &validation)
         .map(|data| data.claims)
         .map_err(|_| AuthError::InvalidCredentials)?;
     if claims.typ == TYPE_ACCESS {
@@ -167,7 +169,7 @@ pub fn encode_ticket(
     Ok(encode(
         &keys.header(),
         &claims,
-        &EncodingKey::from_secret(&keys.current),
+        &EncodingKey::from_secret(&keys.current)?,
     )?)
 }
 
@@ -189,7 +191,7 @@ pub fn decode_ticket(keys: &Keys, token: &str, scope: &str) -> Result<TicketGran
         ..Validation::default()
     };
     let secret = keys.secret_for(token)?;
-    let claims = decode::<TicketClaims>(token, &DecodingKey::from_secret(secret), &validation)
+    let claims = decode::<TicketClaims>(token, &DecodingKey::from_secret(secret)?, &validation)
         .map(|data| data.claims)
         .map_err(|_| AuthError::InvalidCredentials)?;
     if claims.typ == TYPE_TICKET && claims.tkt == scope {
@@ -204,11 +206,78 @@ pub fn decode_ticket(keys: &Keys, token: &str, scope: &str) -> Result<TicketGran
     }
 }
 
+/// Claims carried by the access token of an unlocked share link. Unknown claims are rejected,
+/// so neither an access token nor a ticket passes as one.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ShareClaims {
+    typ: String,
+    shr: Uuid,
+    /// The password version it was granted for.
+    pwv: i32,
+    iat: i64,
+    exp: i64,
+}
+
+/// Which share link, and which of its passwords, an access token was granted for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShareGrant {
+    pub share_id: Uuid,
+    pub password_version: i32,
+}
+
+/// Signs proof that the password of version `grant.password_version` of a share link was
+/// given, valid for `ttl`.
+pub fn encode_share_access(
+    keys: &Keys,
+    grant: ShareGrant,
+    ttl: Duration,
+) -> Result<String, AuthError> {
+    let now = OffsetDateTime::now_utc();
+    let claims = ShareClaims {
+        typ: TYPE_SHARE.to_owned(),
+        shr: grant.share_id,
+        pwv: grant.password_version,
+        iat: now.unix_timestamp(),
+        exp: (now + ttl).unix_timestamp(),
+    };
+    Ok(encode(
+        &keys.header(),
+        &claims,
+        &EncodingKey::from_secret(&keys.current)?,
+    )?)
+}
+
+/// Validates signature and expiry of a share access token, returning what it was granted for.
+pub fn decode_share_access(keys: &Keys, token: &str) -> Result<ShareGrant, AuthError> {
+    let validation = Validation {
+        leeway: 0,
+        ..Validation::default()
+    };
+    let secret = keys.secret_for(token)?;
+    let claims = decode::<ShareClaims>(token, &DecodingKey::from_secret(secret)?, &validation)
+        .map(|data| data.claims)
+        .map_err(|_| AuthError::InvalidCredentials)?;
+    if claims.typ == TYPE_SHARE {
+        Ok(ShareGrant {
+            share_id: claims.shr,
+            password_version: claims.pwv,
+        })
+    } else {
+        Err(AuthError::InvalidCredentials)
+    }
+}
+
 /// Generates a random opaque refresh token.
 pub fn new_refresh_token() -> String {
     let mut bytes = [0u8; REFRESH_TOKEN_BYTES];
     rand::fill(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// Generates the random secret of a share link: 32 bytes, base64url.
+pub fn new_share_token() -> String {
+    new_refresh_token()
 }
 
 /// Hash under which a refresh token is stored.
@@ -261,6 +330,49 @@ mod tests {
         assert!(decode_access(&keys(b"other"), &token).is_err());
     }
 
+    fn grant() -> ShareGrant {
+        ShareGrant {
+            share_id: Uuid::now_v7(),
+            password_version: 3,
+        }
+    }
+
+    #[test]
+    fn share_access_round_trips() {
+        let grant = grant();
+        let token = encode_share_access(&keys(SECRET), grant, Duration::hours(1)).expect("encode");
+        assert_eq!(
+            decode_share_access(&keys(SECRET), &token).expect("decode"),
+            grant
+        );
+    }
+
+    #[test]
+    fn expired_share_access_is_rejected() {
+        let token =
+            encode_share_access(&keys(SECRET), grant(), Duration::seconds(-10)).expect("encode");
+        assert!(decode_share_access(&keys(SECRET), &token).is_err());
+    }
+
+    #[test]
+    fn access_token_is_not_share_access() {
+        let token = encode_access(
+            &keys(SECRET),
+            UserId::new(),
+            Uuid::now_v7(),
+            Duration::minutes(5),
+        )
+        .expect("encode");
+        assert!(decode_share_access(&keys(SECRET), &token).is_err());
+    }
+
+    #[test]
+    fn share_access_is_not_an_access_token() {
+        let token =
+            encode_share_access(&keys(SECRET), grant(), Duration::hours(1)).expect("encode");
+        assert!(decode_access(&keys(SECRET), &token).is_err());
+    }
+
     #[test]
     fn ticket_round_trips_for_its_scope() {
         let user = UserId::new();
@@ -292,8 +404,12 @@ mod tests {
             exp: now + 300,
         };
         let k = keys(SECRET);
-        let token =
-            encode(&k.header(), &claims, &EncodingKey::from_secret(&k.current)).expect("encode");
+        let token = encode(
+            &k.header(),
+            &claims,
+            &EncodingKey::from_secret(&k.current).expect("key"),
+        )
+        .expect("encode");
         assert!(decode_access(&k, &token).is_err());
     }
 
@@ -380,8 +496,12 @@ mod tests {
                 iat: now,
                 exp: now + 300,
             };
-            let token = encode(&k.header(), &claims, &EncodingKey::from_secret(&k.current))
-                .expect("encode");
+            let token = encode(
+                &k.header(),
+                &claims,
+                &EncodingKey::from_secret(&k.current).expect("key"),
+            )
+            .expect("encode");
             assert!(decode_access(&k, &token).is_err(), "{typ:?}");
         }
     }
@@ -399,8 +519,12 @@ mod tests {
             tkt: "events".to_owned(),
             jti: Uuid::now_v7(),
         };
-        let token =
-            encode(&k.header(), &claims, &EncodingKey::from_secret(&k.current)).expect("encode");
+        let token = encode(
+            &k.header(),
+            &claims,
+            &EncodingKey::from_secret(&k.current).expect("key"),
+        )
+        .expect("encode");
         assert!(decode_ticket(&k, &token, "events").is_err());
     }
 

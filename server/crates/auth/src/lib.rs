@@ -11,4 +11,4 @@ pub use error::AuthError;
 pub use oidc::{OidcConfig, OidcService};
 pub use protocol::TokenPair;
 pub use service::{Access, AuthConfig, AuthService, Grant, LOGIN_ATTEMPTS_MEMORY, device_name};
-pub use token::Claims;
+pub use token::{Claims, new_share_token};

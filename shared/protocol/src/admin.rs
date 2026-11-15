@@ -84,7 +84,7 @@ pub struct AccountDevice {
 }
 
 /// A field that is present, even as `null`, becomes `Some`, telling it apart from a missing one.
-fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+pub(crate) fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: Deserializer<'de>,
     T: Deserialize<'de>,

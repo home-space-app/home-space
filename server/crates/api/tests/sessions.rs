@@ -21,7 +21,12 @@ fn forge(claims: Value) -> String {
         kid: Some(URL_SAFE_NO_PAD.encode(&Sha256::digest(SECRET)[..6])),
         ..Header::default()
     };
-    encode(&header, &claims, &EncodingKey::from_secret(SECRET)).expect("forge")
+    encode(
+        &header,
+        &claims,
+        &EncodingKey::from_secret(SECRET).expect("key"),
+    )
+    .expect("forge")
 }
 
 fn access_claims(user: &str, session: Option<Uuid>) -> Value {
