@@ -14,6 +14,7 @@ pub fn Toolbar(
     selected_count: Signal<usize>,
     on_move: Callback<()>,
     on_send: Callback<()>,
+    on_share: Callback<()>,
     on_send_local: Callback<()>,
     on_delete: Callback<()>,
     can_delete: Signal<bool>,
@@ -31,6 +32,7 @@ pub fn Toolbar(
                     text=Signal::derive(move || format!("{} selected", selected_count.get()))
                     icon="more_horiz"
                 >
+                    <MenuItem icon="share" label="Share…" on_select=on_share />
                     <MenuItem icon="send" label="Send to device…" on_select=on_send />
                     <MenuItem icon="drive_file_move" label="Move" on_select=on_move />
                     <Show when=move || can_delete.get()>

@@ -11,6 +11,7 @@ mod search;
 mod search_box;
 mod send_dialog;
 mod settings;
+mod share_dialog;
 mod shell;
 mod sidebar;
 mod transfer_save;

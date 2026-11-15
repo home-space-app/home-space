@@ -9,6 +9,7 @@ pub mod listing;
 pub mod search;
 pub mod selection;
 pub mod send;
+pub mod share;
 pub mod storage;
 pub mod text;
 pub mod transfers;

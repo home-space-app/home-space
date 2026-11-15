@@ -29,6 +29,7 @@ version = "0.3.107"
 features = [
     "Blob",
     "BlobPropertyBag",
+    "Clipboard",
     "CloseEvent",
     "Crypto",
     "CssStyleDeclaration",

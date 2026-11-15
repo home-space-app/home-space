@@ -105,6 +105,14 @@ pub enum Icon {
     /// A user.
     Person,
     Add,
+    /// Shares files through a link.
+    Share,
+    Link,
+    /// Stops a link working.
+    LinkOff,
+    Copy,
+    /// A date.
+    Event,
 }
 
 /// How an icon is tinted.
@@ -185,6 +193,11 @@ impl Icon {
             Self::Send => include_bytes!("../assets/icons/send.svg"),
             Self::Person => include_bytes!("../assets/icons/person.svg"),
             Self::Add => include_bytes!("../assets/icons/add.svg"),
+            Self::Share => include_bytes!("../assets/icons/share.svg"),
+            Self::Link => include_bytes!("../assets/icons/link.svg"),
+            Self::LinkOff => include_bytes!("../assets/icons/link_off.svg"),
+            Self::Copy => include_bytes!("../assets/icons/content_copy.svg"),
+            Self::Event => include_bytes!("../assets/icons/event.svg"),
         }
     }
 

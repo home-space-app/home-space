@@ -27,6 +27,7 @@ const APP_ICON: &[u8] = include_bytes!("../packaging/home-space.png");
 const APP_ICNS: &[u8] = include_bytes!("../packaging/home-space.icns");
 
 fn main() -> iced::Result {
+    locale::init_local_offset();
     #[cfg(target_os = "macos")]
     set_dock_icon();
     let app_id = std::env::var(FLATPAK_ID_VAR).unwrap_or_else(|_| APP_ID.to_owned());

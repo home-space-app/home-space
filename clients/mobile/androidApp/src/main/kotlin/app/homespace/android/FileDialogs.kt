@@ -97,6 +97,8 @@ sealed interface FileAction {
     data class Send(val entries: List<Entry>) : FileAction
     /** Files picked on this phone, to send to a device. */
     data class SendLocal(val files: List<Uri>) : FileAction
+    /** Files and folders of the server, to share through a link. */
+    data class Share(val entries: List<Entry>) : FileAction
 }
 
 /** Shows the dialog of `action`. `onDone` means something changed, so the folder is out of date. */
@@ -147,6 +149,7 @@ internal fun FileDialog(
             )
         }
         is FileAction.SendLocal -> SendLocalDialog(action.files, client, onDismiss, onSessionEnded)
+        is FileAction.Share -> ShareLinkDialog(action.entries, client, onDismiss, onSessionEnded)
     }
 }
 

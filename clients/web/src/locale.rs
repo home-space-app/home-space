@@ -1,5 +1,5 @@
 use js_sys::{Array, Date, Function, Intl::DateTimeFormat, Object, Reflect};
-use time::OffsetDateTime;
+use time::{OffsetDateTime, UtcOffset};
 use wasm_bindgen::JsValue;
 
 /// Formats `time` in the browser's regional settings, in the local time zone.
@@ -39,4 +39,11 @@ pub fn now() -> OffsetDateTime {
     let millis = Date::now() as i128;
     OffsetDateTime::from_unix_timestamp_nanos(millis * 1_000_000)
         .unwrap_or(OffsetDateTime::UNIX_EPOCH)
+}
+
+/// The browser's offset from UTC at `time`, which daylight saving can change.
+pub fn offset_at(time: OffsetDateTime) -> UtcOffset {
+    let millis = (time.unix_timestamp_nanos() / 1_000_000) as f64;
+    let minutes = Date::new(&JsValue::from_f64(millis)).get_timezone_offset();
+    UtcOffset::from_whole_seconds(-(minutes as i32) * 60).unwrap_or(UtcOffset::UTC)
 }
