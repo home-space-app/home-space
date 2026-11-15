@@ -64,6 +64,16 @@ pub struct NewTransfer {
     pub items: Vec<TransferItem>,
 }
 
+/// Which of a recipient's waiting transfers to list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IncomingScope {
+    /// Only those sent to this device.
+    ToDevice(Uuid),
+    /// Those sent to any device, except the ones this device sent: a device that sends to
+    /// another one of the user's lists the transfer as sent, not as received.
+    AllExceptFrom(Option<Uuid>),
+}
+
 /// A transfer removed because its time ran out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExpiredTransfer {
@@ -214,31 +224,44 @@ impl Db {
         Ok((transfer, item))
     }
 
-    /// The transfers sent to `recipient` (only to `device` when given) that wait for them:
-    /// ready or declined, the newest first.
+    /// The transfers sent to `recipient`, within `scope`, that wait for them: ready or
+    /// declined, the newest first.
     pub async fn incoming_transfers(
         &self,
         recipient: UserId,
-        device: Option<Uuid>,
+        scope: IncomingScope,
     ) -> Result<Vec<Transfer>, DbError> {
+        let (to_device, not_from_device) = match scope {
+            IncomingScope::ToDevice(device) => (Some(device), None),
+            IncomingScope::AllExceptFrom(device) => (None, device),
+        };
         let transfers = sqlx::query_as::<_, Transfer>(transfer_query!(
             "t.recipient_id = $1 AND t.state IN ('ready', 'declined') \
              AND ($2::uuid IS NULL OR t.recipient_device = $2) \
+             AND ($3::uuid IS NULL OR t.sender_device IS DISTINCT FROM $3) \
              ORDER BY t.created_at DESC, t.id"
         ))
         .bind(recipient)
-        .bind(device)
+        .bind(to_device)
+        .bind(not_from_device)
         .fetch_all(self.pool())
         .await?;
         Ok(transfers)
     }
 
-    /// The transfers `sender` sent, the newest first.
-    pub async fn outgoing_transfers(&self, sender: UserId) -> Result<Vec<Transfer>, DbError> {
+    /// The transfers `sender` sent from `device`, the newest first. A session without a device
+    /// gets the ones sent from sessions without a device.
+    pub async fn outgoing_transfers(
+        &self,
+        sender: UserId,
+        device: Option<Uuid>,
+    ) -> Result<Vec<Transfer>, DbError> {
         let transfers = sqlx::query_as::<_, Transfer>(transfer_query!(
-            "t.sender_id = $1 ORDER BY t.created_at DESC, t.id"
+            "t.sender_id = $1 AND t.sender_device IS NOT DISTINCT FROM $2 \
+             ORDER BY t.created_at DESC, t.id"
         ))
         .bind(sender)
+        .bind(device)
         .fetch_all(self.pool())
         .await?;
         Ok(transfers)
@@ -477,7 +500,7 @@ mod tests {
         );
         assert_eq!(created.recipient_device_name, "Phone");
         assert!(
-            f.db.incoming_transfers(f.bob, None)
+            f.db.incoming_transfers(f.bob, IncomingScope::AllExceptFrom(None))
                 .await
                 .expect("incoming")
                 .is_empty()
@@ -490,14 +513,14 @@ mod tests {
         let ready = f.db.store_transfer_item(b.id, b"bbb").await.expect("b");
         assert_eq!(ready.map(|t| t.state), Some(TransferState::Ready));
         assert_eq!(
-            f.db.incoming_transfers(f.bob, Some(f.phone))
+            f.db.incoming_transfers(f.bob, IncomingScope::ToDevice(f.phone))
                 .await
                 .expect("incoming")
                 .len(),
             1
         );
         assert!(
-            f.db.incoming_transfers(f.bob, Some(Uuid::now_v7()))
+            f.db.incoming_transfers(f.bob, IncomingScope::ToDevice(Uuid::now_v7()))
                 .await
                 .expect("other device")
                 .is_empty()

@@ -91,7 +91,7 @@ one notified, and the one `GET /transfers/incoming?this_device=true` filters on.
 
 | Request | Result |
 |---|---|
-| `GET /transfers/incoming?this_device=` | Ready and declined transfers sent to the caller (or to the calling device), newest first. |
+| `GET /transfers/incoming?this_device=` | Ready and declined transfers sent to the calling device, or with `this_device=false` to any of the caller's devices except the ones the calling device sent, newest first. |
 | `GET /transfers/{id}` | The summary plus `items: [{id, path, kind, size, sha256?, mime?, modified_at?}]`. |
 | `GET /transfers/{id}/items/{item}/content` | One file. A single `Range: bytes=…` gives 206, so a download can resume. Also accepts `?ticket=` from `POST /tickets {scope: "transfer_item", transfer_id, item_id}`. |
 | `GET /transfers/{id}/archive` | Every file and folder as one zip, made while it is sent: no compression, no `Content-Length` and no `Range`. Also accepts `?ticket=` from `POST /tickets {scope: "transfer_archive", transfer_id}`. A failure partway ends the response with an error instead of a cut-off zip. |
@@ -99,8 +99,10 @@ one notified, and the one `GET /transfers/incoming?this_device=true` filters on.
 | `POST /transfers/{id}/save` `{parent_id?}` | Moves the files into the caller's tree under `parent_id` (the root by default), keeping the folders. A folder name taken at the top becomes `Name (1)`, and a taken file name becomes `name (1).ext`. Answers the nodes created at the top. |
 | `POST /transfers/{id}/decline` | State `declined`. The bytes are removed and the row stays in the incoming list until it expires. |
 
-The sender lists their transfers with `GET /transfers/outgoing` and cancels one with
-`DELETE /transfers/{id}`.
+The sender lists the transfers sent from the calling device with `GET /transfers/outgoing`
+(a session without a device gets the ones sent without a device) and cancels one with
+`DELETE /transfers/{id}`. So a transfer between two of the user's own devices is listed as sent
+on the sending device and as received everywhere else.
 
 Summaries in the lists and events carry `item_count` (files and folders), `file_count`, and
 `name`: the path of the one file or folder at the top of the transfer, when there is only one.

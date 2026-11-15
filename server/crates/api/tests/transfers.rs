@@ -21,6 +21,7 @@ struct Users {
     alice: String,
     alice_laptop: Uuid,
     alice_phone: Uuid,
+    alice_on_phone: String,
     bob: String,
     bob_laptop: Uuid,
     carol: String,
@@ -28,7 +29,7 @@ struct Users {
 
 async fn users(app: &TestApp) -> Users {
     let (alice_laptop, alice_phone, bob_laptop) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
-    app.sign_in_from("alice", alice_phone, "Phone").await;
+    let alice_on_phone = app.sign_in_from("alice", alice_phone, "Phone").await;
     let alice = app.sign_in_from("alice", alice_laptop, "Laptop").await;
     let bob = app.sign_in_from("bob", bob_laptop, "Bob's laptop").await;
     let carol = app.sign_in_from("carol", Uuid::now_v7(), "Carol's").await;
@@ -36,6 +37,7 @@ async fn users(app: &TestApp) -> Users {
         alice,
         alice_laptop,
         alice_phone,
+        alice_on_phone,
         bob,
         bob_laptop,
         carol,
@@ -346,6 +348,39 @@ async fn a_file_from_the_tree_is_sent_as_it_was(pool: PgPool) {
     assert_eq!(received.sender_device_name.as_deref(), Some("Laptop"));
 }
 
+async fn outgoing(app: &TestApp, token: &str) -> Vec<Value> {
+    let response = app.get(&format!("{TRANSFERS}/outgoing"), token).await;
+    assert_eq!(response.status, StatusCode::OK);
+    response.json().as_array().expect("outgoing").clone()
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_transfer_between_own_devices_is_sent_on_one_and_received_on_the_other(pool: PgPool) {
+    let app = setup(pool).await;
+    let u = users(&app).await;
+    let node = upload_file(&app, &u.alice, "a.txt", "hello").await;
+    let created = send(
+        &app,
+        &u.alice,
+        "alice",
+        u.alice_phone,
+        json!([{ "path": "a.txt", "kind": "file", "node_id": node }]),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED);
+    let id = created.json()["id"].clone();
+
+    let sent_on_laptop = outgoing(&app, &u.alice).await;
+    assert_eq!(sent_on_laptop.len(), 1);
+    assert_eq!(sent_on_laptop[0]["id"], id);
+    assert!(incoming(&app, &u.alice).await.is_empty());
+
+    assert!(outgoing(&app, &u.alice_on_phone).await.is_empty());
+    let received_on_phone = incoming(&app, &u.alice_on_phone).await;
+    assert_eq!(received_on_phone.len(), 1);
+    assert_eq!(received_on_phone[0]["id"], id);
+}
+
 #[sqlx::test(migrations = "../../migrations")]
 async fn a_folder_from_the_tree_brings_everything_in_it(pool: PgPool) {
     let app = setup(pool).await;
@@ -416,7 +451,7 @@ async fn a_transfer_downloads_as_one_zip(pool: PgPool) {
     .json();
     let id = created["id"].as_str().expect("id");
 
-    let listed = incoming(&app, &u.alice).await;
+    let listed = incoming(&app, &u.alice_on_phone).await;
     assert_eq!(listed[0]["name"], "Sent");
     assert_eq!(listed[0]["file_count"], 2);
     assert_eq!(listed[0]["item_count"], 3);

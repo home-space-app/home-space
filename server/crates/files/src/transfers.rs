@@ -16,8 +16,8 @@ use tokio::fs;
 use uuid::Uuid;
 
 use db::{
-    ExpiredTransfer, NewTransfer, Node, NodeId, NodeKind, StoreOptions, StoreOutcome, Transfer,
-    TransferItem, UserId,
+    ExpiredTransfer, IncomingScope, NewTransfer, Node, NodeId, NodeKind, StoreOptions,
+    StoreOutcome, Transfer, TransferItem, UserId,
 };
 use protocol::{CreateTransfer, TransferState};
 
@@ -152,22 +152,26 @@ impl FileService {
         Ok((transfer, items))
     }
 
-    /// The transfers waiting for `recipient`, only those sent to `device` when given.
+    /// The transfers waiting for `recipient`, within `scope`.
     pub async fn incoming_transfers(
         &self,
         recipient: UserId,
-        device: Option<Uuid>,
+        scope: IncomingScope,
     ) -> Result<Vec<Transfer>, FilesError> {
         let now = OffsetDateTime::now_utc();
-        let mut transfers = self.db.incoming_transfers(recipient, device).await?;
+        let mut transfers = self.db.incoming_transfers(recipient, scope).await?;
         transfers.retain(|transfer| transfer.expires_at > now);
         Ok(transfers)
     }
 
-    /// The transfers `sender` sent.
-    pub async fn outgoing_transfers(&self, sender: UserId) -> Result<Vec<Transfer>, FilesError> {
+    /// The transfers `sender` sent from `device`; see [`db::Db::outgoing_transfers`].
+    pub async fn outgoing_transfers(
+        &self,
+        sender: UserId,
+        device: Option<Uuid>,
+    ) -> Result<Vec<Transfer>, FilesError> {
         let now = OffsetDateTime::now_utc();
-        let mut transfers = self.db.outgoing_transfers(sender).await?;
+        let mut transfers = self.db.outgoing_transfers(sender, device).await?;
         transfers.retain(|transfer| transfer.expires_at > now);
         Ok(transfers)
     }
