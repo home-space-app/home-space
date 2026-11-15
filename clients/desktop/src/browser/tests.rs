@@ -1512,3 +1512,51 @@ fn the_first_image_has_no_previous() {
     let _ = state.update(Message::Shortcut(Shortcut::Previous));
     assert_eq!(viewed(&state), Some(id(IMAGE_IDS[0])));
 }
+
+/// Sends `messages` to `state`, as the runtime does.
+fn deliver(state: &mut State, messages: Vec<Message>) {
+    for message in messages {
+        let _ = state.update(message);
+    }
+}
+
+#[test]
+fn the_share_picker_follows_its_field_when_the_dialog_grows() {
+    let mut state = state_with_listing();
+    let file = node(FILE_NAME, NodeKind::File, FILE_ID);
+    let (dialog, _) = share::ShareDialog::open(&state.client, vec![file], "alice".to_owned());
+    state.share = Some(dialog);
+    let dana = protocol::UserRef {
+        id: protocol::UserId(Uuid::from_u128(11)),
+        username: "dana".to_owned(),
+    };
+    let _ = state.update(Message::Share(share::Message::Loaded(Ok(Vec::new()))));
+    let _ = state.update(Message::Share(share::Message::UsersLoaded(Ok(vec![
+        dana.clone(),
+    ]))));
+    let messages: Vec<_> = {
+        let mut ui = simulator(state.view());
+        ui.click(client_core::share::ADD_PEOPLE_PLACEHOLDER)
+            .expect("the field is shown");
+        ui.into_messages().collect()
+    };
+    deliver(&mut state, messages);
+    let Some(Menu::SharePeople(opened)) = state.menu else {
+        panic!("the picker is open");
+    };
+
+    let _ = state.update(Message::Share(share::Message::Toggle(dana)));
+    let messages: Vec<_> = {
+        let mut ui = simulator(state.view());
+        ui.simulate([iced::Event::Window(iced::window::Event::RedrawRequested(
+            std::time::Instant::now(),
+        ))]);
+        ui.into_messages().collect()
+    };
+    deliver(&mut state, messages);
+
+    let Some(Menu::SharePeople(followed)) = state.menu else {
+        panic!("the picker stays open");
+    };
+    assert_ne!(followed, opened);
+}

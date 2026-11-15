@@ -3,7 +3,10 @@ package app.homespace.android
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.widget.Toast
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -16,7 +19,11 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -34,7 +41,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SelectableDates
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -69,9 +79,11 @@ import kotlinx.coroutines.launch
 import uniffi.homespace_core.CoreClient
 import uniffi.homespace_core.CoreException
 import uniffi.homespace_core.Entry
+import uniffi.homespace_core.ShareAudience
 import uniffi.homespace_core.ShareExpiry
 import uniffi.homespace_core.ShareForm
 import uniffi.homespace_core.ShareFormState
+import uniffi.homespace_core.SharePerson
 import uniffi.homespace_core.ShareSaved
 
 private const val SAVE = "Save"
@@ -80,6 +92,21 @@ private const val STOP_SHARING = "Stop sharing"
 private const val COPY_LINK = "Copy link"
 private const val NO_LINK_YET = "Save to make the link"
 private const val HIDDEN_PASSWORD = "••••••••••"
+private const val PEOPLE_WITH_ACCESS = "People with access"
+private const val ADD_PEOPLE = "Add people"
+private const val CAN_VIEW = "Can view"
+private const val OWNER = "Owner"
+private const val NO_ONE_FOUND = "No one by that name."
+private const val PEOPLE_NOTE =
+    "People you add can view and download these items. They can’t share them with anyone else."
+private val AVATAR_SIZE = 40.dp
+private val ADD_TILE_RADIUS = 12.dp
+private val PICKER_HEIGHT = 320.dp
+
+private val AUDIENCES = listOf(
+    Triple(ShareAudience.PEOPLE, "People", R.drawable.ic_group),
+    Triple(ShareAudience.LINK, "Link", R.drawable.ic_link),
+)
 private val SECTION_GAP = 20.dp
 private val ROW_GAP = 12.dp
 private val CHIP_GAP = 8.dp
@@ -92,10 +119,14 @@ private val PRESETS = listOf(
     ShareExpiry.NEVER to "Never",
 )
 
-/** A full-screen dialog that shares `entries` through a read-only link, over the screen that asked. */
+/**
+ * A full-screen dialog that shares `entries` read-only with people on the server, or through a
+ * link, over the screen that asked. `owner` is the signed-in user's name.
+ */
 @Composable
 internal fun ShareLinkDialog(
     entries: List<Entry>,
+    owner: String,
     client: CoreClient,
     onDismiss: () -> Unit,
     onSessionEnded: () -> Unit,
@@ -104,7 +135,7 @@ internal fun ShareLinkDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
     ) {
-        ShareLink(entries, client, onDismiss, onSessionEnded)
+        ShareLink(entries, owner, client, onDismiss, onSessionEnded)
     }
 }
 
@@ -112,6 +143,7 @@ internal fun ShareLinkDialog(
 @Composable
 private fun ShareLink(
     entries: List<Entry>,
+    owner: String,
     client: CoreClient,
     onClose: () -> Unit,
     onSessionEnded: () -> Unit,
@@ -127,10 +159,11 @@ private fun ShareLink(
     var confirmStop by remember { mutableStateOf(false) }
     var pickingDate by remember { mutableStateOf(false) }
     var pickedDay by remember { mutableStateOf<LocalDate?>(null) }
+    var addingPeople by remember { mutableStateOf(false) }
 
     LaunchedEffect(client, entries) {
         try {
-            val loaded = client.shareForm(entries)
+            val loaded = client.shareForm(entries, owner)
             form = loaded
             state = loaded.state()
         } catch (_: CoreException.Unauthorized) {
@@ -215,51 +248,76 @@ private fun ShareLink(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            LinkSection(shown.url) { url ->
-                val clipboard = context.getSystemService(ClipboardManager::class.java)
-                clipboard?.setPrimaryClip(ClipData.newPlainText(COPY_LINK, url))
-                Toast.makeText(context, "Link copied", Toast.LENGTH_SHORT).show()
-            }
-            HorizontalDivider()
-            Column(verticalArrangement = Arrangement.spacedBy(ROW_GAP)) {
-                SectionTitle(R.drawable.ic_lock, "Require a password") {
-                    Switch(
-                        checked = shown.requirePassword,
-                        onCheckedChange = { on ->
-                            password = ""
-                            edit { it.setRequirePassword(on) }
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                AUDIENCES.forEachIndexed { index, (audience, label, icon) ->
+                    SegmentedButton(
+                        selected = shown.audience == audience,
+                        onClick = {
+                            error = null
+                            edit { it.setAudience(audience) }
                         },
-                    )
-                }
-                if (shown.editingPassword) {
-                    OutlinedTextField(
-                        value = password,
-                        onValueChange = { typed ->
-                            password = typed
-                            edit { it.setPassword(typed) }
-                        },
-                        label = { Text("Password") },
-                        singleLine = true,
-                        visualTransformation =
-                            if (reveal) VisualTransformation.None else PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        trailingIcon = {
-                            IconButton(onClick = { reveal = !reveal }) {
-                                Icon(
-                                    painterResource(if (reveal) R.drawable.ic_visibility_off else R.drawable.ic_visibility),
-                                    contentDescription = if (reveal) "Hide password" else "Show password",
-                                )
+                        shape = SegmentedButtonDefaults.itemShape(index, AUDIENCES.size),
+                        icon = {
+                            SegmentedButtonDefaults.Icon(active = shown.audience == audience) {
+                                Icon(painterResource(icon), contentDescription = null, Modifier.size(CHIP_CHECK))
                             }
                         },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                } else if (shown.offersChangePassword) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(HIDDEN_PASSWORD, modifier = Modifier.weight(1f))
-                        OutlinedButton(onClick = { edit { it.changePassword() } }) {
-                            Icon(painterResource(R.drawable.ic_key), contentDescription = null)
-                            Spacer(Modifier.width(8.dp))
-                            Text("Change password")
+                    ) { Text(label) }
+                }
+            }
+            if (shown.audience == ShareAudience.PEOPLE) {
+                PeopleSection(
+                    shown,
+                    onRemove = { person -> edit { it.removePerson(person.id) } },
+                    onAdd = { addingPeople = true },
+                )
+            } else {
+                LinkSection(shown.url) { url ->
+                    val clipboard = context.getSystemService(ClipboardManager::class.java)
+                    clipboard?.setPrimaryClip(ClipData.newPlainText(COPY_LINK, url))
+                    Toast.makeText(context, "Link copied", Toast.LENGTH_SHORT).show()
+                }
+                HorizontalDivider()
+                Column(verticalArrangement = Arrangement.spacedBy(ROW_GAP)) {
+                    SectionTitle(R.drawable.ic_lock, "Require a password") {
+                        Switch(
+                            checked = shown.requirePassword,
+                            onCheckedChange = { on ->
+                                password = ""
+                                edit { it.setRequirePassword(on) }
+                            },
+                        )
+                    }
+                    if (shown.editingPassword) {
+                        OutlinedTextField(
+                            value = password,
+                            onValueChange = { typed ->
+                                password = typed
+                                edit { it.setPassword(typed) }
+                            },
+                            label = { Text("Password") },
+                            singleLine = true,
+                            visualTransformation =
+                                if (reveal) VisualTransformation.None else PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            trailingIcon = {
+                                IconButton(onClick = { reveal = !reveal }) {
+                                    Icon(
+                                        painterResource(if (reveal) R.drawable.ic_visibility_off else R.drawable.ic_visibility),
+                                        contentDescription = if (reveal) "Hide password" else "Show password",
+                                    )
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    } else if (shown.offersChangePassword) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(HIDDEN_PASSWORD, modifier = Modifier.weight(1f))
+                            OutlinedButton(onClick = { edit { it.changePassword() } }) {
+                                Icon(painterResource(R.drawable.ic_key), contentDescription = null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Change password")
+                            }
                         }
                     }
                 }
@@ -285,26 +343,49 @@ private fun ShareLink(
                     }
                 }
             }
+            if (shown.audience == ShareAudience.PEOPLE) {
+                Row(horizontalArrangement = Arrangement.spacedBy(ROW_GAP)) {
+                    Icon(
+                        painterResource(R.drawable.ic_info),
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        PEOPLE_NOTE,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            if (shown.url != null) {
-                HorizontalDivider()
-                TextButton(
+            if (shown.hasShare) {
+                OutlinedButton(
                     enabled = !saving,
                     onClick = { confirmStop = true },
-                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
                 ) {
-                    Icon(painterResource(R.drawable.ic_link_off), contentDescription = null)
+                    Icon(painterResource(stopIcon(shown.audience)), contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text(STOP_SHARING)
                 }
             }
         }
+        if (addingPeople) {
+            AddPeopleDialog(
+                form = form,
+                onPick = { person ->
+                    addingPeople = false
+                    edit { it.addPerson(person.id) }
+                },
+                onDismiss = { addingPeople = false },
+            )
+        }
         if (confirmStop) {
             AlertDialog(
                 onDismissRequest = { confirmStop = false },
-                icon = { Icon(painterResource(R.drawable.ic_link_off), contentDescription = null) },
+                icon = { Icon(painterResource(stopIcon(shown.audience)), contentDescription = null) },
                 title = { Text(shown.stopQuestion) },
-                text = { Text("Anyone with the link loses access right away.") },
+                text = { Text(shown.stopNote) },
                 confirmButton = {
                     TextButton(
                         enabled = !saving,
@@ -352,6 +433,114 @@ private fun ShareLink(
             )
         }
     }
+}
+
+private fun stopIcon(audience: ShareAudience): Int = when (audience) {
+    ShareAudience.PEOPLE -> R.drawable.ic_person_remove
+    ShareAudience.LINK -> R.drawable.ic_link_off
+}
+
+/** Who has access: the owner, everyone added, and the button that adds more. */
+@Composable
+private fun PeopleSection(shown: ShareFormState, onRemove: (SharePerson) -> Unit, onAdd: () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(ROW_GAP)) {
+        Text(
+            PEOPLE_WITH_ACCESS,
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        PersonRow(shown.owner, null) {
+            Text(OWNER, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        shown.people.forEach { person ->
+            PersonRow(person.username, person.addedAt?.let { "Added ${localDate(it)}" }) {
+                Text(CAN_VIEW, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                IconButton(onClick = { onRemove(person) }) {
+                    Icon(painterResource(R.drawable.ic_close), contentDescription = "Remove ${person.username}")
+                }
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().clickable(onClick = onAdd).padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(AVATAR_SIZE)
+                    .background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(ADD_TILE_RADIUS)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    painterResource(R.drawable.ic_person_add),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+            }
+            Text(ADD_PEOPLE, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.primary)
+        }
+    }
+}
+
+@Composable
+private fun PersonRow(name: String, detail: String?, end: @Composable () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Avatar(name, AVATAR_SIZE, MaterialTheme.typography.titleMedium)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(name, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            detail?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        end()
+    }
+}
+
+/** Finds the users to share with by name. */
+@Composable
+private fun AddPeopleDialog(form: ShareForm?, onPick: (SharePerson) -> Unit, onDismiss: () -> Unit) {
+    var query by remember { mutableStateOf("") }
+    val found = remember(form, query) { form?.candidates(query) ?: emptyList() }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(painterResource(R.drawable.ic_person_add), contentDescription = null) },
+        title = { Text(ADD_PEOPLE) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(ROW_GAP)) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    placeholder = { Text("Name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (found.isEmpty()) {
+                    Text(NO_ONE_FOUND, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    LazyColumn(modifier = Modifier.heightIn(max = PICKER_HEIGHT)) {
+                        items(found, key = { it.id }) { person ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onPick(person) }
+                                    .padding(vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                            ) {
+                                Avatar(person.username, 32.dp, MaterialTheme.typography.titleSmall)
+                                Text(person.username, style = MaterialTheme.typography.bodyLarge)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 /** The link, or a note that saving makes it, with the button that copies it. */

@@ -97,7 +97,7 @@ sealed interface FileAction {
     data class Send(val entries: List<Entry>) : FileAction
     /** Files picked on this phone, to send to a device. */
     data class SendLocal(val files: List<Uri>) : FileAction
-    /** Files and folders of the server, to share through a link. */
+    /** Files and folders of the server, to share with people or through a link. */
     data class Share(val entries: List<Entry>) : FileAction
 }
 
@@ -106,6 +106,8 @@ sealed interface FileAction {
 internal fun FileDialog(
     action: FileAction,
     client: CoreClient,
+    /** The signed-in user's name. */
+    owner: String,
     onDismiss: () -> Unit,
     onDone: () -> Unit,
     onSessionEnded: () -> Unit,
@@ -149,7 +151,7 @@ internal fun FileDialog(
             )
         }
         is FileAction.SendLocal -> SendLocalDialog(action.files, client, onDismiss, onSessionEnded)
-        is FileAction.Share -> ShareLinkDialog(action.entries, client, onDismiss, onSessionEnded)
+        is FileAction.Share -> ShareLinkDialog(action.entries, owner, client, onDismiss, onSessionEnded)
     }
 }
 

@@ -3,7 +3,7 @@
 use iced::{
     Alignment, Element, Length, Task,
     alignment::Horizontal,
-    widget::{button, column, container, operation, row, scrollable, space, text, text_input},
+    widget::{button, column, container, operation, row, space, text},
 };
 
 use api_client::{ApiError, Client};
@@ -17,6 +17,7 @@ use super::{
     anchor::Anchor,
     context_menu::Placement,
     parts::{self, SECOND_LINE_SIZE, divider},
+    people_picker::{self, Picker},
 };
 use crate::{
     icons::{Icon, Tint},
@@ -33,15 +34,6 @@ const CHIP_GAP: f32 = 6.0;
 const AVATAR: f32 = 18.0;
 const AVATAR_TEXT: f32 = 11.0;
 const REMOVE_ICON: f32 = 14.0;
-const PICKER_WIDTH: f32 = 300.0;
-const PICKER_LIST_HEIGHT: f32 = 180.0;
-const PICKER_PADDING: f32 = 6.0;
-const PICKER_GAP: f32 = 4.0;
-const PICKER_ROW_HEIGHT: f32 = 36.0;
-const PICKER_ROW_PADDING: [f32; 2] = [0.0, 10.0];
-const PICKER_NOTE_PADDING: [f32; 2] = [8.0, 10.0];
-const CHECKBOX: f32 = 18.0;
-const CHECK_MARK: f32 = 14.0;
 const SEARCH_INPUT: &str = "visibility-search";
 const SAVING: &str = "Saving…";
 
@@ -51,6 +43,8 @@ pub enum Message {
     UsersLoaded(Result<Vec<UserRef>, ApiError>),
     /// Opens the people picker hanging from the button that adds users; the browser shows it.
     Pick(Placement),
+    /// The field the people picker hangs from has moved; the browser moves the picker with it.
+    Moved(Placement),
     Query(String),
     /// Adds a user to those who can see the device, or takes them away.
     Toggle(UserRef),
@@ -62,7 +56,7 @@ pub enum Message {
 impl Message {
     /// Whether the message comes from the people picker, which stays open for more.
     pub fn keeps_picker_open(&self) -> bool {
-        matches!(self, Self::Query(_) | Self::Toggle(_))
+        matches!(self, Self::Query(_) | Self::Toggle(_) | Self::Moved(_))
     }
 }
 
@@ -110,6 +104,7 @@ impl State {
                 self.query.clear();
                 return Outcome::Task(operation::focus(SEARCH_INPUT));
             }
+            Message::Moved(_) => {}
             Message::Query(query) => self.query = query,
             Message::Toggle(user) => {
                 match self.picked.iter().position(|picked| picked.id == user.id) {
@@ -241,7 +236,8 @@ impl State {
         // Never sent: the anchor takes the press, and only needs the button to look enabled.
         .on_press(Message::Cancel);
         let add = Anchor::new(add)
-            .on_press(|bounds| Message::Pick(Placement::hanging(bounds, Horizontal::Left)));
+            .on_press(|bounds| Message::Pick(Placement::hanging(bounds, Horizontal::Left)))
+            .on_move(|bounds| Message::Moved(Placement::hanging(bounds, Horizontal::Left)));
         row(self.picked.iter().map(chip))
             .push(add)
             .spacing(CHIPS_GAP)
@@ -252,54 +248,15 @@ impl State {
 
     /// The people picker: a search box over the users, each with a checkbox.
     pub fn picker(&self) -> Element<'_, Message> {
-        let shown = matching(&self.users, &self.query);
-        let rows: Element<'_, Message> = if shown.is_empty() {
-            container(text("Nobody else matches.").style(theme::muted_text))
-                .padding(PICKER_NOTE_PADDING)
-                .into()
-        } else {
-            let rows = shown.into_iter().map(|user| {
-                let checked = self.picked.iter().any(|picked| picked.id == user.id);
-                button(
-                    row![
-                        checkbox(checked),
-                        avatar(&user.username),
-                        text(user.username.as_str())
-                    ]
-                    .spacing(CHOICE_GAP)
-                    .align_y(Alignment::Center),
-                )
-                .padding(PICKER_ROW_PADDING)
-                .width(Length::Fill)
-                .height(PICKER_ROW_HEIGHT)
-                .style(theme::tool)
-                .on_press(Message::Toggle(user.clone()))
-                .into()
-            });
-            scrollable(column(rows)).into()
-        };
-        container(
-            column![
-                text_input("Search people", &self.query)
-                    .id(SEARCH_INPUT)
-                    .style(theme::input)
-                    .padding(parts::FIELD_PADDING)
-                    .on_input(Message::Query),
-                container(rows).max_height(PICKER_LIST_HEIGHT),
-                divider(),
-                container(
-                    text("Only accounts on this server are listed.")
-                        .size(SECOND_LINE_SIZE)
-                        .style(theme::muted_text)
-                )
-                .padding(PICKER_NOTE_PADDING),
-            ]
-            .spacing(PICKER_GAP),
-        )
-        .padding(PICKER_PADDING)
-        .width(PICKER_WIDTH)
-        .style(theme::menu)
-        .into()
+        Picker {
+            users: &self.users,
+            query: &self.query,
+            search_id: SEARCH_INPUT,
+            width: people_picker::MIN_WIDTH,
+            on_query: Message::Query,
+            on_toggle: Message::Toggle,
+        }
+        .view(|id| self.picked.iter().any(|picked| picked.id == id))
     }
 }
 
@@ -333,27 +290,6 @@ fn avatar<'a>(name: &str) -> Element<'a, Message> {
         .center(AVATAR)
         .style(theme::avatar)
         .into()
-}
-
-fn checkbox<'a>(checked: bool) -> Element<'a, Message> {
-    let mark: Element<'a, Message> = if checked {
-        Icon::Check.view(CHECK_MARK, Tint::OnAccent)
-    } else {
-        space().into()
-    };
-    container(mark)
-        .center(CHECKBOX)
-        .style(theme::checkbox(checked))
-        .into()
-}
-
-/// The users whose name contains `query`, ignoring case.
-fn matching<'a>(users: &'a [UserRef], query: &str) -> Vec<&'a UserRef> {
-    let query = query.trim().to_lowercase();
-    users
-        .iter()
-        .filter(|user| query.is_empty() || user.username.to_lowercase().contains(&query))
-        .collect()
 }
 
 /// The icon standing for a visibility in the list of devices.
@@ -449,20 +385,6 @@ mod tests {
             state.update(&client(), Message::Saved(Ok(()))),
             Outcome::Saved
         ));
-    }
-
-    #[test]
-    fn the_picker_filters_by_name_ignoring_case() {
-        let users = [user(1, "dana"), user(2, "Alex"), user(3, "maria")];
-        let names = |query| {
-            matching(&users, query)
-                .into_iter()
-                .map(|user| user.username.as_str())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(names(""), ["dana", "Alex", "maria"]);
-        assert_eq!(names(" AL "), ["Alex"]);
-        assert!(names("zed").is_empty());
     }
 
     #[test]

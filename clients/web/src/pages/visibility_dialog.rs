@@ -10,7 +10,7 @@ use protocol::{Device, DeviceVisibility, SetDeviceVisibility, UserRef};
 
 use super::sidebar::initial;
 use crate::{
-    components::{ErrorAlert, Menu},
+    components::{ErrorAlert, Menu, UserPicker},
     icon::Icon,
     load,
     session::{self, Auth},
@@ -19,15 +19,6 @@ use crate::{
 const VISIBILITY_GROUP: &str = "device-visibility";
 const PICKER_ID: &str = "visibility-users";
 
-/// The users whose name contains `query`, ignoring case.
-fn matching<'a>(users: &'a [UserRef], query: &str) -> Vec<&'a UserRef> {
-    let query = query.trim().to_lowercase();
-    users
-        .iter()
-        .filter(|user| query.is_empty() || user.username.to_lowercase().contains(&query))
-        .collect()
-}
-
 /// Asks who can see `device`; `on_close` gets whether a new setting was saved.
 #[component]
 pub fn VisibilityDialog(device: Device, auth: Auth, on_close: Callback<bool>) -> impl IntoView {
@@ -35,7 +26,6 @@ pub fn VisibilityDialog(device: Device, auth: Auth, on_close: Callback<bool>) ->
     let choice = RwSignal::new(device.visibility);
     let picked = RwSignal::new(device.visible_to.clone());
     let users = RwSignal::new(Vec::<UserRef>::new());
-    let query = RwSignal::new(String::new());
     let error = RwSignal::new(None::<String>);
     let saving = RwSignal::new(false);
 
@@ -122,7 +112,7 @@ pub fn VisibilityDialog(device: Device, auth: Auth, on_close: Callback<bool>) ->
                                         .then(|| {
                                             view! {
                                                 <Show when=selected>
-                                                    <UserChips picked users query toggle />
+                                                    <UserChips picked users toggle />
                                                 </Show>
                                             }
                                         })}
@@ -158,7 +148,6 @@ pub fn VisibilityDialog(device: Device, auth: Auth, on_close: Callback<bool>) ->
 fn UserChips(
     picked: RwSignal<Vec<UserRef>>,
     users: RwSignal<Vec<UserRef>>,
-    query: RwSignal<String>,
     toggle: impl Fn(UserRef) + Copy + Send + Sync + 'static,
 ) -> impl IntoView {
     view! {
@@ -193,91 +182,14 @@ fn UserChips(
                 text=Signal::stored("Add user".to_owned())
                 align_start=true
             >
-                <div class="user-picker">
-                    <label class="user-picker__search">
-                        <Icon name="search" />
-                        <input
-                            class="user-picker__input"
-                            type="search"
-                            placeholder="Search people"
-                            aria-label="Search people"
-                            prop:value=move || query.get()
-                            on:input:target=move |event| query.set(event.target().value())
-                        />
-                    </label>
-                    <ul class="user-picker__list">
-                        {move || {
-                            let users = users.read();
-                            let shown = matching(&users, &query.read());
-                            if shown.is_empty() {
-                                return view! {
-                                    <li class="user-picker__empty">"Nobody else matches."</li>
-                                }
-                                    .into_any();
-                            }
-                            shown
-                                .into_iter()
-                                .cloned()
-                                .map(|user| {
-                                    let user_id = user.id;
-                                    let checked = move || {
-                                        picked.read().iter().any(|chosen| chosen.id == user_id)
-                                    };
-                                    let name = user.username.clone();
-                                    view! {
-                                        <li>
-                                            <label class="user-picker__row">
-                                                <input
-                                                    type="checkbox"
-                                                    class="user-picker__check"
-                                                    prop:checked=checked
-                                                    on:change=move |_| toggle(user.clone())
-                                                />
-                                                <span class="avatar avatar--small" aria-hidden="true">
-                                                    {initial(&name)}
-                                                </span>
-                                                {name.clone()}
-                                            </label>
-                                        </li>
-                                    }
-                                })
-                                .collect_view()
-                                .into_any()
-                        }}
-                    </ul>
-                    <p class="user-picker__note">"Only accounts on this server are listed."</p>
-                </div>
+                <UserPicker
+                    users
+                    picked=Signal::derive(move || {
+                        picked.read().iter().map(|user| user.id).collect()
+                    })
+                    toggle=Callback::new(toggle)
+                />
             </Menu>
         </div>
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use protocol::UserId;
-    use uuid::Uuid;
-
-    use super::*;
-
-    fn user(name: &str) -> UserRef {
-        UserRef {
-            id: UserId(Uuid::nil()),
-            username: name.to_owned(),
-        }
-    }
-
-    #[test]
-    fn the_picker_filters_by_name_ignoring_case() {
-        let users = [user("dana"), user("Alex"), user("maria")];
-        let names = |query| {
-            matching(&users, query)
-                .into_iter()
-                .map(|user| user.username.as_str())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(names(""), ["dana", "Alex", "maria"]);
-        assert_eq!(names("a"), ["dana", "Alex", "maria"]);
-        assert_eq!(names(" AL "), ["Alex"]);
-        assert_eq!(names("zed"), Vec::<&str>::new());
     }
 }

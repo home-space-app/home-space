@@ -7,7 +7,7 @@ use wiremock::{
 };
 
 use api_client::Client;
-use protocol::{CreateShare, NodeId, UpdateShare, paths};
+use protocol::{CreateShare, NodeId, UpdateShare, UserId, paths};
 
 const SHARE_ID: &str = "00000000-0000-0000-0000-0000000000a1";
 const NODE_ID: &str = "00000000-0000-0000-0000-000000000002";
@@ -79,11 +79,12 @@ async fn create_share_sends_the_items_password_and_expiry() {
             node_ids: vec![node_id()],
             password: Some("secret-pw".to_owned()),
             expires_at: Some(datetime!(2026-11-22 10:00 UTC)),
+            recipients: Vec::new(),
         })
         .await
         .expect("create");
 
-    assert_eq!(share.token, TOKEN);
+    assert_eq!(share.token.as_deref(), Some(TOKEN));
     assert!(share.has_password);
 }
 
@@ -124,7 +125,7 @@ async fn update_share_sends_only_what_changes() {
             share_id(),
             &UpdateShare {
                 password: Some(None),
-                expires_at: None,
+                ..UpdateShare::default()
             },
         )
         .await
@@ -155,4 +156,45 @@ async fn share_url_points_at_the_web_page_of_the_link() {
         client.share_url(TOKEN),
         format!("https://files.example/s/{TOKEN}")
     );
+}
+
+#[tokio::test]
+async fn create_share_sends_who_it_is_for() {
+    let server = MockServer::start().await;
+    let dana = UserId(uuid::Uuid::from_u128(7));
+    Mock::given(method("POST"))
+        .and(path(paths::SHARES))
+        .and(body_json(
+            json!({ "node_ids": [NODE_ID], "recipients": [dana] }),
+        ))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": share_id(),
+            "items": [],
+            "has_password": false,
+            "permission": "read",
+            "expires_at": null,
+            "created_at": "2026-11-15T10:00:00Z",
+            "recipients": [{
+                "user": { "id": dana, "username": "dana" },
+                "permission": "read",
+                "added_at": "2026-11-15T10:00:00Z"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = signed_in(&server).await;
+
+    let share = client
+        .create_share(&CreateShare {
+            node_ids: vec![node_id()],
+            password: None,
+            expires_at: None,
+            recipients: vec![dana],
+        })
+        .await
+        .expect("create");
+
+    assert_eq!(share.token, None);
+    assert_eq!(share.recipients[0].user.username, "dana");
 }

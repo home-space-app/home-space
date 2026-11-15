@@ -11,6 +11,7 @@ mod input;
 mod layout;
 mod lost_and_found;
 pub(crate) mod parts;
+mod people_picker;
 mod search;
 mod selection;
 mod send;
@@ -150,6 +151,15 @@ enum Menu {
     Device(Uuid, Placement),
     /// The people picker of the device visibility dialog.
     Users(Placement),
+    /// The people picker of the share dialog.
+    SharePeople(Placement),
+}
+
+impl Menu {
+    /// Whether it opens from a dialog, so it goes over that dialog rather than under it.
+    fn over_dialog(self) -> bool {
+        matches!(self, Self::Users(_) | Self::SharePeople(_))
+    }
 }
 
 /// What the browser shows below the header, other than search results.
@@ -400,6 +410,14 @@ impl State {
                 self.devices_update(devices::Message::Visibility(visibility::Message::Pick(
                     placement,
                 )))
+            }
+            Message::Devices(devices::Message::Visibility(visibility::Message::Moved(
+                placement,
+            ))) => {
+                if let Some(Menu::Users(_)) = self.menu {
+                    self.menu = Some(Menu::Users(placement));
+                }
+                Task::none()
             }
             Message::Devices(message) => {
                 if !message.keeps_picker_open() {
@@ -850,7 +868,8 @@ impl State {
             (Action::Download, _) => files::download(&self.client, selected),
             (Action::Send, _) => self.open_send(send::Source::Nodes(selected)),
             (Action::Share, _) => {
-                let (dialog, task) = share::ShareDialog::open(&self.client, selected);
+                let (dialog, task) =
+                    share::ShareDialog::open(&self.client, selected, self.me.username.clone());
                 self.share = Some(dialog);
                 task.map(Message::Share)
             }
@@ -978,6 +997,15 @@ impl State {
         let Some(dialog) = &mut self.share else {
             return Task::none();
         };
+        self.menu = match message {
+            share::Message::Pick(placement) => Some(Menu::SharePeople(placement)),
+            share::Message::Moved(placement) => self.menu.map(|menu| match menu {
+                Menu::SharePeople(_) => Menu::SharePeople(placement),
+                other => other,
+            }),
+            _ if message.keeps_picker_open() => self.menu,
+            _ => None,
+        };
         match dialog.update(&self.client, message) {
             share::Outcome::Task(task) => task.map(Message::Share),
             share::Outcome::Closed => {
@@ -1042,6 +1070,10 @@ impl State {
         }
         if self.share.is_some() {
             match shortcut {
+                Shortcut::Escape if matches!(self.menu, Some(Menu::SharePeople(_))) => {
+                    self.menu = None;
+                    Task::none()
+                }
                 Shortcut::Escape => self.share_update(share::Message::Cancel),
                 Shortcut::Activate => self.share_update(share::Message::Submit),
                 _ => Task::none(),

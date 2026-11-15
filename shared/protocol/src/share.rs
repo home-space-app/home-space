@@ -1,6 +1,6 @@
-//! Read-only share links (`/shares`, `/public/shares/{token}`).
+//! Read-only shares (`/shares`, `/public/shares/{token}`).
 //!
-//! The owner makes a link to one or more of their files and folders with `POST /shares`.
+//! A share is either for named users, who read it once signed in, or a link. The owner makes a link to one or more of their files and folders with `POST /shares`.
 //! Anyone with the link reads the shared items through `/public/shares/{token}` without
 //! signing in. A link with a password answers only its metadata until it is unlocked with
 //! `POST /public/shares/{token}/unlock`, whose access token goes in the
@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{Node, NodeId, NodeKind, admin::present};
+use crate::{Node, NodeId, NodeKind, UserId, UserRef, admin::present};
 
 /// Body of `POST /shares`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,6 +28,9 @@ pub struct CreateShare {
         skip_serializing_if = "Option::is_none"
     )]
     pub expires_at: Option<OffsetDateTime>,
+    /// The users to share with; empty for a link. A share with users has no password.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recipients: Vec<UserId>,
 }
 
 /// Body of `PATCH /shares/{id}`. A missing field is left as it is; `null` removes the
@@ -42,6 +45,9 @@ pub struct UpdateShare {
     pub password: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "maybe_time")]
     pub expires_at: Option<Option<OffsetDateTime>>,
+    /// Everyone a share with users is for from now on; never empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipients: Option<Vec<UserId>>,
 }
 
 /// Query of `GET /shares`.
@@ -66,12 +72,25 @@ pub enum SharePermission {
     Read,
 }
 
-/// A share link, as its owner sees it.
+/// A user a share is for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShareRecipient {
+    pub user: UserRef,
+    #[serde(default)]
+    pub permission: SharePermission,
+    /// When the user was added to the share.
+    #[serde(with = "time::serde::rfc3339")]
+    pub added_at: OffsetDateTime,
+}
+
+/// A share, as its owner sees it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Share {
     pub id: Uuid,
-    /// The secret part of the link; see [`paths::web_share`](crate::paths::web_share).
-    pub token: String,
+    /// The secret part of the link, see [`paths::web_share`](crate::paths::web_share); `None`
+    /// for a share with users.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
     /// The shared items that are not in the recycle bin.
     pub items: Vec<Node>,
     pub has_password: bool,
@@ -81,6 +100,16 @@ pub struct Share {
     pub expires_at: Option<OffsetDateTime>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    /// Who a share with users is for, by username; empty for a link.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recipients: Vec<ShareRecipient>,
+}
+
+impl Share {
+    /// Whether anyone with a link reads it, rather than named users.
+    pub fn is_link(&self) -> bool {
+        self.token.is_some()
+    }
 }
 
 /// A file or folder seen through a share link: only what a visitor needs to see.
@@ -194,6 +223,7 @@ mod tests {
         let update = UpdateShare {
             password: Some(None),
             expires_at: Some(None),
+            recipients: None,
         };
         let json = serde_json::to_string(&update).expect("json");
         assert_eq!(json, r#"{"password":null,"expires_at":null}"#);

@@ -110,6 +110,8 @@ pub enum Icon {
     Link,
     /// Stops a link working.
     LinkOff,
+    /// Stops sharing with people.
+    PersonRemove,
     Copy,
     /// A date.
     Event,
@@ -196,6 +198,7 @@ impl Icon {
             Self::Share => include_bytes!("../assets/icons/share.svg"),
             Self::Link => include_bytes!("../assets/icons/link.svg"),
             Self::LinkOff => include_bytes!("../assets/icons/link_off.svg"),
+            Self::PersonRemove => include_bytes!("../assets/icons/person_remove.svg"),
             Self::Copy => include_bytes!("../assets/icons/content_copy.svg"),
             Self::Event => include_bytes!("../assets/icons/event.svg"),
         }

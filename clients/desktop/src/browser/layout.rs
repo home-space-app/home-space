@@ -104,7 +104,7 @@ impl State {
             );
         }
         // The people picker opens from a dialog, so it goes over it below.
-        let menu = self.menu.filter(|menu| !matches!(menu, Menu::Users(_)));
+        let menu = self.menu.filter(|menu| !menu.over_dialog());
         if let Some(menu) = menu {
             layers.extend(self.menu_layers(menu, &selected));
         }
@@ -131,6 +131,9 @@ impl State {
                 share.view(&self.client).map(Message::Share),
                 Message::Share(share::Message::Cancel),
             ));
+            if let Some(Menu::SharePeople(placement)) = self.menu {
+                layers.extend(menu_layers(share.picker().map(Message::Share), placement));
+            }
         }
         match &self.page {
             Page::Devices(devices) => {
@@ -328,7 +331,7 @@ impl State {
                 (placement, context_menu::device(id, can_sign_out))
             }
             // Shown over its dialog by the caller.
-            Menu::Users(placement) => (placement, space().into()),
+            Menu::Users(placement) | Menu::SharePeople(placement) => (placement, space().into()),
         };
         menu_layers(panel, placement)
     }
