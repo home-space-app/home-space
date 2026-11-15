@@ -25,6 +25,15 @@ pub enum TicketRequest {
     TransferArchive {
         transfer_id: Uuid,
     },
+    /// A file reached through a share made for the user.
+    SharedFile {
+        share_id: Uuid,
+        node_id: NodeId,
+    },
+    /// A share made for the user, or a folder inside it, as one zip.
+    SharedArchive {
+        share_id: Uuid,
+    },
 }
 
 /// A short-lived ticket passed in the query string where headers are unavailable.

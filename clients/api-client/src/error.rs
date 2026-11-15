@@ -4,6 +4,10 @@ use protocol::ErrorCode;
 const NETWORK_CODE: &str = "network";
 /// Code of a body that could not be read, for [`ApiError::code`].
 const DECODE_CODE: &str = "decode";
+/// What a failed browser request says: the browser hides why, and its error only carries a
+/// stack trace.
+#[cfg(target_arch = "wasm32")]
+const UNREACHABLE: &str = "could not reach the server";
 
 /// Failure of an API call.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -109,13 +113,22 @@ fn cloudflare_reason(status: u16) -> Option<&'static str> {
 
 impl From<reqwest::Error> for ApiError {
     fn from(err: reqwest::Error) -> Self {
-        let message = with_causes(&err);
         if err.is_decode() {
-            Self::Decode(message)
+            Self::Decode(with_causes(&err))
         } else {
-            Self::Transport(message)
+            Self::Transport(transport_message(&err))
         }
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn transport_message(err: &reqwest::Error) -> String {
+    with_causes(err)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn transport_message(_err: &reqwest::Error) -> String {
+    UNREACHABLE.to_owned()
 }
 
 /// `err` followed by its sources, since reqwest's own message ("error sending request")

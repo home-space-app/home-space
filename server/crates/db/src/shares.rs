@@ -30,6 +30,14 @@ macro_rules! owned_columns {
     };
 }
 
+macro_rules! received_columns {
+    () => {
+        "s.id, s.owner_id, u.username AS owner_name, s.expires_at, su.created_at AS shared_at \
+         FROM share_users su JOIN shares s ON s.id = su.share_id \
+         JOIN users u ON u.id = s.owner_id"
+    };
+}
+
 macro_rules! item_columns {
     () => {
         "n.id, n.owner_id, n.parent_id, n.kind, n.name, n.size, n.sha256, n.mime, n.version, \
@@ -61,6 +69,47 @@ impl ShareLink {
     /// Whether the link stopped working at `now`.
     pub fn is_expired(&self, now: OffsetDateTime) -> bool {
         self.expires_at.is_some_and(|expires_at| expires_at <= now)
+    }
+
+    /// What the link reaches.
+    pub fn root(&self) -> SharedRoot {
+        SharedRoot {
+            id: self.id,
+            owner_id: self.owner_id,
+        }
+    }
+}
+
+/// A share as far as reaching its nodes goes: which share, and whose tree it is in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SharedRoot {
+    pub id: Uuid,
+    pub owner_id: UserId,
+}
+
+/// A share another user made for the reader, with the name of its owner.
+#[derive(Clone, Debug, PartialEq, Eq, FromRow)]
+pub struct ReceivedShare {
+    pub id: Uuid,
+    pub owner_id: UserId,
+    pub owner_name: String,
+    pub expires_at: Option<OffsetDateTime>,
+    /// When the reader was added to the share.
+    pub shared_at: OffsetDateTime,
+}
+
+impl ReceivedShare {
+    /// Whether the share stopped working at `now`.
+    pub fn is_expired(&self, now: OffsetDateTime) -> bool {
+        self.expires_at.is_some_and(|expires_at| expires_at <= now)
+    }
+
+    /// What the share reaches.
+    pub fn root(&self) -> SharedRoot {
+        SharedRoot {
+            id: self.id,
+            owner_id: self.owner_id,
+        }
     }
 }
 
@@ -400,9 +449,42 @@ impl Db {
         Ok(share)
     }
 
+    /// The shares other users made for `user` that have not expired at `now`, newest first.
+    pub async fn received_shares(
+        &self,
+        user: UserId,
+        now: OffsetDateTime,
+    ) -> Result<Vec<ReceivedShare>, DbError> {
+        let shares = sqlx::query_as::<_, ReceivedShare>(concat!(
+            "SELECT ",
+            received_columns!(),
+            " WHERE su.user_id = $1 AND (s.expires_at IS NULL OR s.expires_at > $2) \
+             ORDER BY su.created_at DESC, s.id"
+        ))
+        .bind(user)
+        .bind(now)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(shares)
+    }
+
+    /// A share made for `user`, expired or not; `NotFound` when there is none.
+    pub async fn received_share(&self, user: UserId, id: Uuid) -> Result<ReceivedShare, DbError> {
+        let share = sqlx::query_as::<_, ReceivedShare>(concat!(
+            "SELECT ",
+            received_columns!(),
+            " WHERE su.user_id = $1 AND s.id = $2"
+        ))
+        .bind(user)
+        .bind(id)
+        .fetch_one(self.pool())
+        .await?;
+        Ok(share)
+    }
+
     /// A live node reachable through `share`: a shared item or something inside a shared
     /// folder, with nothing on the way up in the recycle bin. `NotFound` for anything else.
-    pub async fn shared_node(&self, share: &ShareLink, id: NodeId) -> Result<Node, DbError> {
+    pub async fn shared_node(&self, share: SharedRoot, id: NodeId) -> Result<Node, DbError> {
         let reachable: bool = sqlx::query_scalar(concat!(
             "WITH RECURSIVE chain AS ( \
                  SELECT n.id, n.parent_id, 0 AS depth FROM nodes n \
@@ -436,7 +518,7 @@ impl Db {
     /// such a folder.
     pub async fn shared_children(
         &self,
-        share: &ShareLink,
+        share: SharedRoot,
         parent_id: NodeId,
     ) -> Result<Vec<Node>, DbError> {
         let parent = self.shared_node(share, parent_id).await?;
@@ -500,7 +582,10 @@ mod tests {
             .await
             .expect("share");
         assert_eq!(
-            db.shared_node(&share, file.id).await.expect("reachable").id,
+            db.shared_node(share.root(), file.id)
+                .await
+                .expect("reachable")
+                .id,
             file.id
         );
     }
@@ -517,11 +602,11 @@ mod tests {
             .await
             .expect("share");
         assert!(matches!(
-            db.shared_node(&share, sibling.id).await,
+            db.shared_node(share.root(), sibling.id).await,
             Err(DbError::NotFound)
         ));
         assert!(matches!(
-            db.shared_node(&share, parent.id).await,
+            db.shared_node(share.root(), parent.id).await,
             Err(DbError::NotFound)
         ));
     }

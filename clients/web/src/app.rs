@@ -10,8 +10,8 @@ use crate::{
     leave_guard,
     pages::{
         AdminPage, AdminTab, Browser, DevicesPage, Login, OidcCallback, PublicSharePage,
-        SearchPage, SettingsPage, SharesPage, Shell, TransferList, TransfersPage, TrashPage,
-        ViewerPage,
+        SearchPage, SettingsPage, SharedWithMePage, SharesPage, Shell, TransferList, TransfersPage,
+        TrashPage, ViewerPage,
     },
     session::Auth,
     uploads::{Sending, UploadItem, UploadPanel},
@@ -62,6 +62,14 @@ pub fn App() -> impl IntoView {
                         <Route
                             path=path!("/settings/devices")
                             view=move || view! { <DevicesPage auth /> }
+                        />
+                        <Route
+                            path=path!("/shared")
+                            view=move || view! { <SharedWithMePage auth /> }
+                        />
+                        <Route
+                            path=path!("/shared/:share")
+                            view=move || view! { <SharedWithMePage auth /> }
                         />
                         <Route
                             path=path!("/settings/shares")

@@ -479,7 +479,7 @@ impl FileService {
         Ok(transfer)
     }
 
-    async fn save_folder(
+    pub(crate) async fn save_folder(
         &self,
         owner: UserId,
         parent: Option<NodeId>,

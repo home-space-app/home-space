@@ -52,14 +52,14 @@ pub fn routes() -> Router<AppState> {
         .route("/public/shares/{token}/archive", get(public_archive))
 }
 
-fn db_error(err: DbError) -> ApiError {
+pub(super) fn db_error(err: DbError) -> ApiError {
     match err {
         DbError::NotFound => ApiError::NotFound,
         other => ApiError::Internal(other.to_string()),
     }
 }
 
-fn shared_node(node: db::Node) -> SharedNode {
+pub(super) fn shared_node(node: db::Node) -> SharedNode {
     SharedNode {
         id: node.id,
         kind: node.kind,
@@ -373,7 +373,7 @@ async fn public_nodes(
     let share = readable(&state, &token, &headers, &access).await?;
     let children = state
         .db
-        .shared_children(&share, folder.parent_id)
+        .shared_children(share.root(), folder.parent_id)
         .await
         .map_err(db_error)?;
     Ok(Json(children.into_iter().map(shared_node).collect()))
@@ -386,7 +386,11 @@ async fn public_content(
     Query(access): Query<ShareAccessQuery>,
 ) -> Result<Response, ApiError> {
     let share = readable(&state, &token, &headers, &access).await?;
-    let node = state.db.shared_node(&share, id).await.map_err(db_error)?;
+    let node = state
+        .db
+        .shared_node(share.root(), id)
+        .await
+        .map_err(db_error)?;
     if node.kind != NodeKind::File {
         return Err(ApiError::NotFound);
     }
@@ -408,17 +412,20 @@ async fn public_archive(
     Query(archive): Query<ShareArchiveQuery>,
 ) -> Result<Response, ApiError> {
     let share = readable(&state, &token, &headers, &access).await?;
-    let entries = state.files.share_archive(&share, archive.folder_id).await?;
-    let name = archive_name(&share, &entries);
+    let entries = state
+        .files
+        .share_archive(share.root(), archive.folder_id)
+        .await?;
+    let name = archive_name(&share.owner_name, &entries);
     Ok(zip_response(&name, entries))
 }
 
 /// The name of a share's zip: its only top-level entry, or who shared it.
-fn archive_name(share: &db::ShareLink, entries: &[files::ArchiveEntry]) -> String {
+pub(super) fn archive_name(owner_name: &str, entries: &[files::ArchiveEntry]) -> String {
     let mut top = entries.iter().filter(|entry| !entry.path.contains('/'));
     match (top.next(), top.next()) {
         (Some(only), None) => only.path.clone(),
-        _ => format!("{SHARED_BY} {}", share.owner_name),
+        _ => format!("{SHARED_BY} {owner_name}"),
     }
 }
 

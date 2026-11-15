@@ -1045,6 +1045,8 @@ fn scope_of(request: &TicketRequest) -> String {
             item_id,
         } => format!("transfer:{transfer_id}:{item_id}"),
         TicketRequest::TransferArchive { transfer_id } => format!("transfer:{transfer_id}"),
+        TicketRequest::SharedFile { share_id, node_id } => format!("shared:{share_id}:{node_id}"),
+        TicketRequest::SharedArchive { share_id } => format!("shared:{share_id}"),
     }
 }
 

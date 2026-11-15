@@ -16,6 +16,8 @@ pub const ICON_SIZE: f32 = 20.0;
 pub enum Icon {
     Folder,
     FolderOutline,
+    /// Shared with the user by someone else.
+    FolderShared,
     Back,
     /// Waiting for its turn.
     Schedule,
@@ -161,6 +163,7 @@ impl Icon {
             Self::Close => include_bytes!("../assets/icons/close.svg"),
             Self::Info => include_bytes!("../assets/icons/info.svg"),
             Self::Check => include_bytes!("../assets/icons/check.svg"),
+            Self::FolderShared => include_bytes!("../assets/icons/folder_shared.svg"),
             Self::Down => include_bytes!("../assets/icons/arrow_downward.svg"),
             Self::Dns => include_bytes!("../assets/icons/dns.svg"),
             Self::Key => include_bytes!("../assets/icons/key.svg"),
@@ -243,7 +246,12 @@ fn mix(from: Color, to: Color, amount: f32) -> Color {
 
 /// The icon that represents `node`.
 pub fn node_icon(node: &Node) -> Icon {
-    match client_core::icon::node_icon(node) {
+    kind_icon(node.kind, &node.mime)
+}
+
+/// The icon of a file or folder of `kind` with `mime`.
+pub fn kind_icon(kind: protocol::NodeKind, mime: &str) -> Icon {
+    match client_core::icon::kind_icon(kind, mime) {
         NodeIcon::Folder => Icon::Folder,
         NodeIcon::Image => Icon::Image,
         NodeIcon::Document => Icon::Document,

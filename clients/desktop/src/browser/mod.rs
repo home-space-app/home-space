@@ -16,6 +16,7 @@ mod search;
 mod selection;
 mod send;
 mod share;
+mod shared;
 mod sidebar;
 mod sync_queue;
 mod syncing;
@@ -112,6 +113,8 @@ pub enum Message {
     Details(details::Message),
     OpenTrash,
     Trash(trash::Message),
+    OpenShared,
+    Shared(shared::Message),
     OpenSyncQueue,
     OpenSyncSettings,
     OpenDevices,
@@ -167,6 +170,8 @@ enum Page {
     Folder,
     /// The recycle bin.
     Trash(Box<trash::State>),
+    /// What other users shared with the user.
+    Shared(Box<shared::State>),
     /// What the sync has left to do.
     SyncQueue,
     /// What syncs where.
@@ -396,6 +401,11 @@ impl State {
             Message::Details(message) => self.details_update(message),
             Message::OpenTrash => self.open_trash(),
             Message::Trash(message) => self.trash_update(message),
+            Message::OpenShared => self.open_shared(),
+            Message::Shared(message) => match &mut self.page {
+                Page::Shared(shared) => shared.update(&self.client, message).map(Message::Shared),
+                _ => Task::none(),
+            },
             Message::OpenSyncQueue => self.open_sync_page(Page::SyncQueue),
             Message::OpenSyncSettings => self.open_sync_page(Page::SyncSettings),
             Message::OpenDevices => self.open_devices(),
@@ -653,6 +663,18 @@ impl State {
         task.map(Message::Trash)
     }
 
+    fn open_shared(&mut self) -> Task<Message> {
+        self.search.clear();
+        self.folder.error = None;
+        self.details = None;
+        self.menu = None;
+        self.folder.selection.clear();
+        let mut shared = shared::State::open(self.me.lost_and_found_id);
+        let task = shared.load(&self.client);
+        self.page = Page::Shared(Box::new(shared));
+        task.map(Message::Shared)
+    }
+
     fn open_sync_page(&mut self, page: Page) -> Task<Message> {
         self.search.clear();
         self.folder.error = None;
@@ -717,6 +739,9 @@ impl State {
     fn reload(&mut self) -> Task<Message> {
         match &mut self.page {
             Page::Trash(trash) => trash.load(&self.client).map(Message::Trash),
+            Page::Shared(shared) => shared
+                .update(&self.client, shared::Message::Refresh)
+                .map(Message::Shared),
             Page::Devices(devices) => devices.load(&self.client).map(Message::Devices),
             Page::Transfers => self
                 .transfer_list
@@ -1116,6 +1141,20 @@ impl State {
                 _ => {}
             }
             Task::none()
+        } else if let Page::Shared(shared) = &mut self.page {
+            match shortcut {
+                Shortcut::Escape if shared.is_asking() => self.handle(Message::Shared(
+                    shared::Message::SaveDialog(transfer_save::Message::Cancel),
+                )),
+                Shortcut::Activate if shared.is_asking() => self.handle(Message::Shared(
+                    shared::Message::SaveDialog(transfer_save::Message::Submit),
+                )),
+                Shortcut::Refresh => self.reload(),
+                Shortcut::Escape | Shortcut::Back | Shortcut::Parent => {
+                    self.open_folder(self.folder.id)
+                }
+                _ => Task::none(),
+            }
         } else if let Page::Devices(devices) = &mut self.page {
             match shortcut {
                 Shortcut::Escape if devices.is_asking() => {
@@ -1272,6 +1311,7 @@ fn leaves_page(message: &Message) -> bool {
             | Message::OpenFiles
             | Message::OpenLostAndFound
             | Message::OpenTrash
+            | Message::OpenShared
             | Message::OpenSyncQueue
             | Message::OpenSyncSettings
             | Message::OpenDevices

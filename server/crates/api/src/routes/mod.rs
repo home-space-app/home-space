@@ -7,6 +7,7 @@ mod content;
 mod devices;
 mod nodes;
 mod search;
+mod shared;
 mod shares;
 mod storage;
 mod transfers;
@@ -34,6 +35,7 @@ pub fn routes() -> Router<AppState> {
         .merge(uploads::routes())
         .merge(users::routes())
         .merge(search::routes())
+        .merge(shared::routes())
         .merge(shares::routes())
         .merge(storage::routes())
         .merge(ws::routes())

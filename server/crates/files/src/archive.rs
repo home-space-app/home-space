@@ -4,7 +4,7 @@ use std::{collections::HashSet, path::PathBuf};
 
 use time::OffsetDateTime;
 
-use db::{NodeId, NodeKind, ShareLink};
+use db::{NodeId, NodeKind, SharedRoot};
 
 use crate::{FileService, FilesError};
 
@@ -24,11 +24,11 @@ pub struct ArchiveEntry {
 }
 
 impl FileService {
-    /// Everything a visitor can reach through `share`, or inside its folder `folder`, as the
+    /// Everything a reader can reach through `share`, or inside its folder `folder`, as the
     /// entries of a zip. Shared items with the same name get a number, as `name (2)`.
     pub async fn share_archive(
         &self,
-        share: &ShareLink,
+        share: SharedRoot,
         folder: Option<NodeId>,
     ) -> Result<Vec<ArchiveEntry>, FilesError> {
         let roots = match folder {

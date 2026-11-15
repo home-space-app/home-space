@@ -111,6 +111,24 @@ impl BlobStore {
         fs::rename(&staged.path, target).await
     }
 
+    /// Stages the current content of a node of `owner` to be stored as another file: a hard
+    /// link where the file system allows it, a copy otherwise. Blobs are only ever replaced by
+    /// a rename, so the link keeps the content as it is now.
+    pub async fn stage_copy(
+        &self,
+        owner: UserId,
+        node: NodeId,
+        size: u64,
+        sha256: Vec<u8>,
+    ) -> io::Result<StagedBlob> {
+        let path = self.root.join(TMP_DIR).join(NodeId::new().to_string());
+        let source = self.blob_path(owner, node);
+        if fs::hard_link(&source, &path).await.is_err() {
+            fs::copy(&source, &path).await?;
+        }
+        Ok(StagedBlob { path, size, sha256 })
+    }
+
     /// Discards a staged blob.
     pub async fn discard(&self, staged: StagedBlob) {
         let _ = fs::remove_file(&staged.path).await;

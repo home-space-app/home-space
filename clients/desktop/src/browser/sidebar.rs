@@ -8,7 +8,7 @@ use iced::{
 };
 
 use super::{Message, Page, State, anchor::Anchor, context_menu::Placement, syncing, toolbar::tip};
-use client_core::labels::LOST_AND_FOUND;
+use client_core::{labels::LOST_AND_FOUND, received::SHARED_WITH_ME};
 
 use crate::{
     ellipsis::ellipsized,
@@ -96,6 +96,14 @@ impl State {
                 0,
                 compact,
                 Message::OpenFiles
+            ),
+            place(
+                Icon::FolderShared,
+                SHARED_WITH_ME,
+                matches!(self.page, Page::Shared(_)),
+                0,
+                compact,
+                Message::OpenShared
             ),
             place(
                 Icon::Sync,

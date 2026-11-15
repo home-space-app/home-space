@@ -14,7 +14,7 @@ use uuid::Uuid;
 use files::ArchiveEntry;
 use notifications::Event;
 use protocol::{
-    CreateTransfer, CreatedTransfer, CreatedTransferItem, IncomingQuery, Node, NodeKind,
+    CreateTransfer, CreatedTransfer, CreatedTransferItem, IncomingQuery, Node, NodeId, NodeKind,
     SaveTransfer, TicketRequest, Transfer, TransferItem, TransferState, TransferSummary, UserRef,
 };
 
@@ -248,25 +248,38 @@ async fn save(
         .save_transfer(user.id, id, parent)
         .await?;
     publish_finished(&state, &saved.transfer);
+    let top = publish_saved(&state, user.id, parent, saved.folders, saved.files).await;
+    Ok(Json(top))
+}
+
+/// Tells `owner`'s devices about folders and files saved into their tree under `parent`, and
+/// answers the ones at the top.
+pub(super) async fn publish_saved(
+    state: &AppState,
+    owner: db::UserId,
+    parent: Option<NodeId>,
+    folders: Vec<db::Node>,
+    files: Vec<db::StoreOutcome>,
+) -> Vec<Node> {
     let mut top = Vec::new();
-    for folder in saved.folders {
+    for folder in folders {
         state.index_name(&folder).await;
         let is_top = folder.parent_id == parent;
         let node = Node::from(folder);
         state
             .hub
-            .publish(user.id, Event::NodeCreated { node: node.clone() });
+            .publish(owner, Event::NodeCreated { node: node.clone() });
         if is_top {
             top.push(node);
         }
     }
-    for outcome in saved.files {
-        let (_, Json(node)) = publish_stored(&state, user.id, outcome).await;
+    for outcome in files {
+        let (_, Json(node)) = publish_stored(state, owner, outcome).await;
         if node.parent_id == parent {
             top.push(node);
         }
     }
-    Ok(Json(top))
+    top
 }
 
 /// A file of a ready transfer, for its recipient. Answers one `Range` of bytes when asked,

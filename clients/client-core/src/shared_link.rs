@@ -60,7 +60,12 @@ pub fn initial(owner: &str) -> String {
 
 /// Folders first, then by name, ignoring case.
 pub fn sort_shared(items: &mut [SharedNode]) {
-    items.sort_by(|a, b| folders_first(a.kind, b.kind).then_with(|| by_name(&a.name, &b.name)));
+    items.sort_by(shared_order);
+}
+
+/// Folders before files, then by name, ignoring case.
+pub fn shared_order(a: &SharedNode, b: &SharedNode) -> Ordering {
+    folders_first(a.kind, b.kind).then_with(|| by_name(&a.name, &b.name))
 }
 
 /// How many folders of the open `trail` still lead to `path`: those need not be looked up

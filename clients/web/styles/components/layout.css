@@ -246,6 +246,15 @@
     flex-direction: row;
   }
 
+  /* Only the open section keeps its name, so every section fits on one row. */
+  .sidebar__link:not(.sidebar__link--active) .sidebar__label {
+    display: none;
+  }
+
+  .sidebar__label {
+    white-space: nowrap;
+  }
+
   .sidebar__footer {
     flex-direction: row;
     align-items: center;
