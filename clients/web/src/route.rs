@@ -59,6 +59,33 @@ pub fn search(query: &str) -> String {
     format!("{SEARCH_PATH}?{SEARCH_PARAM}={encoded}")
 }
 
+/// The query parameter of a share link page naming the folders opened inside it.
+pub const SHARE_PATH_PARAM: &str = "path";
+const SHARE_PATH_SEPARATOR: char = '.';
+
+/// The page of share link `token` opened at the folder reached through `trail`.
+pub fn shared_folder(token: &str, trail: &[NodeId]) -> String {
+    let page = protocol::paths::web_share(token);
+    if trail.is_empty() {
+        page
+    } else {
+        let path = trail
+            .iter()
+            .map(|id| short_id(*id))
+            .collect::<Vec<_>>()
+            .join(&SHARE_PATH_SEPARATOR.to_string());
+        format!("{page}?{SHARE_PATH_PARAM}={path}")
+    }
+}
+
+/// The folders named by a share link page's path, up to the first that is not an id.
+pub fn parse_share_path(value: &str) -> Vec<NodeId> {
+    value
+        .split(SHARE_PATH_SEPARATOR)
+        .map_while(parse_id)
+        .collect()
+}
+
 /// Parses a route id, accepting the short form and the legacy hex form.
 pub fn parse_id(value: &str) -> Option<NodeId> {
     URL_SAFE_NO_PAD
@@ -108,6 +135,30 @@ mod tests {
     #[test]
     fn search_path_percent_encodes_the_query() {
         assert_eq!(search("a b&c/ü"), "/search?q=a%20b%26c%2F%C3%BC");
+    }
+
+    #[test]
+    fn a_share_page_at_its_top_has_no_path() {
+        assert_eq!(shared_folder("tok", &[]), "/s/tok");
+    }
+
+    #[test]
+    fn a_share_page_path_round_trips() {
+        let other = NodeId::from(Uuid::from_u128(7));
+        let url = shared_folder("tok", &[id(), other]);
+        let path = url.strip_prefix("/s/tok?path=").unwrap_or_default();
+        assert_eq!(parse_share_path(path), vec![id(), other]);
+    }
+
+    #[test]
+    fn a_share_page_path_stops_at_a_bad_id() {
+        let path = format!("{}.nope.{}", short_id(id()), short_id(id()));
+        assert_eq!(parse_share_path(&path), vec![id()]);
+    }
+
+    #[test]
+    fn an_empty_share_page_path_names_no_folder() {
+        assert_eq!(parse_share_path(""), Vec::<NodeId>::new());
     }
 
     #[test]

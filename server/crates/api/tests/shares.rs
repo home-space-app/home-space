@@ -704,3 +704,139 @@ async fn a_stopped_link_no_longer_works(pool: PgPool) {
     let listing = public(&app, &format!("/api/v1/public/shares/{token}"), &[]).await;
     assert_eq!(listing.status, StatusCode::NOT_FOUND);
 }
+
+fn zip_names(response: &Response) -> Vec<String> {
+    let zip = zip::ZipArchive::new(std::io::Cursor::new(response.body.clone())).expect("zip");
+    zip.file_names()
+        .map(|name| name.expect("name").into_owned())
+        .collect()
+}
+
+fn zip_text(response: &Response, name: &str) -> String {
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(response.body.clone())).expect("zip");
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name(name).expect("entry"), &mut text).expect("read");
+    text
+}
+
+fn disposition(response: &Response) -> &str {
+    response.headers["content-disposition"]
+        .to_str()
+        .expect("disposition")
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn everything_a_link_shares_downloads_as_one_zip(pool: PgPool) {
+    let app = setup(pool).await;
+    let alice = app.user_token("alice").await;
+    let photos = folder(&app, &alice, "Photos", None).await;
+    let trip = folder(&app, &alice, "Trip", Some(&photos)).await;
+    file(&app, &alice, "beach.jpg", Some(&trip), "sand").await;
+    let report = file(&app, &alice, "report.txt", None, "pdf").await;
+    let (token, _) = share_plain(&app, &alice, &[&photos, &report]).await;
+
+    let response = public(&app, &format!("/api/v1/public/shares/{token}/archive"), &[]).await;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.headers["content-type"], "application/zip");
+    assert!(disposition(&response).ends_with("Shared%20by%20alice.zip"));
+    let mut names = zip_names(&response);
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "Photos/",
+            "Photos/Trip/",
+            "Photos/Trip/beach.jpg",
+            "report.txt"
+        ]
+    );
+    assert_eq!(zip_text(&response, "Photos/Trip/beach.jpg"), "sand");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_folder_inside_a_link_downloads_on_its_own(pool: PgPool) {
+    let app = setup(pool).await;
+    let alice = app.user_token("alice").await;
+    let photos = folder(&app, &alice, "Photos", None).await;
+    let trip = folder(&app, &alice, "Trip", Some(&photos)).await;
+    file(&app, &alice, "beach.jpg", Some(&trip), "sand").await;
+    file(&app, &alice, "cover.jpg", Some(&photos), "cover").await;
+    let (token, _) = share_plain(&app, &alice, &[&photos]).await;
+
+    let response = public(
+        &app,
+        &format!("/api/v1/public/shares/{token}/archive?folder_id={trip}"),
+        &[],
+    )
+    .await;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert!(disposition(&response).ends_with("Trip.zip"));
+    assert_eq!(zip_names(&response), ["Trip/", "Trip/beach.jpg"]);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn shared_items_with_the_same_name_are_numbered_in_the_zip(pool: PgPool) {
+    let app = setup(pool).await;
+    let alice = app.user_token("alice").await;
+    let work = folder(&app, &alice, "Work", None).await;
+    let home = folder(&app, &alice, "Home", None).await;
+    let first = file(&app, &alice, "report.txt", Some(&home), "home").await;
+    let second = file(&app, &alice, "report.txt", Some(&work), "work").await;
+    let (token, _) = share_plain(&app, &alice, &[&first, &second]).await;
+
+    let response = public(&app, &format!("/api/v1/public/shares/{token}/archive"), &[]).await;
+
+    assert_eq!(response.status, StatusCode::OK);
+    let mut names = zip_names(&response);
+    names.sort();
+    assert_eq!(names, ["report (2).txt", "report.txt"]);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_folder_outside_the_link_cannot_be_zipped(pool: PgPool) {
+    let app = setup(pool).await;
+    let alice = app.user_token("alice").await;
+    let home = folder(&app, &alice, "Home", None).await;
+    let photos = folder(&app, &alice, "Photos", Some(&home)).await;
+    let report = file(&app, &alice, "report.txt", Some(&photos), "pdf").await;
+    let (token, _) = share_plain(&app, &alice, &[&photos]).await;
+
+    for id in [&home, &report] {
+        let response = public(
+            &app,
+            &format!("/api/v1/public/shares/{token}/archive?folder_id={id}"),
+            &[],
+        )
+        .await;
+        assert_eq!(response.status, StatusCode::NOT_FOUND, "zip of {id}");
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_zip_of_a_locked_link_needs_its_access_token(pool: PgPool) {
+    let app = setup(pool).await;
+    let alice = app.user_token("alice").await;
+    let report = file(&app, &alice, "report.txt", None, "pdf").await;
+    let created = share(
+        &app,
+        &alice,
+        json!({ "node_ids": [report], "password": SHARE_PASSWORD }),
+    )
+    .await;
+    let token = created.json()["token"].as_str().expect("token").to_owned();
+    let archive = format!("/api/v1/public/shares/{token}/archive");
+
+    let locked = public(&app, &archive, &[]).await;
+    let access = unlock(&app, &token, SHARE_PASSWORD).await.json()["access"]
+        .as_str()
+        .expect("access")
+        .to_owned();
+    let unlocked = public(&app, &format!("{archive}?access={access}"), &[]).await;
+
+    assert_eq!(locked.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(unlocked.status, StatusCode::OK);
+    assert!(disposition(&unlocked).ends_with("report.txt.zip"));
+    assert_eq!(zip_names(&unlocked), ["report.txt"]);
+}

@@ -23,7 +23,12 @@ pub enum NodeIcon {
 
 /// The icon that represents `node`, chosen by MIME type.
 pub fn node_icon(node: &Node) -> NodeIcon {
-    match (node.kind, node.mime.as_str()) {
+    kind_icon(node.kind, &node.mime)
+}
+
+/// The icon of an item of `kind` and `mime` type, for items that are not a [`Node`].
+pub fn kind_icon(kind: NodeKind, mime: &str) -> NodeIcon {
+    match (kind, mime) {
         (NodeKind::Folder, _) => NodeIcon::Folder,
         (_, mime) if mime.starts_with(IMAGE_PREFIX) => NodeIcon::Image,
         (_, mime)

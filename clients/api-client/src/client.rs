@@ -673,7 +673,7 @@ impl Client {
     }
 }
 
-async fn decode<T: DeserializeOwned>(response: Response) -> Result<T, ApiError> {
+pub(crate) async fn decode<T: DeserializeOwned>(response: Response) -> Result<T, ApiError> {
     if response.status().is_success() {
         Ok(response.json().await?)
     } else {

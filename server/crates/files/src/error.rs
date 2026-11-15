@@ -43,6 +43,9 @@ pub enum FilesError {
     /// The manifest of a transfer is not acceptable.
     #[error("{0}")]
     InvalidTransfer(String),
+    /// A zip would hold more than `limit` entries.
+    #[error("too many items to download at once; at most {limit} fit")]
+    TooManyItems { limit: usize },
     #[error("storage error: {0}")]
     Io(#[from] std::io::Error),
     #[error(transparent)]
