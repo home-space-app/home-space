@@ -115,3 +115,39 @@
     font-size: max(16px, 1em);
   }
 }
+
+.share-row__name {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.share-row__name:hover {
+  color: var(--color-accent);
+}
+
+.share-row__title {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.share-row__pill .icon {
+  font-size: 14px;
+}
+
+.share-row__items {
+  color: var(--color-muted);
+  font-size: 0.8125rem;
+  font-weight: 400;
+}
+
+@media (width < 640px) {
+  .share-row__items {
+    display: none;
+  }
+}

@@ -30,6 +30,8 @@ pub const TRASH_PATH: &str = "/trash";
 pub const SETTINGS_PATH: &str = "/settings";
 /// The settings tab listing the user's devices.
 pub const DEVICES_PATH: &str = "/settings/devices";
+/// The settings tab listing the user's share links.
+pub const SHARES_PATH: &str = "/settings/shares";
 
 /// Files sent to the user's devices.
 pub const TRANSFERS_PATH: &str = "/transfers";

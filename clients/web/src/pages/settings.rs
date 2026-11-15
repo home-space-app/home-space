@@ -1,10 +1,14 @@
-//! The user's own settings: profile, password and storage. Devices are the second tab.
+//! The user's own settings: profile, password and storage. Devices and share links are the
+//! other tabs.
 
 use leptos::{ev::SubmitEvent, prelude::*, task::spawn_local};
 use leptos_router::components::A;
 
 use api_client::ApiError;
-use client_core::storage::{bytes, fraction};
+use client_core::{
+    share::SHARES_TAB,
+    storage::{bytes, fraction},
+};
 use protocol::{Event, Storage};
 
 use super::{
@@ -29,6 +33,7 @@ pub fn SettingsHeader() -> impl IntoView {
         <Tabs>
             <Tab href=route::SETTINGS_PATH icon="person" label="Account" />
             <Tab href=route::DEVICES_PATH icon="devices" label="Devices" />
+            <Tab href=route::SHARES_PATH icon="link" label=SHARES_TAB />
         </Tabs>
     }
 }

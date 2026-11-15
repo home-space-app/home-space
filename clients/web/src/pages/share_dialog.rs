@@ -25,37 +25,52 @@ const NO_LINK_YET: &str = "Save to make the link";
 const PICKED_DATE_AHEAD: Duration = Duration::days(7);
 
 /// Shares `nodes` through a link: makes one, or edits the link that shares exactly them.
+/// Given `existing`, it edits that link, and with `stopping` it first asks to stop sharing it;
+/// declining then closes the dialog.
 #[component]
-pub fn ShareDialog(nodes: Vec<Node>, auth: Auth, on_close: Callback<()>) -> impl IntoView {
+pub fn ShareDialog(
+    nodes: Vec<Node>,
+    auth: Auth,
+    on_close: Callback<()>,
+    #[prop(optional)] existing: Option<Share>,
+    #[prop(optional)] stopping: bool,
+) -> impl IntoView {
     let node_ids: Vec<NodeId> = nodes.iter().map(|node| node.id).collect();
     let first = node_ids.first().copied();
-    let share = RwSignal::new(None::<Share>);
-    let draft = RwSignal::new(ShareDraft::new());
-    let loading = RwSignal::new(true);
+    let known = existing.is_some();
+    let draft = RwSignal::new(
+        existing
+            .as_ref()
+            .map_or_else(ShareDraft::new, ShareDraft::of),
+    );
+    let share = RwSignal::new(existing);
+    let loading = RwSignal::new(!known);
     let saving = RwSignal::new(false);
     let error = RwSignal::new(None::<String>);
     let copied = RwSignal::new(false);
     let reveal = RwSignal::new(false);
-    let confirm_stop = RwSignal::new(false);
+    let confirm_stop = RwSignal::new(stopping && known);
 
     let wanted = StoredValue::new(node_ids);
-    load::load(
-        move || async move { session::client().shares(first).await },
-        move |result| {
-            loading.set(false);
-            match result {
-                Ok(shares) => {
-                    if let Some(found) =
-                        wanted.with_value(|ids| matching_share(&shares, ids).cloned())
-                    {
-                        draft.set(ShareDraft::of(&found));
-                        share.set(Some(found));
+    if !known {
+        load::load(
+            move || async move { session::client().shares(first).await },
+            move |result| {
+                loading.set(false);
+                match result {
+                    Ok(shares) => {
+                        if let Some(found) =
+                            wanted.with_value(|ids| matching_share(&shares, ids).cloned())
+                        {
+                            draft.set(ShareDraft::of(&found));
+                            share.set(Some(found));
+                        }
                     }
+                    Err(err) => error.set(Some(auth.fail(&err))),
                 }
-                Err(err) => error.set(Some(auth.fail(&err))),
-            }
-        },
-    );
+            },
+        );
+    }
 
     let link = Memo::new(move |_| {
         share
@@ -154,7 +169,13 @@ pub fn ShareDialog(nodes: Vec<Node>, auth: Auth, on_close: Callback<()>) -> impl
                             <StopSharing
                                 question=question.clone()
                                 busy=saving
-                                on_cancel=Callback::new(move |()| confirm_stop.set(false))
+                                on_cancel=Callback::new(move |()| {
+                                    if stopping {
+                                        on_close.run(());
+                                    } else {
+                                        confirm_stop.set(false);
+                                    }
+                                })
                                 on_confirm=Callback::new(stop)
                             />
                         }
