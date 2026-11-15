@@ -211,9 +211,9 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
         run: |
+          # versionCode comes from build.gradle.kts, where scripts/release.sh bumps it.
           ./gradlew :androidApp:assembleRelease \
-            -Phomespace.versionName=${{ needs.version.outputs.version }} \
-            -Phomespace.versionCode=${{ github.run_number }}
+            -Phomespace.versionName=${{ needs.version.outputs.version }}
       - name: Sign the APK
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
