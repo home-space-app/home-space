@@ -14,18 +14,23 @@ use uuid::Uuid;
 
 use db::{DbError, NewShareLink, NodeKind, ShareLinkUpdate, SharePermission};
 use protocol::{
-    CreateShare, NodeId, PublicShare, Share, ShareAccess, ShareAccessQuery, SharedFolderQuery,
-    SharedNode, SharesQuery, UnlockShare, UpdateShare, paths::SHARE_ACCESS,
+    CreateShare, NodeId, PublicShare, Share, ShareAccess, ShareAccessQuery, ShareArchiveQuery,
+    SharedFolderQuery, SharedNode, SharesQuery, UnlockShare, UpdateShare, paths::SHARE_ACCESS,
 };
 
 use crate::{
     ApiError, AppState,
     extract::{AuthUser, ClientIp},
-    routes::content::{Download, ranged},
+    routes::{
+        archive::zip_response,
+        content::{Download, ranged},
+    },
 };
 
 /// The most items one link may share.
 const MAX_SHARE_ITEMS: usize = 1000;
+/// Names the zip of a link with several items, before the owner's name.
+const SHARED_BY: &str = "Shared by";
 /// No token is longer; anything longer is refused before the database is asked.
 const MAX_TOKEN_LEN: usize = 128;
 
@@ -40,6 +45,7 @@ pub fn routes() -> Router<AppState> {
             "/public/shares/{token}/files/{id}/content",
             get(public_content),
         )
+        .route("/public/shares/{token}/archive", get(public_archive))
 }
 
 fn db_error(err: DbError) -> ApiError {
@@ -312,6 +318,29 @@ async fn public_content(
         size: u64::try_from(node.size).unwrap_or_default(),
     };
     ranged(&headers, download, file).await
+}
+
+/// Everything the link shares, or one folder inside it, as one zip.
+async fn public_archive(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(token): Path<String>,
+    Query(access): Query<ShareAccessQuery>,
+    Query(archive): Query<ShareArchiveQuery>,
+) -> Result<Response, ApiError> {
+    let share = readable(&state, &token, &headers, &access).await?;
+    let entries = state.files.share_archive(&share, archive.folder_id).await?;
+    let name = archive_name(&share, &entries);
+    Ok(zip_response(&name, entries))
+}
+
+/// The name of a share's zip: its only top-level entry, or who shared it.
+fn archive_name(share: &db::ShareLink, entries: &[files::ArchiveEntry]) -> String {
+    let mut top = entries.iter().filter(|entry| !entry.path.contains('/'));
+    match (top.next(), top.next()) {
+        (Some(only), None) => only.path.clone(),
+        _ => format!("{SHARED_BY} {}", share.owner_name),
+    }
 }
 
 #[cfg(test)]

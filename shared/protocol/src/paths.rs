@@ -48,6 +48,8 @@ pub const PUBLIC_SHARES: &str = "/api/v1/public/shares";
 pub const SHARE_ACCESS: &str = "Share-Access";
 /// Query parameter carrying it where headers cannot be sent.
 pub const SHARE_ACCESS_PARAM: &str = "access";
+/// Query parameter naming the folder of a share to zip.
+pub const SHARE_FOLDER_PARAM: &str = "folder_id";
 /// Where the web client opens a share link.
 pub const WEB_SHARE: &str = "/s";
 /// Header of `PATCH /uploads/{id}` naming where the chunk starts, and of upload responses
@@ -125,6 +127,10 @@ pub fn public_share_nodes(token: &str) -> String {
 
 pub fn public_share_file_content(token: &str, id: NodeId) -> String {
     format!("{PUBLIC_SHARES}/{token}/files/{id}/content")
+}
+
+pub fn public_share_archive(token: &str) -> String {
+    format!("{PUBLIC_SHARES}/{token}/archive")
 }
 
 /// The web client page of a share link, relative to the server origin.

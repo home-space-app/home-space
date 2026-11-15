@@ -133,6 +133,14 @@ pub struct SharedFolderQuery {
     pub parent_id: NodeId,
 }
 
+/// Query of `GET /public/shares/{token}/archive`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShareArchiveQuery {
+    /// A folder inside the share to zip; the whole share when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_id: Option<NodeId>,
+}
+
 /// Query naming the access token where the [`SHARE_ACCESS`](crate::paths::SHARE_ACCESS) header
 /// cannot be sent, as in a download link.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

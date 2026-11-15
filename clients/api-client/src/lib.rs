@@ -7,6 +7,7 @@ mod devices;
 mod error;
 mod password;
 mod pkce;
+mod public_shares;
 mod server_address;
 mod shares;
 mod storage;

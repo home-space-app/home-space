@@ -1,4 +1,5 @@
 mod admin;
+mod archive;
 mod auth;
 mod capabilities;
 mod changes;

@@ -1,12 +1,14 @@
 //! File management for home-space: blob storage on disk plus ownership-scoped
 //! operations on the folder/file tree.
 
+mod archive;
 mod error;
 mod service;
 mod store;
 mod transfers;
 mod uploads;
 
+pub use archive::{ArchiveEntry, MAX_ARCHIVE_ENTRIES};
 pub use error::FilesError;
 pub use service::{DEFAULT_CHUNK_BYTES, FileService};
 pub use store::BlobStore;

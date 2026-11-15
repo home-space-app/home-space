@@ -85,7 +85,7 @@ impl ApiError {
             | Self::Auth(AuthError::TooManyAttempts { .. } | AuthError::Busy { .. }) => {
                 (StatusCode::TOO_MANY_REQUESTS, ErrorCode::TooManyRequests)
             }
-            Self::Files(FilesError::TooLarge { .. }) => {
+            Self::Files(FilesError::TooLarge { .. } | FilesError::TooManyItems { .. }) => {
                 (StatusCode::PAYLOAD_TOO_LARGE, ErrorCode::PayloadTooLarge)
             }
             Self::Files(FilesError::QuotaExceeded { .. }) => {

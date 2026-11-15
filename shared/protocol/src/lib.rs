@@ -41,8 +41,8 @@ pub use node::{
 };
 pub use search::{SearchHit, SearchQuery};
 pub use share::{
-    CreateShare, PublicShare, Share, ShareAccess, ShareAccessQuery, SharePermission,
-    SharedFolderQuery, SharedNode, SharesQuery, UnlockShare, UpdateShare,
+    CreateShare, PublicShare, Share, ShareAccess, ShareAccessQuery, ShareArchiveQuery,
+    SharePermission, SharedFolderQuery, SharedNode, SharesQuery, UnlockShare, UpdateShare,
 };
 pub use storage::{
     DatabaseStatus, DiskSpace, DiskStatus, OidcStatus, ServerConfig, ServerStatus, Storage,

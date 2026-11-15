@@ -423,7 +423,7 @@ impl BlobStore {
             .join(version.to_string())
     }
 
-    fn blob_path(&self, owner: UserId, node: NodeId) -> PathBuf {
+    pub(crate) fn blob_path(&self, owner: UserId, node: NodeId) -> PathBuf {
         self.root
             .join(BLOBS_DIR)
             .join(owner.to_string())

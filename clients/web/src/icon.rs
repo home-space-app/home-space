@@ -1,7 +1,7 @@
 use client_core::icon::NodeIcon;
 use leptos::prelude::*;
 
-use protocol::Node;
+use protocol::{Node, NodeKind};
 
 const ICON_FOLDER: &str = "folder";
 const ICON_IMAGE: &str = "image";
@@ -10,7 +10,12 @@ const ICON_OTHER: &str = "draft";
 
 /// The Material Symbols ligature that represents `node`.
 pub fn node_icon(node: &Node) -> &'static str {
-    match client_core::icon::node_icon(node) {
+    kind_icon(node.kind, &node.mime)
+}
+
+/// The Material Symbols ligature of an item of `kind` and `mime` type.
+pub fn kind_icon(kind: NodeKind, mime: &str) -> &'static str {
+    match client_core::icon::kind_icon(kind, mime) {
         NodeIcon::Folder => ICON_FOLDER,
         NodeIcon::Image => ICON_IMAGE,
         NodeIcon::Document => ICON_DOCUMENT,
