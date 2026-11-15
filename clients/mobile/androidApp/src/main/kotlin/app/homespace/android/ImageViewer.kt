@@ -150,7 +150,13 @@ internal fun ImageViewerScreen(session: Session.SignedIn, model: SessionViewMode
                 )
             }
             HorizontalPager(state = pager, key = { entries[it].id }, modifier = Modifier.fillMaxSize()) { page ->
-                ImagePage(session.client, entries[page], model::onSessionEnded)
+                val entry = entries[page]
+                ImagePage(
+                    key = entry.id to entry.sha256,
+                    name = entry.name,
+                    load = { session.client.readImage(entry.id).bytes },
+                    onSessionEnded = model::onSessionEnded,
+                )
             }
         }
     }
@@ -163,14 +169,14 @@ private sealed interface Picture {
     data class Failed(val message: String) : Picture
 }
 
+/** One picture, read with `load` whenever `key` changes, fitted to the page. */
 @Composable
-private fun ImagePage(client: CoreClient, entry: Entry, onSessionEnded: () -> Unit) {
+internal fun ImagePage(key: Any, name: String, load: suspend () -> ByteArray, onSessionEnded: () -> Unit) {
     val metrics = LocalContext.current.resources.displayMetrics
     val maxSide = maxOf(metrics.widthPixels, metrics.heightPixels)
-    val picture by produceState<Picture>(Picture.Loading, entry.id, entry.sha256) {
+    val picture by produceState<Picture>(Picture.Loading, key) {
         value = try {
-            val file = client.readImage(entry.id)
-            decode(file.bytes, maxSide)?.let { Picture.Shown(it) } ?: Picture.Failed(NOT_DECODED)
+            decode(load(), maxSide)?.let { Picture.Shown(it) } ?: Picture.Failed(NOT_DECODED)
         } catch (_: CoreException.Unauthorized) {
             onSessionEnded()
             Picture.Loading
@@ -183,7 +189,7 @@ private fun ImagePage(client: CoreClient, entry: Entry, onSessionEnded: () -> Un
             Picture.Loading -> CircularProgressIndicator()
             is Picture.Shown -> Image(
                 bitmap = shown.bitmap,
-                contentDescription = entry.name,
+                contentDescription = name,
                 contentScale = ContentScale.Fit,
                 modifier = Modifier.fillMaxSize(),
             )

@@ -74,14 +74,12 @@ pub fn shared_folder(token: &str, trail: &[NodeId]) -> String {
     if trail.is_empty() {
         page
     } else {
-        let path = trail
-            .iter()
-            .map(|id| short_id(*id))
-            .collect::<Vec<_>>()
-            .join(&SHARE_PATH_SEPARATOR.to_string());
-        format!("{page}?{SHARE_PATH_PARAM}={path}")
+        format!("{page}?{SHARE_PATH_PARAM}={}", share_path(trail))
     }
 }
+
+/// The query parameter of a "Shared with me" page naming the file open in its viewer.
+pub const SHARED_VIEW_PARAM: &str = "view";
 
 /// The page of share `share` made for the user, opened at the folder reached through `trail`.
 pub fn received_folder(share: uuid::Uuid, trail: &[NodeId]) -> String {
@@ -89,13 +87,26 @@ pub fn received_folder(share: uuid::Uuid, trail: &[NodeId]) -> String {
     if trail.is_empty() {
         page
     } else {
-        let path = trail
-            .iter()
-            .map(|id| short_id(*id))
-            .collect::<Vec<_>>()
-            .join(&SHARE_PATH_SEPARATOR.to_string());
-        format!("{page}?{SHARE_PATH_PARAM}={path}")
+        format!("{page}?{SHARE_PATH_PARAM}={}", share_path(trail))
     }
+}
+
+/// File `file` of share `share`, in the folder reached through `trail`, open in its viewer.
+pub fn received_file(share: uuid::Uuid, trail: &[NodeId], file: NodeId) -> String {
+    let view = format!("{SHARED_VIEW_PARAM}={}", short_id(file));
+    if trail.is_empty() {
+        format!("{SHARED_PATH}/{share}?{view}")
+    } else {
+        format!("{}&{view}", received_folder(share, trail))
+    }
+}
+
+fn share_path(trail: &[NodeId]) -> String {
+    trail
+        .iter()
+        .map(|id| short_id(*id))
+        .collect::<Vec<_>>()
+        .join(&SHARE_PATH_SEPARATOR.to_string())
 }
 
 /// The folders named by a share link page's path, up to the first that is not an id.
@@ -179,6 +190,24 @@ mod tests {
     #[test]
     fn an_empty_share_page_path_names_no_folder() {
         assert_eq!(parse_share_path(""), Vec::<NodeId>::new());
+    }
+
+    #[test]
+    fn a_received_file_names_its_folder_and_itself() {
+        let share = Uuid::from_u128(3);
+        let file = NodeId::from(Uuid::from_u128(7));
+        assert_eq!(
+            received_file(share, &[], file),
+            format!("/shared/{share}?view={}", short_id(file))
+        );
+        assert_eq!(
+            received_file(share, &[id()], file),
+            format!(
+                "/shared/{share}?path={}&view={}",
+                short_id(id()),
+                short_id(file)
+            )
+        );
     }
 
     #[test]

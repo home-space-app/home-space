@@ -1149,6 +1149,17 @@ impl State {
                 Shortcut::Activate if shared.is_asking() => self.handle(Message::Shared(
                     shared::Message::SaveDialog(transfer_save::Message::Submit),
                 )),
+                Shortcut::Escape | Shortcut::Back | Shortcut::Parent
+                    if shared.viewing().is_some() =>
+                {
+                    self.handle(Message::Shared(shared::Message::CloseView))
+                }
+                Shortcut::Open | Shortcut::Next if shared.viewing().is_some() => {
+                    self.handle(Message::Shared(shared::Message::Next))
+                }
+                Shortcut::Previous if shared.viewing().is_some() => {
+                    self.handle(Message::Shared(shared::Message::Previous))
+                }
                 Shortcut::Refresh => self.reload(),
                 Shortcut::Escape | Shortcut::Back | Shortcut::Parent => {
                     self.open_folder(self.folder.id)

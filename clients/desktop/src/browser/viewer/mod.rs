@@ -1,8 +1,8 @@
 //! The page showing a file in a built-in viewer, picked by its MIME type in
 //! [`client_core::viewers`].
 
-mod image;
-mod text;
+pub(super) mod image;
+pub(super) mod text;
 
 use std::{path::PathBuf, sync::Arc};
 

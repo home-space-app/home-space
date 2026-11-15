@@ -226,7 +226,7 @@ private val monospace @Composable get() = TextStyle(
 
 /** The text, read-only and selectable; one row per line keeps long files quick to scroll. */
 @Composable
-private fun TextContent(text: String) {
+internal fun TextContent(text: String) {
     val lines = remember(text) { text.split('\n') }
     val style = monospace
     SelectionContainer {

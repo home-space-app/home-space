@@ -222,6 +222,23 @@ impl State {
             .spacing(SPACING)
             .into();
         }
+        if let Page::Shared(shared) = &self.page
+            && let Some(name) = shared.viewing()
+        {
+            let back = button(Icon::Back.view(ICON_SIZE, Tint::Muted))
+                .padding(BACK_PADDING)
+                .style(theme::tool)
+                .on_press(Message::Shared(shared::Message::CloseView));
+            let title = row![back, heading(name)]
+                .spacing(BACK_GAP)
+                .align_y(Alignment::Center);
+            return column![
+                top(title, shared.action().map(Message::Shared)),
+                shared.view(self.content_width()).map(Message::Shared)
+            ]
+            .spacing(SPACING)
+            .into();
+        }
         let status = self.syncing.status();
         let (title, action, content): (_, Element<'a, Message>, Element<'a, Message>) =
             match &self.page {

@@ -1,6 +1,6 @@
 //! "Shared with me", `/shared`: what other users shared with the user, read-only. Folders
-//! open at `/shared/<share>?path=…`; files and folders download, or are saved as copies into
-//! the user's own files.
+//! open at `/shared/<share>?path=…` and files in their viewer with `&view=…`; files and
+//! folders download, or are saved as copies into the user's own files.
 
 use leptos::{prelude::*, task::spawn_local};
 use leptos_router::{
@@ -15,13 +15,13 @@ use client_core::{
     received::{
         ACCESS, EXPIRES, NEVER, NOTHING_SHARED_WITH_ME, SAVE_TO_MY_FILES, SHARED_BY,
         SHARED_WITH_ME, SharedItem, VIEW_ONLY, find_share, save_copy_title, shared_items,
-        view_only_note,
+        shared_viewer,
     },
     shared_link::{DOWNLOAD, EMPTY_FOLDER, initial, shared_by, sort_shared},
 };
 use protocol::{NodeId, NodeKind, ReceivedShare, SharedNode, TicketRequest};
 
-use super::{SaveDialog, SaveSource};
+use super::{SaveDialog, SaveSource, viewer::SharedViewer};
 use crate::{
     components::{ErrorAlert, Menu, MenuItem},
     icon::{Icon, kind_icon},
@@ -29,12 +29,15 @@ use crate::{
     locale::{medium_date, short_date},
     route,
     session::{self, Auth},
+    viewers::viewers,
 };
 
 const SHARE_PARAM: &str = "share";
 const NO_SIZE: &str = "—";
 const META_SEPARATOR: &str = " · ";
 const SHARE_GONE: &str = "This share is no longer available.";
+const FILE_GONE: &str = "This file is no longer in the share.";
+const LOADING: &str = "Loading…";
 
 /// Items picked to be saved into the user's files, and the share they come from.
 #[derive(Clone)]
@@ -111,6 +114,13 @@ pub fn SharedWithMePage(auth: Auth) -> impl IntoView {
             .map(|path| route::parse_share_path(&path))
             .unwrap_or_default()
     });
+    let view = Memo::new(move |_| {
+        query
+            .read()
+            .get(route::SHARED_VIEW_PARAM)
+            .and_then(|id| route::parse_id(&id))
+    });
+    let viewing = Memo::new(move |_| share_id.read().is_some() && view.read().is_some());
     let shares = RwSignal::new(Vec::<ReceivedShare>::new());
     let loaded = RwSignal::new(false);
     let page = Shared {
@@ -139,10 +149,10 @@ pub fn SharedWithMePage(auth: Auth) -> impl IntoView {
     let saved = Callback::new(move |_: bool| page.saving.set(None));
 
     view! {
-        <main class="explorer">
+        <main class="explorer" class:viewer=move || viewing.get()>
             {move || match (share_id.get(), share.get()) {
                 (None, _) => view! { <TopLevel page shares loaded /> }.into_any(),
-                (Some(_), Some(share)) => view! { <Folder page share path /> }.into_any(),
+                (Some(_), Some(share)) => view! { <Folder page share path view /> }.into_any(),
                 (Some(_), None) => {
                     view! {
                         <div class="explorer__header">
@@ -271,7 +281,12 @@ fn TopRow(page: Shared, row: SharedItem) -> impl IntoView {
 
 /// A folder inside a share: where it is, who shared it, and what it holds.
 #[component]
-fn Folder(page: Shared, share: ReceivedShare, path: Memo<Vec<NodeId>>) -> impl IntoView {
+fn Folder(
+    page: Shared,
+    share: ReceivedShare,
+    path: Memo<Vec<NodeId>>,
+    view: Memo<Option<NodeId>>,
+) -> impl IntoView {
     let share_id = share.id;
     let top = share.items.clone();
     let trail = RwSignal::new(Vec::<SharedNode>::new());
@@ -298,20 +313,67 @@ fn Folder(page: Shared, share: ReceivedShare, path: Memo<Vec<NodeId>>) -> impl I
             }
         });
     });
-    let note = view_only_note(
-        &share.owner.username,
-        share.expires_at.map(medium_date).as_deref(),
-    );
-    let owner = share.owner.username.clone();
+    let trail_ids = Memo::new(move |_| {
+        trail
+            .read()
+            .iter()
+            .map(|folder| folder.id)
+            .collect::<Vec<NodeId>>()
+    });
+    let opened_file = Memo::new(move |_| {
+        view.get().and_then(|id| {
+            items
+                .read()
+                .iter()
+                .find(|item| item.id == id && item.kind == NodeKind::File)
+                .cloned()
+        })
+    });
 
-    view! {
-        <div class="explorer__header explorer__header--stacked">
-            {move || view! { <Crumbs share=Some(share_id) trail=trail.get() /> }}
-            <p class="shared__banner">
-                <span class="avatar avatar--small" aria-hidden="true">{initial(&owner)}</span>
-                <span class="shared__banner-text">{note}</span>
-                <ViewOnly />
+    move || match (view.get(), opened_file.get()) {
+        (None, _) => view! { <FolderListing page share_id trail items loaded /> }.into_any(),
+        (Some(_), Some(item)) => {
+            let download = {
+                let item = item.clone();
+                Callback::new(move |()| page.download(share_id, item.clone()))
+            };
+            view! {
+                <SharedViewer
+                    auth=page.auth
+                    share=share_id
+                    trail=trail_ids.get_untracked()
+                    listing=items.get_untracked()
+                    item
+                    on_download=download
+                />
+            }
+            .into_any()
+        }
+        (Some(_), None) => view! {
+            <div class="explorer__header">
+                {move || view! { <Crumbs share=Some(share_id) trail=trail.get() /> }}
+            </div>
+            <ErrorAlert message=page.error />
+            <p class="explorer__empty">
+                {move || if loaded.get() { FILE_GONE } else { LOADING }}
             </p>
+        }
+        .into_any(),
+    }
+}
+
+/// What a folder of a share holds, below the way back.
+#[component]
+fn FolderListing(
+    page: Shared,
+    share_id: Uuid,
+    trail: RwSignal<Vec<SharedNode>>,
+    items: RwSignal<Vec<SharedNode>>,
+    loaded: RwSignal<bool>,
+) -> impl IntoView {
+    view! {
+        <div class="explorer__header">
+            {move || view! { <Crumbs share=Some(share_id) trail=trail.get() /> }}
         </div>
         <ErrorAlert message=page.error />
         <div class="explorer__scroll">
@@ -383,7 +445,7 @@ fn FolderRow(page: Shared, share: Uuid, trail: Vec<NodeId>, item: SharedNode) ->
     }
 }
 
-/// The name of an item: a folder opens, a file downloads.
+/// The name of an item: a folder opens, a file opens in its viewer or else downloads.
 #[component]
 fn ItemName(
     page: Shared,
@@ -413,6 +475,15 @@ fn ItemName(
             }
             .into_any()
         }
+        NodeKind::File if shared_viewer(viewers(), &item).is_some() => view! {
+            <A
+                href=route::received_file(share, &trail, item.id)
+                attr:class="node-table__name node-table__name--link"
+            >
+                {label}
+            </A>
+        }
+        .into_any(),
         NodeKind::File => view! {
             <button
                 class="node-table__name node-table__name--link shared__file"

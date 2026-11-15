@@ -21,23 +21,6 @@
   cursor: pointer;
 }
 
-.shared__banner {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  margin: 0;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-surface);
-  font-size: var(--text-sm);
-}
-
-.shared__banner-text {
-  flex: 1;
-  min-width: 0;
-}
-
 .breadcrumbs__separator .icon {
   font-size: 20px;
   vertical-align: middle;
@@ -50,12 +33,6 @@
 /* Every share is view only for now, so the access column goes first when room runs out. */
 @media (width < 960px) {
   .shared__extra {
-    display: none;
-  }
-}
-
-@media (width < 640px) {
-  .shared__banner .shared__access {
     display: none;
   }
 }

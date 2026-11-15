@@ -240,7 +240,7 @@ pub fn ImageViewer(
 }
 
 /// A `blob:` URL holding `bytes` as content of type `mime`.
-fn object_url(bytes: &[u8], mime: &str) -> Result<String, String> {
+pub(super) fn object_url(bytes: &[u8], mime: &str) -> Result<String, String> {
     let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes));
     let options = BlobPropertyBag::new();
     options.set_type(mime);
@@ -249,7 +249,7 @@ fn object_url(bytes: &[u8], mime: &str) -> Result<String, String> {
         .map_err(|err| format!("the image could not be shown: {}", describe(&err)))
 }
 
-fn revoke(url: &str) {
+pub(super) fn revoke(url: &str) {
     // A URL that is already gone needs no revoking.
     let _ = Url::revoke_object_url(url);
 }
@@ -258,12 +258,12 @@ fn describe(err: &JsValue) -> String {
     err.as_string().unwrap_or_else(|| format!("{err:?}"))
 }
 
-fn has_modifier(event: &KeyboardEvent) -> bool {
+pub(super) fn has_modifier(event: &KeyboardEvent) -> bool {
     event.ctrl_key() || event.alt_key() || event.meta_key() || event.shift_key()
 }
 
 /// Whether the key went to a field the user types in.
-fn is_typing(event: &KeyboardEvent) -> bool {
+pub(super) fn is_typing(event: &KeyboardEvent) -> bool {
     event
         .target()
         .and_then(|target| target.dyn_into::<HtmlElement>().ok())
