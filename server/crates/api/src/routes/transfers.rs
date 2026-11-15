@@ -11,6 +11,7 @@ use axum::{
 };
 use uuid::Uuid;
 
+use db::IncomingScope;
 use files::ArchiveEntry;
 use notifications::Event;
 use protocol::{
@@ -171,15 +172,14 @@ async fn incoming(
     user: AuthUser,
     Query(query): Query<IncomingQuery>,
 ) -> Result<Json<Vec<TransferSummary>>, ApiError> {
-    let transfers = match (query.this_device, user.device_id) {
-        (false, _) => state.files.incoming_transfers(user.id, None).await?,
-        (true, Some(device)) => {
-            state
-                .files
-                .incoming_transfers(user.id, Some(device))
-                .await?
-        }
-        (true, None) => Vec::new(),
+    let scope = match (query.this_device, user.device_id) {
+        (false, device) => Some(IncomingScope::AllExceptFrom(device)),
+        (true, Some(device)) => Some(IncomingScope::ToDevice(device)),
+        (true, None) => None,
+    };
+    let transfers = match scope {
+        Some(scope) => state.files.incoming_transfers(user.id, scope).await?,
+        None => Vec::new(),
     };
     Ok(Json(transfers.into_iter().map(summary).collect()))
 }
@@ -188,7 +188,10 @@ async fn outgoing(
     State(state): State<AppState>,
     user: AuthUser,
 ) -> Result<Json<Vec<TransferSummary>>, ApiError> {
-    let transfers = state.files.outgoing_transfers(user.id).await?;
+    let transfers = state
+        .files
+        .outgoing_transfers(user.id, user.device_id)
+        .await?;
     Ok(Json(transfers.into_iter().map(summary).collect()))
 }
 
