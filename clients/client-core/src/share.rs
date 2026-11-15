@@ -347,6 +347,47 @@ pub fn format_expiry_date(at: OffsetDateTime, offset: UtcOffset) -> String {
     )
 }
 
+/// The settings tab listing the owner's links.
+pub const SHARES_TAB: &str = "Shares";
+pub const NEVER_EXPIRES: &str = "Never expires";
+pub const EXPIRED: &str = "Expired";
+pub const PASSWORD_PROTECTED: &str = "Password";
+pub const EDIT_SHARE: &str = "Edit…";
+pub const OPEN_LINK: &str = "Open link";
+pub const NO_SHARES: &str =
+    "You have not shared anything yet. Share files and folders from their menu.";
+/// The name of a link whose items are all in the recycle bin.
+pub const NOTHING_SHARED: &str = "Items in the recycle bin";
+
+/// What a link goes by in a list: `report.pdf`, or `Invoices and 2 more`.
+pub fn share_name(items: &[Node]) -> String {
+    match items {
+        [] => NOTHING_SHARED.to_owned(),
+        [item] => item.name.clone(),
+        [first, rest @ ..] => format!("{} and {} more", first.name, rest.len()),
+    }
+}
+
+/// Whether a link still works, as seen at `now`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShareExpiry {
+    Never,
+    /// It works until then.
+    Until(OffsetDateTime),
+    /// It stopped working then.
+    Ended(OffsetDateTime),
+}
+
+impl ShareExpiry {
+    pub fn of(share: &Share, now: OffsetDateTime) -> Self {
+        match share.expires_at {
+            None => Self::Never,
+            Some(at) if at <= now => Self::Ended(at),
+            Some(at) => Self::Until(at),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use protocol::SharePermission;
@@ -580,6 +621,55 @@ mod tests {
         assert_eq!(
             format_expiry_date(datetime!(2026-11-19 12:30 UTC), offset!(+2)),
             "2026-11-19 14:30"
+        );
+    }
+
+    #[test]
+    fn a_link_of_one_item_goes_by_its_name() {
+        assert_eq!(
+            share_name(&[node("report.pdf", NodeKind::File)]),
+            "report.pdf"
+        );
+    }
+
+    #[test]
+    fn a_link_of_several_items_names_the_first_and_counts_the_rest() {
+        let items = [
+            node("Invoices", NodeKind::Folder),
+            node("a", NodeKind::File),
+            node("b", NodeKind::File),
+        ];
+        assert_eq!(share_name(&items), "Invoices and 2 more");
+    }
+
+    #[test]
+    fn a_link_with_every_item_binned_says_so() {
+        assert_eq!(share_name(&[]), NOTHING_SHARED);
+    }
+
+    #[test]
+    fn a_link_without_expiry_never_expires() {
+        assert_eq!(
+            ShareExpiry::of(&share(vec![], false, None), NOW),
+            ShareExpiry::Never
+        );
+    }
+
+    #[test]
+    fn a_link_works_until_its_expiry() {
+        let at = NOW + Duration::days(1);
+        assert_eq!(
+            ShareExpiry::of(&share(vec![], false, Some(at)), NOW),
+            ShareExpiry::Until(at)
+        );
+    }
+
+    #[test]
+    fn a_link_past_its_expiry_has_ended() {
+        let at = NOW - Duration::minutes(1);
+        assert_eq!(
+            ShareExpiry::of(&share(vec![], false, Some(at)), NOW),
+            ShareExpiry::Ended(at)
         );
     }
 }
