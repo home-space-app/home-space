@@ -15,6 +15,7 @@ const CONTENT_TYPE: &str = "Content-Type";
 const FALLBACK_MIME: &str = "application/octet-stream";
 const STATUS_SUCCESS: std::ops::Range<u16> = 200..300;
 const STATUS_UNAUTHORIZED: u16 = 401;
+const UPLOAD_FAILED: &str = "the upload could not reach the server";
 /// localStorage prefix of the ids of unfinished chunked uploads, so dropping the same file
 /// again (even after a reload) continues where it stopped.
 const RESUME_KEY_PREFIX: &str = "homespace.upload.";
@@ -320,8 +321,9 @@ fn failure(outcome: &Outcome) -> ApiError {
     }
 }
 
-fn transport(err: JsValue) -> ApiError {
-    ApiError::Transport(format!("{err:?}"))
+/// The browser's error text is a stack trace, not a message, so it is replaced.
+fn transport(_err: JsValue) -> ApiError {
+    ApiError::Transport(UPLOAD_FAILED.to_owned())
 }
 
 /// Sends `request` with the session's token, refreshing the session and retrying once on a
@@ -388,8 +390,6 @@ async fn send(
             status: xhr.status().map_err(transport)?,
             body: xhr.response_text().map_err(transport)?.unwrap_or_default(),
         }),
-        _ => Err(ApiError::Transport(
-            "network error during upload".to_owned(),
-        )),
+        _ => Err(ApiError::Transport(UPLOAD_FAILED.to_owned())),
     }
 }

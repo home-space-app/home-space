@@ -767,7 +767,7 @@ impl TransferList {
 }
 
 /// Where downloads go: a folder of its own in the user's Downloads.
-fn downloads_folder() -> Option<PathBuf> {
+pub(super) fn downloads_folder() -> Option<PathBuf> {
     std::env::home_dir().map(|home| home.join(DOWNLOADS).join(DOWNLOAD_FOLDER))
 }
 
@@ -777,7 +777,7 @@ fn display_folder() -> String {
 }
 
 /// Something the last download put in the downloads folder, as the user knows it.
-fn display_download(path: &Path) -> String {
+pub(super) fn display_download(path: &Path) -> String {
     match path.file_name() {
         Some(name) => format!("{}/{}", display_folder(), name.to_string_lossy()),
         None => display_folder(),
@@ -1074,7 +1074,7 @@ async fn check(path: &Path, expected: &str, shown: &str) -> Result<(), String> {
 }
 
 /// `root/name`, or `root/name (2).ext` and so on when that is taken.
-async fn free_path(root: &Path, name: &str) -> PathBuf {
+pub(super) async fn free_path(root: &Path, name: &str) -> PathBuf {
     let first = root.join(name);
     if !fs::try_exists(&first).await.unwrap_or(false) {
         return first;
@@ -1111,7 +1111,7 @@ fn load_error(err: &ApiError) -> String {
     }
 }
 
-fn io_error(path: &Path) -> impl Fn(io::Error) -> String + '_ {
+pub(super) fn io_error(path: &Path) -> impl Fn(io::Error) -> String + '_ {
     move |err| format!("{}: {err}", path.display())
 }
 

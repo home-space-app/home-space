@@ -66,6 +66,7 @@ private val BUTTON_HEIGHT = 48.dp
 private enum class Tab(val title: String, val icon: Int, val selectedIcon: Int) {
     FILES("Files", R.drawable.ic_folder, R.drawable.ic_folder_filled),
     TRANSFERS("Transfers", R.drawable.ic_swap_vert, R.drawable.ic_swap_vert_filled),
+    SHARED("Shared", R.drawable.ic_folder_shared, R.drawable.ic_folder_shared_filled),
     SETTINGS("Settings", R.drawable.ic_settings, R.drawable.ic_settings_filled),
 }
 
@@ -124,6 +125,7 @@ fun SignedInScreen(session: Session.SignedIn, model: SessionViewModel) {
                     )
                 }
                 Tab.TRANSFERS -> TransfersScreen(session, model, navigationBar, onOpenPage = { page = it })
+                Tab.SHARED -> SharedScreen(session, model, navigationBar)
                 Tab.SETTINGS -> SettingsScreen(session, model, navigationBar, onOpenPage = { page = it })
             }
         }

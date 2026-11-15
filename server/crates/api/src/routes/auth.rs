@@ -236,6 +236,13 @@ async fn ticket(
                 return Err(ApiError::Forbidden);
             }
         }
+        TicketRequest::SharedFile { share_id, .. } | TicketRequest::SharedArchive { share_id } => {
+            state
+                .db
+                .received_share(user.id, share_id)
+                .await
+                .map_err(super::shares::db_error)?;
+        }
         TicketRequest::Events => {}
     }
     Ok(Json(state.auth.issue_ticket(

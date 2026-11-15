@@ -33,6 +33,9 @@ pub const DEVICES_PATH: &str = "/settings/devices";
 /// The settings tab listing the user's share links.
 pub const SHARES_PATH: &str = "/settings/shares";
 
+/// What other users shared with the user.
+pub const SHARED_PATH: &str = "/shared";
+
 /// Files sent to the user's devices.
 pub const TRANSFERS_PATH: &str = "/transfers";
 /// Files the user sent.
@@ -68,6 +71,21 @@ const SHARE_PATH_SEPARATOR: char = '.';
 /// The page of share link `token` opened at the folder reached through `trail`.
 pub fn shared_folder(token: &str, trail: &[NodeId]) -> String {
     let page = protocol::paths::web_share(token);
+    if trail.is_empty() {
+        page
+    } else {
+        let path = trail
+            .iter()
+            .map(|id| short_id(*id))
+            .collect::<Vec<_>>()
+            .join(&SHARE_PATH_SEPARATOR.to_string());
+        format!("{page}?{SHARE_PATH_PARAM}={path}")
+    }
+}
+
+/// The page of share `share` made for the user, opened at the folder reached through `trail`.
+pub fn received_folder(share: uuid::Uuid, trail: &[NodeId]) -> String {
+    let page = format!("{SHARED_PATH}/{share}");
     if trail.is_empty() {
         page
     } else {

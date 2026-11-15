@@ -4,7 +4,10 @@ use leptos::{html::Div, prelude::*};
 use leptos_router::{components::A, hooks::use_location};
 use web_sys::HtmlElement;
 
-use client_core::storage::{fraction, usage_summary};
+use client_core::{
+    received::SHARED_WITH_ME,
+    storage::{fraction, usage_summary},
+};
 use protocol::{Event, Me, Storage};
 
 use crate::{
@@ -154,6 +157,7 @@ pub fn Sidebar(auth: Auth) -> impl IntoView {
             && !in_found()
     };
     let in_trash = move || location.pathname.get() == route::TRASH_PATH;
+    let in_shared = move || location.pathname.get().starts_with(route::SHARED_PATH);
     let in_transfers = move || location.pathname.get().starts_with(route::TRANSFERS_PATH);
     let incoming = expect_context::<Incoming>();
     let waiting = Signal::derive(move || incoming.waiting.read().len());
@@ -168,6 +172,7 @@ pub fn Sidebar(auth: Auth) -> impl IntoView {
             </A>
             <nav class="sidebar__nav" aria-label="Sections">
                 <NavLink href=HOME_PATH.to_owned() icon="folder" label="Files" active=Signal::derive(in_files) />
+                <NavLink href=route::SHARED_PATH.to_owned() icon="folder_shared" label=SHARED_WITH_ME active=Signal::derive(in_shared) />
                 <NavLink href=route::TRASH_PATH.to_owned() icon="delete" label="Recycle bin" active=Signal::derive(in_trash) />
                 {move || {
                     let path = found_path()?;

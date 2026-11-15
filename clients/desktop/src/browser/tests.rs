@@ -979,6 +979,28 @@ fn opening_the_recycle_bin_loads_it() {
 }
 
 #[test]
+fn the_sidebar_opens_what_is_shared_with_the_user() {
+    let state = state_with_listing();
+    let mut ui = simulator(state.view());
+
+    ui.click(client_core::received::SHARED_WITH_ME)
+        .expect("the entry is shown");
+
+    let messages: Vec<_> = ui.into_messages().collect();
+    assert!(matches!(messages.as_slice(), [Message::OpenShared]));
+}
+
+#[test]
+fn opening_shared_with_me_loads_it() {
+    let mut state = state_with_listing();
+
+    let update = state.update(Message::OpenShared);
+
+    assert!(matches!(update, Update::Task(task) if task.units() > 0));
+    assert!(matches!(state.page, Page::Shared(_)));
+}
+
+#[test]
 fn a_trash_change_reloads_the_open_bin_only() {
     let mut state = state_with_listing();
     let update = state.update(Message::Server(protocol::Event::TrashChanged));

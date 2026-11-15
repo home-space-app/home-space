@@ -7,12 +7,12 @@ use iced::{
     },
 };
 
-use client_core::{labels::HOME, listing::collapsed_crumbs};
+use client_core::{labels::HOME, listing::collapsed_crumbs, received::SHARED_WITH_ME};
 use protocol::Node;
 
 use super::{
     Menu, Message, Page, State, anchor::Anchor, context_menu, context_menu::Placement, devices,
-    dialogs, grid, parts, search, send, share, sidebar, sync_queue, syncing, toolbar,
+    dialogs, grid, parts, search, send, share, shared, sidebar, sync_queue, syncing, toolbar,
     toolbar::SyncChip, transfer_list, transfer_save, viewer,
 };
 use crate::{
@@ -148,6 +148,16 @@ impl State {
                     layers.extend(menu_layers(picker.map(Message::Devices), placement));
                 }
             }
+            Page::Shared(shared) => {
+                if let Some(dialog) = shared.dialog() {
+                    layers.push(modal(
+                        dialog.map(Message::Shared),
+                        Message::Shared(shared::Message::SaveDialog(
+                            transfer_save::Message::Cancel,
+                        )),
+                    ));
+                }
+            }
             Page::Transfers => {
                 if let Some(dialog) = self.transfer_list.dialog() {
                     layers.push(modal(
@@ -219,6 +229,11 @@ impl State {
                     TRASH,
                     trash.action().map(Message::Trash),
                     trash.view().map(Message::Trash),
+                ),
+                Page::Shared(shared) => (
+                    SHARED_WITH_ME,
+                    shared.action().map(Message::Shared),
+                    shared.view(self.content_width()).map(Message::Shared),
                 ),
                 Page::SyncQueue => (
                     SYNC_QUEUE,

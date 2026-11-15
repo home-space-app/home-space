@@ -198,3 +198,67 @@ async fn create_share_sends_who_it_is_for() {
     assert_eq!(share.token, None);
     assert_eq!(share.recipients[0].user.username, "dana");
 }
+
+#[tokio::test]
+async fn shared_with_me_reads_who_shared_what() {
+    let server = MockServer::start().await;
+    let client = signed_in(&server).await;
+    Mock::given(method("GET"))
+        .and(path(paths::SHARED))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+            "id": SHARE_ID,
+            "owner": { "id": "00000000-0000-0000-0000-0000000000b0", "username": "bob" },
+            "items": [{
+                "id": NODE_ID,
+                "kind": "file",
+                "name": "report.pdf",
+                "size": 3,
+                "mime": "application/pdf",
+                "updated_at": "2026-11-15T10:00:00Z",
+            }],
+            "expires_at": null,
+            "shared_at": "2026-11-15T10:00:00Z",
+        }])))
+        .mount(&server)
+        .await;
+
+    let shares = client.shared_with_me().await.expect("shared");
+
+    assert_eq!(shares[0].owner.username, "bob");
+    assert_eq!(shares[0].items[0].name, "report.pdf");
+}
+
+#[tokio::test]
+async fn copy_shared_names_the_items_and_the_folder() {
+    let server = MockServer::start().await;
+    let client = signed_in(&server).await;
+    let folder: NodeId = "00000000-0000-0000-0000-0000000000c0".parse().expect("id");
+    Mock::given(method("POST"))
+        .and(path(paths::shared_copy(share_id())))
+        .and(body_json(
+            json!({ "node_ids": [NODE_ID], "parent_id": folder }),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let copies = client
+        .copy_shared(share_id(), vec![node_id()], Some(folder))
+        .await
+        .expect("copy");
+
+    assert!(copies.is_empty());
+}
+
+#[test]
+fn a_received_archive_url_names_the_folder_and_ticket() {
+    let client = Client::new("https://home.example");
+    let url = client.received_archive_url(share_id(), Some(node_id()), "t");
+    assert_eq!(
+        url,
+        format!(
+            "https://home.example/api/v1/shared/{SHARE_ID}/archive?ticket=t&folder_id={NODE_ID}"
+        )
+    );
+}

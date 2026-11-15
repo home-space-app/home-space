@@ -1,6 +1,6 @@
-//! Read-only shares (`/shares`, `/public/shares/{token}`).
+//! Read-only shares (`/shares`, `/shared`, `/public/shares/{token}`).
 //!
-//! A share is either for named users, who read it once signed in, or a link. The owner makes a link to one or more of their files and folders with `POST /shares`.
+//! A share is either for named users, who read it once signed in through `/shared`, or a link. The owner makes a link to one or more of their files and folders with `POST /shares`.
 //! Anyone with the link reads the shared items through `/public/shares/{token}` without
 //! signing in. A link with a password answers only its metadata until it is unlocked with
 //! `POST /public/shares/{token}/unlock`, whose access token goes in the
@@ -138,6 +138,31 @@ pub struct PublicShare {
     /// The shared items; `None` while a password is needed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub items: Option<Vec<SharedNode>>,
+}
+
+/// A share another user made for the caller: `GET /shared`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReceivedShare {
+    pub id: Uuid,
+    /// Who shared it.
+    pub owner: UserRef,
+    /// The shared items that are not in the owner's recycle bin.
+    pub items: Vec<SharedNode>,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub expires_at: Option<OffsetDateTime>,
+    /// When the caller was given the share.
+    #[serde(with = "time::serde::rfc3339")]
+    pub shared_at: OffsetDateTime,
+}
+
+/// Body of `POST /shared/{id}/copy`: puts copies of shared items into the caller's files.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CopyShared {
+    /// Shared items, or items inside shared folders; folders are copied with everything inside.
+    pub node_ids: Vec<NodeId>,
+    /// The caller's folder to copy into; their root when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<NodeId>,
 }
 
 /// Body of `POST /public/shares/{token}/unlock`.

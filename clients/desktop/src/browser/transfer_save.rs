@@ -1,9 +1,12 @@
-//! Saving a received transfer into a folder of the user's tree.
+//! Saving a received transfer, or copies of items shared with the user, into a folder of the
+//! user's tree.
 
 use api_client::{ApiError, Client};
 use client_core::{
     labels::{HOME, files},
     listing::{Sort, sort_nodes},
+    received::save_copy_title,
+    shared_link::shared_by,
     transfers::transfer_size,
 };
 use iced::widget::Row;
@@ -11,7 +14,8 @@ use iced::{
     Alignment, Element, Length, Task,
     widget::{button, column, container, operation, row, scrollable, text, text_input},
 };
-use protocol::{Node, NodeId, NodeKind, TransferSummary};
+use protocol::{Node, NodeId, NodeKind, SharedNode, TransferSummary};
+use uuid::Uuid;
 
 use super::parts::{self, ROW_SIZE, SECOND_LINE_SIZE, divider};
 use crate::{
@@ -58,9 +62,59 @@ pub enum Outcome {
     Saved,
 }
 
-/// The dialog picking where on the server a transfer goes.
+/// What the dialog saves into the picked folder.
+#[derive(Debug, Clone)]
+pub enum SaveSource {
+    /// A transfer sent to the user.
+    Transfer(Box<TransferSummary>),
+    /// Copies of items of a share made for the user by `owner`.
+    Shared {
+        share: Uuid,
+        items: Vec<SharedNode>,
+        owner: String,
+    },
+}
+
+impl SaveSource {
+    fn title(&self) -> String {
+        match self {
+            Self::Transfer(transfer) => {
+                format!("Save {} on the server", files(transfer.file_count as usize))
+            }
+            Self::Shared { items, .. } => {
+                let names: Vec<&str> = items.iter().map(|item| item.name.as_str()).collect();
+                save_copy_title(&names)
+            }
+        }
+    }
+
+    fn subtitle(&self) -> String {
+        match self {
+            Self::Transfer(transfer) => {
+                let size = transfer_size(transfer);
+                match &transfer.sender_device_name {
+                    Some(device) => format!("From {device} · {size}"),
+                    None => size,
+                }
+            }
+            Self::Shared { owner, .. } => shared_by(owner),
+        }
+    }
+
+    async fn save(self, client: Client, parent: Option<NodeId>) -> Result<Vec<Node>, ApiError> {
+        match self {
+            Self::Transfer(transfer) => client.save_transfer(transfer.id, parent).await,
+            Self::Shared { share, items, .. } => {
+                let ids = items.iter().map(|item| item.id).collect();
+                client.copy_shared(share, ids, parent).await
+            }
+        }
+    }
+}
+
+/// The dialog picking where on the server a transfer, or copies of shared items, go.
 pub struct TransferSave {
-    transfer: TransferSummary,
+    source: SaveSource,
     lost_and_found: NodeId,
     /// The folders opened so far, the last one being where the list is.
     trail: Vec<Node>,
@@ -80,8 +134,20 @@ impl TransferSave {
         transfer: TransferSummary,
         lost_and_found: NodeId,
     ) -> (Self, Task<Message>) {
+        Self::open_for(
+            client,
+            SaveSource::Transfer(Box::new(transfer)),
+            lost_and_found,
+        )
+    }
+
+    pub fn open_for(
+        client: &Client,
+        source: SaveSource,
+        lost_and_found: NodeId,
+    ) -> (Self, Task<Message>) {
         let state = Self {
-            transfer,
+            source,
             lost_and_found,
             trail: Vec::new(),
             folders: None,
@@ -187,11 +253,8 @@ impl TransferSave {
                 self.saving = true;
                 self.error = None;
                 let target = self.destination().last().map(|folder| folder.id);
-                let (client, id) = (client.clone(), self.transfer.id);
-                return Outcome::Task(Task::perform(
-                    async move { client.save_transfer(id, target).await },
-                    Message::Saved,
-                ));
+                let save = self.source.clone().save(client.clone(), target);
+                return Outcome::Task(Task::perform(save, Message::Saved));
             }
             Message::Submit => {}
             Message::Saved(Ok(_)) => return Outcome::Saved,
@@ -207,15 +270,8 @@ impl TransferSave {
 
     /// The dialog panel, without the backdrop.
     pub fn view(&self) -> Element<'_, Message> {
-        let title = format!(
-            "Save {} on the server",
-            files(self.transfer.file_count as usize)
-        );
-        let size = transfer_size(&self.transfer);
-        let subtitle = match &self.transfer.sender_device_name {
-            Some(device) => format!("From {device} · {size}"),
-            None => size,
-        };
+        let title = self.source.title();
+        let subtitle = self.source.subtitle();
         let mut lines = column![
             parts::dialog_head(title, subtitle),
             self.trail_view(),

@@ -6,6 +6,7 @@ pub mod gallery;
 pub mod icon;
 pub mod labels;
 pub mod listing;
+pub mod received;
 pub mod search;
 pub mod selection;
 pub mod send;

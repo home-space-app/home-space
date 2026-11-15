@@ -46,7 +46,10 @@ pub use oidc::{OidcCode, OidcPending};
 pub use protocol::{NodeId, NodeKind, OnConflict, SharePermission, UserId};
 pub use search::{ContentState, RankedNode};
 pub use sessions::LiveSession;
-pub use shares::{NewShareLink, NewUserShare, OwnedShare, ShareLink, ShareRecipient, ShareUpdate};
+pub use shares::{
+    NewShareLink, NewUserShare, OwnedShare, ReceivedShare, ShareLink, ShareRecipient, ShareUpdate,
+    SharedRoot,
+};
 pub use sqlx::PgPool;
 pub use storage::{DatabaseInfo, QuotaUsage, StorageUsage, UserStorage};
 pub use transfers::{ExpiredTransfer, NewTransfer, SubtreeNode, Transfer, TransferItem};

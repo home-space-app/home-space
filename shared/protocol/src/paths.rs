@@ -44,6 +44,8 @@ pub const ADMIN_STATUS: &str = "/api/v1/admin/status";
 pub const ADMIN_USERS: &str = "/api/v1/admin/users";
 pub const SHARES: &str = "/api/v1/shares";
 pub const PUBLIC_SHARES: &str = "/api/v1/public/shares";
+/// Shares other users made for the caller.
+pub const SHARED: &str = "/api/v1/shared";
 /// Header carrying the access token of an unlocked share link.
 pub const SHARE_ACCESS: &str = "Share-Access";
 /// Query parameter carrying it where headers cannot be sent.
@@ -131,6 +133,22 @@ pub fn public_share_file_content(token: &str, id: NodeId) -> String {
 
 pub fn public_share_archive(token: &str) -> String {
     format!("{PUBLIC_SHARES}/{token}/archive")
+}
+
+pub fn shared_nodes(id: uuid::Uuid) -> String {
+    format!("{SHARED}/{id}/nodes")
+}
+
+pub fn shared_file_content(id: uuid::Uuid, node: NodeId) -> String {
+    format!("{SHARED}/{id}/files/{node}/content")
+}
+
+pub fn shared_archive(id: uuid::Uuid) -> String {
+    format!("{SHARED}/{id}/archive")
+}
+
+pub fn shared_copy(id: uuid::Uuid) -> String {
+    format!("{SHARED}/{id}/copy")
 }
 
 /// The web client page of a share link, relative to the server origin.

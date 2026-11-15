@@ -9,6 +9,7 @@ mod password;
 mod pkce;
 mod public_shares;
 mod server_address;
+mod shared;
 mod shares;
 mod storage;
 mod transfers;

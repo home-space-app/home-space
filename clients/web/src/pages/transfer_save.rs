@@ -1,8 +1,10 @@
-//! Saving a received transfer into a folder of the user's tree.
+//! Saving a received transfer, or copies of shared items, into a folder of the user's tree.
 
 use leptos::{html::Input, prelude::*, task::spawn_local};
+use uuid::Uuid;
 use web_sys::KeyboardEvent;
 
+use api_client::ApiError;
 use client_core::{
     labels::{HOME, files},
     listing::{Sort, sort_nodes},
@@ -32,6 +34,27 @@ fn location(path: &[Node]) -> String {
     }
 }
 
+/// What the save dialog puts into the picked folder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SaveSource {
+    /// A transfer sent to the user.
+    Transfer(Uuid),
+    /// Copies of items of a share made for the user.
+    Shared { share: Uuid, nodes: Vec<NodeId> },
+}
+
+impl SaveSource {
+    async fn save(self, parent: Option<NodeId>) -> Result<(), ApiError> {
+        let client = session::client();
+        match self {
+            Self::Transfer(id) => client.save_transfer(id, parent).await.map(drop),
+            Self::Shared { share, nodes } => {
+                client.copy_shared(share, nodes, parent).await.map(drop)
+            }
+        }
+    }
+}
+
 /// Picks a folder and saves `transfer` into it; `on_close` gets whether it was saved.
 #[component]
 pub fn SaveTransferDialog(
@@ -39,12 +62,24 @@ pub fn SaveTransferDialog(
     auth: Auth,
     on_close: Callback<bool>,
 ) -> impl IntoView {
-    let id = transfer.id;
     let title = format!("Save {} on the server", files(transfer.file_count as usize));
     let mut subtitle = transfer_size(&transfer);
     if let Some(device) = &transfer.sender_device_name {
         subtitle = format!("From {device} · {subtitle}");
     }
+    view! { <SaveDialog title subtitle source=SaveSource::Transfer(transfer.id) auth on_close /> }
+}
+
+/// Picks a folder of the user's tree and saves `source` into it; `on_close` gets whether it
+/// was saved.
+#[component]
+pub fn SaveDialog(
+    title: String,
+    subtitle: String,
+    source: SaveSource,
+    auth: Auth,
+    on_close: Callback<bool>,
+) -> impl IntoView {
     // The folders opened so far, the last one being where the list is.
     let trail = RwSignal::new(Vec::<Node>::new());
     // A folder of the list picked as the destination, instead of the open one.
@@ -118,11 +153,12 @@ pub fn SaveTransferDialog(
         });
     });
     let save = move |_| {
+        let source = source.clone();
         let target = destination().last().map(|folder| folder.id);
         busy.set(true);
         spawn_local(async move {
-            match session::client().save_transfer(id, target).await {
-                Ok(_) => on_close.run(true),
+            match source.save(target).await {
+                Ok(()) => on_close.run(true),
                 Err(err) => {
                     busy.set(false);
                     error.set(Some(auth.fail(&err)));
