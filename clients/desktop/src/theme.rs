@@ -825,3 +825,48 @@ pub fn accent(theme: &Theme) -> container::Style {
         ..container::Style::default()
     }
 }
+
+/// A chip among several where one is chosen, such as an expiry.
+pub fn filter_chip(chosen: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, status| {
+        let t = tokens(theme);
+        let (background, text_color, border) = match (chosen, status) {
+            (true, _) => (Some(t.accent_soft), t.accent, Color::TRANSPARENT),
+            (false, button::Status::Hovered | button::Status::Pressed) => {
+                (Some(t.surface_hover), t.text, t.border_strong)
+            }
+            (false, _) => (Some(t.surface), t.text, t.border_strong),
+        };
+        button::Style {
+            background: background.map(Background::Color),
+            text_color,
+            border: outline(border, f32::MAX),
+            ..button::Style::default()
+        }
+    }
+}
+
+/// The track of an on/off switch.
+pub fn switch(on: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, _status| {
+        let t = tokens(theme);
+        button::Style {
+            background: Some(Background::Color(if on {
+                t.accent
+            } else {
+                t.border_strong
+            })),
+            border: Border::default().rounded(f32::MAX),
+            ..button::Style::default()
+        }
+    }
+}
+
+/// The thumb of an on/off switch.
+pub fn switch_thumb(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Color::WHITE.into()),
+        border: Border::default().rounded(f32::MAX),
+        ..container::Style::default()
+    }
+}

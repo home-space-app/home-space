@@ -120,7 +120,7 @@ private const val ANY_FILE = "*/*"
 
 /** What a row's menu can ask for. */
 internal enum class RowAction {
-    OPEN, OPEN_WITH, SHOW_IN_FOLDER, SAVE, SEND, EDIT, KEEP_OFFLINE, DETAILS, RENAME, MOVE, DELETE, REMOVE_OFFLINE, CANCEL_DOWNLOAD
+    OPEN, OPEN_WITH, SHOW_IN_FOLDER, SAVE, SEND, SHARE, EDIT, KEEP_OFFLINE, DETAILS, RENAME, MOVE, DELETE, REMOVE_OFFLINE, CANCEL_DOWNLOAD
 }
 
 /** Folder browsing through the Rust client (`clients/mobile-core`). */
@@ -250,6 +250,7 @@ fun BrowseScreen(
                 saveTo.launch(entry)
             }
             RowAction.SEND -> action = FileAction.Send(listOf(entry))
+            RowAction.SHARE -> action = FileAction.Share(listOf(entry))
             RowAction.OPEN_WITH -> model.openInAnotherApp(session, entry)
             RowAction.EDIT -> model.openFile(session, entry, edit = true)
             RowAction.KEEP_OFFLINE -> model.makeAvailableOffline(session, entry)
@@ -493,6 +494,14 @@ private fun SelectionToolbar(
                     Modifier.fillMaxSize(),
                 ) { more = true }
                 DropdownMenu(expanded = more, onDismissRequest = { more = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Share…") },
+                        leadingIcon = { Icon(painterResource(R.drawable.ic_share), contentDescription = null) },
+                        onClick = {
+                            more = false
+                            onAction(FileAction.Share(chosen))
+                        },
+                    )
                     DropdownMenuItem(
                         text = { Text("Send to device…") },
                         leadingIcon = { Icon(painterResource(R.drawable.ic_send), contentDescription = null) },
@@ -821,7 +830,10 @@ private fun RowMenu(
                 item("Edit in another app", R.drawable.ic_edit_document, RowAction.EDIT)
                 item("Save to…", R.drawable.ic_download, RowAction.SAVE)
             }
-            if (!downloading) item("Send to device…", R.drawable.ic_send, RowAction.SEND)
+            if (!downloading) {
+                item("Share…", R.drawable.ic_share, RowAction.SHARE)
+                item("Send to device…", R.drawable.ic_send, RowAction.SEND)
+            }
             if (entry.offlineKept && !downloading) {
                 item("Remove offline copy", R.drawable.ic_download_off, RowAction.REMOVE_OFFLINE)
             } else if (entry.offlineState == null && !downloading) {

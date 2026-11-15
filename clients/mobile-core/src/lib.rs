@@ -20,6 +20,7 @@ mod autoupload;
 mod events;
 mod files;
 mod offline;
+mod shares;
 mod transfers;
 mod uploads;
 mod viewers;
@@ -31,6 +32,7 @@ pub use autoupload::{
 pub use events::{EventStream, EventsListener, LiveEvent};
 pub use files::DownloadListener;
 pub use offline::{OfflineProblem, OfflineState, OfflineStatus};
+pub use shares::{ShareExpiry, ShareForm, ShareFormState, ShareSaved};
 pub use transfers::{SendFile, SendTarget, TransferLists, TransferRow, TransferStatus};
 pub use viewers::{Gallery, ImageFile, TextFile, TextFormat, ViewerInfo, ViewerKind};
 
@@ -749,7 +751,7 @@ fn login_code(callback_url: &str) -> Result<String, CoreError> {
     }
 }
 
-fn parse_id(id: &str) -> Result<NodeId, CoreError> {
+pub(crate) fn parse_id(id: &str) -> Result<NodeId, CoreError> {
     id.parse()
         .map_err(|_| CoreError::InvalidId { id: id.to_owned() })
 }

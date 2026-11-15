@@ -25,6 +25,7 @@ use super::{
     delete_dialog::DeleteDialog,
     move_dialog::MoveDialog,
     send_dialog::{SendDialog, SendSource},
+    share_dialog::ShareDialog,
 };
 use crate::{
     components::ErrorAlert,
@@ -59,6 +60,7 @@ fn Explorer(auth: Auth) -> impl IntoView {
     let draft_input = NodeRef::<Input>::new();
     let details = RwSignal::new(None::<NodeId>);
     let send_from = RwSignal::new(None::<SendSource>);
+    let sharing = RwSignal::new(None::<Vec<Node>>);
 
     Effect::new(move |_| {
         folder.track();
@@ -162,6 +164,8 @@ fn Explorer(auth: Auth) -> impl IntoView {
     let send = Callback::new(move |nodes: Vec<Node>| send_from.set(Some(SendSource::Nodes(nodes))));
     let send_selected = Callback::new(move |()| send.run(selected_nodes.get_untracked()));
     let send_local = Callback::new(move |()| send_from.set(Some(SendSource::Local)));
+    let share = Callback::new(move |nodes: Vec<Node>| sharing.set(Some(nodes)));
+    let share_selected = Callback::new(move |()| share.run(selected_nodes.get_untracked()));
     let delete_selected = Callback::new(move |()| delete.run(selected_nodes.get_untracked()));
     let selected_count = Signal::derive(move || selected_nodes.read().len());
     let lost_and_found = Signal::derive(move || auth.user.get().map(|user| user.lost_and_found_id));
@@ -222,6 +226,7 @@ fn Explorer(auth: Auth) -> impl IntoView {
         cancel_rename,
         download,
         send,
+        share,
         details: show_details,
         delete,
         lost_and_found,
@@ -235,6 +240,7 @@ fn Explorer(auth: Auth) -> impl IntoView {
                         selected_count
                         on_move=move_selected
                         on_send=send_selected
+                        on_share=share_selected
                         on_send_local=send_local
                         on_delete=delete_selected
                         can_delete
@@ -295,6 +301,13 @@ fn Explorer(auth: Auth) -> impl IntoView {
                 .get()
                 .map(|source| {
                     view! { <SendDialog source auth on_close=Callback::new(move |()| send_from.set(None)) /> }
+                })
+        }}
+        {move || {
+            sharing
+                .get()
+                .map(|nodes| {
+                    view! { <ShareDialog nodes auth on_close=Callback::new(move |()| sharing.set(None)) /> }
                 })
         }}
         {move || {

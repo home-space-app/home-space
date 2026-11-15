@@ -1,4 +1,19 @@
-use time::OffsetDateTime;
+use std::sync::OnceLock;
+
+use time::{OffsetDateTime, UtcOffset};
+
+static LOCAL_OFFSET: OnceLock<UtcOffset> = OnceLock::new();
+
+/// Reads the system's offset from UTC. Call it before any other thread starts: on Unix the
+/// offset can only be read safely while the process has one thread.
+pub fn init_local_offset() {
+    let _ = LOCAL_OFFSET.set(UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC));
+}
+
+/// The system's offset from UTC as read at start; UTC when it could not be read.
+pub fn local_offset() -> UtcOffset {
+    LOCAL_OFFSET.get().copied().unwrap_or(UtcOffset::UTC)
+}
 
 /// Formats `time` per the system's regional settings, falling back to the fixed
 /// `YYYY-MM-DD HH:MM` form when the locale or timestamp can't be handled.

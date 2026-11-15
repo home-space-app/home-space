@@ -8,6 +8,7 @@ mod error;
 mod password;
 mod pkce;
 mod server_address;
+mod shares;
 mod storage;
 mod transfers;
 mod uploads;

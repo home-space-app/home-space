@@ -62,6 +62,8 @@ pub enum Action {
     Download,
     /// Sends to a device.
     Send,
+    /// Shares through a link.
+    Share,
     Rename,
     Move,
     Details,
@@ -75,6 +77,7 @@ impl Action {
             Self::OpenFile | Self::OpenWith => Icon::Web,
             Self::Download => Icon::Download,
             Self::Send => Icon::Send,
+            Self::Share => Icon::Share,
             Self::Rename => Icon::Rename,
             Self::Move => Icon::Move,
             Self::Details => Icon::Info,
@@ -88,6 +91,7 @@ impl Action {
             Self::OpenWith => "Open with system app",
             Self::Download => "Download",
             Self::Send => "Send",
+            Self::Share => "Share",
             Self::Rename => "Rename",
             Self::Move => "Move",
             Self::Details => "Details",
@@ -100,6 +104,7 @@ impl Action {
         match self {
             Self::Move => "Move…",
             Self::Send => "Send to device…",
+            Self::Share => "Share…",
             Self::Delete => "Move to bin",
             _ => self.label(),
         }
@@ -109,7 +114,12 @@ impl Action {
         match self {
             Self::Open | Self::Download => "Enter",
             Self::Rename => "F2",
-            Self::OpenFile | Self::OpenWith | Self::Send | Self::Move | Self::Details => "",
+            Self::OpenFile
+            | Self::OpenWith
+            | Self::Send
+            | Self::Share
+            | Self::Move
+            | Self::Details => "",
             Self::Delete => DELETE_SHORTCUT,
         }
     }
@@ -130,6 +140,7 @@ pub fn actions(selected: &[&Node], lost_and_found: NodeId) -> Vec<(Action, bool)
         .chain([
             (Action::Download, any),
             (Action::Send, any),
+            (Action::Share, any),
             (Action::Move, any),
             (Action::Rename, single),
             (Action::Details, single),

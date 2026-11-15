@@ -12,8 +12,8 @@ use protocol::Node;
 
 use super::{
     Menu, Message, Page, State, anchor::Anchor, context_menu, context_menu::Placement, devices,
-    dialogs, grid, parts, search, send, sidebar, sync_queue, syncing, toolbar, toolbar::SyncChip,
-    transfer_list, transfer_save, viewer,
+    dialogs, grid, parts, search, send, share, sidebar, sync_queue, syncing, toolbar,
+    toolbar::SyncChip, transfer_list, transfer_save, viewer,
 };
 use crate::{
     icons::{ICON_SIZE, Icon, Tint},
@@ -124,6 +124,12 @@ impl State {
             layers.push(modal(
                 send.view().map(Message::Send),
                 Message::Send(send::Message::Cancel),
+            ));
+        }
+        if let Some(share) = &self.share {
+            layers.push(modal(
+                share.view(&self.client).map(Message::Share),
+                Message::Share(share::Message::Cancel),
             ));
         }
         match &self.page {

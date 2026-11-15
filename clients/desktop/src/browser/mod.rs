@@ -14,6 +14,7 @@ pub(crate) mod parts;
 mod search;
 mod selection;
 mod send;
+mod share;
 mod sidebar;
 mod sync_queue;
 mod syncing;
@@ -103,6 +104,7 @@ pub enum Message {
     /// Opens the dialog sending files of this computer to a device.
     SendLocal,
     Send(send::Message),
+    Share(share::Message),
     UploadPlanned(Option<NodeId>, Result<UploadPlan, String>),
     DownloadPlanned(Result<Vec<DownloadFile>, String>),
     Dialog(dialogs::Message),
@@ -180,6 +182,8 @@ pub struct State {
     dialog: Option<Dialog>,
     /// The dialog sending files to a device, while it is open.
     send: Option<send::SendDialog>,
+    /// The dialog sharing files through a link, while it is open.
+    share: Option<share::ShareDialog>,
     details: Option<details::State>,
     page: Page,
     transfers: Transfers,
@@ -208,6 +212,7 @@ impl State {
             menu: None,
             dialog: None,
             send: None,
+            share: None,
             details: None,
             page: Page::Folder,
             transfers: Transfers::default(),
@@ -363,6 +368,7 @@ impl State {
             Message::Upload => self.pick_upload(),
             Message::SendLocal => self.open_send(send::Source::Local),
             Message::Send(message) => self.send_update(message),
+            Message::Share(message) => self.share_update(message),
             Message::UploadPlanned(parent, Ok(plan)) if !plan.is_empty() => self
                 .transfers
                 .enqueue(&self.client, Batch::Upload { parent, plan })
@@ -439,8 +445,10 @@ impl State {
                 Task::none()
             }
             Message::FileHovered => {
-                self.dropping =
-                    self.dialog.is_none() && self.send.is_none() && !self.in_lost_and_found();
+                self.dropping = self.dialog.is_none()
+                    && self.send.is_none()
+                    && self.share.is_none()
+                    && !self.in_lost_and_found();
                 Task::none()
             }
             Message::FilesHoveredLeft => {
@@ -841,6 +849,11 @@ impl State {
             ) => Task::none(),
             (Action::Download, _) => files::download(&self.client, selected),
             (Action::Send, _) => self.open_send(send::Source::Nodes(selected)),
+            (Action::Share, _) => {
+                let (dialog, task) = share::ShareDialog::open(&self.client, selected);
+                self.share = Some(dialog);
+                task.map(Message::Share)
+            }
             (Action::Move, _) => {
                 let (dialog, task) =
                     Dialog::move_nodes(&self.client, selected, self.me.lost_and_found_id);
@@ -961,6 +974,19 @@ impl State {
         task.map(Message::Send)
     }
 
+    fn share_update(&mut self, message: share::Message) -> Task<Message> {
+        let Some(dialog) = &mut self.share else {
+            return Task::none();
+        };
+        match dialog.update(&self.client, message) {
+            share::Outcome::Task(task) => task.map(Message::Share),
+            share::Outcome::Closed => {
+                self.share = None;
+                Task::none()
+            }
+        }
+    }
+
     fn send_update(&mut self, message: send::Message) -> Task<Message> {
         let Some(dialog) = &mut self.send else {
             return Task::none();
@@ -1014,7 +1040,13 @@ impl State {
                 _ => Task::none(),
             };
         }
-        if self.send.is_some() {
+        if self.share.is_some() {
+            match shortcut {
+                Shortcut::Escape => self.share_update(share::Message::Cancel),
+                Shortcut::Activate => self.share_update(share::Message::Submit),
+                _ => Task::none(),
+            }
+        } else if self.send.is_some() {
             match shortcut {
                 Shortcut::Escape => self.send_update(send::Message::Cancel),
                 Shortcut::Activate => self.send_update(send::Message::Submit),
