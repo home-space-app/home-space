@@ -1,4 +1,5 @@
-//! Read-only share links: the owner's `/shares` and the visitors' `/public/shares/{token}`.
+//! Read-only shares: the owner's `/shares`, for named users or as a link, and the visitors'
+//! `/public/shares/{token}`.
 
 use std::collections::{HashMap, HashSet};
 
@@ -12,10 +13,11 @@ use axum::{
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use db::{DbError, NewShareLink, NodeKind, ShareLinkUpdate, SharePermission};
+use db::{DbError, NewShareLink, NewUserShare, NodeKind, SharePermission, ShareUpdate, UserId};
 use protocol::{
     CreateShare, NodeId, PublicShare, Share, ShareAccess, ShareAccessQuery, ShareArchiveQuery,
-    SharedFolderQuery, SharedNode, SharesQuery, UnlockShare, UpdateShare, paths::SHARE_ACCESS,
+    ShareRecipient, SharedFolderQuery, SharedNode, SharesQuery, UnlockShare, UpdateShare, UserRef,
+    paths::SHARE_ACCESS,
 };
 
 use crate::{
@@ -27,8 +29,10 @@ use crate::{
     },
 };
 
-/// The most items one link may share.
+/// The most items one share may hold.
 const MAX_SHARE_ITEMS: usize = 1000;
+/// The most users one share may be for.
+const MAX_RECIPIENTS: usize = 100;
 /// Names the zip of a link with several items, before the owner's name.
 const SHARED_BY: &str = "Shared by";
 /// No token is longer; anything longer is refused before the database is asked.
@@ -66,14 +70,26 @@ fn shared_node(node: db::Node) -> SharedNode {
     }
 }
 
-/// `node_ids` without repeats, in their first order.
-fn unique(node_ids: &[NodeId]) -> Vec<NodeId> {
+/// `ids` without repeats, in their first order.
+fn unique<T: Copy + Eq + std::hash::Hash>(ids: &[T]) -> Vec<T> {
     let mut seen = HashSet::new();
-    node_ids
-        .iter()
-        .copied()
-        .filter(|id| seen.insert(*id))
-        .collect()
+    ids.iter().copied().filter(|id| seen.insert(*id)).collect()
+}
+
+/// `recipients` without repeats; refuses none, too many, or the owner.
+fn check_recipients(owner: UserId, recipients: &[UserId]) -> Result<Vec<UserId>, ApiError> {
+    let recipients = unique(recipients);
+    if recipients.is_empty() || recipients.len() > MAX_RECIPIENTS {
+        Err(ApiError::BadRequest(format!(
+            "a share is for 1 to {MAX_RECIPIENTS} users"
+        )))
+    } else if recipients.contains(&owner) {
+        Err(ApiError::BadRequest(
+            "a share cannot be for its owner".to_owned(),
+        ))
+    } else {
+        Ok(recipients)
+    }
 }
 
 /// Refuses an expiry that has already passed.
@@ -87,10 +103,14 @@ fn check_expiry(expires_at: Option<OffsetDateTime>) -> Result<(), ApiError> {
     }
 }
 
-/// The owner's view of `shares`, with their live items.
-async fn owner_views(state: &AppState, shares: Vec<db::ShareLink>) -> Result<Vec<Share>, ApiError> {
+/// The owner's view of `shares`, with their live items and recipients.
+async fn owner_views(
+    state: &AppState,
+    shares: Vec<db::OwnedShare>,
+) -> Result<Vec<Share>, ApiError> {
     let ids: Vec<Uuid> = shares.iter().map(|share| share.id).collect();
     let mut items = state.db.share_items(&ids).await.map_err(db_error)?;
+    let mut recipients = state.db.share_recipients(&ids).await.map_err(db_error)?;
     Ok(shares
         .into_iter()
         .map(|share| Share {
@@ -101,16 +121,29 @@ async fn owner_views(state: &AppState, shares: Vec<db::ShareLink>) -> Result<Vec
                 .into_iter()
                 .map(protocol::Node::from)
                 .collect(),
-            has_password: share.password_hash.is_some(),
+            has_password: share.has_password,
             permission: share.permission,
             token: share.token,
             expires_at: share.expires_at,
             created_at: share.created_at,
+            recipients: recipients
+                .remove(&share.id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|recipient| ShareRecipient {
+                    user: UserRef {
+                        id: recipient.user_id,
+                        username: recipient.username,
+                    },
+                    permission: recipient.permission,
+                    added_at: recipient.created_at,
+                })
+                .collect(),
         })
         .collect())
 }
 
-async fn owner_view(state: &AppState, share: db::ShareLink) -> Result<Share, ApiError> {
+async fn owner_view(state: &AppState, share: db::OwnedShare) -> Result<Share, ApiError> {
     owner_views(state, vec![share])
         .await?
         .pop()
@@ -125,10 +158,38 @@ async fn create(
     let node_ids = unique(&request.node_ids);
     if node_ids.is_empty() || node_ids.len() > MAX_SHARE_ITEMS {
         return Err(ApiError::BadRequest(format!(
-            "a link shares 1 to {MAX_SHARE_ITEMS} items"
+            "a share holds 1 to {MAX_SHARE_ITEMS} items"
         )));
     }
     check_expiry(request.expires_at)?;
+    let share = if request.recipients.is_empty() {
+        create_link(&state, user.id, &request, &node_ids).await?
+    } else {
+        if request.password.is_some() {
+            return Err(ApiError::BadRequest(
+                "a share with users has no password".to_owned(),
+            ));
+        }
+        let recipients = check_recipients(user.id, &request.recipients)?;
+        let new = NewUserShare {
+            id: Uuid::now_v7(),
+            expires_at: request.expires_at,
+        };
+        state
+            .db
+            .create_user_share(user.id, new, &node_ids, &recipients)
+            .await
+            .map_err(db_error)?
+    };
+    Ok((StatusCode::CREATED, Json(owner_view(&state, share).await?)))
+}
+
+async fn create_link(
+    state: &AppState,
+    owner: UserId,
+    request: &CreateShare,
+    node_ids: &[NodeId],
+) -> Result<db::OwnedShare, ApiError> {
     let password_hash = match request.password.as_deref() {
         Some(password) => Some(state.auth.hash_share_password(password).await?),
         None => None,
@@ -141,12 +202,12 @@ async fn create(
         permission: SharePermission::Read,
         expires_at: request.expires_at,
     };
-    let share = state
+    let link = state
         .db
-        .create_share_link(user.id, new, &node_ids)
+        .create_share_link(owner, new, node_ids)
         .await
         .map_err(db_error)?;
-    Ok((StatusCode::CREATED, Json(owner_view(&state, share).await?)))
+    Ok(link.into())
 }
 
 async fn list(
@@ -156,7 +217,7 @@ async fn list(
 ) -> Result<Json<Vec<Share>>, ApiError> {
     let shares = state
         .db
-        .share_links(user.id, query.node_id)
+        .owned_shares(user.id, query.node_id)
         .await
         .map_err(db_error)?;
     Ok(Json(owner_views(&state, shares).await?))
@@ -169,18 +230,36 @@ async fn update(
     Json(request): Json<UpdateShare>,
 ) -> Result<Json<Share>, ApiError> {
     check_expiry(request.expires_at.flatten())?;
+    let current = state.db.owned_share(user.id, id).await.map_err(db_error)?;
+    let is_link = current.token.is_some();
+    if is_link && request.recipients.is_some() {
+        return Err(ApiError::BadRequest(
+            "a link is not for named users".to_owned(),
+        ));
+    }
+    if !is_link && request.password.is_some() {
+        return Err(ApiError::BadRequest(
+            "a share with users has no password".to_owned(),
+        ));
+    }
+    let recipients = request
+        .recipients
+        .as_deref()
+        .map(|recipients| check_recipients(user.id, recipients))
+        .transpose()?;
     let password_hash = match request.password {
         Some(Some(password)) => Some(Some(state.auth.hash_share_password(&password).await?)),
         Some(None) => Some(None),
         None => None,
     };
-    let update = ShareLinkUpdate {
+    let update = ShareUpdate {
         password_hash: password_hash.as_ref().map(Option::as_deref),
         expires_at: request.expires_at,
+        recipients: recipients.as_deref(),
     };
     let share = state
         .db
-        .update_share_link(user.id, id, update)
+        .update_share(user.id, id, update)
         .await
         .map_err(db_error)?;
     Ok(Json(owner_view(&state, share).await?))

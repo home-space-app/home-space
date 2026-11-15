@@ -123,8 +123,8 @@
 .user-picker {
   display: grid;
   gap: var(--space-1);
-  width: 18rem;
-  max-width: calc(100vw - 16px);
+  width: 100%;
+  min-width: min(18rem, calc(100vw - 16px));
 }
 
 .user-picker__search {

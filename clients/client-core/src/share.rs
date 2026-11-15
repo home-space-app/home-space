@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use protocol::{CreateShare, Node, NodeId, NodeKind, Share, UpdateShare};
+use protocol::{CreateShare, Node, NodeId, NodeKind, Share, UpdateShare, UserId, UserRef};
 use time::{Date, Duration, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset};
 
 /// Fewest characters of a link password, as the server requires.
@@ -31,6 +31,20 @@ pub const PAST_DATE: &str = "Pick a date in the future.";
 pub const BAD_DATE: &str = "Enter the date as YYYY-MM-DD HH:MM.";
 /// What the date field of desktop clients expects.
 pub const DATE_HINT: &str = "YYYY-MM-DD HH:MM";
+pub const PEOPLE_TAB: &str = "People";
+pub const LINK_TAB: &str = "Anyone with the link";
+/// [`LINK_TAB`] where there is little room.
+pub const LINK_TAB_SHORT: &str = "Link";
+pub const PEOPLE_WITH_ACCESS: &str = "People with access";
+pub const ADD_PEOPLE: &str = "Add people";
+pub const ADD_PEOPLE_PLACEHOLDER: &str = "Add people by name";
+pub const REMOVE_PERSON: &str = "Remove";
+/// The only permission for now; shown, not chosen.
+pub const CAN_VIEW: &str = "Can view";
+pub const OWNER: &str = "Owner";
+pub const NO_RECIPIENTS: &str = "Add at least one person.";
+pub const PEOPLE_NOTE: &str =
+    "People you add can view and download these items. They can’t share them with anyone else.";
 
 /// When a link stops working.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,11 +111,49 @@ impl Expiry {
     }
 }
 
+/// Who a share is for: the tabs of the dialog.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Audience {
+    /// Named users, who read it once signed in.
+    #[default]
+    People,
+    /// Anyone holding the link.
+    Link,
+}
+
+impl Audience {
+    pub const ALL: [Self; 2] = [Self::People, Self::Link];
+
+    pub fn of(share: &Share) -> Self {
+        if share.is_link() {
+            Self::Link
+        } else {
+            Self::People
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::People => PEOPLE_TAB,
+            Self::Link => LINK_TAB,
+        }
+    }
+
+    /// [`Self::label`] where there is little room.
+    pub fn short_label(self) -> &'static str {
+        match self {
+            Self::People => PEOPLE_TAB,
+            Self::Link => LINK_TAB_SHORT,
+        }
+    }
+}
+
 /// Why the dialog cannot save yet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DraftError {
     ShortPassword,
     PastDate,
+    NoRecipients,
 }
 
 impl DraftError {
@@ -109,13 +161,15 @@ impl DraftError {
         match self {
             Self::ShortPassword => SHORT_PASSWORD,
             Self::PastDate => PAST_DATE,
+            Self::NoRecipients => NO_RECIPIENTS,
         }
     }
 }
 
-/// What the owner has chosen in the dialog, for a new link or an existing one.
+/// What the owner has chosen in one tab of the dialog, for a new share or an existing one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShareDraft {
+    pub audience: Audience,
     /// The toggle.
     pub require_password: bool,
     /// What is typed in the password field; unused while [`Self::editing_password`] is false.
@@ -123,19 +177,25 @@ pub struct ShareDraft {
     pub expiry: Expiry,
     had_password: bool,
     changing_password: bool,
-    /// The chip shown for the saved link, and when it stops working.
+    /// The chip shown for the saved share, and when it stops working.
     saved: Option<(Expiry, Option<OffsetDateTime>)>,
+    /// Who a share with people is for, by username.
+    recipients: Vec<UserRef>,
+    saved_recipients: Option<Vec<UserId>>,
 }
 
 impl Default for ShareDraft {
     fn default() -> Self {
         Self {
+            audience: Audience::Link,
             require_password: false,
             password: String::new(),
             expiry: Expiry::Week,
             had_password: false,
             changing_password: false,
             saved: None,
+            recipients: Vec::new(),
+            saved_recipients: None,
         }
     }
 }
@@ -146,9 +206,34 @@ impl ShareDraft {
         Self::default()
     }
 
-    /// The draft of an existing link, as it is saved.
-    pub fn of(share: &Share) -> Self {
+    /// The draft of a new share with people: no one yet, never expiring.
+    pub fn for_people() -> Self {
         Self {
+            audience: Audience::People,
+            expiry: Expiry::Never,
+            ..Self::default()
+        }
+    }
+
+    /// The draft of a new share for `audience`.
+    pub fn for_audience(audience: Audience) -> Self {
+        match audience {
+            Audience::People => Self::for_people(),
+            Audience::Link => Self::new(),
+        }
+    }
+
+    /// The draft of an existing share, as it is saved.
+    pub fn of(share: &Share) -> Self {
+        let recipients: Vec<UserRef> = share
+            .recipients
+            .iter()
+            .map(|recipient| recipient.user.clone())
+            .collect();
+        Self {
+            audience: Audience::of(share),
+            saved_recipients: Some(recipients.iter().map(|user| user.id).collect()),
+            recipients,
             require_password: share.has_password,
             password: String::new(),
             expiry: Expiry::of_saved(share.created_at, share.expires_at),
@@ -159,6 +244,36 @@ impl ShareDraft {
                 share.expires_at,
             )),
         }
+    }
+
+    /// Who the share is for, in the order they were added.
+    pub fn recipients(&self) -> &[UserRef] {
+        &self.recipients
+    }
+
+    /// Adds `user`, unless they are in already.
+    pub fn add_recipient(&mut self, user: UserRef) {
+        if !self.has_recipient(user.id) {
+            self.recipients.push(user);
+        }
+    }
+
+    pub fn remove_recipient(&mut self, id: UserId) {
+        self.recipients.retain(|user| user.id != id);
+    }
+
+    pub fn has_recipient(&self, id: UserId) -> bool {
+        self.recipients.iter().any(|user| user.id == id)
+    }
+
+    /// The `users` not added yet whose name contains `query`, ignoring case.
+    pub fn candidates<'a>(&self, users: &'a [UserRef], query: &str) -> Vec<&'a UserRef> {
+        let query = query.trim().to_lowercase();
+        users
+            .iter()
+            .filter(|user| !self.has_recipient(user.id))
+            .filter(|user| user.username.to_lowercase().contains(&query))
+            .collect()
     }
 
     /// Whether the password field takes a new password; otherwise it shows
@@ -198,7 +313,10 @@ impl ShareDraft {
     /// The first thing that keeps the draft from being saved at `now`.
     pub fn check(&self, now: OffsetDateTime) -> Result<(), DraftError> {
         let expiry_changed = self.expiry_change(now).is_some();
-        if self.editing_password() && self.password.chars().count() < MIN_SHARE_PASSWORD_LEN {
+        if self.audience == Audience::People && self.recipients.is_empty() {
+            Err(DraftError::NoRecipients)
+        } else if self.editing_password() && self.password.chars().count() < MIN_SHARE_PASSWORD_LEN
+        {
             Err(DraftError::ShortPassword)
         } else if expiry_changed && self.expires_at(now).is_some_and(|at| at <= now) {
             Err(DraftError::PastDate)
@@ -207,7 +325,7 @@ impl ShareDraft {
         }
     }
 
-    /// The request that makes a link to `node_ids` as drafted.
+    /// The request that shares `node_ids` as drafted.
     pub fn create_request(
         &self,
         node_ids: Vec<NodeId>,
@@ -216,24 +334,41 @@ impl ShareDraft {
         self.check(now)?;
         Ok(CreateShare {
             node_ids,
-            password: self.editing_password().then(|| self.password.clone()),
+            password: (self.audience == Audience::Link && self.editing_password())
+                .then(|| self.password.clone()),
             expires_at: self.expires_at(now),
+            recipients: self.recipient_ids(),
         })
     }
 
-    /// The request that saves the draft of an existing link; empty when nothing changed.
+    fn recipient_ids(&self) -> Vec<UserId> {
+        match self.audience {
+            Audience::People => self.recipients.iter().map(|user| user.id).collect(),
+            Audience::Link => Vec::new(),
+        }
+    }
+
+    /// The request that saves the draft of an existing share; empty when nothing changed.
     pub fn update_request(&self, now: OffsetDateTime) -> Result<UpdateShare, DraftError> {
         self.check(now)?;
-        let password = if self.editing_password() {
+        let password = if self.audience == Audience::People {
+            None
+        } else if self.editing_password() {
             Some(Some(self.password.clone()))
         } else if self.had_password && !self.require_password {
             Some(None)
         } else {
             None
         };
+        let ids = self.recipient_ids();
+        let recipients_changed = self.audience == Audience::People
+            && self.saved_recipients.as_ref().is_none_or(|saved| {
+                saved.len() != ids.len() || !ids.iter().all(|id| saved.contains(id))
+            });
         Ok(UpdateShare {
             password,
             expires_at: self.expiry_change(now),
+            recipients: recipients_changed.then_some(ids),
         })
     }
 
@@ -262,8 +397,18 @@ pub fn stop_sharing_question(items: &[Node]) -> String {
     }
 }
 
-/// Said under [`stop_sharing_question`].
+/// Said under [`stop_sharing_question`] for a link.
 pub const STOP_SHARING_NOTE: &str = "Anyone with the link loses access right away.";
+/// Said under [`stop_sharing_question`] for a share with people.
+pub const STOP_SHARING_PEOPLE_NOTE: &str = "The people it is shared with lose access right away.";
+
+/// Said under [`stop_sharing_question`] for a share for `audience`.
+pub fn stop_sharing_note(audience: Audience) -> &'static str {
+    match audience {
+        Audience::People => STOP_SHARING_PEOPLE_NOTE,
+        Audience::Link => STOP_SHARING_NOTE,
+    }
+}
 
 /// What is shared, by kind: `Invoices and Photos (folders) · report.pdf (file)`.
 pub fn share_subtitle(items: &[Node]) -> String {
@@ -305,11 +450,17 @@ fn listed(names: &[&str]) -> String {
     }
 }
 
-/// The link among `shares` that shares exactly `items`, to edit instead of making another.
-pub fn matching_share<'a>(shares: &'a [Share], items: &[NodeId]) -> Option<&'a Share> {
+/// The share for `audience` among `shares` that shares exactly `items`, to edit instead of
+/// making another.
+pub fn matching_share<'a>(
+    shares: &'a [Share],
+    items: &[NodeId],
+    audience: Audience,
+) -> Option<&'a Share> {
     let wanted: HashSet<NodeId> = items.iter().copied().collect();
     shares.iter().find(|share| {
-        share.items.len() == wanted.len()
+        Audience::of(share) == audience
+            && share.items.len() == wanted.len()
             && share.items.iter().all(|item| wanted.contains(&item.id))
     })
 }
@@ -359,6 +510,21 @@ pub const NO_SHARES: &str =
 /// The name of a link whose items are all in the recycle bin.
 pub const NOTHING_SHARED: &str = "Items in the recycle bin";
 
+/// `sam (you)`, for the owner's row among the people with access.
+pub fn you(username: &str) -> String {
+    format!("{username} (you)")
+}
+
+/// Who a share with people is for: `dana`, `dana and alex`, `dana, alex, kim and 2 more`.
+pub fn recipient_names(share: &Share) -> String {
+    let names: Vec<&str> = share
+        .recipients
+        .iter()
+        .map(|recipient| recipient.user.username.as_str())
+        .collect();
+    listed(&names)
+}
+
 /// What a link goes by in a list: `report.pdf`, or `Invoices and 2 more`.
 pub fn share_name(items: &[Node]) -> String {
     match items {
@@ -390,7 +556,7 @@ impl ShareExpiry {
 
 #[cfg(test)]
 mod tests {
-    use protocol::SharePermission;
+    use protocol::{SharePermission, ShareRecipient};
     use time::macros::{datetime, offset};
     use uuid::Uuid;
 
@@ -417,12 +583,35 @@ mod tests {
     fn share(items: Vec<Node>, has_password: bool, expires_at: Option<OffsetDateTime>) -> Share {
         Share {
             id: Uuid::nil(),
-            token: "token".to_owned(),
+            token: Some("token".to_owned()),
             items,
             has_password,
             permission: SharePermission::Read,
             expires_at,
             created_at: NOW,
+            recipients: Vec::new(),
+        }
+    }
+
+    fn user(name: &str) -> UserRef {
+        UserRef {
+            id: UserId(Uuid::from_u128(name.bytes().map(u128::from).sum())),
+            username: name.to_owned(),
+        }
+    }
+
+    fn people_share(items: Vec<Node>, users: &[&str]) -> Share {
+        Share {
+            token: None,
+            recipients: users
+                .iter()
+                .map(|name| ShareRecipient {
+                    user: user(name),
+                    permission: SharePermission::Read,
+                    added_at: NOW,
+                })
+                .collect(),
+            ..share(items, false, None)
         }
     }
 
@@ -597,9 +786,9 @@ mod tests {
             share(vec![a.clone()], false, None),
             share(vec![a.clone(), b.clone()], false, None),
         ];
-        let found = matching_share(&shares, &[b.id, a.id]).expect("share");
+        let found = matching_share(&shares, &[b.id, a.id], Audience::Link).expect("share");
         assert_eq!(found.items.len(), 2);
-        assert!(matching_share(&shares, &[b.id]).is_none());
+        assert!(matching_share(&shares, &[b.id], Audience::Link).is_none());
     }
 
     #[test]
@@ -671,5 +860,107 @@ mod tests {
             ShareExpiry::of(&share(vec![], false, Some(at)), NOW),
             ShareExpiry::Ended(at)
         );
+    }
+
+    #[test]
+    fn a_new_share_with_people_never_expires() {
+        let draft = ShareDraft::for_people();
+        assert_eq!(draft.expiry, Expiry::Never);
+        assert_eq!(draft.audience, Audience::People);
+    }
+
+    #[test]
+    fn a_share_with_people_needs_someone() {
+        let draft = ShareDraft::for_people();
+        assert_eq!(
+            draft.create_request(Vec::new(), NOW),
+            Err(DraftError::NoRecipients)
+        );
+    }
+
+    #[test]
+    fn a_share_with_people_sends_who_it_is_for() {
+        let mut draft = ShareDraft::for_people();
+        draft.add_recipient(user("dana"));
+        draft.add_recipient(user("dana"));
+        let request = draft.create_request(Vec::new(), NOW).expect("request");
+        assert_eq!(request.recipients, vec![user("dana").id]);
+        assert_eq!(request.password, None);
+    }
+
+    #[test]
+    fn a_new_link_is_for_no_one_in_particular() {
+        let request = ShareDraft::new()
+            .create_request(Vec::new(), NOW)
+            .expect("request");
+        assert!(request.recipients.is_empty());
+    }
+
+    #[test]
+    fn unchanged_people_save_nothing() {
+        let saved = people_share(vec![node("a", NodeKind::File)], &["dana", "alex"]);
+        let draft = ShareDraft::of(&saved);
+        assert_eq!(draft.audience, Audience::People);
+        assert_eq!(draft.update_request(NOW), Ok(UpdateShare::default()));
+    }
+
+    #[test]
+    fn removing_someone_sends_who_is_left() {
+        let saved = people_share(vec![node("a", NodeKind::File)], &["dana", "alex"]);
+        let mut draft = ShareDraft::of(&saved);
+        draft.remove_recipient(user("dana").id);
+        let request = draft.update_request(NOW).expect("request");
+        assert_eq!(request.recipients, Some(vec![user("alex").id]));
+    }
+
+    #[test]
+    fn removing_everyone_is_refused() {
+        let saved = people_share(vec![node("a", NodeKind::File)], &["dana"]);
+        let mut draft = ShareDraft::of(&saved);
+        draft.remove_recipient(user("dana").id);
+        assert_eq!(draft.update_request(NOW), Err(DraftError::NoRecipients));
+    }
+
+    #[test]
+    fn candidates_leave_out_who_is_added_and_match_the_name() {
+        let users = [user("dana"), user("alex"), user("Daniel")];
+        let mut draft = ShareDraft::for_people();
+        draft.add_recipient(user("dana"));
+        let found: Vec<&str> = draft
+            .candidates(&users, "DAN")
+            .into_iter()
+            .map(|user| user.username.as_str())
+            .collect();
+        assert_eq!(found, ["Daniel"]);
+    }
+
+    #[test]
+    fn the_share_of_the_selection_is_found_for_each_audience() {
+        let a = node("a", NodeKind::File);
+        let link = share(vec![a.clone()], false, None);
+        let people = Share {
+            id: Uuid::from_u128(1),
+            ..people_share(vec![a.clone()], &["dana"])
+        };
+        let shares = [link, people];
+        assert_eq!(
+            matching_share(&shares, &[a.id], Audience::People).map(|share| share.id),
+            Some(Uuid::from_u128(1))
+        );
+        assert_eq!(
+            matching_share(&shares, &[a.id], Audience::Link).map(|share| share.id),
+            Some(Uuid::nil())
+        );
+    }
+
+    #[test]
+    fn recipients_are_listed_by_name() {
+        let shared = people_share(Vec::new(), &["dana", "alex", "kim", "lee", "max"]);
+        assert_eq!(recipient_names(&shared), "dana, alex, kim and 2 more");
+    }
+
+    #[test]
+    fn the_owner_is_marked_as_you() {
+        assert_eq!(you("sam"), "sam (you)");
     }
 }

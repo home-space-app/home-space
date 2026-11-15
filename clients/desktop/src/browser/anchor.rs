@@ -14,12 +14,15 @@ use iced::{
 struct State {
     /// What turns a position inside a scrollable into one in the window.
     translation: Vector,
+    /// The window bounds last sent through `on_move`.
+    reported: Option<Rectangle>,
 }
 
 pub struct Anchor<'a, Message> {
     content: Element<'a, Message>,
     on_press: Option<Box<dyn Fn(Rectangle) -> Message + 'a>>,
     on_right_press: Option<Box<dyn Fn(Point) -> Message + 'a>>,
+    on_move: Option<Box<dyn Fn(Rectangle) -> Message + 'a>>,
 }
 
 impl<'a, Message> Anchor<'a, Message> {
@@ -28,6 +31,7 @@ impl<'a, Message> Anchor<'a, Message> {
             content: content.into(),
             on_press: None,
             on_right_press: None,
+            on_move: None,
         }
     }
 
@@ -35,6 +39,13 @@ impl<'a, Message> Anchor<'a, Message> {
     /// content: a button inside only needs a handler to look enabled.
     pub fn on_press(mut self, on_press: impl Fn(Rectangle) -> Message + 'a) -> Self {
         self.on_press = Some(Box::new(on_press));
+        self
+    }
+
+    /// Sends the window bounds of the content whenever they change, so a popup hanging from it
+    /// can follow it: when the dialog around it grows, say.
+    pub fn on_move(mut self, on_move: impl Fn(Rectangle) -> Message + 'a) -> Self {
+        self.on_move = Some(Box::new(on_move));
         self
     }
 
@@ -121,14 +132,22 @@ impl<Message> Widget<Message, Theme, Renderer> for Anchor<'_, Message> {
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        let translation = tree.state.downcast_ref::<State>().translation;
+        let state = tree.state.downcast_mut::<State>();
+        let translation = state.translation;
+        let bounds = layout.bounds() + translation;
+        if let Some(on_move) = &self.on_move
+            && state.reported != Some(bounds)
+        {
+            state.reported = Some(bounds);
+            shell.publish(on_move(bounds));
+        }
         let over = cursor.is_over(layout.bounds());
 
         if over
             && let Event::Mouse(mouse::Event::ButtonPressed(Button::Left)) = event
             && let Some(on_press) = &self.on_press
         {
-            shell.publish(on_press(layout.bounds() + translation));
+            shell.publish(on_press(bounds));
             shell.capture_event();
             return;
         }

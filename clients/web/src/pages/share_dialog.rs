@@ -1,18 +1,22 @@
-//! Sharing files and folders through a read-only link.
+//! Sharing files and folders, read-only, with people on the server or through a link.
 
 use leptos::{prelude::*, task::spawn_local};
 use time::Duration;
 
-use client_core::share::{
-    CHANGE_PASSWORD, COPY_LINK, EXPIRES, Expiry, HIDDEN_PASSWORD, LINK_COPIED,
-    PASSWORD_PLACEHOLDER, PICK_A_DATE, REQUIRE_PASSWORD, STOP_SHARING, STOP_SHARING_NOTE,
-    ShareDraft, format_expiry_date, matching_share, parse_expiry_date, share_subtitle, share_title,
-    stop_sharing_question,
+use client_core::{
+    share::{
+        ADD_PEOPLE, ADD_PEOPLE_PLACEHOLDER, Audience, CAN_VIEW, CHANGE_PASSWORD, COPY_LINK,
+        EXPIRES, Expiry, HIDDEN_PASSWORD, LINK_COPIED, OWNER, PASSWORD_PLACEHOLDER, PEOPLE_NOTE,
+        PICK_A_DATE, REMOVE_PERSON, REQUIRE_PASSWORD, STOP_SHARING, ShareDraft, format_expiry_date,
+        matching_share, parse_expiry_date, share_subtitle, share_title, stop_sharing_note,
+        stop_sharing_question, you,
+    },
+    shared_link::initial,
 };
-use protocol::{Node, NodeId, Share, UpdateShare};
+use protocol::{Node, NodeId, Share, UpdateShare, UserRef};
 
 use crate::{
-    components::ErrorAlert,
+    components::{ErrorAlert, Menu, UserPicker},
     icon::Icon,
     load,
     locale::{now, offset_at, short_date},
@@ -20,13 +24,57 @@ use crate::{
 };
 
 const TITLE_ID: &str = "share-title";
+const PEOPLE_PICKER_ID: &str = "share-people";
 const NO_LINK_YET: &str = "Save to make the link";
+const ADDED: &str = "Added";
+const ICON_PEOPLE: &str = "group";
+const ICON_LINK: &str = "link";
+const ICON_STOP_LINK: &str = "link_off";
+const ICON_STOP_PEOPLE: &str = "person_remove";
 /// How far ahead the date field starts when the owner first picks a date.
 const PICKED_DATE_AHEAD: Duration = Duration::days(7);
 
-/// Shares `nodes` through a link: makes one, or edits the link that shares exactly them.
-/// Given `existing`, it edits that link, and with `stopping` it first asks to stop sharing it;
-/// declining then closes the dialog.
+/// One tab of the dialog: what is drafted there, and the share it edits once there is one.
+#[derive(Clone, Copy)]
+struct Tab {
+    draft: RwSignal<ShareDraft>,
+    share: RwSignal<Option<Share>>,
+}
+
+impl Tab {
+    fn new(audience: Audience, existing: Option<Share>) -> Self {
+        let draft = existing
+            .as_ref()
+            .map_or_else(|| ShareDraft::for_audience(audience), ShareDraft::of);
+        Self {
+            draft: RwSignal::new(draft),
+            share: RwSignal::new(existing),
+        }
+    }
+
+    fn found(self, share: Share) {
+        self.draft.set(ShareDraft::of(&share));
+        self.share.set(Some(share));
+    }
+}
+
+fn audience_icon(audience: Audience) -> &'static str {
+    match audience {
+        Audience::People => ICON_PEOPLE,
+        Audience::Link => ICON_LINK,
+    }
+}
+
+fn stop_icon(audience: Audience) -> &'static str {
+    match audience {
+        Audience::People => ICON_STOP_PEOPLE,
+        Audience::Link => ICON_STOP_LINK,
+    }
+}
+
+/// Shares `nodes` with people or through a link, each in its own tab: makes a share, or
+/// edits the one that shares exactly them. Given `existing`, it edits only that share, and
+/// with `stopping` it first asks to stop sharing it; declining then closes the dialog.
 #[component]
 pub fn ShareDialog(
     nodes: Vec<Node>,
@@ -37,33 +85,50 @@ pub fn ShareDialog(
 ) -> impl IntoView {
     let node_ids: Vec<NodeId> = nodes.iter().map(|node| node.id).collect();
     let first = node_ids.first().copied();
-    let known = existing.is_some();
-    let draft = RwSignal::new(
-        existing
-            .as_ref()
-            .map_or_else(ShareDraft::new, ShareDraft::of),
+    let known = existing.as_ref().map(Audience::of);
+    let audience = RwSignal::new(known.unwrap_or_default());
+    let people = Tab::new(
+        Audience::People,
+        existing.clone().filter(|share| !share.is_link()),
     );
-    let share = RwSignal::new(existing);
-    let loading = RwSignal::new(!known);
+    let link_tab = Tab::new(Audience::Link, existing.filter(Share::is_link));
+    let tab = move || match audience.get() {
+        Audience::People => people,
+        Audience::Link => link_tab,
+    };
+    let current = move || match audience.get_untracked() {
+        Audience::People => people,
+        Audience::Link => link_tab,
+    };
+    let users = RwSignal::new(Vec::<UserRef>::new());
+    let loading = RwSignal::new(known.is_none());
     let saving = RwSignal::new(false);
     let error = RwSignal::new(None::<String>);
     let copied = RwSignal::new(false);
     let reveal = RwSignal::new(false);
-    let confirm_stop = RwSignal::new(stopping && known);
+    let confirm_stop = RwSignal::new(stopping && known.is_some());
 
     let wanted = StoredValue::new(node_ids);
-    if !known {
+    if known.is_none() {
         load::load(
             move || async move { session::client().shares(first).await },
             move |result| {
                 loading.set(false);
                 match result {
                     Ok(shares) => {
-                        if let Some(found) =
-                            wanted.with_value(|ids| matching_share(&shares, ids).cloned())
-                        {
-                            draft.set(ShareDraft::of(&found));
-                            share.set(Some(found));
+                        let find = |audience| {
+                            wanted.with_value(|ids| matching_share(&shares, ids, audience).cloned())
+                        };
+                        let (with_people, with_link) =
+                            (find(Audience::People), find(Audience::Link));
+                        if with_people.is_none() && with_link.is_some() {
+                            audience.set(Audience::Link);
+                        }
+                        if let Some(found) = with_people {
+                            people.found(found);
+                        }
+                        if let Some(found) = with_link {
+                            link_tab.found(found);
                         }
                     }
                     Err(err) => error.set(Some(auth.fail(&err))),
@@ -71,12 +136,23 @@ pub fn ShareDialog(
             },
         );
     }
+    if known != Some(Audience::Link) {
+        load::load(
+            || async { session::client().users().await },
+            move |result| match result {
+                Ok(listed) => users.set(listed),
+                Err(err) => error.set(Some(auth.fail(&err))),
+            },
+        );
+    }
 
     let link = Memo::new(move |_| {
-        share
-            .read()
-            .as_ref()
-            .map(|share| session::client().share_url(&share.token))
+        link_tab.share.read().as_ref().and_then(|share| {
+            share
+                .token
+                .as_deref()
+                .map(|token| session::client().share_url(token))
+        })
     });
     let copy = move |_| {
         let Some(url) = link.get_untracked() else {
@@ -90,13 +166,16 @@ pub fn ShareDialog(
 
     let save = move |_| {
         let now = now();
-        let current = share.get_untracked();
-        let request = match &current {
-            Some(saved) => draft
+        let open = current();
+        let saved = open.share.get_untracked();
+        let request = match &saved {
+            Some(saved) => open
+                .draft
                 .read_untracked()
                 .update_request(now)
                 .map(|request| Err((saved.id, request))),
-            None => draft
+            None => open
+                .draft
                 .read_untracked()
                 .create_request(wanted.get_value(), now)
                 .map(Ok),
@@ -109,17 +188,14 @@ pub fn ShareDialog(
                 error.set(None);
                 spawn_local(async move {
                     let client = session::client();
-                    let made = current.is_none();
+                    let made = saved.is_none();
                     let result = match request {
                         Ok(create) => client.create_share(&create).await,
                         Err((id, update)) => client.update_share(id, &update).await,
                     };
                     saving.set(false);
                     match result {
-                        Ok(saved) if made => {
-                            draft.set(ShareDraft::of(&saved));
-                            share.set(Some(saved));
-                        }
+                        Ok(saved) if made && saved.is_link() => open.found(saved),
                         Ok(_) => on_close.run(()),
                         Err(err) => error.set(Some(auth.fail(&err))),
                     }
@@ -129,7 +205,12 @@ pub fn ShareDialog(
     };
 
     let stop = move |_| {
-        let Some(id) = share.read_untracked().as_ref().map(|share| share.id) else {
+        let Some(id) = current()
+            .share
+            .read_untracked()
+            .as_ref()
+            .map(|share| share.id)
+        else {
             return;
         };
         saving.set(true);
@@ -148,6 +229,8 @@ pub fn ShareDialog(
     let title = share_title(&nodes);
     let subtitle = share_subtitle(&nodes);
     let question = stop_sharing_question(&nodes);
+    let has_share = move || tab().share.read().is_some();
+    let owner = Signal::derive(move || auth.user.get().map(|me| me.username).unwrap_or_default());
 
     view! {
         <div class="modal" on:click=move |_| on_close.run(())>
@@ -168,6 +251,8 @@ pub fn ShareDialog(
                         view! {
                             <StopSharing
                                 question=question.clone()
+                                note=stop_sharing_note(audience.get_untracked())
+                                icon=stop_icon(audience.get_untracked())
                                 busy=saving
                                 on_cancel=Callback::new(move |()| {
                                     if stopping {
@@ -181,28 +266,89 @@ pub fn ShareDialog(
                         }
                     }
                 >
-                    <div class="share__link">
-                        <div class="share__url">
-                            <Icon name="link" />
-                            <input
-                                class="share__url-text"
-                                readonly
-                                aria-label="Link"
-                                placeholder=NO_LINK_YET
-                                prop:value=move || link.get().unwrap_or_default()
-                                on:focus:target=|event| event.target().select()
-                            />
-                        </div>
-                        <button class="button" disabled=move || link.read().is_none() on:click=copy>
-                            <Icon name="content_copy" />
-                            {move || if copied.get() { LINK_COPIED } else { COPY_LINK }}
-                        </button>
-                    </div>
-                    <PasswordSection draft reveal />
-                    <ExpirySection draft />
+                    {known
+                        .is_none()
+                        .then(|| {
+                            view! {
+                                <div class="segmented share__tabs" role="tablist">
+                                    {Audience::ALL
+                                        .into_iter()
+                                        .map(|choice| {
+                                            let chosen = move || audience.get() == choice;
+                                            view! {
+                                                <button
+                                                    type="button"
+                                                    role="tab"
+                                                    class="segmented__option share__tab"
+                                                    class:segmented__option--active=chosen
+                                                    aria-selected=move || chosen().to_string()
+                                                    on:click=move |_| {
+                                                        error.set(None);
+                                                        audience.set(choice);
+                                                    }
+                                                >
+                                                    <Icon name=audience_icon(choice) />
+                                                    <span class="share__tab-long">{choice.label()}</span>
+                                                    <span class="share__tab-short">
+                                                        {choice.short_label()}
+                                                    </span>
+                                                </button>
+                                            }
+                                        })
+                                        .collect_view()}
+                                </div>
+                            }
+                        })}
+                    {move || match audience.get() {
+                        Audience::People => {
+                            view! {
+                                <PeopleSection
+                                    draft=people.draft
+                                    share=people.share
+                                    users
+                                    owner
+                                />
+                            }
+                                .into_any()
+                        }
+                        Audience::Link => {
+                            view! {
+                                <div class="share__link">
+                                    <div class="share__url">
+                                        <Icon name=ICON_LINK />
+                                        <input
+                                            class="share__url-text"
+                                            readonly
+                                            aria-label="Link"
+                                            placeholder=NO_LINK_YET
+                                            prop:value=move || link.get().unwrap_or_default()
+                                            on:focus:target=|event| event.target().select()
+                                        />
+                                    </div>
+                                    <button
+                                        class="button"
+                                        disabled=move || link.read().is_none()
+                                        on:click=copy
+                                    >
+                                        <Icon name="content_copy" />
+                                        {move || if copied.get() { LINK_COPIED } else { COPY_LINK }}
+                                    </button>
+                                </div>
+                                <PasswordSection draft=link_tab.draft reveal />
+                            }
+                                .into_any()
+                        }
+                    }}
+                    {move || view! { <ExpirySection draft=tab().draft /> }}
+                    <Show when=move || audience.get() == Audience::People>
+                        <p class="share__info">
+                            <Icon name="info" />
+                            {PEOPLE_NOTE}
+                        </p>
+                    </Show>
                     <ErrorAlert message=error />
                     <div class="modal__actions share__actions">
-                        <Show when=move || share.read().is_some()>
+                        <Show when=has_share>
                             <button
                                 class="button button--ghost button--danger share__stop"
                                 disabled=move || saving.get()
@@ -211,12 +357,12 @@ pub fn ShareDialog(
                                     confirm_stop.set(true);
                                 }
                             >
-                                <Icon name="link_off" />
+                                {move || view! { <Icon name=stop_icon(audience.get()) /> }}
                                 {STOP_SHARING}
                             </button>
                         </Show>
                         <button class="button" on:click=move |_| on_close.run(())>
-                            {move || if share.read().is_some() { "Close" } else { "Cancel" }}
+                            {move || if has_share() { "Close" } else { "Cancel" }}
                         </button>
                         <button
                             class="button button--primary"
@@ -230,6 +376,96 @@ pub fn ShareDialog(
                 </Show>
             </div>
         </div>
+    }
+}
+
+/// Who the share is for: a drop-down that picks people, the owner, and everyone added.
+#[component]
+fn PeopleSection(
+    draft: RwSignal<ShareDraft>,
+    share: RwSignal<Option<Share>>,
+    users: RwSignal<Vec<UserRef>>,
+    owner: Signal<String>,
+) -> impl IntoView {
+    let toggle = Callback::new(move |user: UserRef| {
+        draft.update(|draft| {
+            if draft.has_recipient(user.id) {
+                draft.remove_recipient(user.id);
+            } else {
+                draft.add_recipient(user);
+            }
+        });
+    });
+    let picked = Signal::derive(move || {
+        draft
+            .read()
+            .recipients()
+            .iter()
+            .map(|user| user.id)
+            .collect()
+    });
+    let added_on = move |user: &UserRef| {
+        share.read().as_ref().and_then(|share| {
+            share
+                .recipients
+                .iter()
+                .find(|recipient| recipient.user.id == user.id)
+                .map(|recipient| format!("{ADDED} {}", short_date(recipient.added_at)))
+        })
+    };
+
+    view! {
+        <div class="share__add">
+            <Menu
+                id=PEOPLE_PICKER_ID.to_owned()
+                label=ADD_PEOPLE
+                icon="person_add"
+                text=Signal::stored(ADD_PEOPLE_PLACEHOLDER.to_owned())
+                align_start=true
+                combo=true
+            >
+                <UserPicker users picked toggle />
+            </Menu>
+            <select class="field__input share__permission" disabled aria-label="Permission">
+                <option>{CAN_VIEW}</option>
+            </select>
+        </div>
+        <ul class="share__people">
+            <li class="share__person">
+                <span class="avatar" aria-hidden="true">{move || initial(&owner.get())}</span>
+                <span class="share__person-name">{move || you(&owner.get())}</span>
+                <span class="share__person-role">{OWNER}</span>
+            </li>
+            <For
+                each=move || draft.read().recipients().to_vec()
+                key=|user| user.id
+                children=move |user| {
+                    let id = user.id;
+                    let name = user.username.clone();
+                    let added = {
+                        let user = user.clone();
+                        move || added_on(&user)
+                    };
+                    view! {
+                        <li class="share__person">
+                            <span class="avatar" aria-hidden="true">{initial(&name)}</span>
+                            <span class="share__person-name">
+                                {name.clone()}
+                                <span class="share__person-added">{added}</span>
+                            </span>
+                            <span class="share__person-role">{CAN_VIEW}</span>
+                            <button
+                                class="button button--ghost button--small"
+                                aria-label=format!("{REMOVE_PERSON} {name}")
+                                on:click=move |_| draft.update(|draft| draft.remove_recipient(id))
+                            >
+                                <Icon name="close" />
+                            </button>
+                        </li>
+                    }
+                }
+            />
+        </ul>
     }
 }
 
@@ -392,10 +628,12 @@ fn ExpirySection(draft: RwSignal<ShareDraft>) -> impl IntoView {
     }
 }
 
-/// Asks before the link stops working.
+/// Asks before the share stops working.
 #[component]
 fn StopSharing(
     question: String,
+    note: &'static str,
+    icon: &'static str,
     busy: RwSignal<bool>,
     on_cancel: Callback<()>,
     on_confirm: Callback<()>,
@@ -403,7 +641,7 @@ fn StopSharing(
     view! {
         <div class="share__confirm">
             <p class="share__label">{question}</p>
-            <p class="modal__note">{STOP_SHARING_NOTE}</p>
+            <p class="modal__note">{note}</p>
         </div>
         <div class="modal__actions">
             <button
@@ -420,7 +658,7 @@ fn StopSharing(
                 disabled=move || busy.get()
                 on:click=move |_| on_confirm.run(())
             >
-                <Icon name="link_off" />
+                <Icon name=icon />
                 {STOP_SHARING}
             </button>
         </div>

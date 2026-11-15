@@ -710,6 +710,21 @@ pub fn field(theme: &Theme) -> container::Style {
     }
 }
 
+/// A button drawn like a field that opens a drop-down, outlined in the accent on hover.
+pub fn combo(theme: &Theme, status: button::Status) -> button::Style {
+    let t = tokens(theme);
+    let border = match status {
+        button::Status::Hovered | button::Status::Pressed => t.accent,
+        button::Status::Active | button::Status::Disabled => t.border_strong,
+    };
+    button::Style {
+        background: Some(t.surface.into()),
+        text_color: t.muted,
+        border: outline(border, RADIUS_SM),
+        ..button::Style::default()
+    }
+}
+
 /// The disc behind the icon of a dialog that warns.
 pub fn danger_disc(theme: &Theme) -> container::Style {
     container::Style {

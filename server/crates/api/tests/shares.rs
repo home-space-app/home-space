@@ -840,3 +840,162 @@ async fn a_zip_of_a_locked_link_needs_its_access_token(pool: PgPool) {
     assert!(disposition(&unlocked).ends_with("report.txt.zip"));
     assert_eq!(zip_names(&unlocked), ["report.txt"]);
 }
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_share_with_users_has_no_link(pool: PgPool) {
+    let app = setup(pool).await;
+    let alice = app.user_token("alice").await;
+    app.user_token("bob").await;
+    let bob = app.user_id("bob").await.to_string();
+    let report = file(&app, &alice, "report.pdf", None, "pdf").await;
+
+    let response = share(
+        &app,
+        &alice,
+        json!({ "node_ids": [report], "recipients": [bob, bob] }),
+    )
+    .await;
+
+    assert_eq!(response.status, StatusCode::CREATED);
+    let body = response.json();
+    assert!(body.get("token").is_none());
+    let recipients = body["recipients"].as_array().expect("recipients");
+    assert_eq!(recipients.len(), 1);
+    assert_eq!(recipients[0]["user"]["username"], "bob");
+    assert_eq!(recipients[0]["permission"], "read");
+    assert!(recipients[0]["added_at"].is_string());
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_share_with_users_takes_no_password(pool: PgPool) {
+    let app = setup(pool).await;
+    let alice = app.user_token("alice").await;
+    app.user_token("bob").await;
+    let bob = app.user_id("bob").await.to_string();
+    let report = file(&app, &alice, "report.pdf", None, "pdf").await;
+
+    let response = share(
+        &app,
+        &alice,
+        json!({ "node_ids": [report], "recipients": [bob], "password": SHARE_PASSWORD }),
+    )
+    .await;
+
+    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_share_is_not_for_its_owner(pool: PgPool) {
+    let app = setup(pool).await;
+    let alice = app.user_token("alice").await;
+    let me = app.user_id("alice").await.to_string();
+    let report = file(&app, &alice, "report.pdf", None, "pdf").await;
+
+    let response = share(
+        &app,
+        &alice,
+        json!({ "node_ids": [report], "recipients": [me] }),
+    )
+    .await;
+
+    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_share_is_not_for_an_unknown_user(pool: PgPool) {
+    let app = setup(pool).await;
+    let alice = app.user_token("alice").await;
+    let report = file(&app, &alice, "report.pdf", None, "pdf").await;
+
+    let response = share(
+        &app,
+        &alice,
+        json!({ "node_ids": [report], "recipients": [uuid::Uuid::now_v7()] }),
+    )
+    .await;
+
+    assert_eq!(response.status, StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn the_owner_changes_who_a_share_is_for(pool: PgPool) {
+    let app = setup(pool).await;
+    let alice = app.user_token("alice").await;
+    app.user_token("bob").await;
+    app.user_token("carol").await;
+    let bob = app.user_id("bob").await.to_string();
+    let carol = app.user_id("carol").await.to_string();
+    let report = file(&app, &alice, "report.pdf", None, "pdf").await;
+    let created = share(
+        &app,
+        &alice,
+        json!({ "node_ids": [report], "recipients": [bob] }),
+    )
+    .await;
+    let id = id_of(&created);
+
+    let response = app
+        .json(
+            Method::PATCH,
+            &format!("/api/v1/shares/{id}"),
+            Some(&alice),
+            json!({ "recipients": [carol] }),
+        )
+        .await;
+
+    assert_eq!(response.status, StatusCode::OK);
+    let body = response.json();
+    let recipients = body["recipients"].as_array().expect("recipients");
+    assert_eq!(recipients.len(), 1);
+    assert_eq!(recipients[0]["user"]["username"], "carol");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_link_is_not_given_recipients(pool: PgPool) {
+    let app = setup(pool).await;
+    let alice = app.user_token("alice").await;
+    app.user_token("bob").await;
+    let bob = app.user_id("bob").await.to_string();
+    let report = file(&app, &alice, "report.pdf", None, "pdf").await;
+    let (_, id) = share_plain(&app, &alice, &[&report]).await;
+
+    let response = app
+        .json(
+            Method::PATCH,
+            &format!("/api/v1/shares/{id}"),
+            Some(&alice),
+            json!({ "recipients": [bob] }),
+        )
+        .await;
+
+    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn the_owner_lists_links_and_shares_with_users(pool: PgPool) {
+    let app = setup(pool).await;
+    let alice = app.user_token("alice").await;
+    app.user_token("bob").await;
+    let bob = app.user_id("bob").await.to_string();
+    let report = file(&app, &alice, "report.pdf", None, "pdf").await;
+    share_plain(&app, &alice, &[&report]).await;
+    share(
+        &app,
+        &alice,
+        json!({ "node_ids": [report], "recipients": [bob] }),
+    )
+    .await;
+
+    let response = app.get("/api/v1/shares", &alice).await;
+
+    let body = response.json();
+    let shares = body.as_array().expect("array");
+    assert_eq!(shares.len(), 2);
+    assert_eq!(
+        shares
+            .iter()
+            .filter(|share| share.get("token").is_some())
+            .count(),
+        1
+    );
+}

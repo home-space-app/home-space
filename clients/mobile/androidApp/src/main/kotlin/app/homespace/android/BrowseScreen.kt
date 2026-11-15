@@ -395,6 +395,7 @@ fun BrowseScreen(
         FileDialog(
             action = current,
             client = session.client,
+            owner = session.user.username,
             onDismiss = { action = null },
             onDone = {
                 action = null

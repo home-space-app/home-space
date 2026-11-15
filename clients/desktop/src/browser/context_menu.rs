@@ -196,6 +196,11 @@ impl Placement {
     pub fn hanging(target: Rectangle, edge: Horizontal) -> Self {
         Self { target, edge }
     }
+
+    /// How wide what the menu hangs from is.
+    pub fn width(&self) -> f32 {
+        self.target.width
+    }
 }
 
 /// `menu` placed by `placement`. It is moved once laid out, as only then is its size known.

@@ -3,9 +3,90 @@
 }
 
 .share__link,
-.share__password {
+.share__password,
+.share__add {
   display: flex;
   gap: var(--space-2);
+}
+
+.share__tabs {
+  justify-self: start;
+}
+
+.share__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.share__tab .icon {
+  font-size: 18px;
+}
+
+.share__tab-short {
+  display: none;
+}
+
+.share__permission {
+  flex: none;
+  width: auto;
+  font-size: var(--text-sm);
+}
+
+.share__people {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  list-style: none;
+}
+
+.share__person {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 52px;
+  padding: var(--space-2) var(--space-3);
+}
+
+.share__person + .share__person {
+  border-top: 1px solid var(--color-border);
+}
+
+.share__person-name {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+
+.share__person-added:not(:empty) {
+  color: var(--color-muted);
+  font-size: 0.8125rem;
+  font-weight: 400;
+}
+
+.share__person-role {
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+}
+
+.share__info {
+  display: flex;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  color: var(--color-muted);
+  font-size: 0.8125rem;
+}
+
+.share__info .icon {
+  font-size: 18px;
 }
 
 .share__url,
@@ -97,6 +178,31 @@
   .share__link,
   .share__password {
     flex-direction: column;
+  }
+
+  .share__add {
+    flex-wrap: wrap;
+  }
+
+  .share__add .combo {
+    flex-basis: 100%;
+  }
+
+  .share__tabs {
+    justify-self: stretch;
+  }
+
+  .share__tab {
+    flex: 1;
+    justify-content: center;
+  }
+
+  .share__tab-long {
+    display: none;
+  }
+
+  .share__tab-short {
+    display: inline;
   }
 
   .share__actions {

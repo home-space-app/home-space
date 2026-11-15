@@ -1,10 +1,10 @@
-//! The settings tab listing every link the user shares things through.
+//! The settings tab listing everything the user shares, with people or through a link.
 
 use leptos::prelude::*;
 
 use client_core::share::{
     COPY_LINK, EDIT_SHARE, EXPIRED, NEVER_EXPIRES, NO_SHARES, OPEN_LINK, PASSWORD_PROTECTED,
-    STOP_SHARING, ShareExpiry, share_name, share_subtitle,
+    STOP_SHARING, ShareExpiry, recipient_names, share_name, share_subtitle,
 };
 use protocol::Share;
 
@@ -18,6 +18,7 @@ use crate::{
 };
 
 const ICON_LINK: &str = "link";
+const ICON_PEOPLE: &str = "group";
 const NEW_TAB: &str = "_blank";
 
 /// A link being edited, or about to stop working.
@@ -81,6 +82,11 @@ pub fn SharesPage(auth: Auth) -> impl IntoView {
                                         share.has_password,
                                         share.expires_at,
                                         share
+                                            .recipients
+                                            .iter()
+                                            .map(|recipient| recipient.user.id)
+                                            .collect::<Vec<_>>(),
+                                        share
                                             .items
                                             .iter()
                                             .map(|item| (item.id, item.name.clone()))
@@ -120,10 +126,15 @@ pub fn SharesPage(auth: Auth) -> impl IntoView {
 #[component]
 fn ShareRow(share: Share, editing: RwSignal<Option<Editing>>) -> impl IntoView {
     let id = share.id;
-    let url = session::client().share_url(&share.token);
+    let url = share
+        .token
+        .as_deref()
+        .map(|token| session::client().share_url(token));
+    let people = (!share.is_link()).then(|| recipient_names(&share));
     let icon = match share.items.as_slice() {
         [item] => node_icon(item),
-        _ => ICON_LINK,
+        _ if share.is_link() => ICON_LINK,
+        _ => ICON_PEOPLE,
     };
     let name = share_name(&share.items);
     let subtitle = (share.items.len() > 1).then(|| share_subtitle(&share.items));
@@ -139,18 +150,21 @@ fn ShareRow(share: Share, editing: RwSignal<Option<Editing>>) -> impl IntoView {
         .map_or_else(|| expires.clone(), |items| format!("{items} · {expires}"));
     let has_password = share.has_password;
 
-    let copy = {
-        let url = url.clone();
-        Callback::new(move |()| {
+    let link_actions = url.map(|url| {
+        let copy = {
+            let url = url.clone();
+            Callback::new(move |()| {
+                if let Some(window) = web_sys::window() {
+                    let _ = window.navigator().clipboard().write_text(&url);
+                }
+            })
+        };
+        let open = Callback::new(move |()| {
             if let Some(window) = web_sys::window() {
-                let _ = window.navigator().clipboard().write_text(&url);
+                let _ = window.open_with_url_and_target(&url, NEW_TAB);
             }
-        })
-    };
-    let open = Callback::new(move |()| {
-        if let Some(window) = web_sys::window() {
-            let _ = window.open_with_url_and_target(&url, NEW_TAB);
-        }
+        });
+        (copy, open)
     });
     let edit = |stopping: bool| {
         let share = share.clone();
@@ -162,6 +176,11 @@ fn ShareRow(share: Share, editing: RwSignal<Option<Editing>>) -> impl IntoView {
         })
     };
     let (start_edit, start_stop) = (edit(false), edit(true));
+    let stop_icon = if share.is_link() {
+        "link_off"
+    } else {
+        "person_remove"
+    };
 
     view! {
         <tr class="node-table__row">
@@ -180,6 +199,15 @@ fn ShareRow(share: Share, editing: RwSignal<Option<Editing>>) -> impl IntoView {
                                     </span>
                                 }
                             })}
+                            {people
+                                .map(|names| {
+                                    view! {
+                                        <span class="pill share-row__pill">
+                                            <Icon name=ICON_PEOPLE />
+                                            {names}
+                                        </span>
+                                    }
+                                })}
                         </span>
                         {subtitle
                             .map(|items| view! { <span class="share-row__items">{items}</span> })}
@@ -193,11 +221,16 @@ fn ShareRow(share: Share, editing: RwSignal<Option<Editing>>) -> impl IntoView {
             <td class="node-table__cell node-table__cell--modified">{created}</td>
             <td class="node-table__cell node-table__cell--actions">
                 <span class="node-table__actions">
-                    <Menu id=format!("share-menu-{id}") label="Link actions">
-                        <MenuItem icon="content_copy" label=COPY_LINK on_select=copy />
-                        <MenuItem icon="open_in_new" label=OPEN_LINK on_select=open />
+                    <Menu id=format!("share-menu-{id}") label="Share actions">
+                        {link_actions
+                            .map(|(copy, open)| {
+                                view! {
+                                    <MenuItem icon="content_copy" label=COPY_LINK on_select=copy />
+                                    <MenuItem icon="open_in_new" label=OPEN_LINK on_select=open />
+                                }
+                            })}
                         <MenuItem icon="edit" label=EDIT_SHARE on_select=start_edit />
-                        <MenuItem icon="link_off" label=STOP_SHARING danger=true on_select=start_stop />
+                        <MenuItem icon=stop_icon label=STOP_SHARING danger=true on_select=start_stop />
                     </Menu>
                 </span>
             </td>

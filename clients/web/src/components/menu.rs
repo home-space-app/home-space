@@ -1,10 +1,17 @@
-use leptos::{html::Div, prelude::*};
+use leptos::{
+    html::{Button, Div},
+    prelude::*,
+};
 use web_sys::HtmlElement;
 
 use crate::icon::Icon;
 
 const ICON_MORE: &str = "more_horiz";
+const ICON_EXPAND: &str = "expand_more";
+const TRIGGER_CLASS: &str = "button button--ghost button--small menu__trigger";
+const COMBO_CLASS: &str = "combo";
 const POPOVER_AUTO: &str = "auto";
+const POPOVER_OPEN: &str = ":popover-open";
 /// Space between the trigger and the panel, and the panel and the window edge.
 const MENU_GAP: f64 = 4.0;
 
@@ -29,19 +36,64 @@ pub fn Menu(
     /// Lines the panel up with the trigger's left edge instead of its right.
     #[prop(optional)]
     align_start: bool,
+    /// Draws the trigger as a full-width field with a chevron, and opens the panel at least as
+    /// wide as it.
+    #[prop(optional)]
+    combo: bool,
     children: ChildrenFn,
 ) -> impl IntoView {
     let panel = NodeRef::<Div>::new();
+    let trigger = NodeRef::<Button>::new();
     provide_context(MenuPanel(panel));
-    let place = move |event: leptos::ev::MouseEvent| {
-        use wasm_bindgen::JsCast;
-        let Some(target) = event
-            .current_target()
-            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+    let layout = Layout { align_start, combo };
+    let open = move |_| {
+        layout.place(trigger, panel, false);
+        request_animation_frame(move || follow(trigger, panel, layout));
+    };
+
+    view! {
+        <button
+            class=if combo { COMBO_CLASS } else { TRIGGER_CLASS }
+            aria-label=label
+            aria-haspopup="menu"
+            popovertarget=id.clone()
+            node_ref=trigger
+            on:click=open
+        >
+            {move || (!icon.is_empty()).then(|| view! { <Icon name=icon /> })}
+            {move || {
+                text.map(|text| {
+                    if combo {
+                        view! { <span class="combo__text">{text.get()}</span> }.into_any()
+                    } else {
+                        text.get().into_any()
+                    }
+                })
+            }}
+            {combo.then(|| view! { <Icon name=ICON_EXPAND /> })}
+        </button>
+        <div id=id class="menu" role="menu" popover=POPOVER_AUTO node_ref=panel>
+            {children()}
+        </div>
+    }
+}
+
+/// How a panel lines up with its trigger.
+#[derive(Clone, Copy)]
+struct Layout {
+    align_start: bool,
+    combo: bool,
+}
+
+impl Layout {
+    /// Puts the panel under the trigger, or above it when there is no room below; `shown` says
+    /// whether the panel is already open, so its own size can be read.
+    fn place(self, trigger: NodeRef<Button>, panel: NodeRef<Div>, shown: bool) {
+        let (Some(trigger), Some(element)) = (trigger.get_untracked(), panel.get_untracked())
         else {
             return;
         };
-        let rect = target.get_bounding_client_rect();
+        let rect = trigger.get_bounding_client_rect();
         let (width, height) = web_sys::window()
             .and_then(|window| {
                 let width = window.inner_width().ok()?.as_f64()?;
@@ -49,35 +101,39 @@ pub fn Menu(
                 Some((width, height))
             })
             .unwrap_or_default();
-        if let Some(element) = panel.get_untracked() {
-            let style = HtmlElement::style(&element);
-            let (panel_width, panel_height) = measure(&element);
-            let y = top(rect.top(), rect.bottom(), panel_height, height);
-            let x = if align_start {
-                left(rect.left() + panel_width, panel_width, width)
-            } else {
-                left(rect.right(), panel_width, width)
-            };
-            let _ = style.set_property("top", &format!("{y}px"));
-            let _ = style.set_property("left", &format!("{x}px"));
-            let _ = style.set_property("right", "auto");
+        let style = HtmlElement::style(&element);
+        if self.combo {
+            let _ = style.set_property("min-width", &format!("{}px", rect.width()));
         }
-    };
+        let (panel_width, panel_height) = if shown {
+            (
+                f64::from(element.offset_width()),
+                f64::from(element.offset_height()),
+            )
+        } else {
+            measure(&element)
+        };
+        let y = top(rect.top(), rect.bottom(), panel_height, height);
+        let x = if self.align_start {
+            left(rect.left() + panel_width, panel_width, width)
+        } else {
+            left(rect.right(), panel_width, width)
+        };
+        let _ = style.set_property("top", &format!("{y}px"));
+        let _ = style.set_property("left", &format!("{x}px"));
+        let _ = style.set_property("right", "auto");
+    }
+}
 
-    view! {
-        <button
-            class="button button--ghost button--small menu__trigger"
-            aria-label=label
-            aria-haspopup="menu"
-            popovertarget=id.clone()
-            on:click=place
-        >
-            {move || (!icon.is_empty()).then(|| view! { <Icon name=icon /> })}
-            {move || text.map(|text| text.get())}
-        </button>
-        <div id=id class="menu" role="menu" popover=POPOVER_AUTO node_ref=panel>
-            {children()}
-        </div>
+/// Keeps an open panel on its trigger every frame, as what is around the trigger can move it:
+/// a dialog that grows as people are picked, say. Stops once the panel closes.
+fn follow(trigger: NodeRef<Button>, panel: NodeRef<Div>, layout: Layout) {
+    let shown = panel
+        .get_untracked()
+        .is_some_and(|element| element.matches(POPOVER_OPEN).unwrap_or(false));
+    if shown {
+        layout.place(trigger, panel, true);
+        request_animation_frame(move || follow(trigger, panel, layout));
     }
 }
 
