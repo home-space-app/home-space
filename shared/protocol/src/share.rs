@@ -1,0 +1,197 @@
+//! Read-only share links (`/shares`, `/public/shares/{token}`).
+//!
+//! The owner makes a link to one or more of their files and folders with `POST /shares`.
+//! Anyone with the link reads the shared items through `/public/shares/{token}` without
+//! signing in. A link with a password answers only its metadata until it is unlocked with
+//! `POST /public/shares/{token}/unlock`, whose access token goes in the
+//! [`SHARE_ACCESS`](crate::paths::SHARE_ACCESS) header, or the `access` query parameter where
+//! headers cannot be sent. An expired link answers 410 Gone, a removed one 404.
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use time::OffsetDateTime;
+use uuid::Uuid;
+
+use crate::{Node, NodeId, NodeKind, admin::present};
+
+/// Body of `POST /shares`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateShare {
+    /// The owner's files and folders to share; folders are shared with everything inside.
+    pub node_ids: Vec<NodeId>,
+    /// Asked for before anything is shown; `None` for no password.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    /// When the link stops working; `None` for never.
+    #[serde(
+        default,
+        with = "time::serde::rfc3339::option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub expires_at: Option<OffsetDateTime>,
+}
+
+/// Body of `PATCH /shares/{id}`. A missing field is left as it is; `null` removes the
+/// password or the expiry.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateShare {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub password: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "maybe_time")]
+    pub expires_at: Option<Option<OffsetDateTime>>,
+}
+
+/// Query of `GET /shares`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharesQuery {
+    /// Only the shares that include this node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<NodeId>,
+}
+
+/// What a share lets its recipients do with the shared items.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(
+    feature = "server",
+    derive(sqlx::Type),
+    sqlx(type_name = "text", rename_all = "lowercase")
+)]
+#[serde(rename_all = "lowercase")]
+pub enum SharePermission {
+    /// See and download them.
+    #[default]
+    Read,
+}
+
+/// A share link, as its owner sees it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Share {
+    pub id: Uuid,
+    /// The secret part of the link; see [`paths::web_share`](crate::paths::web_share).
+    pub token: String,
+    /// The shared items that are not in the recycle bin.
+    pub items: Vec<Node>,
+    pub has_password: bool,
+    #[serde(default)]
+    pub permission: SharePermission,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub expires_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+
+/// A file or folder seen through a share link: only what a visitor needs to see.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedNode {
+    pub id: NodeId,
+    pub kind: NodeKind,
+    pub name: String,
+    pub size: i64,
+    pub mime: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
+}
+
+/// `GET /public/shares/{token}`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicShare {
+    /// The username of who shared it.
+    pub owner: String,
+    /// How many items are shared, known even before a password is given.
+    pub item_count: u32,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub expires_at: Option<OffsetDateTime>,
+    /// The link has a password and the request did not carry a valid access token.
+    pub needs_password: bool,
+    /// The shared items; `None` while a password is needed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items: Option<Vec<SharedNode>>,
+}
+
+/// Body of `POST /public/shares/{token}/unlock`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnlockShare {
+    pub password: String,
+}
+
+/// Answer of `POST /public/shares/{token}/unlock`: proof that the password was given. It stops
+/// working when it expires or the owner changes the password.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShareAccess {
+    pub access: String,
+    /// Seconds until it expires.
+    pub expires_in: i64,
+}
+
+/// Query of `GET /public/shares/{token}/nodes`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedFolderQuery {
+    /// A shared folder, or a folder inside one.
+    pub parent_id: NodeId,
+}
+
+/// Query naming the access token where the [`SHARE_ACCESS`](crate::paths::SHARE_ACCESS) header
+/// cannot be sent, as in a download link.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShareAccessQuery {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
+}
+
+/// An optional time that tells a missing field (`None`) from `null` (`Some(None)`).
+mod maybe_time {
+    use super::{Deserialize, Deserializer, OffsetDateTime, Serializer};
+
+    pub fn serialize<S: Serializer>(
+        value: &Option<Option<OffsetDateTime>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        time::serde::rfc3339::option::serialize(&value.flatten(), serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Option<OffsetDateTime>>, D::Error> {
+        #[derive(Deserialize)]
+        struct Time(#[serde(with = "time::serde::rfc3339::option")] Option<OffsetDateTime>);
+        Time::deserialize(deserializer).map(|Time(time)| Some(time))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_update_tells_a_missing_expiry_from_a_removed_one() {
+        let missing: UpdateShare = serde_json::from_str("{}").expect("json");
+        assert_eq!(missing.expires_at, None);
+        let removed: UpdateShare = serde_json::from_str(r#"{"expires_at":null}"#).expect("json");
+        assert_eq!(removed.expires_at, Some(None));
+    }
+
+    #[test]
+    fn an_update_reads_a_new_expiry() {
+        let update: UpdateShare =
+            serde_json::from_str(r#"{"expires_at":"2026-11-19T14:30:00Z"}"#).expect("json");
+        let expected = OffsetDateTime::from_unix_timestamp(1_795_098_600).expect("time");
+        assert_eq!(update.expires_at, Some(Some(expected)));
+    }
+
+    #[test]
+    fn an_update_round_trips() {
+        let update = UpdateShare {
+            password: Some(None),
+            expires_at: Some(None),
+        };
+        let json = serde_json::to_string(&update).expect("json");
+        assert_eq!(json, r#"{"password":null,"expires_at":null}"#);
+        assert_eq!(
+            serde_json::from_str::<UpdateShare>(&json).expect("back"),
+            update
+        );
+    }
+}

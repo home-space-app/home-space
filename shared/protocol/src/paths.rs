@@ -42,6 +42,14 @@ pub const CAPABILITIES: &str = "/api/v1/capabilities";
 pub const STORAGE: &str = "/api/v1/storage";
 pub const ADMIN_STATUS: &str = "/api/v1/admin/status";
 pub const ADMIN_USERS: &str = "/api/v1/admin/users";
+pub const SHARES: &str = "/api/v1/shares";
+pub const PUBLIC_SHARES: &str = "/api/v1/public/shares";
+/// Header carrying the access token of an unlocked share link.
+pub const SHARE_ACCESS: &str = "Share-Access";
+/// Query parameter carrying it where headers cannot be sent.
+pub const SHARE_ACCESS_PARAM: &str = "access";
+/// Where the web client opens a share link.
+pub const WEB_SHARE: &str = "/s";
 /// Header of `PATCH /uploads/{id}` naming where the chunk starts, and of upload responses
 /// naming how many bytes the server has.
 pub const UPLOAD_OFFSET: &str = "Upload-Offset";
@@ -97,6 +105,31 @@ pub fn transfer_received(id: uuid::Uuid) -> String {
 
 pub fn transfer_save(id: uuid::Uuid) -> String {
     format!("{TRANSFERS}/{id}/save")
+}
+
+pub fn share(id: uuid::Uuid) -> String {
+    format!("{SHARES}/{id}")
+}
+
+pub fn public_share(token: &str) -> String {
+    format!("{PUBLIC_SHARES}/{token}")
+}
+
+pub fn public_share_unlock(token: &str) -> String {
+    format!("{PUBLIC_SHARES}/{token}/unlock")
+}
+
+pub fn public_share_nodes(token: &str) -> String {
+    format!("{PUBLIC_SHARES}/{token}/nodes")
+}
+
+pub fn public_share_file_content(token: &str, id: NodeId) -> String {
+    format!("{PUBLIC_SHARES}/{token}/files/{id}/content")
+}
+
+/// The web client page of a share link, relative to the server origin.
+pub fn web_share(token: &str) -> String {
+    format!("{WEB_SHARE}/{token}")
 }
 
 pub fn node(id: NodeId) -> String {

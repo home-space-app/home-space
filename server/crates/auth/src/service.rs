@@ -10,9 +10,10 @@ use time::{Duration, OffsetDateTime};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, broadcast};
 use uuid::Uuid;
 
-use db::{Db, DbError, LiveSession, NewDevice, OidcPending, User, UserId};
+use db::{Db, DbError, LiveSession, NewDevice, OidcPending, ShareLink, User, UserId};
 use protocol::{
-    DeviceInfo, NodeId, OidcProvider, Providers, TicketRequest, TicketResponse, TokenPair,
+    DeviceInfo, NodeId, OidcProvider, Providers, ShareAccess, TicketRequest, TicketResponse,
+    TokenPair,
 };
 
 use crate::{
@@ -20,8 +21,8 @@ use crate::{
     oidc::{Identity, is_valid_challenge, verifier_matches},
     password,
     token::{
-        Keys, decode_access, decode_ticket, encode_access, encode_ticket, hash_refresh_token,
-        new_refresh_token,
+        Keys, ShareGrant, decode_access, decode_share_access, decode_ticket, encode_access,
+        encode_share_access, encode_ticket, hash_refresh_token, new_refresh_token,
     },
 };
 
@@ -32,6 +33,10 @@ const IPV6_NETWORK_BITS: u32 = 64;
 /// nothing anyone types or a password manager makes comes near it.
 use password::MAX_PASSWORD_LEN;
 const TICKET_TTL_SECS: i64 = 30;
+/// How long a share link stays unlocked after its password was given.
+const SHARE_ACCESS_TTL: Duration = Duration::hours(12);
+/// Wrong passwords of a share link are counted under this prefix and the link's id.
+const SHARE_ATTEMPTS_PREFIX: &str = "share:";
 /// How long after a refresh token kept in a cookie was used it may be presented once more
 /// without ending the session: long enough for two tabs that refreshed at the same moment.
 const SHARED_REFRESH_GRACE: Duration = Duration::seconds(10);
@@ -527,6 +532,63 @@ impl AuthService {
             .unwrap_or_else(PoisonError::into_inner);
         used.retain(|_, expires_at| *expires_at > now);
         used.insert(id, expires_at).is_none()
+    }
+
+    /// Hashes the password of a share link, checked like an account password.
+    pub async fn hash_share_password(&self, password: &str) -> Result<String, AuthError> {
+        password::check_new(password)?;
+        self.hash_blocking(password).await
+    }
+
+    /// Unlocks `share` with `password`, returning proof of it for the following requests.
+    ///
+    /// Wrong passwords are throttled like wrong sign-ins, counted per link and per source
+    /// `address`, so the password of one link cannot be guessed by brute force.
+    pub async fn unlock_share(
+        &self,
+        share: &ShareLink,
+        password: &str,
+        address: Option<IpAddr>,
+    ) -> Result<ShareAccess, AuthError> {
+        if let Some(hash) = share.password_hash.clone() {
+            if password.len() > MAX_PASSWORD_LEN {
+                return Err(AuthError::InvalidCredentials);
+            }
+            let key = format!("{SHARE_ATTEMPTS_PREFIX}{}", share.id);
+            let source = address.map(attempt_source).unwrap_or_default();
+            if let Err(until) = self
+                .db
+                .begin_login_attempt(&key, &source, LOGIN_ATTEMPTS_MEMORY, login_block)
+                .await?
+            {
+                return Err(too_many_attempts(until));
+            }
+            match self.verify_blocking(password, hash).await {
+                Ok(true) => self.db.clear_login_attempts(&key, &source).await?,
+                Ok(false) => return Err(AuthError::InvalidCredentials),
+                Err(err) => {
+                    self.db
+                        .take_back_login_attempt(&key, &source, login_block)
+                        .await?;
+                    return Err(err);
+                }
+            }
+        }
+        let grant = ShareGrant {
+            share_id: share.id,
+            password_version: share.password_version,
+        };
+        Ok(ShareAccess {
+            access: encode_share_access(&self.keys, grant, SHARE_ACCESS_TTL)?,
+            expires_in: SHARE_ACCESS_TTL.whole_seconds(),
+        })
+    }
+
+    /// Whether `access` unlocks `share` with its current password.
+    pub fn verifies_share_access(&self, share: &ShareLink, access: &str) -> bool {
+        decode_share_access(&self.keys, access).is_ok_and(|grant| {
+            grant.share_id == share.id && grant.password_version == share.password_version
+        })
     }
 
     /// The device of `grant`'s session. A session that names none takes `device`, which is

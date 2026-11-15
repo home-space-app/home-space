@@ -25,6 +25,7 @@ mod oidc;
 mod refresh_tokens;
 mod search;
 mod sessions;
+mod shares;
 mod storage;
 mod transfers;
 mod trash;
@@ -42,9 +43,10 @@ pub use nodes::{
     NodeProperties, NodeUpdate, StoreOptions, StoreOutcome,
 };
 pub use oidc::{OidcCode, OidcPending};
-pub use protocol::{NodeId, NodeKind, OnConflict, UserId};
+pub use protocol::{NodeId, NodeKind, OnConflict, SharePermission, UserId};
 pub use search::{ContentState, RankedNode};
 pub use sessions::LiveSession;
+pub use shares::{NewShareLink, ShareLink, ShareLinkUpdate};
 pub use sqlx::PgPool;
 pub use storage::{DatabaseInfo, QuotaUsage, StorageUsage, UserStorage};
 pub use transfers::{ExpiredTransfer, NewTransfer, SubtreeNode, Transfer, TransferItem};

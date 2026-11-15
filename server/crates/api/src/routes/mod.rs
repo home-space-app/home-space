@@ -2,9 +2,11 @@ mod admin;
 mod auth;
 mod capabilities;
 mod changes;
+mod content;
 mod devices;
 mod nodes;
 mod search;
+mod shares;
 mod storage;
 mod transfers;
 mod trash;
@@ -31,6 +33,7 @@ pub fn routes() -> Router<AppState> {
         .merge(uploads::routes())
         .merge(users::routes())
         .merge(search::routes())
+        .merge(shares::routes())
         .merge(storage::routes())
         .merge(ws::routes())
 }
