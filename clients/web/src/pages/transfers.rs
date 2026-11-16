@@ -364,7 +364,7 @@ fn TransferRow(
     let cancel = transfer.clone();
 
     view! {
-        <tr>
+        <tr data-testid="transfer-row">
             <td>
                 <span class="user-cell transfer-cell">
                     <Icon name=icon />
