@@ -53,8 +53,8 @@ Testcontainers needs Docker or podman.
 | Per worker | A database, `homespace user add --password-stdin` for the admin, `homespace serve` on a free port | `fixtures/server.ts` |
 | Per test | Fresh users through the admin API, so tests share a server without a reset | `fixtures/index.ts` (`users`) |
 | Per test | The server log, attached when the test fails | `fixtures/index.ts` (`serverLog`) |
-| Android, per worker | Appium and one session | `fixtures/cross.ts` |
-| Android, per test | App reset; on failure a screenshot, page source and logcat | `fixtures/cross.ts` |
+| Android, per worker | Appium and one session | `fixtures/android-test.ts` |
+| Android, per test | App reset; on failure a screenshot, page source and logcat | `fixtures/android-test.ts` |
 
 The rest of the layout:
 
@@ -65,6 +65,19 @@ The rest of the layout:
 
 The web client is loaded from the test server itself, because its websocket refuses other
 origins.
+
+## Kinds of tests
+
+| Folder | Clients | The other side |
+| --- | --- | --- |
+| `tests/web` | the web client | the API, or a second browser |
+| `tests/android` | the Android app | the API (`Session.sendFile`, `transfer(id)`) |
+| `tests/cross` | the web client and the Android app | each other |
+
+Most tests should drive one client and use the API for the rest: they are faster, and a
+failure points at one client. Keep `tests/cross` for the paths where two real clients must
+agree, such as a transfer from the web arriving on the phone. The `android` project runs
+`tests/android` and `tests/cross`, both on the one emulator.
 
 ## Environment
 
