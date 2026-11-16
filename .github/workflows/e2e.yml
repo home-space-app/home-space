@@ -1,0 +1,148 @@
+# End-to-end tests (e2e/): the real server and web build against a throwaway Postgres, driven
+# by Playwright, and with an Android emulator through Appium.
+#
+# - web: on pull requests and pushes to main.
+# - android: nightly and by hand from the Actions tab; an emulator run takes a while.
+name: E2E
+
+on:
+#  pull_request:
+#  push:
+#    branches: [main]
+#  schedule:
+#    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  E2E_SKIP_BUILD: "1"
+
+jobs:
+  web:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            server
+            clients
+          key: e2e-web
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+      - name: Build the server
+        working-directory: server
+        run: cargo build -p app
+      - name: Build the web client
+        working-directory: clients/web
+        run: trunk build
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+      - name: Install the test dependencies
+        working-directory: e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      # Testcontainers starts Postgres on the runner's Docker.
+      - name: Run the web tests
+        working-directory: e2e
+        run: npx playwright test --project=web
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: e2e-web-report
+          path: |
+            e2e/playwright-report
+            e2e/test-results
+          retention-days: 7
+
+  android:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      NDK_VERSION: "30.0.16248370"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Enable KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: "platforms;android-37.0 ndk;${{ env.NDK_VERSION }}"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown,aarch64-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            server
+            clients
+          key: e2e-android
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: trunk,cargo-ndk
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Build the server
+        working-directory: server
+        run: cargo build -p app
+      - name: Build the web client
+        working-directory: clients/web
+        run: trunk build
+      - name: Build the debug APK
+        working-directory: clients/mobile
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+        run: ./gradlew :androidApp:assembleDebug
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+      - name: Install the test dependencies
+        working-directory: e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npm run appium:drivers
+      # The fixture grants ACCESS_LOCAL_NETWORK itself after every reset of the app.
+      - name: Run the Android tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 37
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot
+          working-directory: e2e
+          script: npx playwright test --project=android
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: e2e-android-report
+          path: |
+            e2e/playwright-report
+            e2e/test-results
+          retention-days: 7
