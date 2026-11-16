@@ -148,6 +148,10 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
     var devicesKey by mutableIntStateOf(0)
         private set
 
+    /** The recycle bin is reloaded whenever this changes. */
+    var trashKey by mutableIntStateOf(0)
+        private set
+
     private val _liveEvents = MutableSharedFlow<LiveEvent>(extraBufferCapacity = 64)
 
     /** What the server pushes while the app is in front, for the screens to pick what to reload. */
@@ -680,6 +684,13 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
         return true
     }
 
+    /** Opens Lost & Found in the folder browser, as after a restore. */
+    fun showLostAndFound(session: Session.SignedIn) {
+        path.clear()
+        path.add(Crumb(null, "Home"))
+        path.add(Crumb(session.user.lostAndFoundId, "Lost & Found"))
+    }
+
     private fun toast(message: String) {
         Toast.makeText(getApplication(), message, Toast.LENGTH_LONG).show()
     }
@@ -769,6 +780,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
                         TransferCenter.devicesChanged()
                     }
                     if (event is LiveEvent.TransfersChanged || event is LiveEvent.Resync) loadTransfers()
+                    if (event is LiveEvent.TrashChanged || event is LiveEvent.Resync) trashKey++
                     _liveEvents.emit(event)
                 }
             }

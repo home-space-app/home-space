@@ -109,6 +109,8 @@ final class SessionModel {
     private(set) var transfers: TransferCenter?
     /// Changes when the user's devices may have changed.
     private(set) var devicesGeneration = 0
+    /// Changes when the recycle bin may have changed.
+    private(set) var trashGeneration = 0
     /// The copy waiting for the user to say whether its unsent edits may go.
     var removalWarning: RemovalWarning?
     /// The names of the files whose unsent edits signing out would lose, while asking.
@@ -739,6 +741,7 @@ final class SessionModel {
         case .resync:
             changes.resync = true
             devicesGeneration += 1
+            trashGeneration += 1
             transfers?.refresh()
         case .devicesChanged:
             devicesGeneration += 1
@@ -747,6 +750,8 @@ final class SessionModel {
             transfers?.refresh()
             return
         case .trashChanged:
+            trashGeneration += 1
+            FileProviderDomains.signalBin()
             return
         }
         pendingChanges = changes

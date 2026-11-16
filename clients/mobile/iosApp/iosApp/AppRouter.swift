@@ -18,6 +18,8 @@ final class AppRouter {
     var tab: AppTab = .files
     /// A received transfer to open as soon as the Transfers tab has it, from a notification.
     var openTransfer: String?
+    /// A folder for the Files tab to open from Home, such as Lost & Found after a restore.
+    var openFolder: FolderRoute?
     /// Whether the app is in front; set by the app as its scene changes.
     var active = false
 

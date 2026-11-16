@@ -133,6 +133,13 @@ fun SettingsScreen(
                 modifier = Modifier.clickable { onOpenPage(SubPage.PROFILE) },
             )
             HorizontalDivider()
+            SectionHeader("Files")
+            ListItem(
+                leadingContent = { LeadingIcon(R.drawable.ic_delete) },
+                headlineContent = { Text("Recycle bin") },
+                trailingContent = { Chevron() },
+                modifier = Modifier.clickable { onOpenPage(SubPage.TRASH) },
+            )
             SectionHeader("Sync")
             ListItem(
                 leadingContent = { LeadingIcon(R.drawable.ic_wifi) },

@@ -45,6 +45,15 @@ enum FileProviderDomains {
         }
     }
 
+    /// Has Files list the recycle bin again.
+    static func signalBin() {
+        Task {
+            for domain in (try? await NSFileProviderManager.domains()) ?? [] {
+                try? await NSFileProviderManager(for: domain)?.signalEnumerator(for: .trashContainer)
+            }
+        }
+    }
+
     /// The extension has a session again, after it found none or a refused one.
     static func sessionReady() {
         Task {

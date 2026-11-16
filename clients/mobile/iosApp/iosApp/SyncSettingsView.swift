@@ -30,6 +30,11 @@ struct SettingsView: View {
                     .padding(.vertical, 4)
                 }
             }
+            Section("Files") {
+                NavigationLink("Recycle Bin") {
+                    TrashView(model: model, client: client, user: user)
+                }
+            }
             Section {
                 NavigationLink("Sync") {
                     SyncSettingsView(model: model, client: client)

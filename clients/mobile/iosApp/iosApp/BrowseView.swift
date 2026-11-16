@@ -14,6 +14,7 @@ struct BrowseView: View {
     let client: CoreClient
     let user: SignedInUser
     @State private var path: [FolderRoute] = []
+    private var router = AppRouter.shared
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -23,6 +24,11 @@ struct BrowseView: View {
                         model: model, client: client, user: user, folderId: route.id, title: route.title,
                         path: $path)
                 }
+        }
+        .onChange(of: router.openFolder, initial: true) { _, route in
+            guard let route else { return }
+            path = [route]
+            router.openFolder = nil
         }
     }
 }

@@ -105,10 +105,10 @@ private val BADGE_SIZE = 14.dp
 private val BADGE_PADDING = 1.dp
 private val BADGE_OVERHANG = 3.dp
 private val TOP_BAR_AVATAR_SIZE = 32.dp
-private val MIN_TOUCH_TARGET = 48.dp
+internal val MIN_TOUCH_TARGET = 48.dp
 private val SHEET_TILE_SIZE = 48.dp
 private val SHEET_ITEM_HEIGHT = 56.dp
-private val TOOLBAR_HEIGHT = 80.dp
+internal val TOOLBAR_HEIGHT = 80.dp
 // Material's navigation bar, which the FAB menu stands above as the FAB does.
 private val NAVIGATION_BAR_HEIGHT = 80.dp
 // So that the add button doesn't cover the last row's menu.
@@ -548,7 +548,7 @@ private fun SelectionToolbar(
 }
 
 @Composable
-private fun ToolbarItem(label: String, icon: Int, enabled: Boolean, modifier: Modifier, onClick: () -> Unit) {
+internal fun ToolbarItem(label: String, icon: Int, enabled: Boolean, modifier: Modifier, onClick: () -> Unit) {
     val tint = MaterialTheme.colorScheme.onSurfaceVariant.let { if (enabled) it else it.copy(alpha = DISABLED_ALPHA) }
     Column(
         modifier = modifier.clickable(enabled = enabled, onClick = onClick),

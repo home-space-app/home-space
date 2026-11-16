@@ -173,10 +173,14 @@ a rename on the server showing up after the app signalled.
   that already exists is reused, as the system may ask again.
 - **Changes:** the working set reads `GET /changes` (`changes`); `gone` becomes
   `syncAnchorExpired`. Folder enumerators report no changes of their own.
-- **Deleting:** `deleteItem` moves to the recycle bin. Files calls it "Delete Now" and warns it
-  can't be undone, since the extension declares no trash.
-- **Still open:** a trash container backed by the recycle bin, so Files offers an undoable delete;
-  a warning before sign-out removes a domain with unsent writes; thumbnails; search; a real device
+- **Deleting:** Files' trash container is the recycle bin (`BinEnumerator`, listed with `trash()`;
+  its anchor is a digest of the bin, so any change lists it again). Delete in Files moves an item
+  to the bin, and it shows in Recently Deleted with the files deleted elsewhere; Delete Now there
+  calls `delete_forever`. The working set reports a binned file as moved to the trash rather than
+  deleted, and the app signals the trash on `TrashChanged`. A move out of the trash would restore
+  into Lost & Found, but Files keeps Recover greyed out for these items, even with every
+  capability set, so restoring is done in the app's Recycle Bin.
+- **Still open:** why Files greys out Recover; a warning before sign-out removes a domain with unsent writes; thumbnails; search; a real device
   check of the extension's memory and of reqwest inside it.
 
 Editing by other apps:
