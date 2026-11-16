@@ -42,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.autofill.ContentType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentType
 import androidx.compose.ui.semantics.semantics
@@ -212,7 +213,7 @@ private fun ServerField(model: SessionViewModel) {
             keyboardType = KeyboardType.Uri,
             imeAction = ImeAction.Next,
         ),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().testTag("login.server"),
     )
 }
 
@@ -349,6 +350,7 @@ private fun PasswordForm(model: SessionViewModel, onlyOption: Boolean) {
         ),
         modifier = Modifier
             .fillMaxWidth()
+            .testTag("login.username")
             .semantics { contentType = ContentType.Username },
     )
     OutlinedTextField(
@@ -376,10 +378,11 @@ private fun PasswordForm(model: SessionViewModel, onlyOption: Boolean) {
         }),
         modifier = Modifier
             .fillMaxWidth()
+            .testTag("login.password")
             .semantics { contentType = ContentType.Password },
     )
     val label = if (model.busy) "Signing in…" else "Sign in"
-    val buttonModifier = Modifier.fillMaxWidth().height(BUTTON_HEIGHT)
+    val buttonModifier = Modifier.fillMaxWidth().height(BUTTON_HEIGHT).testTag("login.signIn")
     // The tonal one sits under single sign-on; alone, it is the screen's main action.
     if (onlyOption) {
         Button(enabled = canSubmit, onClick = model::signInWithPassword, modifier = buttonModifier) { Text(label) }

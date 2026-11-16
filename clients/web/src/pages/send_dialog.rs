@@ -349,6 +349,7 @@ pub fn SendDialog(source: SendSource, auth: Auth, on_close: Callback<()>) -> imp
                                             <h3 class="send-box__title">"To"</h3>
                                             <button
                                                 class="send-row send-row--button"
+                                                data-testid="send-target"
                                                 aria-expanded="false"
                                                 on:click=move |_| picking.set(true)
                                             >

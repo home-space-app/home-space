@@ -38,6 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -291,10 +292,11 @@ private fun TransferRowLayout(
     detail: String,
     progress: Float?,
     onClick: (() -> Unit)? = null,
+    tag: String,
     trailing: @Composable () -> Unit,
 ) {
     val tappable = onClick?.let { Modifier.clickable(onClick = it) } ?: Modifier
-    Column(modifier = Modifier.fillMaxWidth().then(tappable)) {
+    Column(modifier = Modifier.fillMaxWidth().testTag(tag).then(tappable)) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -346,6 +348,7 @@ private fun ReceivedRow(
         detail = detail,
         progress = progress,
         onClick = onActions.takeIf { waiting && progress == null && !opening },
+        tag = "transfer.received",
     ) {
         when {
             progress != null -> IconButton(onClick = onStop) {
@@ -377,6 +380,7 @@ private fun SentRow(row: TransferRow, progress: Float?, onCancel: () -> Unit) {
         title = row.title,
         detail = detail,
         progress = progress,
+        tag = "transfer.sent",
     ) {
         if (row.status == TransferStatus.UPLOADING || row.status == TransferStatus.READY) {
             IconButton(onClick = onCancel) {

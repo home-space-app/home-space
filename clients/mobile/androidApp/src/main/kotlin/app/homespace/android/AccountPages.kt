@@ -44,6 +44,7 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -166,6 +167,7 @@ private fun HomeSpaceNavigationBar(selected: Tab, failedUploads: Int, onSelect: 
                 selected = isSelected,
                 onClick = { onSelect(tab) },
                 label = { Text(tab.title) },
+                modifier = Modifier.testTag("tab.${tab.name.lowercase()}"),
                 colors = NavigationBarItemDefaults.colors(selectedTextColor = MaterialTheme.colorScheme.onSurface),
                 icon = {
                     val icon = @Composable {

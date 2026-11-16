@@ -18,6 +18,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 
 /** Runtime permission for private addresses, from Android 17 (API 37). */
 private const val ACCESS_LOCAL_NETWORK = "android.permission.ACCESS_LOCAL_NETWORK"
@@ -84,7 +86,7 @@ class MainActivity : ComponentActivity() {
                 if (signedIn) askForNotifications()
             }
             HomeSpaceTheme(dark = dark, useSystemColours = model.useSystemColours) {
-                Surface {
+                Surface(modifier = Modifier.semantics { testTagsAsResourceId = true }) {
                     val screen = Modifier.safeDrawingPadding()
                     when (val session = model.session) {
                         is Session.Resuming -> ResumingScreen(session, model, screen)
