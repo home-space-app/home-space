@@ -27,7 +27,7 @@ use crate::{CoreClient, CoreError, RUNTIME, off_ui_thread, parse_id};
 /// get back to the original.
 /// Largest chunk sent, whatever the server allows. Progress moves once per chunk, so this keeps it
 /// moving on a slow connection, and it is the most that is sent again after a dropped one.
-const MAX_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
+pub(crate) const MAX_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
 
 const PICK_AGAIN: &str = "The app closed before this file was ready. Pick it again.";
 const COPY_GONE: &str = "The copy of this file has gone. Pick it again.";

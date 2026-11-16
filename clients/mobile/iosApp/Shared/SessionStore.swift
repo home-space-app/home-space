@@ -13,7 +13,7 @@ struct SavedSession: Codable {
 /// The app's extensions that sign in with a session of their own on this device. Each holds
 /// its own refresh token, since a token is single use and the processes run apart.
 enum ExtensionLabel: String, CaseIterable, Sendable {
-    /// The File Provider (Phase 4).
+    /// The File Provider extension.
     case files
     /// The share extension.
     case share

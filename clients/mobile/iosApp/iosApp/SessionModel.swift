@@ -643,6 +643,7 @@ final class SessionModel {
         let auto = endSync()
         store.forgetSession()
         ExtensionSessions.forget()
+        FileProviderDomains.removeAll()
         forgetDownloads()
         backToForm()
         if case .signedIn(let client, _) = current {
@@ -664,6 +665,7 @@ final class SessionModel {
         let auto = endSync()
         store.forgetSession()
         ExtensionSessions.forget()
+        FileProviderDomains.removeAll()
         forgetDownloads()
         backToForm()
         Task {
@@ -753,6 +755,7 @@ final class SessionModel {
             try? await Task.sleep(for: Self.liveDelay)
             guard let self, var changes = self.pendingChanges else { return }
             self.pendingChanges = nil
+            FileProviderDomains.signalChanges()
             changes.generation = self.liveChanges.generation + 1
             self.liveChanges = changes
         }
@@ -795,6 +798,7 @@ final class SessionModel {
         }
         startEvents()
         ExtensionSessions.refresh(client: active.client, server: active.client.baseUrl())
+        FileProviderDomains.add(for: active.user)
     }
 
     private func forgetDownloads() {

@@ -122,8 +122,8 @@ by a tap. Names the engine ignores (such as `*.tmp`) are never synced, so a tap 
 
 Android hands files to viewers through a `FileProvider` scoped to `offline/`. A tap grants read-only
 access, and **Edit in another app** sends `ACTION_EDIT` with a write grant. iOS uses `QLPreviewController`
-in `.updateContents` mode, whose markup tools save into the file. Editing in other iOS apps needs the
-File Provider: see `docs/todo/mobile-file-provider.md`. Save to… picks the location first on Android,
+in `.updateContents` mode, whose markup tools save into the file. Other iOS apps edit through the
+File Provider (below and `docs/todo/mobile-file-provider.md`). Save to… picks the location first on Android,
 but on iOS only after the download, because the system's export picker needs a file that already exists.
 
 The server has no Range support, so an interrupted download starts over. Uploads over the chunk size
@@ -249,6 +249,21 @@ On iOS (`TransferCenter.swift`, `SendSheet.swift`, `Notifications.swift`):
     shared container gets a suspended process killed. If iOS ends the extension early, what was
     left of a save is dropped from its queue the next time it opens. A send is cancelled when iOS
     warns before ending it; otherwise it stays `uploading` until cancelled from Sent or it expires.
+- **Files app**: the `FileProviderExtension` target puts Home Space under Locations in Files and in
+  every app's document picker. The app adds one `NSFileProviderDomain` per signed-in user and
+  removes it on sign-out, which deletes the system's copies (`FileProviderDomains.swift`). Files
+  asks once before it shows a new location.
+  - It signs in with `session.files`, started by the app like the share sheet's.
+  - Folders are listed with `list`; files download on open with `save_copy`, into the system's
+    temporary folder, so they don't count as offline copies. New files go up by name with
+    `upload_file` (a taken name gets a new version) and edits with `replace_file`, both without a
+    date. New folders, renames, moves and deletes use the app's calls; a delete goes to the recycle
+    bin, though Files says it can't be undone, as the extension has no trash of its own.
+  - Changes from elsewhere come through the working set from `GET /changes`, whose cursor is the
+    sync anchor; a pruned cursor makes the system list everything again. There is no push, so the
+    app signals the extension as live events arrive while it is open; otherwise Files catches up
+    when the system next asks.
+  - Lost & Found is hidden while empty, and the recycle bin folder always.
 
 ## Auto-upload
 

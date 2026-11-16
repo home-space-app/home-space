@@ -20,6 +20,7 @@ mod autoupload;
 mod events;
 mod files;
 mod offline;
+mod provider;
 mod received;
 mod shares;
 mod transfers;
