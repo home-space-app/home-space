@@ -145,6 +145,7 @@ EOF
         mkdir -p "$stage"
         cp "$bin" "$stage/HomeSpace"
         cp "$packaging/home-space.desktop" "$packaging/home-space.png" "$packaging/home-space.svg" "$stage/"
+        cp -R "$packaging/icons" "$stage/"
         archive=$dist/$name.tar.gz
         tar -czf "$archive" -C "$dist" "$name"
         ;;

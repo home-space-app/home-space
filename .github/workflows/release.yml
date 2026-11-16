@@ -3,8 +3,11 @@
 #
 #   git tag v0.2.0 && git push origin v0.2.0
 #
-# - server: Docker image (server + web client) pushed to Docker Hub as homespaceapp/home-space
-# - desktop: macOS .dmg (Apple Silicon), Linux .tar.gz and .flatpak (x86_64)
+# - server: Docker image (server + web client) for linux/amd64 and linux/arm64, pushed to Docker
+#   Hub as homespaceapp/home-space. Each platform builds on a native runner (emulating arm64 to
+#   compile Rust takes hours) and is pushed by digest; server-manifest then tags the multi-arch list.
+# - desktop: macOS .dmg (Apple Silicon), Windows .zip (x86_64), Linux .tar.gz, .deb, .rpm and
+#   .flatpak (x86_64)
 # - android: .apk
 #
 # All packages are attached to the GitHub release for the tag. An existing release (made in the
@@ -21,6 +24,7 @@
 #
 # The macOS app is not signed or notarized, so Gatekeeper asks before the first launch
 # (right-click > Open, or xattr -dr com.apple.quarantine "/Applications/Home Space.app").
+# The Windows .exe is not signed either, so SmartScreen warns before the first launch.
 name: Release
 
 on:
@@ -55,11 +59,75 @@ jobs:
           fi
 
   server-image:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v7
+
+      - name: Platform slug
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: echo "PLATFORM_PAIR=${PLATFORM//\//-}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: homespaceapp/home-space
+
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: runtime
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=homespaceapp/home-space,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=server-${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=server-${{ env.PLATFORM_PAIR }}
+
+      - name: Export the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-digest-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Tags the per-platform images as one multi-arch image.
+  server-manifest:
+    needs: server-image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: server-digest-*
+          merge-multiple: true
 
       - uses: docker/setup-buildx-action@v4
 
@@ -79,16 +147,19 @@ jobs:
           flavor: |
             latest=auto
 
-      - uses: docker/build-push-action@v7
-        with:
-          context: .
-          target: runtime
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Create the manifest list
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          tags=()
+          while read -r tag; do tags+=(-t "$tag"); done < <(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          sources=()
+          for digest in *; do sources+=("homespaceapp/home-space@sha256:$digest"); done
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+
+      - name: Inspect
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: docker buildx imagetools inspect "homespaceapp/home-space:$VERSION"
 
   desktop-macos:
     needs: version
@@ -138,6 +209,41 @@ jobs:
           path: ${{ env.DMG }}
           if-no-files-found: error
 
+  desktop-windows:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: clients
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb,cargo-generate-rpm
+
+      - name: Build
+        working-directory: clients
+        run: cargo build --release --locked -p desktop --features keyring
+
+      - name: Make the .zip
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          $name = "HomeSpace-$env:VERSION-windows-x86_64"
+          $dir = Join-Path $env:RUNNER_TEMP $name
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Copy-Item clients/target/release/HomeSpace.exe, LICENSE -Destination $dir
+          Compress-Archive -Path $dir -DestinationPath "$name.zip" -Force
+          "ZIP=$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows-x86_64
+          path: ${{ env.ZIP }}
+          if-no-files-found: error
+
   desktop-linux:
     needs: version
     runs-on: ubuntu-latest
@@ -166,13 +272,31 @@ jobs:
              clients/desktop/packaging/home-space.png \
              clients/desktop/packaging/home-space.svg \
              LICENSE "$dir/"
+          cp -R clients/desktop/packaging/icons "$dir/"
           tar -C "$RUNNER_TEMP" -czf "$name.tar.gz" "$name"
-          echo "TARBALL=$name.tar.gz" >> "$GITHUB_ENV"
+
+      # Both read [package.metadata.deb] / [package.metadata.generate-rpm] in desktop/Cargo.toml
+      # and package the binary built above. Debian and RPM sort "~" before anything, so a
+      # pre-release 1.0.0-rc.1 becomes 1.0.0~rc.1 and upgrades cleanly to 1.0.0.
+      - name: Make the .deb and .rpm
+        working-directory: clients
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          name="HomeSpace-$VERSION-linux-x86_64"
+          pkg_version="${VERSION//-/\~}"
+          cargo deb -p desktop --no-build --deb-version "$pkg_version-1" -o "$GITHUB_WORKSPACE/$name.deb"
+          cargo generate-rpm -p desktop -s "version = \"$pkg_version\"" -o "$GITHUB_WORKSPACE/$name.rpm"
+          dpkg-deb --info "$GITHUB_WORKSPACE/$name.deb"
+          dpkg-deb --contents "$GITHUB_WORKSPACE/$name.deb"
 
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-linux-x86_64
-          path: ${{ env.TARBALL }}
+          path: |
+            HomeSpace-*-linux-x86_64.tar.gz
+            HomeSpace-*-linux-x86_64.deb
+            HomeSpace-*-linux-x86_64.rpm
           if-no-files-found: error
 
   desktop-flatpak:
@@ -248,7 +372,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: [version, server-image, desktop-macos, desktop-linux, desktop-flatpak, android]
+    needs: [version, server-manifest, desktop-macos, desktop-windows, desktop-linux, desktop-flatpak, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write

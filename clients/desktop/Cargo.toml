@@ -1,5 +1,6 @@
 [package]
 name = "desktop"
+description = "Desktop client for a self-hosted Home Space server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -62,6 +63,61 @@ identifier = "io.github.indomitable.home-space"
 icon = ["packaging/home-space.icns"]
 category = "public.app-category.productivity"
 short_description = "Browse and transfer your home-space files"
+
+# Linux packages, built by the release workflow from an existing release build:
+#   cargo build --release -p desktop --features keyring
+#   cargo deb -p desktop --no-build
+#   cargo generate-rpm -p desktop
+# Paths are relative to this directory; cargo-deb and cargo-generate-rpm map target/release/ to
+# the real target directory.
+[package.metadata.deb]
+name = "home-space"
+maintainer = "Home Space developers"
+copyright = "Home Space developers"
+license-file = ["../../LICENSE", "0"]
+extended-description = "Desktop client for a self-hosted Home Space server: browse, share and sync your files."
+section = "net"
+priority = "optional"
+# winit and wgpu load these at runtime with dlopen, so $auto cannot see them.
+depends = "$auto, libxkbcommon0"
+recommends = "libwayland-client0, libxkbcommon-x11-0, libvulkan1 | libegl1"
+assets = [
+    ["target/release/HomeSpace", "usr/bin/", "755"],
+    ["packaging/home-space.desktop", "usr/share/applications/", "644"],
+    # Every size from scripts/render-icons.sh: KDE ignores the icon when only 256x256 is there.
+    ["packaging/icons/hicolor/16x16/apps/home-space.png", "usr/share/icons/hicolor/16x16/apps/", "644"],
+    ["packaging/icons/hicolor/22x22/apps/home-space.png", "usr/share/icons/hicolor/22x22/apps/", "644"],
+    ["packaging/icons/hicolor/24x24/apps/home-space.png", "usr/share/icons/hicolor/24x24/apps/", "644"],
+    ["packaging/icons/hicolor/32x32/apps/home-space.png", "usr/share/icons/hicolor/32x32/apps/", "644"],
+    ["packaging/icons/hicolor/48x48/apps/home-space.png", "usr/share/icons/hicolor/48x48/apps/", "644"],
+    ["packaging/icons/hicolor/64x64/apps/home-space.png", "usr/share/icons/hicolor/64x64/apps/", "644"],
+    ["packaging/icons/hicolor/128x128/apps/home-space.png", "usr/share/icons/hicolor/128x128/apps/", "644"],
+    ["packaging/icons/hicolor/256x256/apps/home-space.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+    ["packaging/icons/hicolor/512x512/apps/home-space.png", "usr/share/icons/hicolor/512x512/apps/", "644"],
+    ["packaging/home-space.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+]
+
+[package.metadata.generate-rpm]
+name = "home-space"
+summary = "Desktop client for a self-hosted Home Space server"
+assets = [
+    { source = "target/release/HomeSpace", dest = "/usr/bin/HomeSpace", mode = "755" },
+    { source = "packaging/home-space.desktop", dest = "/usr/share/applications/home-space.desktop", mode = "644" },
+    { source = "packaging/icons/hicolor/16x16/apps/home-space.png", dest = "/usr/share/icons/hicolor/16x16/apps/home-space.png", mode = "644" },
+    { source = "packaging/icons/hicolor/22x22/apps/home-space.png", dest = "/usr/share/icons/hicolor/22x22/apps/home-space.png", mode = "644" },
+    { source = "packaging/icons/hicolor/24x24/apps/home-space.png", dest = "/usr/share/icons/hicolor/24x24/apps/home-space.png", mode = "644" },
+    { source = "packaging/icons/hicolor/32x32/apps/home-space.png", dest = "/usr/share/icons/hicolor/32x32/apps/home-space.png", mode = "644" },
+    { source = "packaging/icons/hicolor/48x48/apps/home-space.png", dest = "/usr/share/icons/hicolor/48x48/apps/home-space.png", mode = "644" },
+    { source = "packaging/icons/hicolor/64x64/apps/home-space.png", dest = "/usr/share/icons/hicolor/64x64/apps/home-space.png", mode = "644" },
+    { source = "packaging/icons/hicolor/128x128/apps/home-space.png", dest = "/usr/share/icons/hicolor/128x128/apps/home-space.png", mode = "644" },
+    { source = "packaging/icons/hicolor/256x256/apps/home-space.png", dest = "/usr/share/icons/hicolor/256x256/apps/home-space.png", mode = "644" },
+    { source = "packaging/icons/hicolor/512x512/apps/home-space.png", dest = "/usr/share/icons/hicolor/512x512/apps/home-space.png", mode = "644" },
+    { source = "packaging/home-space.svg", dest = "/usr/share/icons/hicolor/scalable/apps/home-space.svg", mode = "644" },
+    { source = "../../LICENSE", dest = "/usr/share/licenses/home-space/LICENSE", mode = "644", doc = true },
+]
+
+[package.metadata.generate-rpm.requires]
+libxkbcommon = "*"
 
 [dev-dependencies]
 iced_test = "0.14.0"
