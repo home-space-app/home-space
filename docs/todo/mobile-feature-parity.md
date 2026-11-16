@@ -3,7 +3,7 @@
 ## Problem
 
 Desktop and web have most features. Android and iOS now also search, create folders, upload
-picked files, share, and send to devices, but they cannot restore from the trash. iOS has a share
+picked files, share, send to devices, and restore from the recycle bin. iOS has a share
 extension and a File Provider extension. Each extension signs in with a session of its own, which the
 server starts for the app (`/auth/device-sessions`) and the app keeps in a Keychain group and App
 Group it shares with its extensions. Status
@@ -28,7 +28,7 @@ against a dev server (`iosAppUITests/ParityUITests`).
 | Rename | Yes | Yes | Yes | Yes |
 | Move, with conflict choice | Yes | Yes | Yes | Yes |
 | Delete to bin | Yes | Yes | Yes | Yes |
-| Trash: list and restore | Yes | Yes | No | No |
+| Trash: list and restore | Yes | Yes | Yes | Yes |
 | Search | Yes | Yes | Yes | Yes |
 | Share with links or users | Yes | Yes | Yes | Yes |
 | Shared with me | Yes | Yes | Yes | Yes |
@@ -64,7 +64,7 @@ write-ups and are only listed here.
 
 Work in this order:
 
-1. **Trash** (list and restore, `GET /trash`, `POST /trash/restore`).
+1. ~~**Trash**~~: done; see `mobile-trash.md`.
 2. **Live updates** through the websocket (`/api/v1/ws`), which desktop and web already use.
 3. **Medium items**: a device list screen, a sort choice, and an iOS breadcrumb trail.
 
@@ -74,6 +74,3 @@ table after each step.
 ## Open questions
 
 - Should picking a whole folder to upload be added? Desktop has it; auto-upload covers the ongoing case.
-- Is a delete from the phone a move to the bin, as now? (Yes, unless the trash UI makes it
-  confusing.)
-- Should iOS and Android share one data flow for trash, or keep the native list state?

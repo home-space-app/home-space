@@ -1,3 +1,4 @@
+import CryptoKit
 import FileProvider
 
 /// Lists one folder, Home included. Changes come through the working set, so a folder reports
@@ -80,6 +81,15 @@ final class WorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                         deleted.append(NSFileProviderItemIdentifier(id))
                     }
                 }
+                if !deleted.isEmpty {
+                    // The feed reads a binned file as deleted; Files should see it in its trash.
+                    let binned = try await session.client().trash()
+                    let ids = Set(deleted.map(\.rawValue))
+                    let moved = binned.filter { ids.contains($0.id) }
+                    updated += moved.map { ProviderItem(binned: $0) }
+                    let movedIds = Set(moved.map(\.id))
+                    deleted.removeAll { movedIds.contains($0.rawValue) }
+                }
                 if !updated.isEmpty { observer.didUpdate(updated) }
                 if !deleted.isEmpty { observer.didDeleteItems(withIdentifiers: deleted) }
                 observer.finishEnumeratingChanges(upTo: Self.anchor(page.cursor), moreComing: page.more)
@@ -110,19 +120,62 @@ final class WorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
     }
 }
 
-/// The trash is the server's recycle bin, which Files doesn't show.
-final class EmptyEnumerator: NSObject, NSFileProviderEnumerator {
-    func invalidate() {}
+/// Files' trash: the files in the server's recycle bin. The anchor is a digest of what the bin
+/// holds, so any change has the system list it again.
+final class BinEnumerator: NSObject, NSFileProviderEnumerator {
+    private let session: ProviderSession
+    private var task: Task<Void, Never>?
+
+    init(session: ProviderSession) {
+        self.session = session
+    }
+
+    func invalidate() {
+        task?.cancel()
+    }
 
     func enumerateItems(for observer: NSFileProviderEnumerationObserver, startingAt page: NSFileProviderPage) {
-        observer.finishEnumerating(upTo: nil)
+        let session = session
+        task = Task {
+            do {
+                let binned = try await session.client().trash()
+                observer.didEnumerate(binned.map { ProviderItem(binned: $0) })
+                observer.finishEnumerating(upTo: nil)
+            } catch {
+                if case CoreError.Unauthorized = error { await session.ended() }
+                observer.finishEnumeratingWithError(providerError(error))
+            }
+        }
     }
 
     func enumerateChanges(for observer: NSFileProviderChangeObserver, from anchor: NSFileProviderSyncAnchor) {
-        observer.finishEnumeratingChanges(upTo: anchor, moreComing: false)
+        let session = session
+        task = Task {
+            do {
+                let current = Self.anchor(try await session.client().trash())
+                if current == anchor {
+                    observer.finishEnumeratingChanges(upTo: anchor, moreComing: false)
+                } else {
+                    // The bin has no change feed; listing it again is cheap.
+                    observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
+                }
+            } catch {
+                if case CoreError.Unauthorized = error { await session.ended() }
+                observer.finishEnumeratingWithError(providerError(error))
+            }
+        }
     }
 
     func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
-        completionHandler(NSFileProviderSyncAnchor(Data("empty".utf8)))
+        let session = session
+        Task {
+            let binned = try? await session.client().trash()
+            completionHandler(binned.map(Self.anchor))
+        }
+    }
+
+    private static func anchor(_ binned: [TrashEntry]) -> NSFileProviderSyncAnchor {
+        let listing = binned.map { "\($0.id)@\($0.deletedAt.timeIntervalSince1970)" }.joined(separator: ",")
+        return NSFileProviderSyncAnchor(Data(SHA256.hash(data: Data(listing.utf8))))
     }
 }

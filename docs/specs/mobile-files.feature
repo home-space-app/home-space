@@ -212,6 +212,38 @@ Feature: Search, new folders and uploads on mobile
       When alice shares a file to Home Space
       Then the share sheet asks her to open Home Space and sign in
 
+  # --- Recycle bin -----------------------------------------------------------------------------
+
+  Rule: The recycle bin lists deleted files and restores them to Lost & Found
+
+    Background:
+      Given alice deleted "notes.txt" from Home and "return.pdf" from "Docs/Taxes"
+
+    Scenario: Opening the bin
+      When alice opens Settings and then "Recycle bin"
+      Then she sees "notes.txt" from "Home" and "return.pdf" from "/Docs/Taxes", most recent first
+      And each shows when it was deleted and its size
+
+    Scenario: Restoring
+      When alice restores "notes.txt"
+      Then "notes.txt" is in Lost & Found, not back in Home
+      And she is told "Restored 1 file to Lost & Found", with a way to open it
+
+    Scenario: A name taken in Lost & Found
+      Given Lost & Found already holds a "notes.txt"
+      When alice restores "notes.txt"
+      Then she is asked to override or skip it
+      And overriding keeps the file there as a version of the restored one
+
+    Scenario: Deleting forever
+      When alice deletes "return.pdf" forever
+      Then she is asked first, and told it can't be undone
+      And afterwards it is gone from the bin and from the server
+
+    Scenario: Emptying the bin
+      When alice empties the recycle bin and confirms
+      Then the bin is empty and says deleted files stay until deleted forever
+
   # --- Home Space in the Files app -----------------------------------------------------------
 
   Rule: On iOS, Home Space is a location in Files and in other apps' document pickers

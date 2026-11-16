@@ -66,6 +66,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.homespace_core.ConflictSide
+import uniffi.homespace_core.MoveConflict
 import uniffi.homespace_core.CoreClient
 import uniffi.homespace_core.CoreException
 import uniffi.homespace_core.Entry
@@ -80,7 +81,7 @@ import uniffi.homespace_core.sendSummary
 private val CONFLICTS_HEIGHT = 240.dp
 private val DETAILS_TILE_SIZE = 72.dp
 private val PICKER_ROW_HEIGHT = 56.dp
-private const val WORKING = "Working…"
+internal const val WORKING = "Working…"
 private const val HOME = "Home"
 /** How many names a summary of shared files spells out. */
 private const val SUMMARY_NAMES = 3
@@ -541,7 +542,8 @@ private fun MoveDialog(
 
     conflicts?.let { found ->
         ConflictsDialog(
-            found = found,
+            title = found.conflictsTitle,
+            conflicts = found.conflicts,
             saving = saving,
             error = error,
             onCancel = {
@@ -809,10 +811,14 @@ private fun PickerRow(onClick: () -> Unit, content: @Composable () -> Unit) {
 private fun describe(side: ConflictSide): String =
     "${localDate(side.updatedAt)} · ${side.sizeLabel}"
 
-/** Files already at the destination; cancelling goes back to choosing another folder. */
+/**
+ * Files already at the destination, from a move or a restore; cancelling goes back to where the
+ * user was.
+ */
 @Composable
-private fun ConflictsDialog(
-    found: MoveResult,
+internal fun ConflictsDialog(
+    title: String,
+    conflicts: List<MoveConflict>,
     saving: Boolean,
     error: String?,
     onCancel: () -> Unit,
@@ -820,7 +826,7 @@ private fun ConflictsDialog(
 ) {
     AlertDialog(
         onDismissRequest = onCancel,
-        title = { Text(found.conflictsTitle) },
+        title = { Text(title) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Override replaces the current content and keeps it as a version.")
@@ -828,7 +834,7 @@ private fun ConflictsDialog(
                     modifier = Modifier.heightIn(max = CONFLICTS_HEIGHT),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    items(found.conflicts, key = { it.path }) { conflict ->
+                    items(conflicts, key = { it.path }) { conflict ->
                         Column {
                             Text(conflict.name)
                             val small = MaterialTheme.typography.bodySmall

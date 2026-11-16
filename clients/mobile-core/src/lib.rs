@@ -24,6 +24,7 @@ mod provider;
 mod received;
 mod shares;
 mod transfers;
+mod trash;
 mod uploads;
 mod viewers;
 

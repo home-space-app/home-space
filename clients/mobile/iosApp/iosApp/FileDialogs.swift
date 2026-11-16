@@ -295,7 +295,17 @@ private struct MoveSheet: View {
         NavigationStack {
             Group {
                 if let conflicts {
-                    conflictList(conflicts)
+                    ConflictList(
+                        title: conflicts.conflictsTitle,
+                        conflicts: conflicts.conflicts,
+                        saving: saving,
+                        error: error,
+                        onResolve: move,
+                        onCancel: {
+                            self.conflicts = nil
+                            error = nil
+                        }
+                    )
                 } else {
                     picker
                 }
@@ -317,50 +327,6 @@ private struct MoveSheet: View {
                         .disabled(saving || alreadyIn(entries: entries, destination: destination))
                 }
             }
-    }
-
-    /// Files already at the destination; cancelling goes back to choosing another folder.
-    private func conflictList(_ found: MoveResult) -> some View {
-        List {
-            Section {
-                ForEach(found.conflicts, id: \.path) { conflict in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(conflict.name)
-                        Group {
-                            Text(conflict.path)
-                            Text("Incoming: \(describe(conflict.incoming))")
-                            Text("Existing: \(conflict.existing.map(describe) ?? "Also selected")")
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    }
-                    .fileRow()
-                }
-            } footer: {
-                Text("Override replaces the current content and keeps it as a version.")
-            }
-            if let error {
-                Text(error).foregroundStyle(.red).fileRow()
-            }
-            Section {
-                Button(saving ? "Working…" : "Override") { move(.override) }
-                    .disabled(saving)
-                    .fileRow()
-                Button("Skip these files") { move(.skip) }
-                    .disabled(saving)
-                    .fileRow()
-            }
-        }
-        .fileList()
-        .navigationTitle(found.conflictsTitle)
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel") {
-                    conflicts = nil
-                    error = nil
-                }
-            }
-        }
     }
 
     private func loadFolders() async {
@@ -399,6 +365,57 @@ private struct MoveSheet: View {
             } catch {
                 self.error = fileMessage(for: error)
                 saving = false
+            }
+        }
+    }
+}
+
+/// Files already where others are moved or restored to, and the choice of what to do about them.
+/// Cancelling goes back to where the user was. Shown inside a navigation stack.
+struct ConflictList: View {
+    let title: String
+    let conflicts: [MoveConflict]
+    let saving: Bool
+    let error: String?
+    let onResolve: (MoveMode) -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(conflicts, id: \.path) { conflict in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(conflict.name)
+                        Group {
+                            Text(conflict.path)
+                            Text("Incoming: \(describe(conflict.incoming))")
+                            Text("Existing: \(conflict.existing.map(describe) ?? "Also selected")")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    .fileRow()
+                }
+            } footer: {
+                Text("Override replaces the current content and keeps it as a version.")
+            }
+            if let error {
+                Text(error).foregroundStyle(.red).fileRow()
+            }
+            Section {
+                Button(saving ? "Working…" : "Override") { onResolve(.override) }
+                    .disabled(saving)
+                    .fileRow()
+                Button("Skip these files") { onResolve(.skip) }
+                    .disabled(saving)
+                    .fileRow()
+            }
+        }
+        .fileList()
+        .navigationTitle(title)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel", action: onCancel)
             }
         }
     }

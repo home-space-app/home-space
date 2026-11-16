@@ -14,7 +14,8 @@ Native UI on each platform, with the code that talks to the server in Rust:
 Both apps sign in with a password or single sign-on, whichever the server offers, stay signed in
 between runs, browse folders, and select several rows. They also manage files: details, rename,
 move, delete (to the recycle bin), save to a chosen location, create folders, upload files and search
-by name. On Android, tapping a text file shows it in the built-in text viewer, where it can be
+by name. Settings › Recycle bin lists deleted files, restores them to Lost & Found, and deletes them
+for good; see `docs/todo/mobile-trash.md`. On Android, tapping a text file shows it in the built-in text viewer, where it can be
 edited and saved as a new version. Tapping an image shows it in the image viewer, which swipes
 through the other images of its folder (see `docs/viewers.md`). Tapping any other file, or choosing
 **Open in another app**, downloads it and opens it in the system's viewer.
@@ -258,7 +259,8 @@ On iOS (`TransferCenter.swift`, `SendSheet.swift`, `Notifications.swift`):
     temporary folder, so they don't count as offline copies. New files go up by name with
     `upload_file` (a taken name gets a new version) and edits with `replace_file`, both without a
     date. New folders, renames, moves and deletes use the app's calls; a delete goes to the recycle
-    bin, though Files says it can't be undone, as the extension has no trash of its own.
+    bin, which Files shows as Recently Deleted, where Delete Now deletes for good. Files greys out
+    Recover there, so files are restored from the app's Recycle Bin.
   - Changes from elsewhere come through the working set from `GET /changes`, whose cursor is the
     sync anchor; a pruned cursor makes the system list everything again. There is no push, so the
     app signals the extension as live events arrive while it is open; otherwise Files catches up

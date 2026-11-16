@@ -22,13 +22,23 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             completionHandler(ProviderItem.home, nil)
             return Progress()
         }
-        guard identifier != .trashContainer, identifier != .workingSet else {
+        if identifier == .trashContainer {
+            completionHandler(ProviderItem.bin, nil)
+            return Progress()
+        }
+        guard identifier != .workingSet else {
             completionHandler(nil, NSFileProviderError(.noSuchItem))
             return Progress()
         }
         return run(completion: { completionHandler(nil, $0) }) { client, _ in
-            let entry = try await client.entry(id: identifier.rawValue)
-            completionHandler(ProviderItem(entry), nil)
+            let id = identifier.rawValue
+            do {
+                completionHandler(ProviderItem(try await client.entry(id: id)), nil)
+            } catch CoreError.Failed(let code, _) where code == "not_found" {
+                // The server hides binned files from its node lookups.
+                guard let binned = try await Self.binned(id, client: client) else { throw NSFileProviderError(.noSuchItem) }
+                completionHandler(ProviderItem(binned: binned), nil)
+            }
         }
     }
 
@@ -39,7 +49,14 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         let domain = domain
         return run(units: 100, completion: { completionHandler(nil, nil, $0) }) { client, progress in
             let id = itemIdentifier.rawValue
-            let entry = try await client.entry(id: id)
+            let entry: Entry
+            do {
+                entry = try await client.entry(id: id)
+            } catch CoreError.Failed(let code, _) where code == "not_found" {
+                // A binned file: it stays in the bin, but its content can't be read until restored.
+                guard try await Self.binned(id, client: client) == nil else { throw CocoaError(.featureUnsupported) }
+                throw NSFileProviderError(.noSuchItem)
+            }
             // The system moves the file away once it has it.
             let folder = try NSFileProviderManager(for: domain)?.temporaryDirectoryURL()
                 ?? FileManager.default.temporaryDirectory
@@ -87,14 +104,29 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         let id = item.itemIdentifier.rawValue
         let parent = item.parentItemIdentifier
         let name = item.filename
+        let domain = domain
         return run(completion: { completionHandler(nil, [], false, $0) }) { client, _ in
-            if changedFields.contains(.parentItemIdentifier) {
-                guard parent != .trashContainer else {
-                    // Files has no trash of ours to show; the recycle bin takes it.
-                    try await client.delete(ids: [id])
-                    completionHandler(nil, [], false, nil)
+            if changedFields.contains(.parentItemIdentifier) && parent == .trashContainer {
+                try await client.delete(ids: [id])
+                guard let binned = try await Self.binned(id, client: client) else {
+                    // A folder's files go into the bin one by one and the folder itself goes
+                    // away; Files learns that when it lists the bin again.
+                    Self.signalBin(domain)
+                    completionHandler(item, [], false, nil)
                     return
                 }
+                completionHandler(ProviderItem(binned: binned), [], false, nil)
+                return
+            }
+            if changedFields.contains(.parentItemIdentifier), try await Self.binned(id, client: client) != nil {
+                // Put Back, or a move out of the bin: the server restores into Lost & Found only,
+                // so the item reports that as its folder.
+                let result = try await client.restoreTrashed(ids: [id], mode: .abort)
+                if !result.conflicts.isEmpty {
+                    throw NSFileProviderError(.filenameCollision)
+                }
+                Self.signalBin(domain)
+            } else if changedFields.contains(.parentItemIdentifier) {
                 let moved = try await client.moveNodes(ids: [id], parentId: parent.nodeId, mode: .abort)
                 if !moved.conflicts.isEmpty {
                     throw NSFileProviderError(.filenameCollision)
@@ -116,9 +148,17 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         options: NSFileProviderDeleteItemOptions = [], request: NSFileProviderRequest,
         completionHandler: @escaping (Error?) -> Void
     ) -> Progress {
-        run(completion: completionHandler) { client, _ in
-            // Into the recycle bin, as everywhere else, rather than gone for good.
-            try await client.delete(ids: [identifier.rawValue])
+        let domain = domain
+        return run(completion: completionHandler) { client, _ in
+            let id = identifier.rawValue
+            if try await Self.binned(id, client: client) != nil {
+                // Deleted from the bin: gone for good.
+                try await client.deleteForever(ids: [id])
+            } else {
+                // Files deletes for good only what it doesn't trash; the recycle bin still takes it.
+                try await client.delete(ids: [id])
+            }
+            Self.signalBin(domain)
             completionHandler(nil)
         }
     }
@@ -128,7 +168,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     ) throws -> NSFileProviderEnumerator {
         switch containerItemIdentifier {
         case .workingSet: WorkingSetEnumerator(session: session)
-        case .trashContainer: EmptyEnumerator()
+        case .trashContainer: BinEnumerator(session: session)
         default: FolderEnumerator(folder: containerItemIdentifier.nodeId, session: session)
         }
     }
@@ -168,6 +208,16 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             }
             throw NSFileProviderError(.filenameCollision)
         }
+    }
+
+    /// The binned file `id`, or `nil` when it is not in the bin.
+    private static func binned(_ id: String, client: CoreClient) async throws -> TrashEntry? {
+        try await client.trash().first { $0.id == id }
+    }
+
+    /// Has Files list the bin again.
+    private static func signalBin(_ domain: NSFileProviderDomain) {
+        NSFileProviderManager(for: domain)?.signalEnumerator(for: .trashContainer) { _ in }
     }
 
     private static func emptyFile() throws -> URL {

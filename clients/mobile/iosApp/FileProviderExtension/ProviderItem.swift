@@ -15,73 +15,138 @@ extension NSFileProviderItemIdentifier {
     }
 }
 
-/// A Home Space file or folder as Files sees it. Ids stay the same across moves and renames.
+/// A Home Space file or folder as Files sees it, or a file in the recycle bin. Ids stay the same
+/// across moves and renames, and into the bin and back.
 final class ProviderItem: NSObject, NSFileProviderItem {
-    private let entry: Entry?
+    private enum Backing {
+        case home
+        case bin
+        case entry(Entry)
+        case binned(TrashEntry)
+    }
+
+    private let backing: Backing
 
     init(_ entry: Entry) {
-        self.entry = entry
+        backing = .entry(entry)
     }
 
-    /// Home.
-    private override init() {
-        entry = nil
+    init(binned entry: TrashEntry) {
+        backing = .binned(entry)
     }
 
-    static let home = ProviderItem()
+    private init(_ backing: Backing) {
+        self.backing = backing
+    }
+
+    static let home = ProviderItem(.home)
+
+    /// Files' trash, which is the server's recycle bin.
+    static let bin = ProviderItem(.bin)
 
     /// Whether Files should never see `entry`.
     static func isHidden(_ entry: Entry) -> Bool {
         entry.parentId == nil && entry.kind == .folder && entry.name.hasPrefix(binPrefix)
     }
 
+    private var entry: Entry? {
+        if case .entry(let entry) = backing { return entry }
+        return nil
+    }
+
     var itemIdentifier: NSFileProviderItemIdentifier {
-        entry.map { NSFileProviderItemIdentifier($0.id) } ?? .rootContainer
+        switch backing {
+        case .home: .rootContainer
+        case .bin: .trashContainer
+        case .entry(let entry): NSFileProviderItemIdentifier(entry.id)
+        case .binned(let entry): NSFileProviderItemIdentifier(entry.id)
+        }
     }
 
     var parentItemIdentifier: NSFileProviderItemIdentifier {
-        NSFileProviderItemIdentifier(node: entry?.parentId)
+        switch backing {
+        case .home, .bin: .rootContainer
+        case .entry(let entry): NSFileProviderItemIdentifier(node: entry.parentId)
+        case .binned: .trashContainer
+        }
     }
 
     var filename: String {
-        entry?.name ?? "Home Space"
+        switch backing {
+        case .home: "Home Space"
+        case .bin: "Recycle Bin"
+        case .entry(let entry): entry.name
+        case .binned(let entry): entry.name
+        }
     }
 
     var contentType: UTType {
-        guard let entry, entry.kind == .file else { return .folder }
-        return UTType(mimeType: entry.mime, conformingTo: .data)
-            ?? UTType(filenameExtension: (entry.name as NSString).pathExtension)
-            ?? .data
+        switch backing {
+        case .home, .bin: return .folder
+        case .entry(let entry):
+            guard entry.kind == .file else { return .folder }
+            return Self.type(mime: entry.mime, name: entry.name)
+        case .binned(let entry):
+            return Self.type(mime: entry.mime, name: entry.name)
+        }
     }
 
     var documentSize: NSNumber? {
-        guard let entry, entry.kind == .file else { return nil }
-        return NSNumber(value: entry.size)
+        switch backing {
+        case .entry(let entry) where entry.kind == .file: NSNumber(value: entry.size)
+        case .binned(let entry): NSNumber(value: entry.size)
+        default: nil
+        }
     }
 
     var contentModificationDate: Date? {
-        entry?.updatedAt
+        switch backing {
+        case .entry(let entry): entry.updatedAt
+        case .binned(let entry): entry.deletedAt
+        default: nil
+        }
     }
 
     var capabilities: NSFileProviderItemCapabilities {
-        guard let entry else { return [.allowsReading, .allowsContentEnumerating, .allowsAddingSubItems] }
-        if entry.kind == .folder {
+        switch backing {
+        case .home:
+            return [.allowsReading, .allowsContentEnumerating, .allowsAddingSubItems]
+        case .bin:
+            return [.allowsReading, .allowsContentEnumerating]
+        case .entry(let entry) where entry.kind == .folder:
             return [
                 .allowsReading, .allowsContentEnumerating, .allowsAddingSubItems,
-                .allowsRenaming, .allowsReparenting, .allowsDeleting,
+                .allowsRenaming, .allowsReparenting, .allowsTrashing, .allowsDeleting,
             ]
+        case .entry:
+            return [.allowsReading, .allowsWriting, .allowsRenaming, .allowsReparenting, .allowsTrashing, .allowsDeleting]
+        case .binned:
+            // Files offers Recover only for readable items. The server can't send a binned
+            // file's content, so opening one fails; it can be put back or deleted for good.
+            return [.allowsReading, .allowsReparenting, .allowsDeleting]
         }
-        return [.allowsReading, .allowsWriting, .allowsRenaming, .allowsReparenting, .allowsDeleting]
     }
 
     /// The content changes with the hash, or the version where the server has no hash; the rest
     /// with the name, the folder or the time of the last change.
     var itemVersion: NSFileProviderItemVersion {
-        guard let entry else {
-            return NSFileProviderItemVersion(contentVersion: Data("home".utf8), metadataVersion: Data("home".utf8))
+        switch backing {
+        case .home, .bin:
+            let fixed = Data(filename.utf8)
+            return NSFileProviderItemVersion(contentVersion: fixed, metadataVersion: fixed)
+        case .entry(let entry):
+            let content = entry.sha256 ?? "v\(entry.version)"
+            let metadata = "\(entry.name)|\(entry.parentId ?? "")|\(entry.updatedAt.timeIntervalSince1970)"
+            return NSFileProviderItemVersion(contentVersion: Data(content.utf8), metadataVersion: Data(metadata.utf8))
+        case .binned(let entry):
+            let metadata = "\(entry.name)|bin|\(entry.deletedAt.timeIntervalSince1970)"
+            return NSFileProviderItemVersion(contentVersion: Data("bin".utf8), metadataVersion: Data(metadata.utf8))
         }
-        let content = entry.sha256 ?? "v\(entry.version)"
-        let metadata = "\(entry.name)|\(entry.parentId ?? "")|\(entry.updatedAt.timeIntervalSince1970)"
-        return NSFileProviderItemVersion(contentVersion: Data(content.utf8), metadataVersion: Data(metadata.utf8))
+    }
+
+    private static func type(mime: String, name: String) -> UTType {
+        UTType(mimeType: mime, conformingTo: .data)
+            ?? UTType(filenameExtension: (name as NSString).pathExtension)
+            ?? .data
     }
 }

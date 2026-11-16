@@ -71,7 +71,7 @@ private enum class Tab(val title: String, val icon: Int, val selectedIcon: Int) 
 }
 
 /** The screens that cover the navigation bar, and go back to where they were opened from. */
-enum class SubPage { PROFILE, UPLOAD_FOLDERS, OFFLINE_FILES }
+enum class SubPage { PROFILE, UPLOAD_FOLDERS, OFFLINE_FILES, TRASH }
 
 /** The folder browser and the screens around it, which end with the session. */
 @Composable
@@ -111,6 +111,11 @@ fun SignedInScreen(session: Session.SignedIn, model: SessionViewModel) {
         SubPage.PROFILE -> ProfileScreen(session, model, closePage)
         SubPage.UPLOAD_FOLDERS -> UploadFoldersScreen(session, model, closePage)
         SubPage.OFFLINE_FILES -> OfflineFilesScreen(session, model, closePage)
+        SubPage.TRASH -> TrashScreen(session, model, closePage, onShowLostAndFound = {
+            model.showLostAndFound(session)
+            page = null
+            tab = Tab.FILES
+        })
         null -> {
             // The other tabs go back to Files, and from there back leaves the app.
             BackHandler(enabled = tab != Tab.FILES) { tab = Tab.FILES }
