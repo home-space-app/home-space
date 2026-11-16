@@ -147,6 +147,7 @@ targets:
     sources:
       - FileProviderExtension
       - Shared/SessionStore.swift
+      - Shared/ExtensionSession.swift
       - path: ../build/rust-core/ios/swift
         group: RustCore
     dependencies:

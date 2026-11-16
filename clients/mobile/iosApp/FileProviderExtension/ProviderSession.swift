@@ -5,80 +5,68 @@ import UIKit
 
 private let log = Logger(subsystem: "app.homespace.ios.files", category: "provider")
 
-/// Saves the extension's refresh token as soon as Rust reports it: tokens are single use. The
-/// server extends the session on each refresh, so the app need not start a new one for a while.
-private final class FilesTokenSaver: SessionListener {
-    private let server: String
-    private let store = SessionStore()
-
-    init(server: String) {
-        self.server = server
-    }
-
-    func refreshTokenChanged(token: String?) {
-        if let token {
-            store.saveSession(SavedSession(server: server, refreshToken: token, renewedAt: Date()), for: .files)
-        } else {
-            store.forgetSession(for: .files)
-        }
-    }
-}
-
 /// The extension's one client, signed in with the session the app started for it
 /// (`ExtensionSessions` in the app). Calls arrive on many threads at once; they share it.
 actor ProviderSession {
-    private var client: CoreClient?
-    private var restoring: Task<CoreClient, Error>?
+    private typealias SignedIn = (client: CoreClient, saver: ExtensionTokenSaver)
 
-    func client() async throws -> CoreClient {
-        if let client { return client }
+    private var signedIn: SignedIn?
+    private var restoring: Task<SignedIn, Error>?
+
+    /// Runs `work` with the signed-in client. When the server refuses its session, the next
+    /// call signs in again with whatever session is saved by then: the app may have started
+    /// a new one, which is what ended this one.
+    nonisolated func withClient<T>(_ work: (CoreClient) async throws -> T) async throws -> T {
+        let current = try await signIn()
+        do {
+            return try await work(current.client)
+        } catch {
+            if case CoreError.Unauthorized = error {
+                current.saver.sessionEnded()
+                await ended(current.client)
+            }
+            throw error
+        }
+    }
+
+    private func signIn() async throws -> SignedIn {
+        if let signedIn { return signedIn }
         if let restoring { return try await restoring.value }
         let task = Task { try await Self.restore() }
         restoring = task
         defer { restoring = nil }
         let restored = try await task.value
-        client = restored
+        signedIn = restored
         return restored
     }
 
-    /// The server refused the session; the app starts a new one when it next opens.
-    func ended() {
-        client = nil
-        SessionStore().forgetSession(for: .files)
+    /// Drops `client`, unless another has replaced it already.
+    private func ended(_ client: CoreClient) {
+        if signedIn?.client === client {
+            signedIn = nil
+        }
     }
 
-    private static func restore() async throws -> CoreClient {
+    private static func restore() async throws -> SignedIn {
         let store = SessionStore()
         guard let saved = store.loadSession(for: .files) else {
             store.markNeedsSession(.files)
             throw NSFileProviderError(.notAuthenticated)
         }
-        let client = try await CoreClient.withSession(
+        let saver = ExtensionTokenSaver(server: saved.server, label: .files, token: saved.refreshToken)
+        let client = try CoreClient.withSession(
             baseUrl: saved.server,
             device: DeviceIdentity(id: store.deviceId, name: UIDevice.current.name),
-            listener: FilesTokenSaver(server: saved.server),
+            listener: saver,
             filesDir: try privateFolder("files").path
         )
         do {
             _ = try await client.restore(refreshToken: saved.refreshToken)
         } catch CoreError.Unauthorized {
-            store.forgetSession(for: .files)
+            saver.sessionEnded()
             throw NSFileProviderError(.notAuthenticated)
         }
-        return client
-    }
-
-    /// A folder of the extension's own: a database held open in the App Group's container gets
-    /// the extension killed when it is suspended.
-    static func privateFolder(_ name: String) throws -> URL {
-        var folder = try FileManager.default
-            .url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-            .appendingPathComponent(name, isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        try folder.setResourceValues(values)
-        return folder
+        return (client, saver)
     }
 }
 

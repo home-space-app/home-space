@@ -10,27 +10,31 @@ enum ExtensionSessions {
     /// Started again when this old, as an unused one expires after 30 days.
     private static let renewAfter: TimeInterval = 25 * 24 * 60 * 60
     private static var running: Task<Void, Never>?
+    /// Moves on as the extensions' sessions are forgotten, so a run started before then saves
+    /// nothing: the server has ended what it started.
+    private static var generation = 0
 
-    /// Starts the sessions that are missing, refused or old, once at a time.
+    /// Starts the sessions that are missing, refused or old, one at a time.
     static func refresh(client: CoreClient, server: String) {
         guard running == nil else { return }
+        let started = generation
         running = Task {
-            defer { running = nil }
+            defer { if generation == started { running = nil } }
             let store = SessionStore()
             for label in labels where needsNew(label, server: server, store: store) {
+                let token: String
                 do {
-                    let token = try await client.startDeviceSession(label: label.rawValue)
-                    store.saveSession(
-                        SavedSession(server: server, refreshToken: token, renewedAt: Date()),
-                        for: label
-                    )
-                    if label == .files {
-                        FileProviderDomains.sessionReady()
-                    }
+                    token = try await client.startDeviceSession(label: label.rawValue)
                 } catch {
                     // Tried again the next time the app signs in or opens; an older server
-                    // without extension sessions refuses every time.
-                    return
+                    // without extension sessions refuses every time. The other labels still
+                    // get theirs.
+                    continue
+                }
+                guard generation == started, !Task.isCancelled else { return }
+                store.saveSession(SavedSession(server: server, refreshToken: token, renewedAt: Date()), for: label)
+                if label == .files {
+                    FileProviderDomains.sessionReady()
                 }
             }
         }
@@ -38,6 +42,7 @@ enum ExtensionSessions {
 
     /// Forgets the extensions' sessions; the server ends them with the app's own.
     static func forget() {
+        generation += 1
         running?.cancel()
         running = nil
         SessionStore().forgetExtensionSessions()

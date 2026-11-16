@@ -191,15 +191,4 @@ final class ClientHolder {
     static func syncFolder() throws -> URL {
         try privateFolder("sync")
     }
-
-    private static func privateFolder(_ name: String) throws -> URL {
-        var folder = try FileManager.default
-            .url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-            .appendingPathComponent(name, isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        try folder.setResourceValues(values)
-        return folder
-    }
 }

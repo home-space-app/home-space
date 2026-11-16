@@ -150,6 +150,14 @@ Feature: Device registration and presence
       When the extension asks for a "files" session
       Then it is refused
 
+    # Security: an extension's session never outlives the app session that started it.
+    Scenario: An expired app session takes its extensions with it
+      Given "Phone" has a "files" session that refreshed today
+      And the app on "Phone" has not been opened for the refresh token lifetime
+      When expired sessions are pruned
+      Then the app's session and its "files" session have ended
+      And Files asks the user to open the app and sign in again
+
   Rule: A device that has been signed out longer than the refresh token lifetime is removed
 
     Scenario: A CLI that is never started again is dropped

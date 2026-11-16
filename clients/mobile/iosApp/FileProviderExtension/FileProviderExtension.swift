@@ -86,10 +86,13 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 throw CocoaError(.featureUnsupported)
             }
             let source = try url ?? Self.emptyFile()
-            // A name that is taken gets a new version, as the app's uploads do.
+            // A new file never takes over one that has the name: it gets the next free name, which
+            // Files then shows. Only an item the system says may be there already, as when it
+            // rebuilds what it knows, becomes a new version of it.
             let entry = try await client.uploadFile(
                 parentId: parent.nodeId, name: name, path: source.path,
-                mime: type.preferredMIMEType ?? UTType(filenameExtension: (name as NSString).pathExtension)?.preferredMIMEType
+                mime: type.preferredMIMEType ?? UTType(filenameExtension: (name as NSString).pathExtension)?.preferredMIMEType,
+                keepBoth: !options.contains(.mayAlreadyExist)
             )
             completionHandler(ProviderItem(entry), [], false, nil)
         }
@@ -136,7 +139,19 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 _ = try await client.rename(id: id, name: name)
             }
             if changedFields.contains(.contents), let newContents {
-                _ = try await client.replaceFile(id: id, path: newContents.path)
+                let current = try await client.entry(id: id)
+                if ProviderItem(current).itemVersion.contentVersion == version.contentVersion {
+                    _ = try await client.replaceFile(id: id, path: newContents.path)
+                } else {
+                    // The file changed on the server since the edit began, as from another device
+                    // while this one was offline. Neither is lost: the edit goes in beside it as
+                    // a file of its own, and Files fetches the newer content for this one.
+                    _ = try await client.uploadFile(
+                        parentId: current.parentId, name: current.name, path: newContents.path,
+                        mime: current.mime, keepBoth: true
+                    )
+                    Self.signalWorkingSet(domain)
+                }
             }
             let entry = try await client.entry(id: id)
             completionHandler(ProviderItem(entry), [], false, nil)
@@ -174,7 +189,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     }
 
     /// Runs `work` with the signed-in client, and hands any failure to `completion` in the form
-    /// Files understands. A refused session is forgotten, so the app starts another.
+    /// Files understands.
     private func run(
         units: Int64 = 1, completion: @escaping (Error) -> Void,
         _ work: @escaping (CoreClient, Progress) async throws -> Void
@@ -183,9 +198,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         let session = session
         let task = Task {
             do {
-                try await work(session.client(), progress)
+                try await session.withClient { try await work($0, progress) }
             } catch {
-                if case CoreError.Unauthorized = error { await session.ended() }
                 completion(providerError(error))
             }
         }
@@ -213,6 +227,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     /// The binned file `id`, or `nil` when it is not in the bin.
     private static func binned(_ id: String, client: CoreClient) async throws -> TrashEntry? {
         try await client.trash().first { $0.id == id }
+    }
+
+    /// Has Files ask for the changes on the server.
+    private static func signalWorkingSet(_ domain: NSFileProviderDomain) {
+        NSFileProviderManager(for: domain)?.signalEnumerator(for: .workingSet) { _ in }
     }
 
     /// Has Files list the bin again.

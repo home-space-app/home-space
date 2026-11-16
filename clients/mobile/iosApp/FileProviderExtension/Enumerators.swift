@@ -22,11 +22,10 @@ final class FolderEnumerator: NSObject, NSFileProviderEnumerator {
         let session = session
         task = Task {
             do {
-                let entries = try await session.client().list(parentId: folder)
+                let entries = try await session.withClient { try await $0.list(parentId: folder) }
                 observer.didEnumerate(entries.filter { !ProviderItem.isHidden($0) }.map(ProviderItem.init))
                 observer.finishEnumerating(upTo: nil)
             } catch {
-                if case CoreError.Unauthorized = error { await session.ended() }
                 observer.finishEnumeratingWithError(providerError(error))
             }
         }
@@ -68,7 +67,12 @@ final class WorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
         let session = session
         task = Task {
             do {
-                let page = try await session.client().changes(since: since)
+                let (page, binned) = try await session.withClient { client in
+                    let page = try await client.changes(since: since)
+                    // The feed reads a binned file as deleted; Files should see it in its trash.
+                    let deletes = page.changes.contains { if case .deleted = $0 { true } else { false } }
+                    return (page, deletes ? try await client.trash() : [])
+                }
                 var updated: [NSFileProviderItem] = []
                 var deleted: [NSFileProviderItemIdentifier] = []
                 for change in page.changes {
@@ -82,8 +86,6 @@ final class WorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                     }
                 }
                 if !deleted.isEmpty {
-                    // The feed reads a binned file as deleted; Files should see it in its trash.
-                    let binned = try await session.client().trash()
                     let ids = Set(deleted.map(\.rawValue))
                     let moved = binned.filter { ids.contains($0.id) }
                     updated += moved.map { ProviderItem(binned: $0) }
@@ -97,7 +99,6 @@ final class WorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                 // The server has pruned the changes since then; the system lists everything again.
                 observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
             } catch {
-                if case CoreError.Unauthorized = error { await session.ended() }
                 observer.finishEnumeratingWithError(providerError(error))
             }
         }
@@ -106,7 +107,7 @@ final class WorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
     func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
         let session = session
         Task {
-            let page = try? await session.client().changes(since: nil)
+            let page = try? await session.withClient { try await $0.changes(since: nil) }
             completionHandler(page.map { Self.anchor($0.cursor) })
         }
     }
@@ -138,11 +139,10 @@ final class BinEnumerator: NSObject, NSFileProviderEnumerator {
         let session = session
         task = Task {
             do {
-                let binned = try await session.client().trash()
+                let binned = try await session.withClient { try await $0.trash() }
                 observer.didEnumerate(binned.map { ProviderItem(binned: $0) })
                 observer.finishEnumerating(upTo: nil)
             } catch {
-                if case CoreError.Unauthorized = error { await session.ended() }
                 observer.finishEnumeratingWithError(providerError(error))
             }
         }
@@ -152,7 +152,7 @@ final class BinEnumerator: NSObject, NSFileProviderEnumerator {
         let session = session
         task = Task {
             do {
-                let current = Self.anchor(try await session.client().trash())
+                let current = Self.anchor(try await session.withClient { try await $0.trash() })
                 if current == anchor {
                     observer.finishEnumeratingChanges(upTo: anchor, moreComing: false)
                 } else {
@@ -160,7 +160,6 @@ final class BinEnumerator: NSObject, NSFileProviderEnumerator {
                     observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
                 }
             } catch {
-                if case CoreError.Unauthorized = error { await session.ended() }
                 observer.finishEnumeratingWithError(providerError(error))
             }
         }
@@ -169,7 +168,7 @@ final class BinEnumerator: NSObject, NSFileProviderEnumerator {
     func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
         let session = session
         Task {
-            let binned = try? await session.client().trash()
+            let binned = try? await session.withClient { try await $0.trash() }
             completionHandler(binned.map(Self.anchor))
         }
     }

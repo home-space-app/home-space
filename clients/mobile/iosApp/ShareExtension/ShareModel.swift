@@ -2,25 +2,6 @@ import Foundation
 import Observation
 import UIKit
 
-/// Saves the extension's refresh token as soon as Rust reports it: tokens are single use. The
-/// server extends the session on each refresh, so the app need not start a new one for a while.
-private final class ShareTokenSaver: SessionListener {
-    private let server: String
-    private let store = SessionStore()
-
-    init(server: String) {
-        self.server = server
-    }
-
-    func refreshTokenChanged(token: String?) {
-        if let token {
-            store.saveSession(SavedSession(server: server, refreshToken: token, renewedAt: Date()), for: .share)
-        } else {
-            store.forgetSession(for: .share)
-        }
-    }
-}
-
 /// The extension copies each file into the queue itself, so the queue never asks.
 private final class NoPickedSources: PickedFiles {
     func copyFile(source: String, dest: String) throws {
@@ -88,6 +69,7 @@ final class ShareModel {
     @ObservationIgnored private let onCancel: () -> Void
     @ObservationIgnored private var content: SharedContent?
     @ObservationIgnored private var client: CoreClient?
+    @ObservationIgnored private var saver: ExtensionTokenSaver?
     @ObservationIgnored private var queue: UploadQueue?
     @ObservationIgnored private var uploading: [String: UInt64] = [:]
     @ObservationIgnored private var transfer: String?
@@ -125,18 +107,20 @@ final class ShareModel {
             state = .signedOut
             return
         }
+        let saver = ExtensionTokenSaver(server: saved.server, label: .share, token: saved.refreshToken)
         do {
             let client = try CoreClient.withSession(
                 baseUrl: saved.server,
                 device: DeviceIdentity(id: store.deviceId, name: UIDevice.current.name),
-                listener: ShareTokenSaver(server: saved.server),
-                filesDir: try Self.privateFolder("offline").path
+                listener: saver,
+                filesDir: try privateFolder("offline").path
             )
             _ = try await client.restore(refreshToken: saved.refreshToken)
             self.client = client
+            self.saver = saver
             state = .ready(client, content)
         } catch CoreError.Unauthorized {
-            store.forgetSession(for: .share)
+            saver.sessionEnded()
             state = .signedOut
         } catch {
             state = .failed(fileMessage(for: error))
@@ -193,7 +177,7 @@ final class ShareModel {
                     ?? (summary.offline ? "Could not reach the server" : "The upload stopped before it finished.")
             )
         } catch CoreError.Unauthorized {
-            SessionStore().forgetSession(for: .share)
+            saver?.sessionEnded()
             self.client = nil
             end()
             state = .signedOut
@@ -223,7 +207,7 @@ final class ShareModel {
                 files: content.sendFiles, userId: target.userId, deviceId: target.deviceId, listener: listener)
             if !cancelled { finish() }
         } catch CoreError.Unauthorized {
-            SessionStore().forgetSession(for: .share)
+            saver?.sessionEnded()
             self.client = nil
             end()
             state = .signedOut
@@ -244,7 +228,7 @@ final class ShareModel {
 
     /// The session ended while choosing.
     func sessionEnded() {
-        SessionStore().forgetSession(for: .share)
+        saver?.sessionEnded()
         client = nil
         state = .signedOut
     }
@@ -295,7 +279,7 @@ final class ShareModel {
         if let queue { return queue }
         let queue = try UploadQueue.open(
             client: client,
-            dataDir: try Self.privateFolder("uploads").path,
+            dataDir: try privateFolder("uploads").path,
             files: NoPickedSources(),
             listener: QueueForwarder { [weak self] in self?.uploadsChanged() }
         )
@@ -315,18 +299,5 @@ final class ShareModel {
             done += items.first(where: { $0.key == key }).map { min($0.done, size) } ?? size
         }
         state = .working(title, Double(done) / Double(total))
-    }
-
-    /// A folder of the extension's own, not the App Group's: a database held open in a shared
-    /// container gets the extension killed when it is suspended.
-    static func privateFolder(_ name: String) throws -> URL {
-        var folder = try FileManager.default
-            .url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-            .appendingPathComponent(name, isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        try folder.setResourceValues(values)
-        return folder
     }
 }
