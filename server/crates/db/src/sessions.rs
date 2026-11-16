@@ -184,6 +184,11 @@ impl Db {
     }
 
     /// Deletes expired sessions, returning how many were removed.
+    ///
+    /// Security: an extension's session never outlives the app session that started it. An
+    /// expired app session takes its extensions' sessions with it (`ON DELETE CASCADE` on
+    /// `parent_session_id`), however recently they were used, so a device left alone for the
+    /// refresh token lifetime has to sign in again in the app before its extensions work again.
     pub async fn prune_sessions(&self) -> Result<u64, DbError> {
         let pruned = sqlx::query("DELETE FROM sessions WHERE expires_at <= now()")
             .execute(self.pool())
@@ -287,6 +292,55 @@ mod tests {
             .await
             .expect("expiry");
         assert!(unexpired);
+    }
+
+    /// Security: extensions end with the app's session, even when they are still in use.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn an_expired_app_session_takes_its_extensions_with_it(pool: PgPool) {
+        let user = Uuid::now_v7();
+        sqlx::query("INSERT INTO users (id, username, password_hash) VALUES ($1, 'alice', 'x')")
+            .bind(user)
+            .execute(&pool)
+            .await
+            .expect("user");
+        let device = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO devices (id, user_id, name, platform) VALUES ($1, $2, 'Phone', 'ios')",
+        )
+        .bind(device)
+        .bind(user)
+        .execute(&pool)
+        .await
+        .expect("device");
+        let db = Db::from_pool(pool.clone());
+        let (app, files) = (Uuid::now_v7(), Uuid::now_v7());
+        let expires = OffsetDateTime::now_utc() + time::Duration::days(30);
+        db.start_session(app, UserId::from(user), Some(device), b"app", expires)
+            .await
+            .expect("start");
+        db.start_device_session(app, UserId::from(user), "files", files, b"files", expires)
+            .await
+            .expect("extension")
+            .expect("started");
+        sqlx::query("UPDATE sessions SET expires_at = now() - interval '1 second' WHERE id = $1")
+            .bind(app)
+            .execute(&pool)
+            .await
+            .expect("expire");
+
+        db.prune_sessions().await.expect("prune");
+
+        let left: i64 = sqlx::query_scalar("SELECT count(*) FROM sessions")
+            .fetch_one(&pool)
+            .await
+            .expect("count");
+        assert_eq!(left, 0);
+        assert!(
+            db.live_session(files, UserId::from(user))
+                .await
+                .expect("live")
+                .is_none()
+        );
     }
 
     #[sqlx::test(migrations = "../../migrations")]

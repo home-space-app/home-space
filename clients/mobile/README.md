@@ -244,6 +244,9 @@ On iOS (`TransferCenter.swift`, `SendSheet.swift`, `Notifications.swift`):
     the app starts after signing in and again when it is 25 days old (`ExtensionSessions.swift`).
     With none, or one the server refused, the sheet asks the user to open the app, which then
     starts a new one.
+  - An extension's session never outlives the app's own, as a security rule: when the app's
+    session ends or expires (the app unopened for 30 days), the server ends the extensions'
+    sessions with it, however recently they were used. They work again once the user signs in.
   - Unlike Android, the extension uploads or sends the files itself while its sheet stays open,
     showing progress; it can't hand them to the app's queue. Its own upload queue and offline
     folder are in the extension's container, not the App Group's, since a database held open in a

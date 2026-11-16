@@ -58,13 +58,15 @@ impl CoreClient {
     }
 
     /// Uploads the file at `path` as `name` in `parent_id`, or Home when `None`, and returns it.
-    /// A name that is taken gets a new version, and identical content changes nothing.
+    /// A name that is taken gets a new version, or with `keep_both` a file of its own under the
+    /// next free name, as `name (1).ext`. Identical content changes nothing either way.
     pub async fn upload_file(
         &self,
         parent_id: Option<String>,
         name: String,
         path: String,
         mime: Option<String>,
+        keep_both: bool,
     ) -> Result<Entry, CoreError> {
         let parent = parent_id.as_deref().map(parse_id).transpose()?;
         self.send_file(path, move |size| CreateUpload {
@@ -75,7 +77,7 @@ impl CoreClient {
             modified_at: None,
             mime,
             node_id: None,
-            keep_both: false,
+            keep_both,
             version_of: None,
             auto_upload: false,
             transfer_item_id: None,
@@ -248,12 +250,53 @@ mod tests {
                 "a.txt".into(),
                 file.to_string_lossy().into_owned(),
                 Some("text/plain".into()),
+                false,
             )
             .await
             .unwrap();
 
         assert_eq!(entry.name, "a.txt");
         assert_eq!(entry.size, 6);
+    }
+
+    #[tokio::test]
+    async fn keeping_both_asks_for_a_name_of_its_own() {
+        let server = MockServer::start().await;
+        let client = signed_in(&server).await;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, b"abcdef").unwrap();
+        Mock::given(method("POST"))
+            .and(path(protocol::paths::UPLOADS))
+            .and(body_partial_json(
+                serde_json::json!({ "name": "a.txt", "keep_both": true }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": UPLOAD_ID, "offset": 0, "size": 6, "chunk_size": 1024,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path(format!("{}/{UPLOAD_ID}", protocol::paths::UPLOADS)))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({ "offset": 6, "node": node("a (1).txt", "file", 6) }),
+            ))
+            .mount(&server)
+            .await;
+
+        let entry = client
+            .upload_file(
+                None,
+                "a.txt".into(),
+                file.to_string_lossy().into_owned(),
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(entry.name, "a (1).txt");
     }
 
     #[tokio::test]
@@ -325,6 +368,7 @@ mod tests {
             "c".into(),
             file.to_string_lossy().into_owned(),
             None,
+            false,
         ))
         .unwrap();
 
