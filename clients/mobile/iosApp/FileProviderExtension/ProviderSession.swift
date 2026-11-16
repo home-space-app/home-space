@@ -53,7 +53,7 @@ actor ProviderSession {
             store.markNeedsSession(.files)
             throw NSFileProviderError(.notAuthenticated)
         }
-        let client = try CoreClient.withSession(
+        let client = try await CoreClient.withSession(
             baseUrl: saved.server,
             device: DeviceIdentity(id: store.deviceId, name: UIDevice.current.name),
             listener: FilesTokenSaver(server: saved.server),
