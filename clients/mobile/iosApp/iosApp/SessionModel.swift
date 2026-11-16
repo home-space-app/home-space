@@ -820,18 +820,6 @@ private func exportName(of entry: Entry) -> String {
     safeFileName(entry.name, fallback: entry.id)
 }
 
-/// The sentence to show when a file operation fails.
-func fileMessage(for error: Error) -> String {
-    switch error as? CoreError {
-    case .Failed(_, let detail):
-        detail.prefix(1).uppercased() + detail.dropFirst()
-    case .Unreachable:
-        "Could not reach the server"
-    default:
-        error.localizedDescription
-    }
-}
-
 /// The sentence to show for a failure, matching the web client's.
 private func signInMessage(for error: Error) -> String {
     switch error as? CoreError {

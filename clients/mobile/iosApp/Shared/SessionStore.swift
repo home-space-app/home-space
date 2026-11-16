@@ -49,7 +49,16 @@ struct SessionStore: Sendable {
     }()
 
     init() {
-        Self.migrateOnce()
+        // Only the app knows where older versions kept things; an extension can't see its
+        // Keychain group, and would mark the move done before the app made it.
+        if Self.isApp {
+            Self.migrateOnce()
+        }
+    }
+
+    /// Whether this process is the app rather than one of its extensions.
+    private static var isApp: Bool {
+        Bundle.main.bundleURL.pathExtension == "app"
     }
 
     /// Identifies this install to the server; survives signing out.
@@ -91,6 +100,13 @@ struct SessionStore: Sendable {
     func saveSession(_ session: SavedSession, for label: ExtensionLabel) {
         Self.save(session, account: Self.account(label))
         Self.defaults.removeObject(forKey: Self.needsKey(label))
+    }
+
+    /// Forgets the session of `label`, as the extension finds it ended. The app starts a new one
+    /// the next time it opens.
+    func forgetSession(for label: ExtensionLabel) {
+        SecItemDelete(Self.query(account: Self.account(label)) as CFDictionary)
+        markNeedsSession(label)
     }
 
     /// Forgets every extension's session, as the app's own session ends.

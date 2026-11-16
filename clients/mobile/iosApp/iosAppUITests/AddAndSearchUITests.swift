@@ -73,11 +73,22 @@ final class AddAndSearchUITests: XCTestCase {
         sleep(1)
         // The checkmark in the picker's corner confirms; it has no dependable label.
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.125)).tap()
+        // Whichever photo comes first in the library, PNG, JPEG or HEIC.
+        let image = NSPredicate(
+            format: "label ENDSWITH[c] '.png' OR label ENDSWITH[c] '.jpg' OR label ENDSWITH[c] '.jpeg' OR label ENDSWITH[c] '.heic'")
         XCTAssertTrue(
-            app.staticTexts.matching(NSPredicate(format: "label ENDSWITH[c] '.png'")).firstMatch
-                .waitForExistence(timeout: 15),
+            app.staticTexts.matching(image).firstMatch.waitForExistence(timeout: 15),
             app.debugDescription
         )
+
+        // The folder goes again, so that Home stays as the other tests expect it.
+        app.navigationBars.buttons.firstMatch.tap()
+        let made = app.staticTexts[name]
+        XCTAssertTrue(made.waitForExistence(timeout: 10), app.debugDescription)
+        made.press(forDuration: 1.2)
+        app.buttons["Delete"].tap()
+        app.buttons["Move to bin"].tap()
+        XCTAssertTrue(made.waitForNonExistence(timeout: 10), app.debugDescription)
 
         // Search finds it from anywhere and says where it is.
         let search = app.searchFields.firstMatch
