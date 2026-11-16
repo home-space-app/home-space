@@ -7,6 +7,7 @@ Future improvements. Each item links to its write-up in [`todo/`](todo/).
 | High | L | [Sharing files and folders: links for anyone or specific users, with expiry](todo/sharing.md) |
 | High | L | [Mobile feature parity: Android and iOS gain trash and live updates](todo/mobile-feature-parity.md) |
 | Medium | L | [Send files and folders to a device: temporary copy, notification, deleted after download or 24 h](todo/send-to-device.md) |
+| Medium | L | [macOS File Provider: Home Space in Finder with on-demand files, downloaded when opened](todo/macos-file-provider.md) |
 | Medium | L | [Mobile native file provider: Home Space in the system file pickers, to attach files and save into it](todo/mobile-file-provider.md) |
 | Medium | L | [Administration panel: users, password resets, quotas, groups](todo/admin-panel.md) |
 | Medium | L | [Object storage backends: S3 and Azure Blob next to the local file system](todo/object-storage.md) |
