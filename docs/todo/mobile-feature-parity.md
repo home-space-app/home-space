@@ -3,7 +3,7 @@
 ## Problem
 
 Desktop and web have most features. Android and iOS now also search, create folders, upload
-picked files, share, send to devices, and restore from the recycle bin. iOS has a share
+picked files, share, send to devices, restore from the recycle bin, and update live while open. iOS has a share
 extension and a File Provider extension. Each extension signs in with a session of its own, which the
 server starts for the app (`/auth/device-sessions`) and the app keeps in a Keychain group and App
 Group it shares with its extensions. Status
@@ -28,18 +28,18 @@ against a dev server (`iosAppUITests/ParityUITests`).
 | Rename | Yes | Yes | Yes | Yes |
 | Move, with conflict choice | Yes | Yes | Yes | Yes |
 | Delete to bin | Yes | Yes | Yes | Yes |
-| Trash: list and restore | Yes | Yes | Yes | Yes |
+| Trash: list, restore, delete for good, empty | Yes | Yes | Yes | Yes |
 | Search | Yes | Yes | Yes | Yes |
 | Share with links or users | Yes | Yes | Yes | Yes |
 | Shared with me | Yes | Yes | Yes | Yes |
 | Send to device | Yes | Yes | Yes | Yes |
 | Receive transfers (open link, save, download, decline) | Yes | Yes | Yes | Yes |
 | Notifications for received transfers | Partial: in the app only | Partial: in the app only | Yes | Yes: local, while open or in background refresh |
-| Built-in text and image viewers | Yes | Yes | Yes | Yes |
+| Built-in text and image viewers, text editing | Yes | Yes | Yes | Yes |
 | Share files from other apps into Home Space | n/a | n/a | Yes | Yes (`ShareExtension`) |
 | Home Space in the system file picker | n/a | n/a | Yes | Yes (`FileProviderExtension`): also rename, move and delete |
-| Upload files | Yes | Yes | Yes, not whole folders | Yes, not whole folders |
-| Drag and drop to upload | No | Yes | n/a | n/a |
+| Upload files | Yes, also whole folders | Yes, not whole folders (Send takes folders) | Yes, not whole folders | Yes, not whole folders |
+| Drag and drop to upload | Yes | Yes | n/a | n/a |
 | Resumable uploads | Yes | Yes | Yes | Yes |
 | Download a file | Yes | Yes | Yes | Yes |
 | Save to a chosen location | Yes | Partial: the browser picks the folder | Yes | Yes |
@@ -48,10 +48,14 @@ against a dev server (`iosAppUITests/ParityUITests`).
 | Folder sync from this device | Yes | No | Auto-upload one way, offline folders both ways | Auto-upload one way, offline folders both ways |
 | Quick upload of camera photos | No | No | Yes | Yes |
 | Transfers continue with the app closed | n/a | n/a | Auto-upload: yes | Auto-upload: when iOS allows |
+| Own storage usage | No | Yes (settings, sidebar) | No | No |
+| Change password | No | Yes | No | No |
+| Administration (server status, users, quotas) | No | Yes, for admins | No | No |
 
 Sources: `clients/desktop/src/browser`, `clients/desktop/src/transfers.rs`, `clients/sync-core`,
 `clients/web/src/upload.rs`, `clients/web/src/pages/browser`, `clients/mobile/androidApp`,
-`clients/mobile/iosApp`, `clients/mobile-core/src/lib.rs`.
+`clients/mobile/iosApp`, `clients/mobile-core/src/lib.rs`, `clients/mobile-core/src/events.rs`,
+`clients/web/src/pages/settings.rs`, `clients/web/src/pages/admin.rs`.
 
 ## Scope
 
@@ -65,7 +69,7 @@ write-ups and are only listed here.
 Work in this order:
 
 1. ~~**Trash**~~: done; see `mobile-trash.md`.
-2. **Live updates** through the websocket (`/api/v1/ws`), which desktop and web already use.
+2. ~~**Live updates**~~: done; `mobile-core/src/events.rs`, opened while the app is in front.
 3. **Medium items**: a device list screen, a sort choice, and an iOS breadcrumb trail.
 
 Each step adds `mobile-core` calls first, then Android and iOS screens. Keep parity by checking this

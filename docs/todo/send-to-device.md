@@ -1,9 +1,11 @@
 # Send files and folders to a device
 
-> **Status:** the server part is done and documented in
+> **Status (2026-11-16):** done in every client and documented in
 > [../send-to-device.md](../send-to-device.md). It differs from the proposal below where the
-> decisions at the end say so. Still to do: the shared client code (`api-client`, `client-core`),
-> then the desktop, web and mobile clients, and the zip route for the web client.
+> decisions at the end say so. Desktop, web, Android and iOS send and receive; several files or a
+> folder download as a zip (`/transfers/{id}/archive`). Still open: OS notifications on the
+> desktop and browser notifications on the web (both only notify inside the app), "download
+> automatically from my own devices", and the open questions at the end.
 
 ## Problem
 

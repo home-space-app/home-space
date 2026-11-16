@@ -1,5 +1,15 @@
 # Administration panel
 
+**Status (2026-11-16):** mostly done, on the web only. Admins (`users.is_admin`, migration
+`0016`, `homespace user add --admin` and `homespace user admin [--revoke]`) see Administration
+with two tabs: Server status (disk and every user's storage) and Users. Users can be added,
+edited, disabled, given a quota, given a new password and deleted. A deletion is delayed and can
+be cancelled (`users.delete_at`, migration `0020`). Quotas are enforced (507 `quota_exceeded`).
+
+Still open: groups, `HOMESPACE_OIDC_ADMIN_GROUP`, password reset links, a default quota for new
+users, a per-user usage counter, and the server-side sync ignore list.
+
+
 ## Problem
 
 Users are managed only through the CLI (`homespace user add | list | passwd` in

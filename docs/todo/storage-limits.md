@@ -1,5 +1,14 @@
 # Optional upload limit, free-space check and storage usage
 
+**Status (2026-11-16):** half done. `GET /storage` returns the user's usage split into files,
+versions and the recycle bin, and the disk's total and available bytes (`statvfs`, Unix only). The
+web client shows it in the sidebar and in Settings. Quotas from `admin-panel.md` are enforced.
+
+Still open: the upload limit is still on by default (`HOMESPACE_MAX_UPLOAD_BYTES`, 10 GiB), there
+is no free-space reserve and no disk check on upload, the desktop and mobile clients don't show
+usage, and no client warns before an upload that will not fit.
+
+
 ## Problem
 
 `HOMESPACE_MAX_UPLOAD_BYTES` defaults to 10 GiB (`server/crates/app/src/config.rs`), so a file over

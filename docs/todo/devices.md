@@ -86,7 +86,9 @@ Step 4, the device list in the clients:
 
 ## Left
 
-- **Android.** Registers on first sign-in, so its uploads show as "from Phone".
+- ~~**Android.**~~ Done (2026-11-16): Android and iOS register on sign-in, and their uploads show
+  where they came from. Renaming and signing out devices from the phones is tracked in
+  `mobile-feature-parity.md`.
 - Conflict copies named after the other device do not apply: sync keeps no conflict copies,
   the server keeps the losing content as a version.
 
