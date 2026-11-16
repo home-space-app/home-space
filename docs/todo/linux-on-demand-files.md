@@ -9,7 +9,7 @@ only be reached through the app's browser.
 
 The macOS plan ([`macos-file-provider.md`](macos-file-provider.md)) solves this with Apple's File
 Provider. This plan has the same requirements for Linux. Windows gets its own plan with the Cloud
-Files API.
+Files API ([`windows-cloud-files.md`](windows-cloud-files.md)).
 
 ## Wanted
 
@@ -100,7 +100,10 @@ clients/desktop/src/vfs/
   mounts at login. This is the same open question as the macOS menu-bar mode.
 - **`vfs-core` does the work and is tested without FUSE**, with `wiremock` like the other clients.
   The FUSE adapter only translates inodes, file handles and errors. The Windows Cloud Files adapter
-  uses the same core.
+  uses the same core ([`windows-cloud-files.md`](windows-cloud-files.md)); its placeholders are real
+  NTFS files, so the store keeps room for per-node local state (local path, placeholder version,
+  in-sync flag) behind an adapter trait. The FUSE adapter doesn't need that state and leaves it
+  empty.
 - **Mount point:** `~/Home Space` by default, changeable in settings. Mount options
   `fsname=homespace,subtype=homespace,default_permissions`, so `mount` and `df` show
   `fuse.homespace`. The app adds a bookmark to `~/.config/gtk-3.0/bookmarks` (Nautilus, Thunar,
