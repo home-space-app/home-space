@@ -119,6 +119,37 @@ Feature: Device registration and presence
       Then "Phone" has no sessions left
       And "Phone" is still listed as signed out
 
+  Rule: An app's extensions get sessions of their own on its device, which end with the app's
+
+    Scenario: The share extension gets a session from the app
+      Given alice is signed in on "Phone"
+      When the app starts a "share" session
+      Then "Phone" has the app's session and a "share" session
+      And each refreshes with its own token
+
+    Scenario: Starting a label again replaces the earlier session
+      Given "Phone" has a "share" session
+      When the app starts another "share" session
+      Then the earlier "share" session has ended
+
+    Scenario: Signing the app out ends its extensions on that device only
+      Given "Phone" and "Tablet" each have a "share" session
+      When alice signs the app out on "Phone"
+      Then the "share" session of "Phone" has ended
+      And "Tablet" and its "share" session are still signed in
+
+    Scenario: A password change ends extensions started by another session naming the same device
+      Given "Phone" has a "share" session
+      And a second sign-in names the device of "Phone" and starts a "files" session
+      When alice changes her password on "Phone"
+      Then "Phone" and its "share" session are still signed in
+      And the second sign-in and its "files" session have ended
+
+    Scenario: An extension cannot start sessions
+      Given "Phone" has a "share" session
+      When the extension asks for a "files" session
+      Then it is refused
+
   Rule: A device that has been signed out longer than the refresh token lifetime is removed
 
     Scenario: A CLI that is never started again is dropped

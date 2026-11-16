@@ -642,6 +642,7 @@ final class SessionModel {
         forgetUploads()
         let auto = endSync()
         store.forgetSession()
+        ExtensionSessions.forget()
         forgetDownloads()
         backToForm()
         if case .signedIn(let client, _) = current {
@@ -662,6 +663,7 @@ final class SessionModel {
         forgetUploads()
         let auto = endSync()
         store.forgetSession()
+        ExtensionSessions.forget()
         forgetDownloads()
         backToForm()
         Task {
@@ -686,6 +688,10 @@ final class SessionModel {
             startEvents()
             // Catches what the socket missed while the app was away.
             transfers?.start()
+            // An extension may have found its session refused meanwhile.
+            if case .signedIn(let client, _) = session {
+                ExtensionSessions.refresh(client: client, server: client.baseUrl())
+            }
         } else {
             foregroundSync?.stop()
             transfers?.stop()
@@ -788,6 +794,7 @@ final class SessionModel {
             sync.start()
         }
         startEvents()
+        ExtensionSessions.refresh(client: active.client, server: active.client.baseUrl())
     }
 
     private func forgetDownloads() {

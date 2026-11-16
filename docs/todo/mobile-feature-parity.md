@@ -4,7 +4,9 @@
 
 Desktop and web have most features. Android and iOS now also search, create folders, upload
 picked files, share, and send to devices, but they cannot restore from the trash. iOS has no share
-extension or File Provider yet, since both need a session of their own per process. Status
+extension or File Provider yet. Both need a session of their own per process; the server now
+starts those (`/auth/device-sessions`), and the iOS app keeps one ready for the share extension in
+a Keychain group and App Group it shares with its extensions. Status
 per client, as of 2026-11-16. Desktop, web and Android were checked in source; iOS was also run
 against a dev server (`iosAppUITests/ParityUITests`).
 

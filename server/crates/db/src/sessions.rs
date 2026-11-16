@@ -109,7 +109,63 @@ impl Db {
         Ok(())
     }
 
-    /// Ends a session and, with it, its refresh tokens.
+    /// Starts a session labelled `label` for an extension of the app on the device of
+    /// `parent`, the app's own session, with its first refresh token. An earlier session with
+    /// that label started by `parent` ends.
+    ///
+    /// Returns the device, or `None` when `parent` has ended, names no device, or is itself
+    /// an extension's session.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_device_session(
+        &self,
+        parent: Uuid,
+        user_id: UserId,
+        label: &str,
+        session_id: Uuid,
+        token_hash: &[u8],
+        expires_at: OffsetDateTime,
+    ) -> Result<Option<Uuid>, DbError> {
+        let mut tx = self.pool().begin().await?;
+        // Locks the app's session, so two requests for the same label take turns.
+        let device = sqlx::query_scalar::<_, Option<Uuid>>(
+            "SELECT device_id FROM sessions \
+             WHERE id = $1 AND user_id = $2 AND label IS NULL AND expires_at > now() \
+             FOR UPDATE",
+        )
+        .bind(parent)
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .flatten();
+        let Some(device) = device else {
+            return Ok(None);
+        };
+        // Only the sessions `parent` started: the device id is the client's word, so another
+        // session naming the same device must not be able to end or replace these.
+        sqlx::query("DELETE FROM sessions WHERE parent_session_id = $1 AND label = $2")
+            .bind(parent)
+            .bind(label)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "INSERT INTO sessions (id, user_id, device_id, label, parent_session_id, expires_at) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(session_id)
+        .bind(user_id)
+        .bind(device)
+        .bind(label)
+        .bind(parent)
+        .bind(expires_at)
+        .execute(&mut *tx)
+        .await?;
+        insert_token(&mut tx, session_id, user_id, token_hash, expires_at).await?;
+        tx.commit().await?;
+        Ok(Some(device))
+    }
+
+    /// Ends a session and, with it, its refresh tokens. Ending the app's own session also
+    /// ends the sessions it started for its extensions, which the database cascades.
     pub async fn end_session(&self, session_id: Uuid) -> Result<(), DbError> {
         sqlx::query("DELETE FROM sessions WHERE id = $1")
             .bind(session_id)

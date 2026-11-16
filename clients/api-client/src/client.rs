@@ -6,10 +6,10 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use protocol::{
     Capabilities, ChangesQuery, ChangesResponse, ClientMessage, CreateFolderRequest, DeviceInfo,
-    ErrorBody, FileVersion, Health, ListQuery, LoginRequest, Me, MoveRequest, MoveResponse, Node,
-    NodeId, NodeProperties, OidcExchangeRequest, OnConflict, Providers, RefreshRequest,
-    RestoreRequest, SearchHit, SearchQuery, TicketRequest, TicketResponse, TokenPair, TrashItem,
-    UpdateRequest, paths,
+    DeviceSessionRequest, ErrorBody, FileVersion, Health, ListQuery, LoginRequest, Me, MoveRequest,
+    MoveResponse, Node, NodeId, NodeProperties, OidcExchangeRequest, OnConflict, Providers,
+    RefreshRequest, RestoreRequest, SearchHit, SearchQuery, TicketRequest, TicketResponse,
+    TokenPair, TrashItem, UpdateRequest, paths,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use protocol::{ContentQuery, UploadQuery};
@@ -238,6 +238,24 @@ impl Client {
             self.rotate(saved_token).await?;
         }
         self.signed_in().await
+    }
+
+    /// Starts a second session on this device for one of the app's extensions, named by
+    /// `label` (one of [`protocol::DEVICE_SESSION_LABELS`]), and returns its refresh token.
+    /// The client keeps its own session: the extension restores the new one in a client of
+    /// its own. Starting another with the same label ends the earlier one.
+    pub async fn start_device_session(&self, label: &str) -> Result<String, ApiError> {
+        let request = DeviceSessionRequest {
+            label: label.to_owned(),
+        };
+        let pair: TokenPair = self
+            .send_json(|| {
+                self.http
+                    .post(self.url(paths::DEVICE_SESSIONS))
+                    .json(&request)
+            })
+            .await?;
+        Ok(pair.refresh_token)
     }
 
     /// Ends the session and revokes its refresh token.

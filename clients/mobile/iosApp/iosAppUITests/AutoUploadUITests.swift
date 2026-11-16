@@ -17,7 +17,7 @@ final class AutoUploadUITests: XCTestCase {
         app.buttons["Photo Library"].tap()
         // The test installs the app afresh, which takes back the access to photos.
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let allow = springboard.buttons["Allow Full Access"]
+        let allow = springboard.buttons["Allow Full Access"].firstMatch
         if allow.waitForExistence(timeout: 5) {
             allow.tap()
         }

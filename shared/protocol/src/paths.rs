@@ -11,6 +11,7 @@ pub const AUTH: &str = "/api/v1/auth";
 pub const LOGIN: &str = "/api/v1/auth/login";
 pub const REFRESH: &str = "/api/v1/auth/refresh";
 pub const LOGOUT: &str = "/api/v1/auth/logout";
+pub const DEVICE_SESSIONS: &str = "/api/v1/auth/device-sessions";
 pub const PROVIDERS: &str = "/api/v1/auth/providers";
 pub const OIDC_START: &str = "/api/v1/auth/oidc/start";
 pub const OIDC_CALLBACK: &str = "/api/v1/auth/oidc/callback";

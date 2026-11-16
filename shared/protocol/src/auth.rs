@@ -34,6 +34,17 @@ pub struct RefreshRequest {
     pub cookie: bool,
 }
 
+/// `POST /auth/device-sessions`: the app's session starts a second session on its device, for
+/// one of the app's extensions, which keeps its own refresh token.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeviceSessionRequest {
+    /// Which extension it is for: one of [`DEVICE_SESSION_LABELS`].
+    pub label: String,
+}
+
+/// The labels of the extra sessions a device may hold.
+pub const DEVICE_SESSION_LABELS: [&str; 2] = ["files", "share"];
+
 /// Access and refresh token returned on login and refresh.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenPair {

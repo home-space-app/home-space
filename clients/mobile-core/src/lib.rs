@@ -465,6 +465,18 @@ impl CoreClient {
         Ok(self.signed_in(me))
     }
 
+    /// Starts a session of its own on this device for one of the app's extensions, `label`
+    /// being `files` or `share`, and returns its refresh token for the extension to
+    /// [`restore`](Self::restore) in a client of its own. This client's session carries on;
+    /// starting another with the same label ends the earlier one, and signing this session
+    /// out ends them all.
+    pub async fn start_device_session(&self, label: String) -> Result<String, CoreError> {
+        let inner = self.inner.clone();
+        off_ui_thread(async move { inner.start_device_session(&label).await })
+            .await
+            .map_err(Into::into)
+    }
+
     /// Lists a folder, or Home when `parent_id` is `None`, folders first then by name. Home
     /// leaves out Lost & Found while it is empty.
     pub async fn list(&self, parent_id: Option<String>) -> Result<Vec<Entry>, CoreError> {

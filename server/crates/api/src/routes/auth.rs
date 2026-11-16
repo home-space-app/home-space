@@ -9,8 +9,9 @@ use axum::{
     routing::{get, post},
 };
 use protocol::{
-    ChangePasswordRequest, LoginRequest, Me, OidcCallbackQuery, OidcExchangeRequest,
-    OidcStartQuery, Providers, RefreshRequest, TicketRequest, TicketResponse, TokenPair,
+    ChangePasswordRequest, DeviceSessionRequest, LoginRequest, Me, OidcCallbackQuery,
+    OidcExchangeRequest, OidcStartQuery, Providers, RefreshRequest, TicketRequest, TicketResponse,
+    TokenPair,
 };
 
 use crate::{
@@ -28,6 +29,7 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/login", post(login))
         .route("/auth/refresh", post(refresh))
         .route("/auth/logout", post(logout))
+        .route("/auth/device-sessions", post(device_session))
         .route("/me", get(me))
         .route("/me/password", post(change_password))
         .route("/tickets", post(ticket))
@@ -154,6 +156,20 @@ async fn logout(
         Some(browser) => (StatusCode::NO_CONTENT, [(SET_COOKIE, browser.forget())]).into_response(),
         None => StatusCode::NO_CONTENT.into_response(),
     })
+}
+
+/// Starts a session for an extension of the calling app on the app's device. The extension
+/// keeps the refresh token itself, so it is always in the body and never in a cookie.
+async fn device_session(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(request): Json<DeviceSessionRequest>,
+) -> Result<Json<TokenPair>, ApiError> {
+    let pair = state
+        .auth
+        .start_device_session(user.id, user.session_id, &request.label)
+        .await?;
+    Ok(Json(pair))
 }
 
 /// The browser behind a request that asks for the cookie or relies on it; `None` for an app.

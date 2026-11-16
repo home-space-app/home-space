@@ -12,8 +12,8 @@ use uuid::Uuid;
 
 use db::{Db, DbError, LiveSession, NewDevice, OidcPending, ShareLink, User, UserId};
 use protocol::{
-    DeviceInfo, NodeId, OidcProvider, Providers, ShareAccess, TicketRequest, TicketResponse,
-    TokenPair,
+    DEVICE_SESSION_LABELS, DeviceInfo, NodeId, OidcProvider, Providers, ShareAccess, TicketRequest,
+    TicketResponse, TokenPair,
 };
 
 use crate::{
@@ -425,7 +425,44 @@ impl AuthService {
         self.pair(user_id, session_id, String::new())
     }
 
-    /// Ends the session of `refresh_token`; unknown tokens are ignored.
+    /// Starts a session labelled `label` for an extension of the app on the device of the
+    /// app's own session `parent`, ending any earlier one with that label `parent` started. The pair's
+    /// refresh token belongs to the extension; the app's own session carries on unchanged.
+    pub async fn start_device_session(
+        &self,
+        user_id: UserId,
+        parent: Uuid,
+        label: &str,
+    ) -> Result<TokenPair, AuthError> {
+        if !DEVICE_SESSION_LABELS.contains(&label) {
+            return Err(AuthError::InvalidInput("unknown device session label"));
+        }
+        self.require_may_sign_in(user_id).await?;
+        let session_id = Uuid::now_v7();
+        let refresh_token = new_refresh_token();
+        let started = self
+            .db
+            .start_device_session(
+                parent,
+                user_id,
+                label,
+                session_id,
+                &hash_refresh_token(&refresh_token),
+                self.refresh_expiry(),
+            )
+            .await?;
+        if started.is_none() {
+            return Err(AuthError::InvalidInput(
+                "only an app session that names its device can start another",
+            ));
+        }
+        // The earlier session with this label may have had a websocket open.
+        self.sessions_ended(user_id);
+        self.pair(user_id, session_id, refresh_token)
+    }
+
+    /// Ends the session of `refresh_token`, and with the app's own session the sessions of
+    /// extensions it started; unknown tokens are ignored.
     pub async fn logout(&self, refresh_token: &str) -> Result<(), AuthError> {
         if let Some(stored) = self
             .db
