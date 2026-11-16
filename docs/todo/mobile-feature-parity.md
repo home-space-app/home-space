@@ -3,10 +3,10 @@
 ## Problem
 
 Desktop and web have most features. Android and iOS now also search, create folders, upload
-picked files, share, and send to devices, but they cannot restore from the trash. iOS has no share
-extension or File Provider yet. Both need a session of their own per process; the server now
-starts those (`/auth/device-sessions`), and the iOS app keeps one ready for the share extension in
-a Keychain group and App Group it shares with its extensions. Status
+picked files, share, and send to devices, but they cannot restore from the trash. iOS has a share
+extension but no File Provider yet. Each extension signs in with a session of its own, which the
+server starts for the app (`/auth/device-sessions`) and the app keeps in a Keychain group and App
+Group it shares with its extensions. Status
 per client, as of 2026-11-16. Desktop, web and Android were checked in source; iOS was also run
 against a dev server (`iosAppUITests/ParityUITests`).
 
@@ -36,7 +36,7 @@ against a dev server (`iosAppUITests/ParityUITests`).
 | Receive transfers (open link, save, download, decline) | Yes | Yes | Yes | Yes |
 | Notifications for received transfers | Partial: in the app only | Partial: in the app only | Yes | Yes: local, while open or in background refresh |
 | Built-in text and image viewers | Yes | Yes | Yes | Yes |
-| Share files from other apps into Home Space | n/a | n/a | Yes | No: needs a share extension |
+| Share files from other apps into Home Space | n/a | n/a | Yes | Yes (`ShareExtension`) |
 | Home Space in the system file picker | n/a | n/a | Yes | No: needs a File Provider extension |
 | Upload files | Yes | Yes | Yes, not whole folders | Yes, not whole folders |
 | Drag and drop to upload | No | Yes | n/a | n/a |

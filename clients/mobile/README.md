@@ -236,8 +236,19 @@ On iOS (`TransferCenter.swift`, `SendSheet.swift`, `Notifications.swift`):
 - Notifications are local: from the lists the app loads while open, and from `BackgroundSync` when
   "Sync in background" is on. The permission is asked the first time Transfers is opened or after
   the first send. Tapping one opens Transfers, and **Open** on a link opens its confirmation.
-- There is no share extension yet: that needs a session of its own per process, see
-  [`docs/todo/mobile-file-provider.md`](../../docs/todo/mobile-file-provider.md).
+- **Share sheet**: the `ShareExtension` target takes up to 20 files, photos or videos, one web link,
+  or text, and offers **Save to Home Space** (a folder picker) and **Send to Device** (the device
+  picker). Text becomes a file the way Android names it: a `.uris` list when it is only links.
+  - It signs in with a session of its own (`session.share` in the shared Keychain group), which
+    the app starts after signing in and again when it is 25 days old (`ExtensionSessions.swift`).
+    With none, or one the server refused, the sheet asks the user to open the app, which then
+    starts a new one.
+  - Unlike Android, the extension uploads or sends the files itself while its sheet stays open,
+    showing progress; it can't hand them to the app's queue. Its own upload queue and offline
+    folder are in the extension's container, not the App Group's, since a database held open in a
+    shared container gets a suspended process killed. If iOS ends the extension early, what was
+    left of a save is dropped from its queue the next time it opens. A send is cancelled when iOS
+    warns before ending it; otherwise it stays `uploading` until cancelled from Sent or it expires.
 
 ## Auto-upload
 

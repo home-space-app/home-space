@@ -13,13 +13,6 @@ struct SendSheet: View {
     @State private var sent = false
     @State private var error: String?
 
-    private var own: [SendTarget] { targets?.filter(\.own) ?? [] }
-    private var others: [SendTarget] { targets?.filter { !$0.own } ?? [] }
-    /// Other users' devices, by user.
-    private var otherUsers: [(String, [SendTarget])] {
-        Dictionary(grouping: others, by: \.username).sorted { $0.key < $1.key }
-    }
-
     private var summary: String? {
         guard case .files(let files, _) = payload else { return nil }
         let bytes = files.reduce(UInt64(0)) { total, file in
@@ -32,58 +25,9 @@ struct SendSheet: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                if let error {
-                    Text(error).foregroundStyle(.red)
-                }
-                if let targets {
-                    if targets.isEmpty {
-                        ContentUnavailableView(
-                            "No Devices",
-                            systemImage: "iphone.slash",
-                            description: Text("Sign in to Home Space on another device to send files to it.")
-                        )
-                    } else {
-                        Section {
-                            ForEach(own, id: \.deviceId) { row($0) }
-                            if own.isEmpty {
-                                Text("You have no other devices.").foregroundStyle(.secondary)
-                            }
-                        } header: {
-                            Text("Your Devices")
-                        } footer: {
-                            if let summary {
-                                Text(summary)
-                            }
-                        }
-                        if !others.isEmpty {
-                            Section {
-                                Toggle("Another User’s Device", isOn: $showOthers.animation())
-                            }
-                            if showOthers {
-                                ForEach(otherUsers, id: \.0) { user, devices in
-                                    Section(user) {
-                                        ForEach(devices, id: \.deviceId) { row($0) }
-                                    }
-                                }
-                            }
-                        }
-                        if let chosen {
-                            Section {
-                            } footer: {
-                                Text(chosen.note)
-                            }
-                        }
-                    }
-                } else {
-                    HStack {
-                        Spacer()
-                        ProgressView()
-                        Spacer()
-                    }
-                    .listRowBackground(Color.clear)
-                }
-            }
+            DeviceList(
+                targets: targets, chosen: $chosen, showOthers: $showOthers, error: error, summary: summary
+            )
             .navigationTitle(payload.count == 1 ? "Send to Device" : "Send \(payload.count) Items")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -110,42 +54,12 @@ struct SendSheet: View {
         }
     }
 
-    private func row(_ target: SendTarget) -> some View {
-        Button {
-            chosen = target
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: platformSymbol(target.platform))
-                    .frame(width: 28)
-                    .foregroundStyle(Color.accentColor)
-                    .accessibilityLabel(platformName(target.platform))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(target.name).foregroundStyle(.primary)
-                    Text(target.status)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                if chosen?.deviceId == target.deviceId {
-                    Image(systemName: "checkmark")
-                        .foregroundStyle(Color.accentColor)
-                        .accessibilityLabel("Selected")
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(chosen?.deviceId == target.deviceId ? .isSelected : [])
-    }
-
     private func load() async {
         guard let center = model.transfers else { return }
         do {
             let found = try await center.targets()
             targets = found
-            if chosen == nil || !found.contains(where: { $0.deviceId == chosen?.deviceId }) {
-                chosen = found.first(where: \.preferred) ?? found.first(where: \.own)
-            }
+            chosen = DeviceList.choice(in: found, keeping: chosen)
             if let chosen, !chosen.own {
                 showOthers = true
             }

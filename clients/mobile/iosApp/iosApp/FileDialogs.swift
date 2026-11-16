@@ -271,18 +271,12 @@ private struct DeleteSheet: View {
 }
 
 private struct MoveSheet: View {
-    /// A folder opened on the way down from Home.
-    private struct Crumb: Equatable {
-        let id: String
-        let name: String
-    }
-
     let entries: [Entry]
     let model: SessionModel
     let client: CoreClient
     let onDone: () -> Void
     @Environment(\.dismiss) private var dismiss
-    @State private var trail: [Crumb] = []
+    @State private var trail: [FolderCrumb] = []
     @State private var folders: [Entry]?
     @State private var conflicts: MoveResult?
     @State private var saving = false
@@ -295,10 +289,6 @@ private struct MoveSheet: View {
             return "Move “\(entry.name)”"
         }
         return "Move \(entries.count) items"
-    }
-
-    private var location: String {
-        trail.isEmpty ? "Home" : "/" + trail.map(\.name).joined(separator: "/")
     }
 
     var body: some View {
@@ -316,60 +306,17 @@ private struct MoveSheet: View {
     }
 
     private var picker: some View {
-        List {
-            Section("To \(location)") {
-                if !trail.isEmpty {
-                    Button { trail.removeLast() } label: {
-                        pickerRow {
-                            Image(systemName: "arrow.up").frame(width: 26, height: 26)
-                            Text("Up")
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .fileRow()
+        FolderPicker(heading: "To \(folderLocation(trail))", trail: $trail, folders: folders, error: error)
+            .navigationTitle(title)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
                 }
-                ForEach(folders ?? [], id: \.id) { folder in
-                    Button {
-                        trail.append(Crumb(id: folder.id, name: folder.name))
-                    } label: {
-                        pickerRow {
-                            EntryIconView(icon: .folder, state: nil)
-                            Text(folder.name).lineLimit(1)
-                            Spacer()
-                            // It opens the folder, as a row in the browser does.
-                            Image(systemName: "chevron.right")
-                                .font(.footnote.weight(.semibold))
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .fileRow()
-                }
-                if folders?.isEmpty == true {
-                    Text("No subfolders").foregroundStyle(.secondary).fileRow()
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(saving ? "Working…" : "Move here") { move(.abort) }
+                        .disabled(saving || alreadyIn(entries: entries, destination: destination))
                 }
             }
-            if let error {
-                Text(error).foregroundStyle(.red).fileRow()
-            }
-        }
-        .fileList()
-        .navigationTitle(title)
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel") { dismiss() }
-            }
-            ToolbarItem(placement: .confirmationAction) {
-                Button(saving ? "Working…" : "Move here") { move(.abort) }
-                    .disabled(saving || alreadyIn(entries: entries, destination: destination))
-            }
-        }
-    }
-
-    private func pickerRow(@ViewBuilder content: () -> some View) -> some View {
-        HStack(spacing: 12, content: content)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
     }
 
     /// Files already at the destination; cancelling goes back to choosing another folder.

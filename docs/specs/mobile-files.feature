@@ -184,3 +184,30 @@ Feature: Search, new folders and uploads on mobile
       Given nothing to transfer and nothing set up to sync
       When alice opens Transfers
       Then it says there are no transfers
+
+  # --- Sharing from other apps -------------------------------------------------------------
+
+  Rule: Another app's share sheet saves to a folder or sends to a device
+
+    Scenario: Saving a shared file
+      When alice shares a photo from another app to Home Space
+      And picks Save and the folder "Pictures"
+      Then the photo is uploaded into "Pictures"
+
+    Scenario: Sending a shared file
+      When alice shares a photo from another app to Home Space
+      And picks Send and her laptop
+      Then a transfer of the photo goes to her laptop
+
+    Scenario: Shared text goes as a file named after the phone
+      When alice shares the text "remember the milk" from another app and saves it
+      Then a file named after the phone and the time holds the text
+
+    Scenario: Shared links go as a list of links
+      When alice shares a web page's link from a browser and saves it
+      Then a ".uris" file named after the phone and the time holds the link
+
+    Scenario: Without a session for the share sheet
+      Given the app has no session ready for its share sheet, as on iOS before the app is opened
+      When alice shares a file to Home Space
+      Then the share sheet asks her to open Home Space and sign in
