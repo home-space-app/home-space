@@ -17,171 +17,27 @@ extension View {
     }
 }
 
+/// A folder pushed in the Files tab; a `nil` id is Home.
+struct FolderRoute: Hashable {
+    let id: String?
+    let title: String
+}
+
 /// Folder browsing through the Rust client (`clients/mobile-core`).
 struct BrowseView: View {
     let model: SessionModel
     let client: CoreClient
     let user: SignedInUser
+    @State private var path: [FolderRoute] = []
 
     var body: some View {
-        NavigationStack {
-            FolderView(model: model, client: client, user: user, folderId: nil, title: "Home")
-        }
-        .background(
-            QuickLookPresenter(
-                url: Binding(get: { model.preview }, set: { model.preview = $0 }),
-                onChange: { model.previewEnded() }
-            )
-        )
-        .alert(
-            "Remove “\(model.removalWarning?.entry.name ?? "")” from this iPhone?",
-            isPresented: Binding(
-                get: { model.removalWarning != nil },
-                set: { if !$0 { model.removalWarning = nil } }
-            ),
-            presenting: model.removalWarning
-        ) { warning in
-            Button("Remove", role: .destructive) {
-                model.removeOfflineCopy(client: client, entry: warning.entry, confirmed: true)
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: { warning in
-            Text(unsentEditsMessage(warning.names))
-        }
-        .alert(
-            "Sign out?",
-            isPresented: Binding(
-                get: { model.signOutWarning != nil },
-                set: { if !$0 { model.signOutWarning = nil } }
-            ),
-            presenting: model.signOutWarning
-        ) { _ in
-            Button("Sign Out", role: .destructive) { model.signOut() }
-            Button("Cancel", role: .cancel) {}
-        } message: { names in
-            Text(unsentEditsMessage(names))
-        }
-        .sheet(
-            item: Binding(
-                get: { model.pendingExport },
-                set: { if $0 == nil { model.exportFinished() } }
-            )
-        ) { export in
-            ExportPicker(url: export.url) { model.exportFinished() }
-                .ignoresSafeArea()
-        }
-        .alert(
-            "Something went wrong",
-            isPresented: Binding(
-                get: { model.notice != nil },
-                set: { if !$0 { model.notice = nil } }
-            ),
-            actions: { Button("OK") {} },
-            message: { Text(model.notice ?? "") }
-        )
-    }
-}
-
-private func unsentEditsMessage(_ names: [String]) -> String {
-    let shown = names.prefix(3).joined(separator: ", ")
-    let more = names.count > 3 ? " and \(names.count - 3) more" : ""
-    return "Edits to \(shown)\(more) aren't on the server yet and will be lost."
-}
-
-/// Shows a file in the system's Quick Look, whose markup tools save into the file. The sync then
-/// sends the change to the server. Presented by UIKit, because SwiftUI's `quickLookPreview` offers
-/// no way to allow editing.
-private struct QuickLookPresenter: UIViewControllerRepresentable {
-    @Binding var url: URL?
-    let onChange: () -> Void
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    func makeUIViewController(context: Context) -> UIViewController { UIViewController() }
-
-    func updateUIViewController(_ host: UIViewController, context: Context) {
-        let coordinator = context.coordinator
-        coordinator.onDismiss = {
-            url = nil
-            onChange()
-        }
-        coordinator.onChange = onChange
-        guard let url else {
-            coordinator.preview?.dismiss(animated: true)
-            coordinator.preview = nil
-            return
-        }
-        guard coordinator.url != url || coordinator.preview == nil else { return }
-        coordinator.url = url
-        let preview = QLPreviewController()
-        preview.dataSource = coordinator
-        preview.delegate = coordinator
-        coordinator.preview = preview
-        // Not while SwiftUI is updating the view.
-        DispatchQueue.main.async { host.present(preview, animated: true) }
-    }
-
-    final class Coordinator: NSObject, QLPreviewControllerDataSource, QLPreviewControllerDelegate {
-        var url: URL?
-        var preview: QLPreviewController?
-        var onDismiss: () -> Void = {}
-        var onChange: () -> Void = {}
-
-        func numberOfPreviewItems(in controller: QLPreviewController) -> Int { url == nil ? 0 : 1 }
-
-        func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem {
-            (url ?? URL(fileURLWithPath: "/")) as NSURL
-        }
-
-        func previewController(
-            _ controller: QLPreviewController,
-            editingModeFor previewItem: QLPreviewItem
-        ) -> QLPreviewItemEditingMode {
-            .updateContents
-        }
-
-        func previewController(_ controller: QLPreviewController, didUpdateContentsOf previewItem: QLPreviewItem) {
-            onChange()
-        }
-
-        func previewControllerDidDismiss(_ controller: QLPreviewController) {
-            preview = nil
-            url = nil
-            onDismiss()
-        }
-    }
-}
-
-/// The screens the header's menu leads to.
-private enum AccountPage: String, Identifiable {
-    case profile = "Profile"
-    case transfers = "Transfers"
-    case settings = "Settings"
-
-    var id: Self { self }
-}
-
-/// The header's menu: who is signed in, and where to go from here.
-private struct AccountMenu: View {
-    let username: String
-    let onOpen: (AccountPage) -> Void
-    let onSignOut: () -> Void
-
-    var body: some View {
-        Menu("Menu", systemImage: "ellipsis.circle") {
-            Section(username) {
-                Button(AccountPage.profile.rawValue, systemImage: "person") { onOpen(.profile) }
-                Button(AccountPage.transfers.rawValue, systemImage: "arrow.up.arrow.down") { onOpen(.transfers) }
-                Button(AccountPage.settings.rawValue, systemImage: "gearshape") { onOpen(.settings) }
-            }
-            Section {
-                Button(
-                    "Sign out",
-                    systemImage: "rectangle.portrait.and.arrow.right",
-                    role: .destructive,
-                    action: onSignOut
-                )
-            }
+        NavigationStack(path: $path) {
+            FolderView(model: model, client: client, user: user, folderId: nil, title: "Home", path: $path)
+                .navigationDestination(for: FolderRoute.self) { route in
+                    FolderView(
+                        model: model, client: client, user: user, folderId: route.id, title: route.title,
+                        path: $path)
+                }
         }
     }
 }
@@ -192,20 +48,25 @@ private struct FolderView: View {
     let user: SignedInUser
     let folderId: String?
     let title: String
+    @Binding var path: [FolderRoute]
     @State private var entries: [Entry] = []
     @State private var error: String?
     @State private var selection = Set<String>()
     @State private var editMode = EditMode.inactive
     @State private var action: FileAction?
-    @State private var page: AccountPage?
     @State private var query = ""
     @State private var results: [SearchResult] = []
     /// Whether what `results` answers is the query typed now, so "no results" isn't shown early.
     @State private var answered = false
-    @State private var shownFolder: ShownFolder?
     @State private var pickingFiles = false
     @State private var pickingPhotos = false
     @State private var photos: [PhotosPickerItem] = []
+    @State private var pickingSendFiles = false
+    @State private var pickingSendPhotos = false
+    @State private var sendPhotos: [PhotosPickerItem] = []
+    /// Files picked to send, waiting for the picker to close before the device sheet opens.
+    @State private var pendingSend: SendPayload?
+    @State private var preparingSend = false
 
     private var searchText: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var searching: Bool { !searchText.isEmpty }
@@ -223,10 +84,7 @@ private struct FolderView: View {
                         .contextMenu {
                             if result.entry.kind == .file {
                                 Button("Show in Folder", systemImage: "folder") {
-                                    shownFolder = ShownFolder(
-                                        id: result.entry.parentId,
-                                        title: result.location.components(separatedBy: " / ").last ?? "Home"
-                                    )
+                                    showInFolder(result.entry)
                                 }
                             }
                             rowActions(result.entry)
@@ -237,7 +95,7 @@ private struct FolderView: View {
             } else {
                 if !model.uploads.isEmpty {
                     Button {
-                        page = .transfers
+                        AppRouter.shared.tab = .transfers
                     } label: {
                         UploadsSummaryRow(uploads: model.uploads)
                     }
@@ -294,40 +152,21 @@ private struct FolderView: View {
                 }
                 .disabled(entries.isEmpty || searching)
             }
-            if !selecting {
-                ToolbarItem(placement: .topBarTrailing) {
-                    AccountMenu(
-                        username: user.username,
-                        onOpen: { page = $0 },
-                        onSignOut: { model.requestSignOut(client: client) }
-                    )
-                }
+            if preparingSend {
+                ToolbarItem(placement: .topBarLeading) { ProgressView() }
             }
             if selecting && !chosen.isEmpty {
                 ToolbarItemGroup(placement: .bottomBar) { selectionActions }
             }
         }
         .toolbar(selecting && !chosen.isEmpty ? .visible : .hidden, for: .bottomBar)
-        .navigationDestination(item: $page) { page in
-            switch page {
-            case .profile:
-                Color.clear.navigationTitle(page.rawValue)
-            case .transfers:
-                TransfersView(model: model, client: client)
-            case .settings:
-                SettingsView(model: model, client: client)
-            }
-        }
         .sheet(item: $action) { current in
-            FileDialog(action: current, model: model, client: client) {
+            FileDialog(action: current, model: model, client: client, owner: user.username) {
                 action = nil
                 selection = []
                 editMode = .inactive
                 model.reload()
             }
-        }
-        .navigationDestination(item: $shownFolder) { folder in
-            FolderView(model: model, client: client, user: user, folderId: folder.id, title: folder.title)
         }
         .sheet(isPresented: $pickingFiles) {
             ImportPicker { files in
@@ -345,6 +184,36 @@ private struct FolderView: View {
             guard !photos.isEmpty else { return }
             model.uploadPhotos(photos: photos, parentId: folderId, folderName: title)
             photos = []
+        }
+        .sheet(
+            isPresented: $pickingSendFiles,
+            onDismiss: {
+                if let pendingSend {
+                    action = .send(pendingSend)
+                    self.pendingSend = nil
+                }
+            }
+        ) {
+            ImportPicker { files in
+                do {
+                    pendingSend = try TransferCenter.prepare(files: files)
+                } catch {
+                    model.notice = fileMessage(for: error)
+                }
+            }
+            .ignoresSafeArea()
+        }
+        .photosPicker(
+            isPresented: $pickingSendPhotos,
+            selection: $sendPhotos,
+            matching: .any(of: [.images, .videos]),
+            preferredItemEncoding: .current
+        )
+        .onChange(of: sendPhotos) {
+            guard !sendPhotos.isEmpty else { return }
+            let picked = sendPhotos
+            sendPhotos = []
+            Task { await prepareSend(picked) }
         }
         .task(id: model.reloadKey) { await load() }
         // Changes from other devices, when they touch this folder.
@@ -370,6 +239,10 @@ private struct FolderView: View {
             Button("New Folder", systemImage: "folder.badge.plus") { action = .newFolder(folderId) }
             Button("Upload Files", systemImage: "doc.badge.plus") { pickingFiles = true }
             Button("Upload Photos", systemImage: "photo.badge.plus") { pickingPhotos = true }
+            Section {
+                Button("Send Files to a Device", systemImage: "paperplane") { pickingSendFiles = true }
+                Button("Send Photos to a Device", systemImage: "photo.on.rectangle") { pickingSendPhotos = true }
+            }
         }
     }
 
@@ -377,15 +250,7 @@ private struct FolderView: View {
     private func row(_ entry: Entry, location: String? = nil) -> some View {
         switch entry.kind {
         case .folder:
-            NavigationLink {
-                FolderView(
-                    model: model,
-                    client: client,
-                    user: user,
-                    folderId: entry.id,
-                    title: entry.name
-                )
-            } label: {
+            NavigationLink(value: FolderRoute(id: entry.id, title: entry.name)) {
                 rowLabel(entry, location: location)
             }
         case .file:
@@ -430,9 +295,18 @@ private struct FolderView: View {
             }
         }
         if entry.kind == .file && !downloading {
+            if viewerFor(mime: entry.mime, size: entry.size) != nil {
+                Button("Open in Quick Look", systemImage: "eye") {
+                    model.openInQuickLook(client: client, entry: entry)
+                }
+            }
             Button("Save to…", systemImage: "square.and.arrow.down") {
                 model.saveFile(client: client, entry: entry)
             }
+        }
+        Section {
+            Button("Share…", systemImage: "person.crop.circle.badge.plus") { action = .share([entry]) }
+            Button("Send to Device…", systemImage: "paperplane") { action = .send(.entries([entry])) }
         }
         Button("Details", systemImage: "info.circle") { action = .details(entry) }
         Button("Rename", systemImage: "pencil") { action = .rename(entry) }
@@ -464,6 +338,50 @@ private struct FolderView: View {
         if !chosen.contains(where: { $0.id == user.lostAndFoundId }) {
             Spacer()
             Button("Delete", role: .destructive) { action = .delete(chosen) }
+        }
+        Spacer()
+        Menu("More", systemImage: "ellipsis.circle") {
+            Button("Share…", systemImage: "person.crop.circle.badge.plus") { action = .share(chosen) }
+            Button("Send to Device…", systemImage: "paperplane") { action = .send(.entries(chosen)) }
+        }
+    }
+
+    /// Opens the folder a search result is in, with the folders above it to go back through.
+    private func showInFolder(_ entry: Entry) {
+        Task {
+            do {
+                let above = try await client.ancestors(id: entry.id)
+                query = ""
+                path = above.filter { $0.kind == .folder }.map { FolderRoute(id: $0.id, title: $0.name) }
+            } catch CoreError.Unauthorized {
+                model.sessionEnded()
+            } catch {
+                model.notice = fileMessage(for: error)
+            }
+        }
+    }
+
+    /// Copies picked photos out of the library, then asks which device they go to.
+    private func prepareSend(_ picked: [PhotosPickerItem]) async {
+        preparingSend = true
+        defer { preparingSend = false }
+        do {
+            let folder = try TransferCenter.sendFolder()
+            var files: [SendFile] = []
+            for item in picked {
+                guard let photo = try await item.loadTransferable(type: PickedPhoto.self) else { continue }
+                let target = freeURL(folder.appendingPathComponent(photo.url.lastPathComponent))
+                try FileManager.default.moveItem(at: photo.url, to: target)
+                try? FileManager.default.removeItem(at: photo.url.deletingLastPathComponent())
+                files.append(SendFile(name: target.lastPathComponent, path: target.path, mime: TransferCenter.mime(of: target)))
+            }
+            guard !files.isEmpty else {
+                try? FileManager.default.removeItem(at: folder)
+                return
+            }
+            action = .send(.files(files, folder: folder))
+        } catch {
+            model.notice = "Could not read the photos: \(fileMessage(for: error))"
         }
     }
 
@@ -511,12 +429,6 @@ private struct FolderView: View {
 private struct SearchRequest: Equatable {
     let text: String
     let reloadKey: Int
-}
-
-/// The folder of a search result, to show it.
-private struct ShownFolder: Identifiable, Hashable {
-    let id: String?
-    let title: String
 }
 
 /// A file on its way up, shown in every folder so that a failure can't go unseen.

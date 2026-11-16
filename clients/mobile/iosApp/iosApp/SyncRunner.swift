@@ -193,6 +193,10 @@ enum BackgroundSync {
         }
         let summary = try? await auto.runPass(retryNow: false)
         try? await client.offlinePass()
+        // There is no push, so this is how transfers sent while the app was away get noticed.
+        if let lists = try? await client.transfers() {
+            await IncomingNotices.update(lists.received, quiet: false)
+        }
         // Nothing watches the network once this task ends. An open app allows it again.
         try? await client.offlineAllow(allowed: false)
         task.setTaskCompleted(success: summary != nil)

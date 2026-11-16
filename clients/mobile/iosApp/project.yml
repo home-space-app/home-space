@@ -53,6 +53,10 @@ targets:
         # Shown when the app first connects to a server on the LAN (devices only).
         NSLocalNetworkUsageDescription: Home Space connects to your Home Space server on the local network.
         NSPhotoLibraryUsageDescription: Home Space uploads the photos and videos you choose to your server.
+        # Files received from other devices are kept in Documents/Received, which Files shows under
+        # On My iPhone › Home Space. Everything private stays in Application Support.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
         # Sync in background; the identifiers are in SyncRunner.swift.
         UIBackgroundModes:
           - fetch

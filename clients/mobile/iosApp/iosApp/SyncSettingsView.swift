@@ -3,15 +3,40 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-/// The Settings screen, which only leads to Sync so far.
+/// The Settings tab: the account, sync, and signing out.
 struct SettingsView: View {
     let model: SessionModel
     let client: CoreClient
+    let user: SignedInUser
 
     var body: some View {
         Form {
-            NavigationLink("Sync") {
-                SyncSettingsView(model: model, client: client)
+            Section {
+                NavigationLink {
+                    ProfileView(model: model, client: client, user: user)
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "person.crop.circle.fill")
+                            .font(.largeTitle)
+                            .foregroundStyle(Color.accentColor)
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(user.username).font(.headline)
+                            Text("Profile and Devices")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            Section {
+                NavigationLink("Sync") {
+                    SyncSettingsView(model: model, client: client)
+                }
+            }
+            Section {
+                Button("Sign Out", role: .destructive) { model.requestSignOut(client: client) }
             }
         }
         .navigationTitle("Settings")
@@ -294,7 +319,7 @@ struct SyncSettingsView: View {
 }
 
 /// Chooses a folder on the server; `folder` is `nil` for Home.
-private struct ServerFolderSheet: View {
+struct ServerFolderSheet: View {
     private struct Crumb: Equatable {
         let id: String
         let name: String

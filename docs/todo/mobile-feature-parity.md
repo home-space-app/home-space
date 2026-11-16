@@ -2,9 +2,11 @@
 
 ## Problem
 
-Desktop and web have most features. Android and iOS now also search, create folders and upload picked
-files, but they cannot restore from the trash or receive live updates. Status
-per client, as of 2026-11-06 (checked in source, not by running the apps):
+Desktop and web have most features. Android and iOS now also search, create folders, upload
+picked files, share, and send to devices, but they cannot restore from the trash. iOS has no share
+extension or File Provider yet, since both need a session of their own per process. Status
+per client, as of 2026-11-16. Desktop, web and Android were checked in source; iOS was also run
+against a dev server (`iosAppUITests/ParityUITests`).
 
 | Feature | Desktop | Web | Android | iOS |
 | --- | --- | --- | --- | --- |
@@ -13,20 +15,27 @@ per client, as of 2026-11-06 (checked in source, not by running the apps):
 | Stay signed in between launches | Yes | Yes | Yes | Yes |
 | Sign out | Yes | Yes | Yes | Yes |
 | Register this device | Yes | Yes | Yes | Yes |
-| Device list (rename, sign out devices) | Yes | Yes | No | No |
+| Device list (rename, sign out devices) | Yes | Yes | Partial: list only | Partial: list only |
 | Browse folders | Yes | Yes | Yes | Yes |
 | Breadcrumb or parent navigation | Yes | Yes | Yes | Partial: back navigation only |
 | Sort by name, size and date | Yes | Yes | Partial: folders first, then name | Partial: folders first, then name |
 | Select several items | Yes | Yes | Yes | Yes |
 | Details panel (created, edited on, device) | Yes | Yes | Yes | Yes |
-| Live updates while browsing | Yes | Yes | No | No |
+| Live updates while browsing | Yes | Yes | Yes | Yes |
 | Create folder | Yes | Yes | Yes | Yes |
 | Rename | Yes | Yes | Yes | Yes |
 | Move, with conflict choice | Yes | Yes | Yes | Yes |
 | Delete to bin | Yes | Yes | Yes | Yes |
 | Trash: list and restore | Yes | Yes | No | No |
 | Search | Yes | Yes | Yes | Yes |
-| Share with links or users | No | No | No | No |
+| Share with links or users | Yes | Yes | Yes | Yes |
+| Shared with me | Yes | Yes | Yes | Yes |
+| Send to device | Yes | Yes | Yes | Yes |
+| Receive transfers (open link, save, download, decline) | Yes | Yes | Yes | Yes |
+| Notifications for received transfers | Partial: in the app only | Partial: in the app only | Yes | Yes: local, while open or in background refresh |
+| Built-in text and image viewers | Yes | Yes | Yes | Yes |
+| Share files from other apps into Home Space | n/a | n/a | Yes | No: needs a share extension |
+| Home Space in the system file picker | n/a | n/a | Yes | No: needs a File Provider extension |
 | Upload files | Yes | Yes | Yes, not whole folders | Yes, not whole folders |
 | Drag and drop to upload | No | Yes | n/a | n/a |
 | Resumable uploads | Yes | Yes | Yes | Yes |

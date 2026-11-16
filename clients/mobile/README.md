@@ -189,17 +189,18 @@ The task doesn't run in the simulator (`BGTaskSchedulerErrorDomain` 1), so it ne
 
 ## Transfers
 
-**Transfers** (a navigation bar tab on Android, in the header's menu on iOS) has each picked file
+**Transfers** (a tab on both platforms, with a badge for failed uploads and transfers waiting for
+the user) has each picked file
 with its progress, Retry and Cancel; each
 auto-upload source, with the file on its way and how far along it is; and how offline copies stand.
 Downloads aren't listed, since they show on their rows and run only while the app is open.
 
-### Send to device (Android)
+### Send to device
 
-On Android, **Transfers** also lists what was sent to the user's devices (**Received**) and what the
-user sent (**Sent**); see [`docs/send-to-device.md`](../../docs/send-to-device.md). iOS does not
-have this yet. `mobile-core/src/transfers.rs` holds the calls, with the same words as the desktop
-and web clients.
+**Transfers** also lists what was sent to the user's devices (**Received**) and what the user sent
+(**Sent**); see [`docs/send-to-device.md`](../../docs/send-to-device.md).
+`mobile-core/src/transfers.rs` holds the calls, with the same words as the desktop and web clients.
+The Android details come first, then how iOS differs.
 
 - **Receiving**: a waiting transfer's menu offers **Save** (the server moves it into a folder of
   the user's tree), **Download** (to `Download/Home Space` on the phone, through MediaStore; each
@@ -220,6 +221,23 @@ and web clients.
   sent to this phone is shown then, after each reconnect, and from background sync when that is on.
   There is no push service, so with the app closed and background sync off nothing is shown until
   the app is next opened.
+
+On iOS (`TransferCenter.swift`, `SendSheet.swift`, `Notifications.swift`):
+
+- **Receiving**: tapping a waiting transfer offers **Open** (for links, after a confirmation),
+  **Save to My Files…**, **Download to iPhone** and **Decline**. A download goes to
+  `Documents/Received`, which Files shows under On My iPhone › Home Space (`UIFileSharingEnabled`
+  and `LSSupportsOpeningDocumentsInPlace`). Everything private stays in Application Support.
+- **Sending**: the same menu entries as Android, plus **Add > Send Files/Photos to a Device**. Picked
+  files are copied into a folder of their own under `tmp/send`, removed once the send ends.
+- A send from the phone gets the short background time every app gets and, on iOS 26, a
+  `BGContinuedProcessingTask` (`app.homespace.ios.uploads.send`) that shows its progress. If iOS
+  ends it, the transfer is cancelled, since it can't resume, and a notification says so.
+- Notifications are local: from the lists the app loads while open, and from `BackgroundSync` when
+  "Sync in background" is on. The permission is asked the first time Transfers is opened or after
+  the first send. Tapping one opens Transfers, and **Open** on a link opens its confirmation.
+- There is no share extension yet: that needs a session of its own per process, see
+  [`docs/todo/mobile-file-provider.md`](../../docs/todo/mobile-file-provider.md).
 
 ## Auto-upload
 

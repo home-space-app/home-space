@@ -19,6 +19,9 @@ enum FileAction: Identifiable {
     case delete([Entry])
     /// A new folder in the folder with this id, or Home when nil.
     case newFolder(String?)
+    /// Sharing with people or by a link.
+    case share([Entry])
+    case send(SendPayload)
 
     var id: String {
         switch self {
@@ -27,6 +30,8 @@ enum FileAction: Identifiable {
         case .move(let entries): "move-\(entries.map(\.id).joined())"
         case .delete(let entries): "delete-\(entries.map(\.id).joined())"
         case .newFolder(let parent): "new-folder-\(parent ?? "")"
+        case .share(let entries): "share-\(entries.map(\.id).joined())"
+        case .send(let payload): "send-\(payload.id)"
         }
     }
 }
@@ -36,10 +41,16 @@ struct FileDialog: View {
     let action: FileAction
     let model: SessionModel
     let client: CoreClient
+    /// The signed-in user's name, which the share dialog lists first.
+    var owner = ""
     let onDone: () -> Void
 
     var body: some View {
         switch action {
+        case .share(let entries):
+            ShareSheet(model: model, client: client, entries: entries, owner: owner)
+        case .send(let payload):
+            SendSheet(model: model, payload: payload, onSent: onDone)
         case .details(let entry):
             DetailsSheet(entry: entry, model: model, client: client)
         case .rename(let entry):
