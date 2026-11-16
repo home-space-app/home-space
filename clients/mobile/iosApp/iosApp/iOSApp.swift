@@ -2,11 +2,13 @@ import SwiftUI
 
 @main
 struct iOSApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = SessionModel()
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
         BackgroundSync.register()
+        registerPlatformImageTypes()
     }
 
     var body: some Scene {
@@ -31,7 +33,7 @@ private struct RootView: View {
             case .signedOut:
                 LoginView(model: model)
             case .signedIn(let client, let user):
-                BrowseView(model: model, client: client, user: user)
+                MainTabs(model: model, client: client, user: user)
             }
         }
         .task { model.start() }

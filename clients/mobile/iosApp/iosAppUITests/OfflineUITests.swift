@@ -6,28 +6,13 @@ import XCTest
 /// TEST_RUNNER_HOMESPACE_E2E_HOLD_SECONDS it then stays open that long, to change things from outside.
 final class OfflineUITests: XCTestCase {
     func testOpeningAndKeepingOffline() throws {
-        let environment = ProcessInfo.processInfo.environment
-        guard let user = environment["HOMESPACE_E2E_USER"],
-            let password = environment["HOMESPACE_E2E_PASSWORD"]
-        else {
-            throw XCTSkip("no test user given")
-        }
-        let app = XCUIApplication()
-        app.launch()
-        let menu = app.buttons["Menu"]
-        if !menu.waitForExistence(timeout: 5) {
-            let signIn = app.buttons["Sign in"]
-            XCTAssertTrue(signIn.waitForExistence(timeout: 15), app.debugDescription)
-            app.textFields["Username"].tap()
-            app.textFields["Username"].typeText(user)
-            app.secureTextFields["Password"].tap()
-            app.secureTextFields["Password"].typeText(password)
-            signIn.tap()
-            XCTAssertTrue(menu.waitForExistence(timeout: 15), app.debugDescription)
-        }
+        // The Keychain outlives the app, so a run after an earlier one may find itself signed in.
+        let app = try launchSignedIn(self)
 
-        // Opening a file shows Quick Look with its markup tool, and leaves a copy.
-        app.staticTexts["real.png"].tap()
+        // Opening a file in Quick Look shows its markup tool, and leaves a copy. A tap opens the
+        // built-in image viewer instead, so this goes through the row's menu.
+        app.staticTexts["real.png"].press(forDuration: 1.2)
+        app.buttons["Open in Quick Look"].tap()
         let preview = app.otherElements["QLPreviewControllerView"]
         XCTAssertTrue(preview.waitForExistence(timeout: 15), app.debugDescription)
         // Quick Look starts full screen, and a tap brings its controls.
@@ -42,7 +27,7 @@ final class OfflineUITests: XCTestCase {
         app.staticTexts["Docs"].press(forDuration: 1.2)
         app.buttons["Make Available Offline"].tap()
 
-        let hold = environment["HOMESPACE_E2E_HOLD_SECONDS"].flatMap(Double.init) ?? 0
+        let hold = ProcessInfo.processInfo.environment["HOMESPACE_E2E_HOLD_SECONDS"].flatMap(Double.init) ?? 0
         if hold > 0 {
             Thread.sleep(forTimeInterval: hold)
         }

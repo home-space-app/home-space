@@ -5,29 +5,9 @@ import XCTest
 /// TEST_RUNNER_HOMESPACE_E2E_USER and TEST_RUNNER_HOMESPACE_E2E_PASSWORD. The simulator's sample photos are what goes up.
 final class AutoUploadUITests: XCTestCase {
     func testPhotoLibraryUploads() throws {
-        let environment = ProcessInfo.processInfo.environment
-        guard let user = environment["HOMESPACE_E2E_USER"],
-            let password = environment["HOMESPACE_E2E_PASSWORD"]
-        else {
-            throw XCTSkip("no test user given")
-        }
-        let app = XCUIApplication()
-        app.launch()
-
         // The Keychain outlives the app, so a run after an earlier one may find itself signed in.
-        let menu = app.buttons["Menu"]
-        if !menu.waitForExistence(timeout: 5) {
-            let signIn = app.buttons["Sign in"]
-            XCTAssertTrue(signIn.waitForExistence(timeout: 15), app.debugDescription)
-            app.textFields["Username"].tap()
-            app.textFields["Username"].typeText(user)
-            app.secureTextFields["Password"].tap()
-            app.secureTextFields["Password"].typeText(password)
-            signIn.tap()
-            XCTAssertTrue(menu.waitForExistence(timeout: 15), app.debugDescription)
-        }
-        menu.tap()
-        app.buttons["Settings"].tap()
+        let app = try launchSignedIn(self)
+        app.tab("Settings").tap()
         app.buttons["Sync"].firstMatch.tap()
         XCTAssertTrue(app.switches["Sync only on Wi-Fi"].waitForExistence(timeout: 5))
         XCTAssertEqual(app.switches["Sync only on Wi-Fi"].value as? String, "1")

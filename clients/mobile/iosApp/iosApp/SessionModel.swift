@@ -18,23 +18,6 @@ enum Probe {
     case failed(String)
 }
 
-/// Forwards download progress to the main actor; reports come from the Rust runtime's threads.
-private final class ProgressForwarder: DownloadListener {
-    private let report: @Sendable (String, Double) -> Void
-
-    init(model: SessionModel) {
-        report = { [weak model] id, fraction in
-            Task { @MainActor in
-                model?.downloadProgressed(id: id, fraction: fraction)
-            }
-        }
-    }
-
-    func progress(id: String, done: Int64, total: Int64) {
-        report(id, total > 0 ? min(Double(done) / Double(total), 1) : 1)
-    }
-}
-
 /// Forwards live events to the main actor; they come from the Rust runtime's threads.
 private final class EventsForwarder: EventsListener {
     private let deliver: @Sendable (LiveEvent?) -> Void
@@ -71,47 +54,6 @@ struct LiveChanges: Equatable {
 
     func touches(folder: String?, entries: [Entry]) -> Bool {
         resync || folders.contains(folder) || entries.contains { ids.contains($0.id) }
-    }
-}
-
-/// A photo or video from the library, as a file of its own. The file the system hands over goes
-/// away once this returns.
-private struct PickedPhoto: Transferable {
-    let url: URL
-
-    static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(importedContentType: .image) { try PickedPhoto(keeping: $0) }
-        FileRepresentation(importedContentType: .movie) { try PickedPhoto(keeping: $0) }
-    }
-
-    private init(keeping received: ReceivedTransferredFile) throws {
-        let folder = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        url = folder.appendingPathComponent(received.file.lastPathComponent)
-        try FileManager.default.copyItem(at: received.file, to: url)
-    }
-}
-
-/// Time to finish after the user leaves the app. `onExpiry` runs when iOS is about to end it.
-@MainActor
-private final class BackgroundTime {
-    private var task = UIBackgroundTaskIdentifier.invalid
-
-    init(name: String, onExpiry: @escaping @MainActor () -> Void) {
-        task = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
-            MainActor.assumeIsolated {
-                onExpiry()
-                self?.end()
-            }
-        }
-    }
-
-    func end() {
-        if task != .invalid {
-            UIApplication.shared.endBackgroundTask(task)
-            task = .invalid
-        }
     }
 }
 
@@ -159,6 +101,14 @@ final class SessionModel {
     private(set) var liveChanges = LiveChanges()
     /// The file Quick Look is showing.
     var preview: URL?
+    /// Whether Quick Look may save changes into `preview`; not for a copy of someone else's file.
+    private(set) var previewEditable = true
+    /// The file open in a built-in viewer.
+    var viewer: OpenViewer?
+    /// Send to device, while someone is signed in.
+    private(set) var transfers: TransferCenter?
+    /// Changes when the user's devices may have changed.
+    private(set) var devicesGeneration = 0
     /// The copy waiting for the user to say whether its unsent edits may go.
     var removalWarning: RemovalWarning?
     /// The names of the files whose unsent edits signing out would lose, while asking.
@@ -319,8 +269,18 @@ final class SessionModel {
         reloadKey += 1
     }
 
-    /// Shows a file: at once if the copy here is current, else after downloading it.
+    /// Shows a file in its built-in viewer, or else in Quick Look.
     func openFile(client: CoreClient, entry: Entry) {
+        if let info = viewerFor(mime: entry.mime, size: entry.size) {
+            lastTapped = entry.id
+            viewer = OpenViewer(source: .own(entry), info: info)
+        } else {
+            openInQuickLook(client: client, entry: entry)
+        }
+    }
+
+    /// Shows a file in Quick Look: at once if the copy here is current, else after downloading it.
+    func openInQuickLook(client: CoreClient, entry: Entry) {
         lastTapped = entry.id
         guard downloading.insert(entry.id).inserted else { return }
         Task {
@@ -328,10 +288,11 @@ final class SessionModel {
             do {
                 let path = try await client.openCopy(
                     id: entry.id,
-                    listener: ProgressForwarder(model: self)
+                    listener: downloadListener()
                 )
                 // Nothing pops up over another file or after the user has left the app.
                 if lastTapped == entry.id, UIApplication.shared.applicationState == .active {
+                    previewEditable = true
                     preview = URL(fileURLWithPath: path)
                 }
                 reload()
@@ -517,7 +478,7 @@ final class SessionModel {
                 try await client.saveCopy(
                     id: entry.id,
                     destPath: file.path,
-                    listener: ProgressForwarder(model: self)
+                    listener: downloadListener()
                 )
                 pendingExport = PendingExport(url: file)
             } catch {
@@ -532,6 +493,65 @@ final class SessionModel {
         guard let export = pendingExport else { return }
         try? FileManager.default.removeItem(at: export.url.deletingLastPathComponent())
         pendingExport = nil
+    }
+
+    /// Shows a file shared with the user, read-only: in its built-in viewer, or else in Quick Look
+    /// from a temporary copy.
+    func openShared(client: CoreClient, entry: SharedEntry, siblings: [SharedEntry]) {
+        lastTapped = entry.id
+        if let info = viewerFor(mime: entry.mime, size: entry.size) {
+            viewer = OpenViewer(source: .shared(entry, siblings: siblings), info: info)
+            return
+        }
+        guard downloading.insert(entry.id).inserted else { return }
+        Task {
+            defer { downloadEnded(entry.id) }
+            do {
+                let file = try sharedCopyFile(entry)
+                try await client.saveSharedCopy(file: entry, destPath: file.path, listener: downloadListener())
+                if lastTapped == entry.id, UIApplication.shared.applicationState == .active {
+                    previewEditable = false
+                    preview = file
+                }
+            } catch {
+                sharedDownloadFailed(entry: entry, error: error)
+            }
+        }
+    }
+
+    /// Downloads a shared file, then asks where to put it.
+    func saveShared(client: CoreClient, entry: SharedEntry) {
+        guard downloading.insert(entry.id).inserted else { return }
+        Task {
+            defer { downloadEnded(entry.id) }
+            do {
+                let file = try sharedCopyFile(entry)
+                try await client.saveSharedCopy(file: entry, destPath: file.path, listener: downloadListener())
+                pendingExport = PendingExport(url: file)
+            } catch {
+                sharedDownloadFailed(entry: entry, error: error)
+            }
+        }
+    }
+
+    private func sharedCopyFile(_ entry: SharedEntry) throws -> URL {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shared", isDirectory: true)
+            .appendingPathComponent(entry.id, isDirectory: true)
+        try? FileManager.default.removeItem(at: folder)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder.appendingPathComponent(safeFileName(entry.name, fallback: entry.id))
+    }
+
+    private func sharedDownloadFailed(entry: SharedEntry, error: Error) {
+        switch error as? CoreError {
+        case .Cancelled:
+            break
+        case .Unauthorized:
+            sessionEnded()
+        default:
+            notice = "Could not download “\(entry.name)”: \(fileMessage(for: error))"
+        }
     }
 
     func cancelDownload(client: CoreClient, entry: Entry) {
@@ -584,7 +604,11 @@ final class SessionModel {
         foregroundSync?.checkOfflineCopies()
     }
 
-    fileprivate func downloadProgressed(id: String, fraction: Double) {
+    private func downloadListener() -> ProgressForwarder {
+        ProgressForwarder { [weak self] id, fraction in self?.downloadProgressed(id: id, fraction: fraction) }
+    }
+
+    private func downloadProgressed(id: String, fraction: Double) {
         // A report can arrive after the download has ended.
         if downloading.contains(id) {
             progress[id] = fraction
@@ -612,6 +636,7 @@ final class SessionModel {
 
     func signOut() {
         signOutWarning = nil
+        forgetTransfers()
         let current = session
         let queue = uploadQueue()
         forgetUploads()
@@ -632,6 +657,7 @@ final class SessionModel {
 
     /// The server ended the session while the user was browsing.
     func sessionEnded() {
+        forgetTransfers()
         let queue = uploadQueue()
         forgetUploads()
         let auto = endSync()
@@ -644,14 +670,25 @@ final class SessionModel {
         }
     }
 
+    private func forgetTransfers() {
+        transfers?.end()
+        transfers = nil
+        viewer = nil
+        IncomingNotices.forgetAll()
+    }
+
     /// Called as the app comes to the front and leaves it.
     func appInFront(_ inFront: Bool) {
         isInFront = inFront
+        AppRouter.shared.active = inFront
         if inFront {
             foregroundSync?.start()
             startEvents()
+            // Catches what the socket missed while the app was away.
+            transfers?.start()
         } else {
             foregroundSync?.stop()
+            transfers?.stop()
             stopEvents()
             BackgroundSync.schedule()
         }
@@ -693,7 +730,15 @@ final class SessionModel {
             changes.folders.insert(parentId)
         case .resync:
             changes.resync = true
-        case .trashChanged, .devicesChanged, .transfersChanged:
+            devicesGeneration += 1
+            transfers?.refresh()
+        case .devicesChanged:
+            devicesGeneration += 1
+            return
+        case .transfersChanged:
+            transfers?.refresh()
+            return
+        case .trashChanged:
             return
         }
         pendingChanges = changes
@@ -728,6 +773,11 @@ final class SessionModel {
         session = .signedIn(client: active.client, user: active.user)
         ClientHolder.shared.onUploadsChanged = { [weak self] in self?.uploadsChanged() }
         uploadsChanged()
+        let center = TransferCenter(client: active.client, onSessionEnded: { [weak self] in self?.sessionEnded() })
+        transfers = center
+        if isInFront {
+            center.start()
+        }
         let sync = ForegroundSync(
             session: active,
             onSessionEnded: { [weak self] in self?.sessionEnded() },
@@ -745,6 +795,7 @@ final class SessionModel {
         progress = [:]
         lastTapped = nil
         preview = nil
+        previewEditable = true
     }
 
     private func backToForm() {
@@ -759,8 +810,7 @@ final class SessionModel {
 
 /// A name that stays inside the temporary folder, whatever the server sent.
 private func exportName(of entry: Entry) -> String {
-    let name = (entry.name as NSString).lastPathComponent
-    return name.isEmpty || name == "." || name == ".." || name == "/" ? entry.id : name
+    safeFileName(entry.name, fallback: entry.id)
 }
 
 /// The sentence to show when a file operation fails.

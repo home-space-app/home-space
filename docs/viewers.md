@@ -1,6 +1,6 @@
 # Built-in file viewers
 
-The web, desktop and Android clients show some files themselves instead of downloading them or
+The web, desktop, Android and iOS clients show some files themselves instead of downloading them or
 handing them to another app. Which viewer shows a file depends on its MIME type, which the server
 stores (it guesses the type from the file name when the uploader sends none).
 
@@ -19,12 +19,13 @@ There are two viewers:
 | Web | The file name links to `/files/{id}/view`. Search results link there too. | The row menu still has **Download**. |
 | Desktop | Double-click, Enter, Space, the toolbar's Open and the details panel's Open show the viewer in the main window. Back, Escape or Backspace return to the folder. | The context menu has **Open with system app**. |
 | Android | A tap shows the viewer full screen. The back arrow returns to the list. | The row menu has **Open in another app** and **Edit in another app**. |
+| iOS | A tap shows the viewer full screen; **Done** returns to the list. Files shared with the user open read-only in the same viewers. | The row menu has **Open in Quick Look**, whose markup edits are synced as before. |
 
 Files with no viewer, or larger than the viewer's limit, open the way they did before.
 
 ## The text viewer
 
-- A file always opens read-only. On desktop and Android the text can still be selected and copied.
+- A file always opens read-only. On desktop, Android and iOS the text can still be selected and copied.
 - **Edit** turns the view into a plain editor. There is no highlighting or other editing help.
 - **Cancel** drops the edits and shows the file again.
 - **Save** stores the text as the file's new content. The server keeps the previous content as a
@@ -36,7 +37,8 @@ Files with no viewer, or larger than the viewer's limit, open the way they did b
 - When another device changes the file while it is shown, web and desktop reload it. During
   editing, they show a notice instead and keep the edits. Saving then makes the edits current, and
   the other change stays as a version.
-- Android asks before discarding edits on Back. Desktop disables Back while editing.
+- Android asks before discarding edits on Back, and iOS on Cancel, where swiping the screen away
+  is also held back. Desktop disables Back while editing.
 
 ## The image viewer
 
@@ -45,7 +47,8 @@ Files with no viewer, or larger than the viewer's limit, open the way they did b
   lists them. Files of other types are skipped.
   - **Space** or **→** shows the next image, and **←** the previous one.
   - The header also has previous and next buttons, and a counter such as `3 / 12`.
-  - On Android the images can be swiped. The keys work there with a hardware keyboard.
+  - On Android and iOS the images can be swiped. The keys work on Android with a hardware keyboard.
+    iOS shows the counter under the name, as `3 of 12`, and pictures zoom with a pinch or a double tap.
 - Stepping stops at the first and last image, and the button for that direction is disabled there.
 - An image opened from search results steps through its own folder.
 - On the web, stepping replaces the page in the history, so the browser's Back returns to the
@@ -86,6 +89,7 @@ the shared types are matched first. Each client keeps one instance and looks eve
 | Web | `clients/web/src/viewers.rs` | `image/svg+xml`, `image/avif`, `image/x-icon`, `image/vnd.microsoft.icon` |
 | Desktop | `clients/desktop/src/viewers.rs` | `image/tiff`, `image/x-icon`, `image/vnd.microsoft.icon` |
 | Android | `registerPlatformImageTypes` in `ImageViewer.kt`, through `add_viewer_types` | `image/heic` and `image/heif` on Android 9+, `image/avif` on Android 12+ |
+| iOS | `registerPlatformImageTypes` in `Viewers.swift`, through `add_viewer_types` | Those of `image/heic`, `image/heif`, `image/avif` and `image/webp` that ImageIO decodes on the device |
 
 A type can be added from what the client finds at runtime. For example, desktop could check for a
 RAW codec on the system when it starts and then add `image/x-canon-cr2` and similar types to the

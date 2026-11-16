@@ -1,17 +1,36 @@
 import SwiftUI
 
-/// Everything on its way between this phone and the server: picked files, then what syncs by itself.
+/// Everything on its way to or from this phone: what other devices sent, picked files, what
+/// syncs by itself, then what this user sent.
 struct TransfersView: View {
     let model: SessionModel
     let client: CoreClient
     @State private var sources: [UploadSource] = []
     @State private var current: CurrentUpload?
     @State private var offline: OfflineStatus?
+    /// The received transfer whose choices are showing.
+    @State private var acting: TransferRow?
+    /// The received transfer waiting for a folder to be saved into.
+    @State private var saving: TransferRow?
+    @State private var declining: TransferRow?
 
     private var kept: UInt64 { offline?.kept ?? 0 }
+    private var center: TransferCenter? { model.transfers }
+    private var received: [TransferRow] { center?.received ?? [] }
+    private var sent: [TransferRow] { center?.sent ?? [] }
 
     var body: some View {
         List {
+            if let error = center?.error {
+                Text(error).foregroundStyle(.red)
+            }
+            if !received.isEmpty {
+                Section("Received") {
+                    ForEach(received, id: \.id) { row in
+                        receivedRow(row)
+                    }
+                }
+            }
             if !model.uploads.isEmpty {
                 Section {
                     ForEach(model.uploads, id: \.key) { upload in
@@ -54,18 +73,135 @@ struct TransfersView: View {
                     }
                 }
             }
+            if !sent.isEmpty || (center?.preparing ?? 0) > 0 {
+                Section("Sent") {
+                    if let preparing = center?.preparing, preparing > 0 {
+                        HStack(spacing: 12) {
+                            ProgressView().frame(width: 26, height: 26)
+                            Text(preparing == 1 ? "Starting to send…" : "Starting \(preparing) sends…")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    ForEach(sent, id: \.id) { row in
+                        sentRow(row)
+                    }
+                }
+            }
         }
         .overlay {
-            if model.uploads.isEmpty && sources.isEmpty && kept == 0 {
+            if model.uploads.isEmpty && sources.isEmpty && kept == 0 && received.isEmpty && sent.isEmpty
+                && (center?.preparing ?? 0) == 0 && center?.loaded == true
+            {
                 ContentUnavailableView(
                     "No Transfers",
                     systemImage: "arrow.up.arrow.down",
-                    description: Text("Files you upload and folders that sync show up here.")
+                    description: Text("Files sent to this iPhone, files you upload and folders that sync show up here.")
                 )
             }
         }
         .navigationTitle("Transfers")
+        .refreshable {
+            await center?.reload()
+            await load()
+        }
         .task(id: ClientHolder.shared.changes.generation) { await load() }
+        .task { await IncomingNotices.askIfNeeded() }
+        // A notification's Open, once the list has the transfer.
+        .task(id: OpenRequest(id: AppRouter.shared.openTransfer, loaded: center?.loaded ?? false)) {
+            guard let id = AppRouter.shared.openTransfer, let center, center.loaded else { return }
+            AppRouter.shared.openTransfer = nil
+            if let row = center.received.first(where: { $0.id == id }), row.status == .ready, row.canOpen {
+                center.open(row)
+            }
+        }
+        .confirmationDialog(
+            acting?.title ?? "",
+            isPresented: Binding(get: { acting != nil }, set: { if !$0 { acting = nil } }),
+            titleVisibility: .visible,
+            presenting: acting
+        ) { row in
+            if row.canOpen {
+                Button("Open") { center?.open(row) }
+            }
+            Button("Save to My Files…") { saving = row }
+            Button("Download to iPhone") { center?.download(row) }
+            Button("Decline", role: .destructive) { declining = row }
+            Button("Cancel", role: .cancel) {}
+        } message: { row in
+            Text([row.party, row.sizeLabel, row.note].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
+        }
+        .confirmationDialog(
+            "Decline “\(declining?.title ?? "")”?",
+            isPresented: Binding(get: { declining != nil }, set: { if !$0 { declining = nil } }),
+            titleVisibility: .visible,
+            presenting: declining
+        ) { row in
+            Button("Decline", role: .destructive) { center?.decline(row) }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("The sender sees that you declined it, and the files are deleted from the server.")
+        }
+        .sheet(item: $saving) { row in
+            ServerFolderSheet(
+                title: "Save to My Files",
+                confirm: "Save",
+                askUploadExisting: false,
+                model: model,
+                client: client
+            ) { parent, _, _ in
+                center?.save(row, to: parent)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func receivedRow(_ row: TransferRow) -> some View {
+        let downloading = center?.downloading.contains(row.id) == true
+        let actionable = row.status == .ready && !downloading
+        Button {
+            if actionable {
+                acting = row
+            }
+        } label: {
+            TransferRowLabel(row: row, progress: center?.progress[row.id], received: true, busy: downloading)
+        }
+        .buttonStyle(.plain)
+        .disabled(!actionable && !downloading)
+        .swipeActions {
+            if downloading {
+                Button("Stop") { center?.stopDownload(row) }
+            } else if row.status == .ready {
+                Button("Decline", role: .destructive) { declining = row }
+            }
+        }
+        .contextMenu {
+            if downloading {
+                Button("Stop Download", systemImage: "stop.circle") { center?.stopDownload(row) }
+            } else if row.status == .ready {
+                if row.canOpen {
+                    Button("Open", systemImage: "arrow.up.forward.app") { center?.open(row) }
+                }
+                Button("Save to My Files…", systemImage: "folder.badge.plus") { saving = row }
+                Button("Download to iPhone", systemImage: "arrow.down.circle") { center?.download(row) }
+                Button("Decline", systemImage: "xmark.circle", role: .destructive) { declining = row }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sentRow(_ row: TransferRow) -> some View {
+        let cancellable = row.status == .uploading || row.status == .ready
+        TransferRowLabel(row: row, progress: center?.progress[row.id], received: false, busy: false)
+            .swipeActions {
+                if cancellable {
+                    Button("Cancel", role: .destructive) { center?.cancel(row) }
+                }
+            }
+            .contextMenu {
+                if cancellable {
+                    Button("Cancel Transfer", systemImage: "xmark.circle", role: .destructive) { center?.cancel(row) }
+                }
+            }
     }
 
     private func load() async {
@@ -111,6 +247,71 @@ struct TransfersView: View {
             return "Waiting for the connection"
         }
         return status.pending > 0 ? "\(status.pending) updating" : "Up to date"
+    }
+}
+
+extension TransferRow: Identifiable {}
+
+/// What makes a notification's Open look for its transfer again.
+private struct OpenRequest: Equatable {
+    let id: String?
+    let loaded: Bool
+}
+
+/// A transfer in the Received or Sent list.
+private struct TransferRowLabel: View {
+    let row: TransferRow
+    let progress: Double?
+    let received: Bool
+    let busy: Bool
+
+    private var symbol: String {
+        if row.canOpen {
+            return "link"
+        }
+        return received ? "arrow.down.doc" : "paperplane"
+    }
+
+    private var status: String {
+        if busy {
+            return progress.map { "Downloading · \(Int($0 * 100))%" } ?? "Downloading…"
+        }
+        if let progress, row.status == .uploading {
+            return "Sending · \(Int(progress * 100))%"
+        }
+        return row.statusLabel
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol)
+                .frame(width: 26, height: 26)
+                .foregroundStyle(row.status == .ready && received ? Color.accentColor : Color.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(row.title).lineLimit(1)
+                Text([row.party, row.sizeLabel].filter { !$0.isEmpty }.joined(separator: " · "))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(row.status == .ready && received ? Color.accentColor : Color.secondary)
+                if let note = row.note, !note.isEmpty {
+                    Text("“\(note)”")
+                        .font(.caption)
+                        .italic()
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                if let progress, busy || row.status == .uploading {
+                    ProgressView(value: progress)
+                        .accessibilityLabel(busy ? "Download progress" : "Send progress")
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
     }
 }
 
