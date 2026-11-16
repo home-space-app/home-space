@@ -54,6 +54,10 @@ enum UserCommand {
         /// Make the user an administrator.
         #[arg(long)]
         admin: bool,
+        /// Read the password from the first line of standard input instead of prompting, for
+        /// scripts and tests.
+        #[arg(long)]
+        password_stdin: bool,
     },
     /// List users.
     List,
@@ -64,7 +68,12 @@ enum UserCommand {
         revoke: bool,
     },
     /// Change a user's password (revokes their sessions); the password is prompted for.
-    Passwd { username: String },
+    Passwd {
+        username: String,
+        /// Read the password from the first line of standard input instead of prompting.
+        #[arg(long)]
+        password_stdin: bool,
+    },
 }
 
 #[tokio::main]
@@ -299,8 +308,12 @@ async fn run_search_command(command: SearchCommand, db: Db, config: &Config) -> 
 
 async fn run_user_command(command: UserCommand, db: &Db, config: &Config) -> Result<()> {
     match command {
-        UserCommand::Add { username, admin } => {
-            let password = prompt_new_password()?;
+        UserCommand::Add {
+            username,
+            admin,
+            password_stdin,
+        } => {
+            let password = read_new_password(password_stdin)?;
             let user = auth_service(db, config)?
                 .create_user(&username, &password)
                 .await
@@ -339,13 +352,16 @@ async fn run_user_command(command: UserCommand, db: &Db, config: &Config) -> Res
                 println!("{username} is now an administrator");
             }
         }
-        UserCommand::Passwd { username } => {
+        UserCommand::Passwd {
+            username,
+            password_stdin,
+        } => {
             let user = db
                 .find_user_by_username(&username)
                 .await
                 .context("looking up user")?
                 .with_context(|| format!("no such user: {username}"))?;
-            let password = prompt_new_password()?;
+            let password = read_new_password(password_stdin)?;
             auth_service(db, config)?
                 .set_password(user.id, &password)
                 .await
@@ -354,6 +370,21 @@ async fn run_user_command(command: UserCommand, db: &Db, config: &Config) -> Res
         }
     }
     Ok(())
+}
+
+fn read_new_password(from_stdin: bool) -> Result<String> {
+    if !from_stdin {
+        return prompt_new_password();
+    }
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .context("reading password from standard input")?;
+    let password = line.trim_end_matches(['\r', '\n']);
+    if password.is_empty() {
+        anyhow::bail!("no password on standard input");
+    }
+    Ok(password.to_owned())
 }
 
 fn prompt_new_password() -> Result<String> {
