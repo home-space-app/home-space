@@ -211,3 +211,32 @@ Feature: Search, new folders and uploads on mobile
       Given the app has no session ready for its share sheet, as on iOS before the app is opened
       When alice shares a file to Home Space
       Then the share sheet asks her to open Home Space and sign in
+
+  # --- Home Space in the Files app -----------------------------------------------------------
+
+  Rule: On iOS, Home Space is a location in Files and in other apps' document pickers
+
+    Scenario: Browsing and opening
+      Given alice is signed in to the app
+      When she opens Home Space under Locations in Files
+      Then she sees Home, folders first, without the recycle bin
+      And opening "notes.txt" downloads it from the server
+
+    Scenario: Saving into Home Space
+      When alice saves a mail attachment "plan.pdf" into Home Space from another app
+      Then "plan.pdf" is uploaded into Home
+      And saving it again with other content makes a new version
+
+    Scenario: Organising in Files
+      When alice makes a folder, renames it and deletes it in Files
+      Then the server makes, renames and deletes the folder
+      And a deleted file goes to the recycle bin
+
+    Scenario: Changes made elsewhere
+      Given alice renames "notes.txt" on the web
+      When she opens the app and then Files
+      Then Files shows the new name
+
+    Scenario: Signing out
+      When alice signs out of the app
+      Then Home Space is no longer a location in Files

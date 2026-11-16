@@ -25,7 +25,16 @@ final class OfflineUITests: XCTestCase {
         XCTAssertTrue(kept.waitForExistence(timeout: 15), app.debugDescription)
 
         app.staticTexts["Docs"].press(forDuration: 1.2)
-        app.buttons["Make Available Offline"].tap()
+        // An earlier run may have left it offline already.
+        let keep = app.buttons["Make Available Offline"]
+        if keep.waitForExistence(timeout: 3) {
+            keep.tap()
+        } else {
+            XCTAssertTrue(app.buttons["Remove Offline Copy"].exists, app.debugDescription)
+            app.buttons["Remove Offline Copy"].tap()
+            app.staticTexts["Docs"].press(forDuration: 1.2)
+            keep.tap()
+        }
 
         let hold = ProcessInfo.processInfo.environment["HOMESPACE_E2E_HOLD_SECONDS"].flatMap(Double.init) ?? 0
         if hold > 0 {

@@ -156,6 +156,29 @@ emulator with the system picker: browse, open, new folder, save, and saving a na
   rename and move, offline reads, thumbnails, search, recents and tree access
   (`FLAG_SUPPORTS_IS_CHILD`).
 
+### iOS: what shipped
+
+`FileProviderExtension` (`clients/mobile/iosApp`), an `NSFileProviderReplicatedExtension`. Checked on
+the iOS 26 simulator with Files: browse, open, new folder, rename, delete, duplicate (an upload), and
+a rename on the server showing up after the app signalled.
+
+- **Session:** `session.files`, started by the app (Phase 2's `/auth/device-sessions`). With none,
+  the extension answers `notAuthenticated`; the app calls `signalErrorResolved` once it has one.
+- **Ids:** node ids, and `rootContainer` for Home. Items carry the hash (or version) as the content
+  version and the name, folder and time as the metadata version.
+- **Reading:** `fetchContents` calls `save_copy` into the domain's temporary folder; cancelling
+  calls `cancel_download`.
+- **Writing:** `createItem` uploads by name (`upload_file`), and `modifyItem` replaces content by
+  node id (`replace_file`), so a file moved meanwhile is followed. Neither sends a date. A folder
+  that already exists is reused, as the system may ask again.
+- **Changes:** the working set reads `GET /changes` (`changes`); `gone` becomes
+  `syncAnchorExpired`. Folder enumerators report no changes of their own.
+- **Deleting:** `deleteItem` moves to the recycle bin. Files calls it "Delete Now" and warns it
+  can't be undone, since the extension declares no trash.
+- **Still open:** a trash container backed by the recycle bin, so Files offers an undoable delete;
+  a warning before sign-out removes a domain with unsent writes; thumbnails; search; a real device
+  check of the extension's memory and of reqwest inside it.
+
 Editing by other apps:
 
 - Two-way sync covers edits by viewers (Android `ACTION_EDIT`, iOS Quick Look). The provider adds the

@@ -6,7 +6,7 @@ import Foundation
 @MainActor
 enum ExtensionSessions {
     /// The extensions that ship so far.
-    static let labels: [ExtensionLabel] = [.share]
+    static let labels: [ExtensionLabel] = [.share, .files]
     /// Started again when this old, as an unused one expires after 30 days.
     private static let renewAfter: TimeInterval = 25 * 24 * 60 * 60
     private static var running: Task<Void, Never>?
@@ -24,6 +24,9 @@ enum ExtensionSessions {
                         SavedSession(server: server, refreshToken: token, renewedAt: Date()),
                         for: label
                     )
+                    if label == .files {
+                        FileProviderDomains.sessionReady()
+                    }
                 } catch {
                     // Tried again the next time the app signs in or opens; an older server
                     // without extension sessions refuses every time.

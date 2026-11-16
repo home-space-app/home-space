@@ -41,6 +41,7 @@ targets:
       - framework: ../build/rust-core/ios/HomeSpaceCore.xcframework
         embed: false
       - target: ShareExtension
+      - target: FileProviderExtension
     info:
       path: iosApp/Info.plist
       properties:
@@ -131,6 +132,45 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         # Only the app has an icon of its own.
         ASSETCATALOG_COMPILER_APPICON_NAME: ""
+  # Home Space in Files and in other apps' file pickers (FileProviderExtension). It signs in with
+  # a session of its own, like the share extension; the app adds its domain while signed in
+  # (iosApp/FileProviderDomains.swift).
+  FileProviderExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - FileProviderExtension
+      - Shared/SessionStore.swift
+      - path: ../build/rust-core/ios/swift
+        group: RustCore
+    dependencies:
+      - target: RustCore
+      - framework: ../build/rust-core/ios/HomeSpaceCore.xcframework
+        embed: false
+    info:
+      path: FileProviderExtension/Info.plist
+      properties:
+        CFBundleDisplayName: Home Space
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: Home Space connects to your Home Space server on the local network.
+        AppIdentifierPrefix: $(AppIdentifierPrefix)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.fileprovider-nonui
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).FileProviderExtension
+          NSExtensionFileProviderSupportsEnumeration: true
+          NSExtensionFileProviderDocumentGroup: group.app.homespace
+    entitlements:
+      path: FileProviderExtension/FileProviderExtension.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.app.homespace
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)app.homespace.shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.homespace.ios.files
+        GENERATE_INFOPLIST_FILE: NO
   iosAppUITests:
     type: bundle.ui-testing
     platform: iOS
