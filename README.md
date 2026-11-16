@@ -156,6 +156,7 @@ one.
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/auth/login`, `/auth/refresh`, `/auth/logout` | JWT access + rotating refresh tokens; login (and `/auth/oidc/exchange`) take an optional `device: {id, name, platform}`; after 3 wrong passwords for a username from one client address (an IPv6 /64 counts as one), login answers that address `429 too_many_requests` with `Retry-After` for 30 s, then 1, 2, 4 min and so on (up to a day) until the right password; other addresses are not held up, so guessing cannot lock the owner out, and a device the user has signed in from before has its own count, so it still gets in when its address is blocked; an address is also counted over all usernames and waits after 20 wrong passwords within an hour (30 s doubling up to 15 min), again except for known devices; passwords are checked one per processor at a time, and a sign-in that waits over 5 s for its turn gets `429` too |
+| POST | `/auth/device-sessions` | `{label}` (`files` or `share`): the app's own session on a named device starts a second session there for one of its extensions (a File Provider, a share extension), which keeps its own refresh token; returns a `TokenPair` (never a cookie). An app session has one session per label, so a new one ends the earlier one it started; signing the app out, or the device, ends them; 400 for an unknown label, a session without a device, or an extension's own session |
 | GET | `/auth/providers` | how users can sign in: `{password, oidc: {name}?}` |
 | GET / GET / POST | `/auth/oidc/start`, `/auth/oidc/callback`, `/auth/oidc/exchange` | single sign-on, see [Single sign-on](#single-sign-on) |
 | GET | `/me` | current user: `{id, username, lost_and_found_id, is_admin, external}` (`external`: signs in only through the identity provider) |
@@ -369,7 +370,11 @@ claim, so neither is accepted in place of the other.
 
 Access tokens are only accepted while the session they were issued for exists in the database. A
 session starts after a verified password or provider login and ends on logout, on refresh token
-reuse, on a password change or when it expires. So the signing secret alone cannot forge access:
+reuse, on a password change or when it expires. An app's extensions on a device get sessions of
+their own from the app's (`/auth/device-sessions`), since a refresh token is single use and they
+run in other processes; those end with the app's session, and a password change keeps only the
+ones started by the session that changed it (the device id is the client's word, so it is never
+what ties them together). So the signing secret alone cannot forge access:
 a token it signs for a session that does not exist is rejected, and logging out takes effect at
 once rather than when the access token expires.
 

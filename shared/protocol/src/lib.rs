@@ -21,8 +21,9 @@ mod upload;
 
 pub use admin::{Account, AccountDevice, CreateAccount, SetPassword, UpdateAccount};
 pub use auth::{
-    ChangePasswordRequest, LoginRequest, Me, OidcCallbackQuery, OidcExchangeRequest, OidcProvider,
-    OidcStartQuery, Providers, RefreshRequest, TokenPair,
+    ChangePasswordRequest, DEVICE_SESSION_LABELS, DeviceSessionRequest, LoginRequest, Me,
+    OidcCallbackQuery, OidcExchangeRequest, OidcProvider, OidcStartQuery, Providers,
+    RefreshRequest, TokenPair,
 };
 pub use capabilities::Capabilities;
 pub use change::{Change, ChangesQuery, ChangesResponse};

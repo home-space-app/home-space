@@ -135,7 +135,7 @@ impl Db {
 
 impl Db {
     /// Replaces a user's password hash and ends every session except `keep`, the one that
-    /// asked for the change.
+    /// asked for the change, and the sessions `keep` started for its extensions.
     pub async fn change_password_hash(
         &self,
         id: UserId,
@@ -153,11 +153,19 @@ impl Db {
         if updated.rows_affected() == 0 {
             return Err(DbError::NotFound);
         }
-        sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND id <> $2")
-            .bind(id)
-            .bind(keep)
-            .execute(&mut *tx)
-            .await?;
+        // The sessions `keep` started for its extensions stay signed in with it. They are told
+        // apart by their parent, never by the device id, which any session can claim. When
+        // `keep` is an extension's session its app session stays too, since ending that would
+        // end `keep` with it.
+        sqlx::query(
+            "DELETE FROM sessions s WHERE s.user_id = $1 AND s.id <> $2 \
+             AND s.parent_session_id IS DISTINCT FROM $2 \
+             AND s.id IS DISTINCT FROM (SELECT parent_session_id FROM sessions WHERE id = $2)",
+        )
+        .bind(id)
+        .bind(keep)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(())
     }

@@ -52,7 +52,7 @@ enum IncomingNotices {
     private static let notifiedKey = "transfers.notified"
     private static let thread = "transfers"
 
-    private static var defaults: UserDefaults { .standard }
+    private static var defaults: UserDefaults { SessionStore.defaults }
 
     /// Notifies the transfers waiting for this phone that haven't been, unless `quiet`; either
     /// way they count as seen. Withdraws notifications of those no longer waiting.

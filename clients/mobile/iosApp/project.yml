@@ -57,6 +57,8 @@ targets:
         # On My iPhone › Home Space. Everything private stays in Application Support.
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        # Lets SessionStore name the Keychain group it shares with the extensions.
+        AppIdentifierPrefix: $(AppIdentifierPrefix)
         # Sync in background; the identifiers are in SyncRunner.swift.
         UIBackgroundModes:
           - fetch
@@ -65,6 +67,14 @@ targets:
           - app.homespace.ios.sync-refresh
           - app.homespace.ios.sync-processing
           - app.homespace.ios.uploads.*
+    # The App Group and Keychain group the app shares with its extensions (SessionStore.swift).
+    entitlements:
+      path: iosApp/iosApp.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.app.homespace
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)app.homespace.shared
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.homespace.ios
