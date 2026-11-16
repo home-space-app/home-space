@@ -218,9 +218,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: clients
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-deb,cargo-generate-rpm
 
       - name: Build
         working-directory: clients
@@ -257,6 +254,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: clients
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb,cargo-generate-rpm
 
       - name: Build
         working-directory: clients
