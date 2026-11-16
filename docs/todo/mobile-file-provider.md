@@ -1,5 +1,11 @@
 # Mobile native file provider
 
+**Status (2026-11-16):** done on both platforms. Android has a `DocumentsProvider` (open, save,
+new folder) and iOS has a File Provider extension (open, save, new folder, rename, move, delete
+to the recycle bin). See "Android: what shipped" and "iOS: what shipped" below for what is still
+open on each.
+
+
 ## Problem
 
 Home Space files can only be reached from inside the app. To attach one to an email, the user has
@@ -131,7 +137,7 @@ This builds on the mobile data sync work (auto-upload and two-way offline sync, 
 1. **Done:** the upload calls in `mobile-core`, the process-wide client holder, WorkManager, and
    two-way offline sync.
 2. **Android provider, open and save:** done (2026-11-12), see below.
-3. **iOS extension:** the storage it sits beside is now settled.
+3. **iOS extension:** done, see below.
 
 ### Android: what shipped
 

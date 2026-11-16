@@ -1,5 +1,19 @@
 # Sharing files and folders
 
+**Status (2026-11-16):** done in every client, read-only. It differs from the proposal below:
+
+- A share holds several items (`share_items`), and how it is reached lives in its own tables:
+  `share_links` for anyone with the link, `share_users` for named users (migrations `0021`,
+  `0022`). The link token is kept as it is, not hashed, so the owner can copy the link again.
+- Links may have a password. Wrong tries are limited like sign-ins.
+- Recipients browse and download under "Shared with me" (`/shared`), download a folder as a zip
+  (`/shared/{id}/archive`, `/public/shares/{token}/archive`), and save copies into their own
+  files (`/shared/{id}/copy`). The share dialog picks users from `GET /users`.
+
+Still open: groups (they need groups from `admin-panel.md`), write access, `share_changed` and
+`shared_with_me_changed` events, and deleting shares that expired long ago.
+
+
 ## Problem
 
 Every node belongs to one user, and all node endpoints return 404 for ids owned by someone else
