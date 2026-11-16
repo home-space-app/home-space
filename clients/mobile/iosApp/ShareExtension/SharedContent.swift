@@ -119,15 +119,17 @@ enum SharedContentReader {
         let named = provider.suggestedName.map { !($0 as NSString).pathExtension.isEmpty } ?? false
         guard let type = types.first(where: { $0.conforms(to: .data) && (named || !$0.conforms(to: .text)) })
         else { return nil }
+        // Read before the callback, which must not capture the provider (it isn't Sendable).
+        let suggestedName = provider.suggestedName
         return try await withCheckedThrowingContinuation { continuation in
             _ = provider.loadFileRepresentation(forTypeIdentifier: type.identifier) { url, error in
                 // The file goes once this returns, so it is copied here.
                 guard let url else {
-                    continuation.resume(throwing: SharedContentError.unreadable(provider.suggestedName ?? "File"))
+                    continuation.resume(throwing: SharedContentError.unreadable(suggestedName ?? "File"))
                     return
                 }
                 var name = url.lastPathComponent
-                if let suggested = provider.suggestedName, !suggested.isEmpty {
+                if let suggested = suggestedName, !suggested.isEmpty {
                     name = suggested
                     if (suggested as NSString).pathExtension.isEmpty, let ext = type.preferredFilenameExtension {
                         name += "." + ext
