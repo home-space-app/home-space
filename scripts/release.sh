@@ -65,13 +65,21 @@ set_toml_version() {
 
 # Replaces a single regex match in a file; fails if it does not match exactly once.
 replace_once() {
-    local file="$1" pattern="$2" replacement="$3" count
+    local file="$1" pattern="$2" replacement="$3" count tmp
     count="$(grep -cE "$pattern" "$file" || true)"
     if [[ "$count" -ne 1 ]]; then
         echo "error: expected one match of /$pattern/ in $file, found $count" >&2
         exit 1
     fi
-    sed -E -i "s/$pattern/$replacement/" "$file"
+    # No `sed -i`: BSD (macOS) and GNU sed disagree on its argument.
+    tmp="$(mktemp)"
+    sed -E "s/$pattern/$replacement/" "$file" >"$tmp" || {
+        rm -f "$tmp"
+        echo "error: could not edit $file" >&2
+        exit 1
+    }
+    cat "$tmp" >"$file"
+    rm -f "$tmp"
 }
 
 ios_spec="clients/mobile/iosApp/project.yml"
