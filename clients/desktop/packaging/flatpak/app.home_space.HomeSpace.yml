@@ -47,8 +47,11 @@ modules:
         -t /app/share/metainfo/
       - install -Dm644 clients/desktop/packaging/home-space.svg
         /app/share/icons/hicolor/scalable/apps/app.home_space.HomeSpace.svg
-      - install -Dm644 clients/desktop/packaging/home-space.png
-        /app/share/icons/hicolor/256x256/apps/app.home_space.HomeSpace.png
+      # Every size from scripts/render-icons.sh, renamed to the app id.
+      - for png in clients/desktop/packaging/icons/hicolor/*/apps/home-space.png; do
+          size=$(basename "$(dirname "$(dirname "$png")")");
+          install -Dm644 "$png" "/app/share/icons/hicolor/$size/apps/app.home_space.HomeSpace.png";
+        done
     sources:
       - type: dir
         path: ../../../..

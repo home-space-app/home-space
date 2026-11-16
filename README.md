@@ -270,7 +270,10 @@ builds with `--features keyring` for the current CPU and writes to `clients/targ
 - `linux`: a tar.gz with the binary, `home-space.desktop` and the icons.
 - `windows` (run from Git Bash): `HomeSpace.exe`, plus a zip when a zip tool is available. Release
   builds have no console window.
-The icons in `clients/desktop/packaging` are rendered from `home-space.svg`.
+The icons in `clients/desktop/packaging` are rendered from `home-space.svg`. The Linux packages
+install every size in `packaging/icons/hicolor` (16 to 512 px; KDE shows a generic icon when only
+256x256 is there); after changing the SVG, re-render them with
+`clients/desktop/scripts/render-icons.sh` (needs `rsvg-convert`).
 
 The Linux client is also packaged as a Flatpak (`app.home_space.HomeSpace`, on the
 `org.freedesktop.Platform` runtime). With `flatpak` and `flatpak-builder` installed,
@@ -281,6 +284,13 @@ the crates from `Cargo.lock` in `packaging/flatpak/cargo-sources.json` with
 folder (sync folders are changed in place) and the Secret Service keyring; sync folders outside home
 need an override (`flatpak override --user --filesystem=/mnt/data app.home_space.HomeSpace`).
 CI builds the bundle on pull requests that touch the desktop client, and tagged releases attach it.
+
+Tagged releases also attach a Windows zip (`HomeSpace.exe`, unsigned, so SmartScreen warns on the
+first launch) and Linux `.deb` and `.rpm` packages (x86_64). The packages install `HomeSpace` to
+`/usr/bin` with its desktop entry and icons; their contents are set in `[package.metadata.deb]` and
+`[package.metadata.generate-rpm]` of `clients/desktop/Cargo.toml`, and can be built locally with
+`cargo deb -p desktop` and `cargo generate-rpm -p desktop` (after a release build) from `clients/`.
+The server image on Docker Hub covers `linux/amd64` and `linux/arm64`.
 
 ## Single sign-on
 
