@@ -1,6 +1,6 @@
 import { test as base } from './index.ts';
 import { Adb, startAndroidSession, startAppium } from './android.ts';
-import { AndroidApp } from '../clients/android/screens.ts';
+import { AndroidApp } from '../clients/android/index.ts';
 import type { Browser } from 'webdriverio';
 
 export { expect } from './index.ts';
@@ -21,7 +21,12 @@ export const test = base.extend<{ android: AndroidApp }, AndroidWorker>({
     async ({}, use) => {
       const adb = await Adb.pick();
       await adb.waitForBoot();
-      await use(adb);
+      const restoreAnimations = await adb.disableAnimations();
+      try {
+        await use(adb);
+      } finally {
+        await restoreAnimations();
+      }
     },
     { scope: 'worker' },
   ],
