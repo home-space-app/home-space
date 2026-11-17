@@ -233,6 +233,20 @@ impl Store {
         tx.commit()
     }
 
+    /// Changes what a source covers, such as the albums of a photos source, and clears its
+    /// problem. What was sent stays recorded, so a file it covered before doesn't go again. The
+    /// change token is forgotten: it said nothing about what the source now covers.
+    pub fn set_handle(&self, id: &str, handle: &str, label: &str) -> Result<()> {
+        let mut db = self.db();
+        let tx = db.transaction()?;
+        tx.execute(
+            "UPDATE sources SET handle = ?2, label = ?3, problem = NULL WHERE id = ?1",
+            params![id, handle, label],
+        )?;
+        tx.execute("DELETE FROM change_tokens WHERE source = ?1", [id])?;
+        tx.commit()
+    }
+
     pub fn set_problem(&self, id: &str, problem: Option<&str>) -> Result<()> {
         self.db().execute(
             "UPDATE sources SET problem = ?2 WHERE id = ?1",
