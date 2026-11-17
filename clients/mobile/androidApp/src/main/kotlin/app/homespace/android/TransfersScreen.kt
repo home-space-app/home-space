@@ -455,7 +455,7 @@ private fun IncomingSheet(
 @Composable
 internal fun SourceTile(kind: SourceKind) {
     IconTile(
-        if (kind == SourceKind.PHOTOS) R.drawable.ic_photo_camera else R.drawable.ic_folder_open,
+        if (kind == SourceKind.PHOTOS) R.drawable.ic_node_image else R.drawable.ic_folder_open,
         MaterialTheme.colorScheme.tertiaryContainer,
         MaterialTheme.colorScheme.onTertiaryContainer,
     )

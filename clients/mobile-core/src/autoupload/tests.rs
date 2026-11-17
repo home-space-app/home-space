@@ -632,6 +632,26 @@ async fn a_deleted_target_pauses_the_source_until_another_is_chosen() {
 }
 
 #[tokio::test]
+async fn changing_what_a_source_covers_keeps_what_was_sent() {
+    let w = world().await;
+    let source = w.add(true);
+    w.sources.put("a", "", b"data", OLD);
+    w.auto.run_pass(false).await.expect("first");
+
+    w.auto
+        .set_source_handle(source.id, "albums".to_owned(), "Albums".to_owned())
+        .expect("handle");
+    w.sources.put("b", "WhatsApp Images", b"more", OLD);
+    let after = w.auto.run_pass(false).await.expect("after");
+
+    let changed = w.source();
+    assert_eq!(changed.handle, "albums");
+    assert_eq!(changed.label, "Albums");
+    assert_eq!(after.uploaded, 1, "only the file it didn't cover before");
+    assert_eq!(w.uploads().len(), 2);
+}
+
+#[tokio::test]
 async fn a_source_that_cant_be_read_reports_it_and_recovers() {
     let w = world().await;
     w.add(true);

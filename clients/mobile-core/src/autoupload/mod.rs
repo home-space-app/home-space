@@ -305,6 +305,19 @@ impl AutoUpload {
             .map_err(storage_error)
     }
 
+    /// Changes what a source covers, such as which albums a photos source uploads, and its label.
+    /// Files already sent don't go again; files it now covers go on the next pass.
+    pub fn set_source_handle(
+        &self,
+        id: String,
+        handle: String,
+        label: String,
+    ) -> Result<(), CoreError> {
+        self.store
+            .set_handle(&id, &handle, &label)
+            .map_err(storage_error)
+    }
+
     /// Runs one pass, unless one is running. The app calls this only when the network and the
     /// settings allow it, and [`AutoUpload::stop`] once they no longer do. With `retry_now`,
     /// files and an outage waiting to be tried again go at once, for when the user asked.

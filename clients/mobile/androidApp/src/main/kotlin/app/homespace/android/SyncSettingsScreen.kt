@@ -12,6 +12,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -75,6 +77,8 @@ private data class PickedSource(val kind: SourceKind, val handle: String, val la
 /** What the folders screen is asking the user. */
 private sealed interface SyncDialog {
     data object AddSource : SyncDialog
+    /** Albums for a new photos source, or for [existing] to upload instead. */
+    data class ChooseAlbums(val existing: UploadSource?) : SyncDialog
     data class ChooseTarget(val source: PickedSource) : SyncDialog
     data class ChangeTarget(val source: UploadSource) : SyncDialog
     data class Remove(val source: UploadSource) : SyncDialog
@@ -357,8 +361,7 @@ fun UploadFoldersScreen(session: Session.SignedIn, model: SessionViewModel, onBa
                 ok && permission != android.Manifest.permission.ACCESS_MEDIA_LOCATION
             }
         ) {
-            val camera = PickedSource(SourceKind.PHOTOS, CAMERA_HANDLE, "Camera photos and videos")
-            dialog = SyncDialog.ChooseTarget(camera)
+            dialog = SyncDialog.ChooseAlbums(null)
         } else {
             error = "Home Space needs access to your photos to upload them."
         }
@@ -378,8 +381,8 @@ fun UploadFoldersScreen(session: Session.SignedIn, model: SessionViewModel, onBa
             ExtendedFloatingActionButton(
                 onClick = { dialog = SyncDialog.AddSource },
                 icon = { Icon(painterResource(R.drawable.ic_add), contentDescription = null) },
-                text = { Text("Add folder") },
-                modifier = Modifier.semantics { contentDescription = "Add folder" },
+                text = { Text("Add") },
+                modifier = Modifier.semantics { contentDescription = "Add what uploads" },
             )
         },
     ) { padding ->
@@ -402,6 +405,7 @@ fun UploadFoldersScreen(session: Session.SignedIn, model: SessionViewModel, onBa
                     source = source,
                     current = current?.takeIf { it.sourceId == source.id },
                     onChangeTarget = { dialog = SyncDialog.ChangeTarget(source) },
+                    onChangeAlbums = { dialog = SyncDialog.ChooseAlbums(source) },
                     onRemove = { dialog = SyncDialog.Remove(source) },
                 )
             }
@@ -411,39 +415,62 @@ fun UploadFoldersScreen(session: Session.SignedIn, model: SessionViewModel, onBa
 
     when (val shown = dialog) {
         null -> Unit
-        SyncDialog.AddSource -> AlertDialog(
-            onDismissRequest = { dialog = null },
-            title = { Text("What should upload?") },
-            text = {
-                Column {
-                    TextButton(onClick = {
-                        dialog = null
-                        askPhotos.launch(cameraPermissions().toTypedArray())
-                    }) { Text("Camera photos and videos") }
-                    TextButton(onClick = {
-                        dialog = null
-                        pickFolder.launch(null)
-                    }) { Text("Choose a folder") }
+        SyncDialog.AddSource -> UploadChoicesDialog(
+            sources = sources,
+            onDismiss = { dialog = null },
+            onPhotos = {
+                dialog = null
+                askPhotos.launch(cameraPermissions().toTypedArray())
+            },
+            onKnownFolder = { folder ->
+                dialog = null
+                pickFolder.launch(folder.initialUri)
+            },
+            onOtherFolder = {
+                dialog = null
+                pickFolder.launch(null)
+            },
+        )
+        is SyncDialog.ChooseAlbums -> AlbumPickerDialog(
+            title = "Choose albums",
+            confirm = if (shown.existing == null) "Next" else "Save",
+            initial = shown.existing?.let { existing ->
+                albumIds(existing.handle).takeIf { existing.handle != CAMERA_HANDLE }
+            },
+            onDismiss = { dialog = null },
+            onConfirm = { albums ->
+                val handle = albumsHandle(albums.map { it.id })
+                val label = albumsLabel(albums.map { it.name })
+                val existing = shown.existing
+                if (existing == null) {
+                    dialog = SyncDialog.ChooseTarget(PickedSource(SourceKind.PHOTOS, handle, label))
+                } else {
+                    try {
+                        auto.setSourceHandle(existing.id, handle, label)
+                    } catch (e: CoreException) {
+                        error = e.fileMessage()
+                    }
+                    dialog = null
+                    refresh++
+                    model.syncNow()
                 }
             },
-            confirmButton = {},
-            dismissButton = { TextButton(onClick = { dialog = null }) { Text("Cancel") } },
         )
         is SyncDialog.ChooseTarget -> ServerFolderDialog(
             title = "Upload “${shown.source.label}” to",
             confirm = "Add",
             client = session.client,
-            askUploadExisting = true,
             onDismiss = { dialog = null },
             onSessionEnded = model::onSessionEnded,
-            onChoose = { folder, label, uploadExisting ->
+            onChoose = { folder, label ->
                 auto.addSource(
                     shown.source.kind,
                     shown.source.handle,
                     shown.source.label,
                     folder,
                     label,
-                    uploadExisting,
+                    // Everything already in it goes up too: that is what adding it is for.
+                    true,
                 )
                 dialog = null
                 refresh++
@@ -454,10 +481,9 @@ fun UploadFoldersScreen(session: Session.SignedIn, model: SessionViewModel, onBa
             title = "Upload “${shown.source.label}” to",
             confirm = "Change",
             client = session.client,
-            askUploadExisting = false,
             onDismiss = { dialog = null },
             onSessionEnded = model::onSessionEnded,
-            onChoose = { folder, label, _ ->
+            onChoose = { folder, label ->
                 auto.setSourceTarget(shown.source.id, folder, label)
                 dialog = null
                 refresh++
@@ -510,11 +536,13 @@ private fun WaitingForWifiCard() {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SourceCard(
     source: UploadSource,
     current: CurrentUpload?,
     onChangeTarget: () -> Unit,
+    onChangeAlbums: () -> Unit,
     onRemove: () -> Unit,
 ) {
     val failing = source.problem != null || source.lastError != null
@@ -544,11 +572,14 @@ private fun SourceCard(
                 style = MaterialTheme.typography.bodyMedium.tabular(),
                 color = if (failing) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Row(
+            FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
             ) {
                 TextButton(onClick = onRemove) { Text("Remove") }
+                if (source.kind == SourceKind.PHOTOS) {
+                    TextButton(onClick = onChangeAlbums) { Text("Albums") }
+                }
                 OutlinedButton(onClick = onChangeTarget) { Text("Change folder") }
             }
         }
