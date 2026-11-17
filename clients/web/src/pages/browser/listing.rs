@@ -38,7 +38,11 @@ pub(super) struct Listing {
     pub sorted: Memo<Vec<Node>>,
     pub crumbs: RwSignal<Vec<Node>>,
     pub sort: RwSignal<Sort>,
+    /// What is shown as the problem: why a change failed, else why loading failed.
     pub error: RwSignal<Option<String>>,
+    /// Why the last change failed. Kept across reloads, which only clear their own errors,
+    /// until a change succeeds or another folder opens.
+    change_error: RwSignal<Option<String>>,
     auth: Auth,
     resource: LocalResource<Loaded>,
 }
@@ -58,6 +62,11 @@ impl Listing {
         let crumbs = RwSignal::new(Vec::<Node>::new());
         let sort = RwSignal::new(Sort::default());
         let error = RwSignal::new(None::<String>);
+        let change_error = RwSignal::new(None::<String>);
+        Effect::new(move |_| {
+            folder.track();
+            change_error.set(None);
+        });
 
         let lost_and_found = move || auth.user.get_untracked().map(|user| user.lost_and_found_id);
 
@@ -67,7 +76,7 @@ impl Listing {
                 Ok((listing, path)) => {
                     nodes.set(listing);
                     crumbs.set(path);
-                    error.set(None);
+                    error.set(change_error.get_untracked());
                 }
                 Err(err) => error.set(Some(auth.fail(&err))),
             },
@@ -106,6 +115,7 @@ impl Listing {
             crumbs,
             sort,
             error,
+            change_error,
             auth,
             resource,
         }
@@ -116,10 +126,18 @@ impl Listing {
         self.resource.refetch();
     }
 
+    /// Shows why a change failed, until a change succeeds or another folder opens.
+    pub fn fail(self, err: &ApiError) {
+        let message = Some(self.auth.fail(err));
+        self.change_error.set(message.clone());
+        self.error.set(message);
+    }
+
     /// Shows the error of a finished change, if any, and loads the folder again.
     pub fn settle(self, result: Result<(), ApiError>) {
-        if let Err(err) = result {
-            self.error.set(Some(self.auth.fail(&err)));
+        match result {
+            Ok(()) => self.change_error.set(None),
+            Err(err) => self.fail(&err),
         }
         self.refetch();
     }

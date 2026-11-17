@@ -190,7 +190,7 @@ fn Explorer(auth: Auth) -> impl IntoView {
                             .set_href(&client.download_url(node.id, &ticket.ticket));
                     }
                 }
-                Err(err) => error.set(Some(auth.fail(&err))),
+                Err(err) => listing.fail(&err),
             }
         });
     });
