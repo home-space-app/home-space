@@ -178,12 +178,14 @@ private fun ServerField(model: SessionViewModel) {
         value = model.server,
         onValueChange = model::onServerChanged,
         label = { Text("Server") },
+        placeholder = { Text(EXAMPLE_SERVER) },
         singleLine = true,
         enabled = !model.busy,
         isError = probe is Probe.Failed,
         leadingIcon = { Icon(painterResource(R.drawable.ic_dns), contentDescription = null) },
         trailingIcon = {
             when (probe) {
+                Probe.Idle -> Unit
                 Probe.Checking -> CircularProgressIndicator(
                     strokeWidth = 2.dp,
                     modifier = Modifier.size(FIELD_PROGRESS_SIZE),
@@ -201,6 +203,7 @@ private fun ServerField(model: SessionViewModel) {
         supportingText = {
             Text(
                 when (probe) {
+                    Probe.Idle -> "The address of your Home Space server"
                     Probe.Checking -> "Contacting the server…"
                     is Probe.Failed -> probe.message
                     is Probe.Ready -> connectedLabel(probe.options)
