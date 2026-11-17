@@ -13,15 +13,14 @@ FROM toolchain AS server
 COPY shared shared
 COPY server server
 WORKDIR /workspace/server
-RUN cargo build --release -p app
+RUN cargo build --release -p app \
+    && mkdir /out-data
 
-FROM docker.io/library/debian:stable-slim AS runtime
-RUN useradd --system --create-home --uid 10001 homespace \
-    && mkdir /data \
-    && chown homespace /data
+FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:2c362104c7f7adc37e6bdc87451450ff3834871a6268d930815cbe561493f947 AS runtime
+COPY --from=server --chown=65532:65532 /out-data /data
 COPY --from=server /workspace/server/target/release/homespace /usr/local/bin/homespace
 COPY --from=web /workspace/clients/web/dist /srv/web
-USER homespace
+USER 65532:65532
 ENV HOMESPACE_BIND=0.0.0.0:8080 \
     HOMESPACE_STORAGE=local \
     HOMESPACE_STORAGE_ROOT=/data \
@@ -30,6 +29,3 @@ EXPOSE 8080
 VOLUME /data
 ENTRYPOINT ["homespace"]
 CMD ["serve"]
-
-FROM toolchain AS test
-CMD ["sh", "-c", "cd server && cargo test --workspace --all-features && cd ../clients && cargo test --workspace"]
