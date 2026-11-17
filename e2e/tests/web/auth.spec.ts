@@ -1,12 +1,12 @@
 import { test, expect } from '../../fixtures/index.ts';
-import { LoginPage } from '../../clients/web/pages.ts';
+import { LoginPage } from '../../clients/web/index.ts';
 
 test('a user signs in and logs out', async ({ page, users }) => {
   const alice = await users.create('alice');
-  const browser = await new LoginPage(page).signInAndWait(alice);
-  await expect(page.locator('.account__name')).toHaveText(alice.username);
+  const files = await new LoginPage(page).signInAndWait(alice);
+  await expect(files.sidebar.accountName).toHaveText(alice.username);
 
-  await browser.logOut();
+  await files.sidebar.logOut();
   await expect(page).toHaveURL(/\/login$/);
   await page.reload();
   await expect(page).toHaveURL(/\/login$/);

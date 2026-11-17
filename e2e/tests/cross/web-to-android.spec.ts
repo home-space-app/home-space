@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { test, expect } from '../../fixtures/android-test.ts';
 import { testFile } from '../../fixtures/paths.ts';
-import { LoginPage } from '../../clients/web/pages.ts';
+import { LoginPage } from '../../clients/web/index.ts';
 
 test('a file sent from the web arrives on Android and is downloaded', async ({
   page,
