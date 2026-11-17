@@ -286,7 +286,7 @@ pub fn UsersTab(auth: Auth, status: RwSignal<Option<ServerStatus>>) -> impl Into
                     view! {
                         <AddUserDialog
                             auth
-                            disk_free=disk_free.get()
+                            disk_free
                             on_close=Callback::new(move |created: Option<Account>| {
                                 adding.set(false);
                                 if let Some(created) = created {
@@ -594,7 +594,10 @@ fn QuotaField(quota: QuotaInput) -> impl IntoView {
 #[component]
 fn AddUserDialog(
     auth: Auth,
-    disk_free: Option<u64>,
+    /// Free disk space, for the quota hint. A signal, so that its arriving after the dialog
+    /// opened updates the hint instead of making the dialog again with empty fields.
+    #[prop(into)]
+    disk_free: Signal<Option<u64>>,
     on_close: Callback<Option<Account>>,
 ) -> impl IntoView {
     let username = RwSignal::new(String::new());
@@ -604,7 +607,7 @@ fn AddUserDialog(
     let is_admin = RwSignal::new(false);
     let problem = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
-    let quota_hint = match disk_free {
+    let quota_hint = move || match disk_free.get() {
         Some(free) => format!(
             "Leave empty for no quota. {} free on the disk.",
             bytes(free)
