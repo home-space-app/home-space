@@ -6,6 +6,7 @@ Future improvements. Each item links to its write-up in [`todo/`](todo/).
 |---|---|---|
 | High | L | [Sharing: done; groups, write access and share events left](todo/sharing.md) |
 | High | L | [Mobile feature parity: device management, sort choice, iOS breadcrumb](todo/mobile-feature-parity.md) |
+| Medium | L | [Native Tailscale: the server and apps join a tailnet by themselves, so the server is reachable from anywhere without being public](todo/tailscale.md) |
 | Medium | L | [Send to device: done; desktop and web OS notifications left](todo/send-to-device.md) |
 | Medium | L | [macOS File Provider: Home Space in Finder with on-demand files, downloaded when opened](todo/macos-file-provider.md) |
 | Medium | L | [Windows Cloud Files: Home Space in File Explorer with on-demand files, downloaded when opened](todo/windows-cloud-files.md) |
