@@ -3,7 +3,6 @@ package app.homespace.android
 import android.app.Application
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.widget.Toast
@@ -27,7 +26,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.homespace_core.CoreClient
 import uniffi.homespace_core.CoreException
-import uniffi.homespace_core.DeviceIdentity
 import uniffi.homespace_core.DownloadListener
 import uniffi.homespace_core.Entry
 import uniffi.homespace_core.EntryKind
@@ -35,15 +33,14 @@ import uniffi.homespace_core.EventStream
 import uniffi.homespace_core.EventsListener
 import uniffi.homespace_core.LiveEvent
 import uniffi.homespace_core.QueuedUpload
-import uniffi.homespace_core.SessionListener
 import uniffi.homespace_core.SignInOptions
 import uniffi.homespace_core.SignedInUser
 import uniffi.homespace_core.TransferRow
 import uniffi.homespace_core.normalizeServerUrl
 import uniffi.homespace_core.viewerFor
 
-/** The server on the host machine, as seen from the emulator. */
-private const val DEFAULT_SERVER = "http://10.0.2.2:8080"
+/** An example address, shown as the empty server field's hint. Never contacted. */
+const val EXAMPLE_SERVER = "https://files.example.com"
 private const val PROBE_DELAY_MILLIS = 600L
 /** How long live changes are gathered before the folder on screen is reloaded once for them. */
 private const val LIVE_RELOAD_DELAY_MILLIS = 300L
@@ -57,6 +54,8 @@ sealed interface Session {
 
 /** What the server said about how to sign in. */
 sealed interface Probe {
+    /** No address typed yet, so nothing has been asked. */
+    data object Idle : Probe
     data object Checking : Probe
     data class Ready(val options: SignInOptions) : Probe
     data class Failed(val message: String) : Probe
@@ -82,7 +81,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
 
     var session by mutableStateOf<Session>(Session.SignedOut)
         private set
-    var server by mutableStateOf(store.lastServer ?: DEFAULT_SERVER)
+    var server by mutableStateOf(store.lastServer.orEmpty())
         private set
     var probe by mutableStateOf<Probe>(Probe.Checking)
         private set
@@ -228,8 +227,13 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
     fun onServerChanged(text: String) {
         server = text
         error = null
-        probe = Probe.Checking
         probeJob?.cancel()
+        if (text.isBlank()) {
+            probe = Probe.Idle
+            return
+        }
+        probe = Probe.Checking
+        // Asks once typing pauses, not on every keystroke.
         probeJob = viewModelScope.launch {
             delay(PROBE_DELAY_MILLIS)
             check()
@@ -238,8 +242,12 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
 
     /** Asks the server again straight away, such as after a failure. */
     fun probeNow() {
-        probe = Probe.Checking
         probeJob?.cancel()
+        if (server.isBlank()) {
+            probe = Probe.Idle
+            return
+        }
+        probe = Probe.Checking
         probeJob = viewModelScope.launch { check() }
     }
 
