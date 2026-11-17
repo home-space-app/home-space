@@ -60,6 +60,11 @@ The rest of the layout:
 
 - `fixtures/api.ts` is the REST API, used to arrange a test and check its outcome.
 - `clients/web` and `clients/android` hold the page and screen objects.
+  - The web objects follow the Page Object Model and mirror the client's source: one class per
+    page in `clients/web/pages` (all signed-in pages extend `AppPage`, which has the sidebar), and
+    in `clients/web/components` what pages share or open: the file table, the sidebar and the
+    dialogs. An action that opens a dialog returns its object. Tests import from
+    `clients/web/index.ts`.
   - Web elements are found by role and label, and by `data-testid` where there is no accessible name.
   - Android elements are found by Compose `testTag`, exposed as resource ids.
 

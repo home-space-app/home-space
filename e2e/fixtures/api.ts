@@ -51,6 +51,43 @@ export interface Node {
   name: string;
   kind: string;
   size?: number;
+  mime?: string;
+  version?: number;
+  parent_id?: string | null;
+}
+
+export interface FileVersion {
+  version: number;
+  size: number;
+}
+
+export interface Share {
+  id: string;
+  /** The secret of a link share, `/s/<token>`; absent for a share with users. */
+  token?: string;
+  items: Node[];
+}
+
+export interface TrashItem {
+  node: Node;
+  original_path: string;
+}
+
+/** Who can see a device and send files to it (`DeviceVisibility` in shared/protocol). */
+export type DeviceVisibility = 'owner' | 'hidden' | 'everyone' | 'users';
+
+export interface ReceivedShare {
+  id: string;
+  owner: { id: string; username: string };
+  items: Node[];
+}
+
+export interface AdminAccount {
+  id: string;
+  username: string;
+  is_admin: boolean;
+  disabled: boolean;
+  delete_at?: string | null;
 }
 
 export class ApiError extends Error {
@@ -173,6 +210,66 @@ export class Session {
     return this.get<Node[]>('/nodes');
   }
 
+  /** The files and folders in folder `parentId`, or in the root folder. */
+  nodes(parentId?: string) {
+    return this.get<Node[]>(parentId ? `/nodes?parent_id=${parentId}` : '/nodes');
+  }
+
+  /** The node called `name` in folder `parentId` (the root when unset); throws when missing. */
+  async node(name: string, parentId?: string): Promise<Node> {
+    const found = (await this.nodes(parentId)).find((node) => node.name === name);
+    if (!found) {
+      throw new Error(`${name} is not in ${parentId ?? 'the root folder'} of ${this.username}`);
+    }
+    return found;
+  }
+
+  createFolder(name: string, parentId?: string) {
+    return this.request<Node>('POST', '/folders', { name, parent_id: parentId ?? null });
+  }
+
+  /**
+   * Uploads the file at `file` into folder `parentId`, or the root folder. The type comes from
+   * the extension, as a browser would send it, so the web client offers its viewers.
+   */
+  async uploadFile(file: string, parentId?: string, name = path.basename(file)) {
+    const bytes = await readFile(file);
+    await this.upload(
+      { name, size: bytes.length, mime: mimeOf(name), ...(parentId ? { parent_id: parentId } : {}) },
+      bytes,
+    );
+    return this.node(name, parentId);
+  }
+
+  /** The previous versions of file `id`, newest first. */
+  versions(id: string) {
+    return this.get<FileVersion[]>(`/nodes/${id}/versions`);
+  }
+
+  /** The shares this user made, with people or by link. */
+  shares() {
+    return this.get<Share[]>('/shares');
+  }
+
+  trash() {
+    return this.get<TrashItem[]>('/trash');
+  }
+
+  /** What other users shared with this user. */
+  sharedWithMe() {
+    return this.get<ReceivedShare[]>('/shared');
+  }
+
+  /** `PUT /devices/{id}/visibility`. */
+  setDeviceVisibility(deviceId: string, visibility: DeviceVisibility, users: string[] = []) {
+    return this.request('PUT', `/devices/${deviceId}/visibility`, { visibility, users });
+  }
+
+  /** `GET /admin/users`; needs an administrator's session. */
+  accounts() {
+    return this.get<AdminAccount[]>('/admin/users');
+  }
+
   me() {
     return this.get<{ id: string; username: string }>('/me');
   }
@@ -225,4 +322,13 @@ export class Session {
       offset = ((await response.json()) as { offset: number }).offset;
     } while (offset < bytes.length);
   }
+}
+
+const MIME_TYPES: Record<string, string> = {
+  '.txt': 'text/plain',
+  '.png': 'image/png',
+};
+
+function mimeOf(name: string) {
+  return MIME_TYPES[path.extname(name).toLowerCase()] ?? 'application/octet-stream';
 }

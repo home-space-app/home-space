@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { test, expect } from '../../fixtures/index.ts';
 import { testFile } from '../../fixtures/paths.ts';
-import { LoginPage, TransfersPage, stubSavePicker } from '../../clients/web/pages.ts';
+import { LoginPage, TransfersPage, stubSavePicker } from '../../clients/web/index.ts';
 
 // Two browsers are two devices: no emulator needed to test send-to-device end to end.
 test('a file sent from one browser arrives in another', async ({ browser, users, api }) => {
