@@ -4,3 +4,7 @@
 **/dist
 **/.env
 server/data
+# Not part of any image: the Android/iOS app project and the end-to-end tests.
+clients/mobile
+e2e
+**/node_modules
