@@ -109,7 +109,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/digests"
           touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: server-digest-${{ env.PLATFORM_PAIR }}
           path: ${{ runner.temp }}/digests/*
@@ -197,7 +197,7 @@ jobs:
           hdiutil create -volname "Home Space" -srcfolder "$staging" -fs HFS+ -format UDZO -ov "$dmg"
           echo "DMG=$dmg" >> "$GITHUB_ENV"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: desktop-macos-arm64
           path: ${{ env.DMG }}
@@ -229,7 +229,7 @@ jobs:
           Compress-Archive -Path $dir -DestinationPath "$name.zip" -Force
           "ZIP=$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: desktop-windows-x86_64
           path: ${{ env.ZIP }}
@@ -284,7 +284,7 @@ jobs:
           dpkg-deb --info "$GITHUB_WORKSPACE/$name.deb"
           dpkg-deb --contents "$GITHUB_WORKSPACE/$name.deb"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: desktop-linux-x86_64
           path: |
@@ -359,7 +359,7 @@ jobs:
           "$tools/apksigner" verify "$base.apk"
           rm "$RUNNER_TEMP/release.jks"
           echo "APK=$base.apk" >> "$GITHUB_ENV"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: android
           path: ${{ env.APK }}
