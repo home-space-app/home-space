@@ -18,6 +18,8 @@ export const ANDROID_PACKAGE = 'app.homespace.android';
  */
 const PERMISSIONS = ['android.permission.ACCESS_LOCAL_NETWORK', 'android.permission.POST_NOTIFICATIONS'];
 
+const ANIMATION_SETTINGS = ['window_animation_scale', 'transition_animation_scale', 'animator_duration_scale'];
+
 /** Where the emulator reaches the host's loopback, where the test server listens. */
 export const HOST_FROM_EMULATOR = '10.0.2.2';
 
@@ -62,6 +64,27 @@ export class Adb {
       await new Promise((resolve) => setTimeout(resolve, 1_000));
     }
     throw new Error(`${this.serial} did not finish booting`);
+  }
+
+  /**
+   * Turns the system's animations off and returns a function that turns them back on as they
+   * were. While a window animates in, UiAutomator's lookups stall for 10 s or more.
+   */
+  async disableAnimations(): Promise<() => Promise<void>> {
+    const before = new Map<string, string>();
+    for (const setting of ANIMATION_SETTINGS) {
+      before.set(setting, (await this.shell('settings', 'get', 'global', setting)).trim());
+      await this.shell('settings', 'put', 'global', setting, '0');
+    }
+    return async () => {
+      for (const [setting, value] of before) {
+        if (value === 'null') {
+          await this.shell('settings', 'delete', 'global', setting);
+        } else {
+          await this.shell('settings', 'put', 'global', setting, value);
+        }
+      }
+    };
   }
 
   async sdk(): Promise<number> {
@@ -129,7 +152,7 @@ export async function startAndroidSession(appium: URL, adb: Adb) {
   if (!existsSync(paths.androidApk)) {
     throw new Error(`${paths.androidApk} is missing; run \`npm run build:android\` in e2e/`);
   }
-  return remote({
+  const driver = await remote({
     protocol: appium.protocol.replace(':', ''),
     hostname: appium.hostname,
     port: Number(appium.port),
@@ -151,4 +174,15 @@ export async function startAndroidSession(appium: URL, adb: Adb) {
       'appium:newCommandTimeout': 600,
     },
   });
+  await driver.updateSettings({
+    // UiAutomator waits for the app to go idle before every lookup, up to 10 s by default. A
+    // progress indicator or the system file picker never goes idle; the screen objects wait
+    // for what they need instead.
+    waitForIdleTimeout: 0,
+    // The XPath 2 engine waits for the active window's root node, which a dialog with a
+    // blinking cursor keeps from it for 10 s or more per lookup. XPath 1 doesn't, and the
+    // screen objects' selectors are XPath 1.
+    enforceXPath1: true,
+  });
+  return driver;
 }

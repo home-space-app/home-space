@@ -233,12 +233,39 @@ export class Session {
    * the extension, as a browser would send it, so the web client offers its viewers.
    */
   async uploadFile(file: string, parentId?: string, name = path.basename(file)) {
-    const bytes = await readFile(file);
+    return this.uploadContent(name, await readFile(file), parentId);
+  }
+
+  /**
+   * Uploads `bytes` as file `name` into folder `parentId`, or the root folder. Over a file of
+   * that name, the upload is its new content and the old content becomes a version.
+   */
+  async uploadContent(name: string, bytes: Buffer, parentId?: string) {
     await this.upload(
       { name, size: bytes.length, mime: mimeOf(name), ...(parentId ? { parent_id: parentId } : {}) },
       bytes,
     );
     return this.node(name, parentId);
+  }
+
+  /** `PATCH /nodes/{id}`: renames a file or folder. */
+  rename(id: string, name: string) {
+    return this.request<Node>('PATCH', `/nodes/${id}`, { name });
+  }
+
+  /** `PATCH /nodes/{id}`: moves a file or folder into folder `parentId`, or the root folder. */
+  move(id: string, parentId: string | null) {
+    return this.request<Node>('PATCH', `/nodes/${id}`, { parent_id: parentId });
+  }
+
+  /** `DELETE /nodes/{id}`: moves a file or folder to the recycle bin. */
+  delete(id: string) {
+    return this.request<void>('DELETE', `/nodes/${id}`);
+  }
+
+  /** Shares files and folders with other users, read-only. */
+  shareWith(nodeIds: string[], recipientIds: string[]) {
+    return this.request<Share>('POST', '/shares', { node_ids: nodeIds, recipients: recipientIds });
   }
 
   /** The previous versions of file `id`, newest first. */

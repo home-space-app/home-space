@@ -65,8 +65,18 @@ The rest of the layout:
     in `clients/web/components` what pages share or open: the file table, the sidebar and the
     dialogs. An action that opens a dialog returns its object. Tests import from
     `clients/web/index.ts`.
+  - The Android objects are laid out the same way: one class per screen in
+    `clients/android/screens` (the tabs extend `TabScreen`, which has the navigation bar), and
+    dialogs and sheets in `clients/android/components`. Tests import from
+    `clients/android/index.ts`.
   - Web elements are found by role and label, and by `data-testid` where there is no accessible name.
-  - Android elements are found by Compose `testTag`, exposed as resource ids.
+  - Android elements are found by XPath: by Compose `testTag` (exposed as resource ids), by
+    content description, or by text. The session runs UiAutomator's XPath 1 engine
+    (`enforceXPath1`), because the default one stalls for 10 s or more per lookup while a dialog
+    has a blinking cursor. For the same reason the fixture turns the device's animations off
+    for the run, and puts them back afterwards.
+  - Uploading from the phone isn't tested: it goes through Android's own file picker, whose
+    window stalls every lookup and which remembers its last view between runs.
 
 The web client is loaded from the test server itself, because its websocket refuses other
 origins.
@@ -76,7 +86,7 @@ origins.
 | Folder | Clients | The other side |
 | --- | --- | --- |
 | `tests/web` | the web client | the API, or a second browser |
-| `tests/android` | the Android app | the API (`Session.sendFile`, `transfer(id)`) |
+| `tests/android` | the Android app | the API, as another of the user's devices or another user |
 | `tests/cross` | the web client and the Android app | each other |
 
 Most tests should drive one client and use the API for the rest: they are faster, and a
