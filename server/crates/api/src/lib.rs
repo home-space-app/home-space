@@ -6,10 +6,12 @@ mod extract;
 mod headers;
 mod routes;
 mod state;
+mod tenants;
 
 pub use error::ApiError;
 use headers::WebPolicy;
 pub use state::{AppState, ServerInfo};
+pub use tenants::{Resolved, TenantContext, TenantMode, Tenants, normalize_host};
 
 use std::path::Path;
 

@@ -6,11 +6,17 @@ use files::FileService;
 use notifications::Hub;
 use search::SearchIndex;
 
+use crate::Tenants;
+
 /// Shared services handed to every handler.
 #[derive(Clone, Debug)]
 pub struct AppState {
     pub db: Db,
+    /// The auth service of tenant 1, the only tenant requests reach until they are routed
+    /// by host.
     pub auth: AuthService,
+    /// Every tenant of the server, with its own auth service.
+    pub tenants: Tenants,
     pub files: FileService,
     pub hub: Hub,
     pub search: SearchIndex,
