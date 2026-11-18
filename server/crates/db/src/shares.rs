@@ -6,7 +6,7 @@ use sqlx::FromRow;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{Db, DbError, Node, NodeId, NodeKind, SharePermission, UserId};
+use crate::{Db, DbError, Node, NodeId, NodeKind, SharePermission, TenantId, UserId};
 
 macro_rules! share_columns {
     () => {
@@ -178,6 +178,40 @@ pub struct ShareUpdate<'a> {
 }
 
 /// Adds share `id` of `owner` for `node_ids`, which must all be live nodes of `owner`.
+/// Adds `users` to the recipients of the share `id` of `owner`; `NotFound` unless every one
+/// is another user of the owner's tenant. Users never change tenant, so counting them first
+/// holds under concurrency.
+async fn add_recipients(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner: UserId,
+    id: Uuid,
+    users: &[UserId],
+) -> Result<(), DbError> {
+    let mut unique = users.to_vec();
+    unique.sort_unstable_by_key(|user| user.0);
+    unique.dedup();
+    let found: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM users r JOIN users o ON o.tenant_id = r.tenant_id \
+         WHERE o.id = $1 AND r.id = ANY($2) AND r.id <> $1",
+    )
+    .bind(owner)
+    .bind(&unique)
+    .fetch_one(&mut **tx)
+    .await?;
+    if usize::try_from(found).ok() != Some(unique.len()) {
+        return Err(DbError::NotFound);
+    }
+    sqlx::query(
+        "INSERT INTO share_users (share_id, user_id) SELECT $1, unnest($2::uuid[]) \
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(id)
+    .bind(&unique)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 async fn insert_share(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     owner: UserId,
@@ -243,7 +277,7 @@ impl Db {
     }
 
     /// Shares `node_ids`, which must all be live nodes of `owner`, with `user_ids`, who must
-    /// all be other users; `NotFound` when one is not.
+    /// all be other users of the owner's tenant; `NotFound` when one is not.
     pub async fn create_user_share(
         &self,
         owner: UserId,
@@ -256,11 +290,7 @@ impl Db {
         }
         let mut tx = self.pool().begin().await?;
         insert_share(&mut tx, owner, new.id, new.expires_at, node_ids).await?;
-        sqlx::query("INSERT INTO share_users (share_id, user_id) SELECT $1, unnest($2::uuid[])")
-            .bind(new.id)
-            .bind(user_ids)
-            .execute(&mut *tx)
-            .await?;
+        add_recipients(&mut tx, owner, new.id, user_ids).await?;
         tx.commit().await?;
         self.owned_share(owner, new.id).await
     }
@@ -363,7 +393,7 @@ impl Db {
     }
 
     /// Changes a share of `owner`. A new or removed password raises its version. New
-    /// recipients must be other users; `NotFound` when one is not.
+    /// recipients must be other users of the owner's tenant; `NotFound` when one is not.
     pub async fn update_share(
         &self,
         owner: UserId,
@@ -409,14 +439,7 @@ impl Db {
                 .bind(recipients)
                 .execute(&mut *tx)
                 .await?;
-            sqlx::query(
-                "INSERT INTO share_users (share_id, user_id) SELECT $1, unnest($2::uuid[]) \
-                 ON CONFLICT DO NOTHING",
-            )
-            .bind(id)
-            .bind(recipients)
-            .execute(&mut *tx)
-            .await?;
+            add_recipients(&mut tx, owner, id, recipients).await?;
         }
         tx.commit().await?;
         self.owned_share(owner, id).await
@@ -436,14 +459,20 @@ impl Db {
         }
     }
 
-    /// The share link with `token`, whoever owns it.
-    pub async fn share_by_token(&self, token: &str) -> Result<ShareLink, DbError> {
+    /// The share link with `token`, whoever of `tenant` owns it; `NotFound` for a link of
+    /// another tenant.
+    pub async fn share_by_token(
+        &self,
+        tenant: TenantId,
+        token: &str,
+    ) -> Result<ShareLink, DbError> {
         let share = sqlx::query_as::<_, ShareLink>(concat!(
             "SELECT ",
             share_columns!(),
-            " WHERE l.token = $1"
+            " WHERE l.token = $1 AND u.tenant_id = $2"
         ))
         .bind(token)
+        .bind(tenant)
         .fetch_one(self.pool())
         .await?;
         Ok(share)
@@ -646,7 +675,10 @@ mod tests {
         )
         .await
         .expect("update");
-        let updated = db.share_by_token(TOKEN).await.expect("by token");
+        let updated = db
+            .share_by_token(TenantId::DEFAULT, TOKEN)
+            .await
+            .expect("by token");
         assert_eq!(updated.password_hash.as_deref(), Some("phc"));
         assert_eq!(updated.password_version, share.password_version + 1);
     }
@@ -662,7 +694,10 @@ mod tests {
             .expect("share");
         assert_eq!(share.permission, SharePermission::Read);
         assert_eq!(
-            db.share_by_token(TOKEN).await.expect("by token").id,
+            db.share_by_token(TenantId::DEFAULT, TOKEN)
+                .await
+                .expect("by token")
+                .id,
             share.id
         );
     }
@@ -691,7 +726,10 @@ mod tests {
         )
         .await
         .expect("update");
-        let updated = db.share_by_token(TOKEN).await.expect("by token");
+        let updated = db
+            .share_by_token(TenantId::DEFAULT, TOKEN)
+            .await
+            .expect("by token");
         assert_eq!(updated.password_hash.as_deref(), Some("phc"));
         assert_eq!(updated.password_version, share.password_version);
         assert!(updated.expires_at.is_some());
@@ -708,7 +746,7 @@ mod tests {
             .expect("share");
         db.delete_share(alice, share.id).await.expect("delete");
         assert!(matches!(
-            db.share_by_token(TOKEN).await,
+            db.share_by_token(TenantId::DEFAULT, TOKEN).await,
             Err(DbError::NotFound)
         ));
     }
@@ -762,6 +800,61 @@ mod tests {
             Err(DbError::NotFound)
         ));
         assert!(db.owned_shares(alice, None).await.expect("list").is_empty());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn shares_stay_within_their_tenant(pool: PgPool) {
+        let db = Db::from_pool(pool);
+        let other = crate::tenants::add_test_tenant(&db).await;
+        let alice = user(&db, "alice").await;
+        let bob = user(&db, "bob").await;
+        let mallory = db
+            .create_user(other, "mallory", "hash")
+            .await
+            .expect("mallory")
+            .id;
+        let file = node(&db, alice, None, NodeKind::File).await;
+
+        assert!(matches!(
+            db.create_user_share(alice, new_user_share(), &[file.id], &[bob, mallory])
+                .await,
+            Err(DbError::NotFound)
+        ));
+        let share = db
+            .create_user_share(alice, new_user_share(), &[file.id], &[bob])
+            .await
+            .expect("share");
+        assert!(matches!(
+            db.update_share(
+                alice,
+                share.id,
+                ShareUpdate {
+                    recipients: Some(&[mallory]),
+                    ..ShareUpdate::default()
+                },
+            )
+            .await,
+            Err(DbError::NotFound)
+        ));
+        let recipients = db.share_recipients(&[share.id]).await.expect("recipients");
+        assert_eq!(recipients[&share.id].len(), 1);
+        assert_eq!(recipients[&share.id][0].user_id, bob);
+
+        let link = db
+            .create_share_link(alice, new_share(TOKEN), &[file.id])
+            .await
+            .expect("link");
+        assert_eq!(
+            db.share_by_token(TenantId::DEFAULT, TOKEN)
+                .await
+                .expect("by token")
+                .id,
+            link.id
+        );
+        assert!(matches!(
+            db.share_by_token(other, TOKEN).await,
+            Err(DbError::NotFound)
+        ));
     }
 
     #[sqlx::test(migrations = "../../migrations")]

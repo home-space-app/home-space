@@ -325,11 +325,11 @@ impl TestApp {
             .to_owned()
     }
 
-    /// The id of an existing user.
+    /// The id of an existing user of this app's tenant.
     pub async fn user_id(&self, username: &str) -> db::UserId {
         self.state
             .db
-            .find_user_by_username(db::TenantId::DEFAULT, username)
+            .find_user_by_username(self.auth.tenant(), username)
             .await
             .expect("lookup")
             .expect("user")
