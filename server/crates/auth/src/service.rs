@@ -130,6 +130,7 @@ impl AuthService {
     pub fn new(db: Db, config: AuthConfig) -> Result<Self, AuthError> {
         let dummy_hash = password::hash(DUMMY_PASSWORD)?;
         let keys = Keys::new(
+            config.tenant,
             config.jwt_secret.clone(),
             config.previous_jwt_secrets.clone(),
         );
@@ -154,6 +155,7 @@ impl AuthService {
     /// notices of ended sessions (user ids are unique).
     pub fn for_tenant(&self, config: AuthConfig) -> Self {
         let keys = Keys::new(
+            config.tenant,
             config.jwt_secret.clone(),
             config.previous_jwt_secrets.clone(),
         );
@@ -447,7 +449,7 @@ impl AuthService {
     ) -> Result<TokenPair, AuthError> {
         let stored = self
             .db
-            .find_refresh_token(&hash_refresh_token(refresh_token))
+            .find_refresh_token(self.config.tenant, &hash_refresh_token(refresh_token))
             .await?
             .ok_or(AuthError::InvalidCredentials)?;
         let now = OffsetDateTime::now_utc();
@@ -522,7 +524,7 @@ impl AuthService {
     pub async fn logout(&self, refresh_token: &str) -> Result<(), AuthError> {
         if let Some(stored) = self
             .db
-            .find_refresh_token(&hash_refresh_token(refresh_token))
+            .find_refresh_token(self.config.tenant, &hash_refresh_token(refresh_token))
             .await?
         {
             self.end_session(stored.user_id, stored.family_id).await?;
@@ -552,7 +554,7 @@ impl AuthService {
     pub async fn is_live(&self, grant: &Grant) -> Result<bool, AuthError> {
         Ok(self
             .db
-            .live_session(grant.session_id, grant.user_id)
+            .live_session(self.config.tenant, grant.session_id, grant.user_id)
             .await?
             .is_some())
     }
@@ -719,7 +721,7 @@ impl AuthService {
         user_id: UserId,
     ) -> Result<LiveSession, AuthError> {
         self.db
-            .live_session(session_id, user_id)
+            .live_session(self.config.tenant, session_id, user_id)
             .await?
             .ok_or(AuthError::InvalidCredentials)
     }
@@ -817,7 +819,7 @@ impl AuthService {
         self.oidc()?;
         let stored = self
             .db
-            .take_oidc_code(&hash_refresh_token(code))
+            .take_oidc_code(self.config.tenant, &hash_refresh_token(code))
             .await?
             .ok_or(AuthError::InvalidCredentials)?;
         if verifier_matches(code_verifier, &stored.client_challenge) {
@@ -917,12 +919,13 @@ impl AuthService {
         self.pair(user_id, session_id, refresh_token)
     }
 
-    /// Refuses a user who is disabled or marked for deletion.
+    /// Refuses a user who is disabled or marked for deletion, or who is not of this tenant.
     async fn require_may_sign_in(&self, user_id: UserId) -> Result<(), AuthError> {
         let user = self
             .db
             .find_user(user_id)
             .await?
+            .filter(|user| user.tenant_id == self.config.tenant)
             .ok_or(AuthError::InvalidCredentials)?;
         if user.may_sign_in() {
             Ok(())

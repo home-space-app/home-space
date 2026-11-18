@@ -253,7 +253,7 @@ const PHONE: Uuid = Uuid::from_u128(0x0193_a4a0_0000_7000_8000_0000_0000_0001);
 const TABLET: Uuid = Uuid::from_u128(0x0193_a4a0_0000_7000_8000_0000_0000_0002);
 
 async fn sign_in_from(app: &TestApp, device: Uuid, name: &str) -> String {
-    app.state.auth.create_user("alice", PASSWORD).await.ok();
+    app.auth.create_user("alice", PASSWORD).await.ok();
     let response = app
         .json(
             Method::POST,

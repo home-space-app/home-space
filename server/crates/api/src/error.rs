@@ -24,6 +24,12 @@ pub enum ApiError {
     Gone,
     #[error("too many connections are open for this account")]
     TooManyConnections,
+    /// No tenant answers on the host the request was sent to.
+    #[error("this server does not answer on this host")]
+    UnknownHost,
+    /// The tenant of the host is disabled, being deleted, or not configured.
+    #[error("this site is not available")]
+    TenantUnavailable,
     #[error("{0}")]
     BadRequest(String),
     #[error(transparent)]
@@ -81,6 +87,10 @@ impl ApiError {
                 | FilesError::InvalidTransfer(_),
             ) => (StatusCode::BAD_REQUEST, ErrorCode::BadRequest),
             Self::Gone | Self::Files(FilesError::Gone) => (StatusCode::GONE, ErrorCode::Gone),
+            // No error code of its own: clients only ever talk to a host they were given, so
+            // they cannot do better than report it.
+            Self::UnknownHost => (StatusCode::MISDIRECTED_REQUEST, ErrorCode::NotFound),
+            Self::TenantUnavailable => (StatusCode::SERVICE_UNAVAILABLE, ErrorCode::Internal),
             Self::TooManyConnections
             | Self::Auth(AuthError::TooManyAttempts { .. } | AuthError::Busy { .. }) => {
                 (StatusCode::TOO_MANY_REQUESTS, ErrorCode::TooManyRequests)

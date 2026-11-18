@@ -1,7 +1,7 @@
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{Db, DbError, UserId};
+use crate::{Db, DbError, TenantId, UserId};
 
 /// A session that has not ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,18 +72,20 @@ impl Db {
         Ok(true)
     }
 
-    /// `session_id` if it is an unexpired session of `user_id`.
+    /// `session_id` if it is an unexpired session of `user_id`, a user of `tenant`.
     pub async fn live_session(
         &self,
+        tenant: TenantId,
         session_id: Uuid,
         user_id: UserId,
     ) -> Result<Option<LiveSession>, DbError> {
         let device = sqlx::query_scalar::<_, Option<Uuid>>(
-            "SELECT device_id FROM sessions \
-             WHERE id = $1 AND user_id = $2 AND expires_at > now()",
+            "SELECT s.device_id FROM sessions s JOIN users u ON u.id = s.user_id \
+             WHERE s.id = $1 AND s.user_id = $2 AND s.expires_at > now() AND u.tenant_id = $3",
         )
         .bind(session_id)
         .bind(user_id)
+        .bind(tenant)
         .fetch_optional(self.pool())
         .await?;
         Ok(device.map(|device_id| LiveSession { device_id }))
@@ -260,7 +262,7 @@ mod tests {
                 .expect("migrate");
         }
         let user = Uuid::now_v7();
-        sqlx::query("INSERT INTO users (id, username, password_hash) VALUES ($1, 'alice', 'x')")
+        sqlx::query("INSERT INTO users (id, tenant_id, username, password_hash) VALUES ($1, 1, 'alice', 'x')")
             .bind(user)
             .execute(&pool)
             .await
@@ -298,7 +300,7 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn an_expired_app_session_takes_its_extensions_with_it(pool: PgPool) {
         let user = Uuid::now_v7();
-        sqlx::query("INSERT INTO users (id, username, password_hash) VALUES ($1, 'alice', 'x')")
+        sqlx::query("INSERT INTO users (id, tenant_id, username, password_hash) VALUES ($1, 1, 'alice', 'x')")
             .bind(user)
             .execute(&pool)
             .await
@@ -336,7 +338,7 @@ mod tests {
             .expect("count");
         assert_eq!(left, 0);
         assert!(
-            db.live_session(files, UserId::from(user))
+            db.live_session(crate::TenantId::DEFAULT, files, UserId::from(user))
                 .await
                 .expect("live")
                 .is_none()
@@ -346,7 +348,7 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn ending_a_session_removes_its_refresh_tokens(pool: PgPool) {
         let user = Uuid::now_v7();
-        sqlx::query("INSERT INTO users (id, username, password_hash) VALUES ($1, 'alice', 'x')")
+        sqlx::query("INSERT INTO users (id, tenant_id, username, password_hash) VALUES ($1, 1, 'alice', 'x')")
             .bind(user)
             .execute(&pool)
             .await
@@ -375,5 +377,42 @@ mod tests {
                 .await
                 .expect("continue")
         );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_session_and_its_refresh_token_are_found_only_in_their_tenant(pool: PgPool) {
+        let db = Db::from_pool(pool);
+        let other = crate::tenants::add_test_tenant(&db).await;
+        let alice = db.create_user(other, "alice", "x").await.expect("alice").id;
+        let session = Uuid::now_v7();
+        let expires = OffsetDateTime::now_utc() + time::Duration::days(1);
+        db.start_session(session, alice, None, b"token", expires)
+            .await
+            .expect("start");
+
+        assert!(
+            db.live_session(TenantId::DEFAULT, session, alice)
+                .await
+                .expect("live")
+                .is_none()
+        );
+        assert!(
+            db.live_session(other, session, alice)
+                .await
+                .expect("live")
+                .is_some()
+        );
+        assert!(
+            db.find_refresh_token(TenantId::DEFAULT, b"token")
+                .await
+                .expect("token")
+                .is_none()
+        );
+        let found = db
+            .find_refresh_token(other, b"token")
+            .await
+            .expect("token")
+            .expect("found in its own tenant");
+        assert_eq!(found.family_id, session);
     }
 }

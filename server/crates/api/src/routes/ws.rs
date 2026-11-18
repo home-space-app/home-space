@@ -23,7 +23,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use auth::{AuthError, Grant};
+use auth::{AuthError, AuthService, Grant};
 use db::UserId;
 use notifications::{Event, Presence};
 use protocol::{ClientMessage, DeviceInfo, TicketRequest};
@@ -31,7 +31,7 @@ use protocol::{ClientMessage, DeviceInfo, TicketRequest};
 use crate::{
     ApiError, AppState,
     browser::refuse_other_sites,
-    extract::{AuthUser, TicketQuery},
+    extract::{AuthUser, Tenant, TicketQuery},
 };
 
 /// How often the server pings, so that a client gone silent is noticed.
@@ -59,24 +59,25 @@ pub fn routes() -> Router<AppState> {
 
 async fn upgrade(
     State(state): State<AppState>,
+    tenant: Tenant,
     headers: HeaderMap,
     Query(query): Query<TicketQuery>,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
     // A page of another site must not open the user's events, however the socket signs in.
-    refuse_other_sites(&headers, &state)?;
+    refuse_other_sites(&headers, &tenant)?;
     // Listen before the session is checked, so that it cannot end unnoticed in between.
-    let ended = state.auth.ended_sessions();
+    let ended = tenant.auth.ended_sessions();
     let (grant, lifetime) = match query.ticket {
         Some(ticket) => (
-            state
+            tenant
                 .auth
                 .verify_ticket(&ticket, &TicketRequest::Events)
                 .await?,
-            state.auth.access_ttl().unsigned_abs(),
+            tenant.auth.access_ttl().unsigned_abs(),
         ),
         None => {
-            let user = AuthUser::from_headers(&headers, &state).await?;
+            let user = AuthUser::from_headers(&headers, &tenant).await?;
             let grant = Grant {
                 user_id: user.id,
                 session_id: user.session_id,
@@ -90,10 +91,11 @@ async fn upgrade(
         .subscribe_within(grant.user_id, MAX_SOCKETS_PER_USER)
         .ok_or(ApiError::TooManyConnections)?;
     let feeds = Feeds { events, ended };
+    let auth = tenant.auth.clone();
     Ok(ws
         .max_message_size(MAX_MESSAGE_BYTES)
         .max_frame_size(MAX_MESSAGE_BYTES)
-        .on_upgrade(move |socket| session(state, grant, socket, feeds, lifetime)))
+        .on_upgrade(move |socket| session(state, auth, grant, socket, feeds, lifetime)))
 }
 
 fn remaining_lifetime(token_exp: i64) -> Duration {
@@ -113,6 +115,7 @@ struct Feeds {
 
 async fn session(
     state: AppState,
+    auth: AuthService,
     grant: Grant,
     mut socket: WebSocket,
     Feeds {
@@ -144,7 +147,7 @@ async fn session(
                     Err(RecvError::Lagged(_)) => true,
                     Err(RecvError::Closed) => false,
                 };
-                if recheck && !still_live(&state, &grant).await {
+                if recheck && !still_live(&auth, &grant).await {
                     close_ended(&mut socket).await;
                     break;
                 }
@@ -156,12 +159,12 @@ async fn session(
                 }
                 // Also catches sessions ended where no notice reaches this server, such as a
                 // password changed from the command line.
-                if !still_live(&state, &grant).await {
+                if !still_live(&auth, &grant).await {
                     close_ended(&mut socket).await;
                     break;
                 }
                 if online.is_none() {
-                    online = register(&state, &grant, &mut unregistered).await;
+                    online = register(&state, &auth, &grant, &mut unregistered).await;
                 }
                 Some(Message::Ping(Default::default()))
             }
@@ -182,7 +185,7 @@ async fn session(
                             serde_json::from_str(text.as_str())
                     {
                         unregistered = Some(device);
-                        online = register(&state, &grant, &mut unregistered).await;
+                        online = register(&state, &auth, &grant, &mut unregistered).await;
                     }
                     None
                 }
@@ -204,8 +207,8 @@ async fn session(
 
 /// Whether the socket's session still lives. A failed check counts as ended: the client
 /// reconnects, and is let back in only with a live session.
-async fn still_live(state: &AppState, grant: &Grant) -> bool {
-    state.auth.is_live(grant).await.unwrap_or_else(|err| {
+async fn still_live(auth: &AuthService, grant: &Grant) -> bool {
+    auth.is_live(grant).await.unwrap_or_else(|err| {
         tracing::warn!(error = %err, "checking the websocket's session failed");
         false
     })
@@ -231,11 +234,12 @@ async fn close(socket: &mut WebSocket, code: u16, reason: &'static str) {
 /// `unregistered` to be tried again, so a socket is not left offline for its whole life.
 async fn register(
     state: &AppState,
+    auth: &AuthService,
     grant: &Grant,
     unregistered: &mut Option<DeviceInfo>,
 ) -> Option<(Uuid, Presence)> {
     let device = unregistered.take()?;
-    match state.auth.session_device(grant, &device).await {
+    match auth.session_device(grant, &device).await {
         Ok(device) => Some((device, state.hub.connect(grant.user_id, device))),
         Err(err @ AuthError::InvalidInput(_)) => {
             tracing::warn!(error = %err, "the websocket's hello names an invalid device");

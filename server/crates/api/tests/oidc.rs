@@ -270,8 +270,7 @@ async fn callback_keeps_the_code_out_of_caches_and_referrers(pool: PgPool) {
 async fn a_taken_username_gets_a_numbered_suffix(pool: PgPool) {
     let idp = FakeIdp::start().await;
     let app = setup_oidc(pool, &idp, DEFAULTS).await;
-    app.state
-        .auth
+    app.auth
         .create_user("alice", PASSWORD)
         .await
         .expect("existing user");
@@ -537,11 +536,7 @@ async fn password_login_can_be_turned_off(pool: PgPool) {
         ..DEFAULTS
     };
     let app = setup_oidc(pool, &idp, options).await;
-    app.state
-        .auth
-        .create_user("alice", PASSWORD)
-        .await
-        .expect("user");
+    app.auth.create_user("alice", PASSWORD).await.expect("user");
     let response = app
         .json(
             Method::POST,

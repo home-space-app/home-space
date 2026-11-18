@@ -25,7 +25,7 @@ fn pair(tokens: Value) -> Pair {
 }
 
 async fn sign_in(app: &TestApp, device: Option<Uuid>) -> Pair {
-    app.state.auth.create_user("alice", PASSWORD).await.ok();
+    app.auth.create_user("alice", PASSWORD).await.ok();
     let mut body = json!({ "username": "alice", "password": PASSWORD });
     if let Some(device) = device {
         body["device"] = json!({ "id": device, "name": "Phone", "platform": "ios" });

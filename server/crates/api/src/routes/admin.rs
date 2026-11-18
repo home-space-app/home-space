@@ -17,7 +17,10 @@ use protocol::{
 };
 
 use super::storage::{disk_space, usage};
-use crate::{ApiError, AppState, extract::AdminUser};
+use crate::{
+    ApiError, AppState,
+    extract::{AdminUser, Tenant},
+};
 
 const NOT_YOURSELF: &str = "administrators cannot disable, delete or demote themselves";
 const NO_PASSWORD: &str = "this account signs in through single sign-on and has no password";
@@ -91,10 +94,11 @@ async fn get_account(
 /// Creates an account that signs in with a password.
 async fn create_account(
     State(state): State<AppState>,
+    tenant: Tenant,
     _admin: AdminUser,
     Json(request): Json<CreateAccount>,
 ) -> Result<(StatusCode, Json<Account>), ApiError> {
-    let user = state
+    let user = tenant
         .auth
         .create_user(request.username.trim(), &request.password)
         .await?;
@@ -115,6 +119,7 @@ async fn create_account(
 /// Changes the role, state or quota of an account. Disabling it ends all its sessions.
 async fn update_account(
     State(state): State<AppState>,
+    tenant: Tenant,
     admin: AdminUser,
     Path(id): Path<UserId>,
     Json(request): Json<UpdateAccount>,
@@ -141,7 +146,7 @@ async fn update_account(
             .await
             .map_err(db_error)?;
         if disabled {
-            state.auth.sessions_ended(id);
+            tenant.auth.sessions_ended(id);
         }
     }
     Ok(Json(account(state.db.account(id).await.map_err(db_error)?)))
@@ -150,6 +155,7 @@ async fn update_account(
 /// Sets a new password for an account that has one, ending all its sessions.
 async fn set_password(
     State(state): State<AppState>,
+    tenant: Tenant,
     _admin: AdminUser,
     Path(id): Path<UserId>,
     Json(request): Json<SetPassword>,
@@ -163,7 +169,7 @@ async fn set_password(
     if user.password_hash.is_none() {
         return Err(ApiError::Auth(AuthError::InvalidInput(NO_PASSWORD)));
     }
-    state.auth.set_password(id, &request.password).await?;
+    tenant.auth.set_password(id, &request.password).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -193,6 +199,7 @@ async fn account_devices(
 /// background job then deletes it with all its files. Until then it can be cancelled.
 async fn delete_account(
     State(state): State<AppState>,
+    tenant: Tenant,
     admin: AdminUser,
     Path(id): Path<UserId>,
 ) -> Result<Json<Account>, ApiError> {
@@ -206,7 +213,7 @@ async fn delete_account(
         .mark_for_deletion(id, delete_at)
         .await
         .map_err(db_error)?;
-    state.auth.sessions_ended(id);
+    tenant.auth.sessions_ended(id);
     Ok(Json(account(state.db.account(id).await.map_err(db_error)?)))
 }
 

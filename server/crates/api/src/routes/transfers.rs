@@ -21,7 +21,7 @@ use protocol::{
 
 use crate::{
     ApiError, AppState,
-    extract::{AuthUser, TicketQuery},
+    extract::{AuthUser, Tenant, TicketQuery},
     routes::{
         archive::zip_response,
         content::{Download, ranged},
@@ -289,26 +289,21 @@ pub(super) async fn publish_saved(
 /// so an interrupted download can resume.
 async fn content(
     State(state): State<AppState>,
+    tenant: Tenant,
     headers: HeaderMap,
     Query(query): Query<TicketQuery>,
     Path((id, item_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Response, ApiError> {
-    let caller = match query.ticket {
-        Some(ticket) => {
-            state
-                .auth
-                .verify_ticket(
-                    &ticket,
-                    &TicketRequest::TransferItem {
-                        transfer_id: id,
-                        item_id,
-                    },
-                )
-                .await?
-                .user_id
-        }
-        None => AuthUser::from_headers(&headers, &state).await?.id,
-    };
+    let caller = tenant
+        .caller(
+            &headers,
+            query.ticket.as_deref(),
+            &TicketRequest::TransferItem {
+                transfer_id: id,
+                item_id,
+            },
+        )
+        .await?;
     let (item, file) = state.files.open_transfer_item(caller, id, item_id).await?;
     let name = item.path.rsplit('/').next().unwrap_or(&item.path);
     let download = Download {
@@ -322,20 +317,18 @@ async fn content(
 /// Every file and folder of a ready transfer as one zip, for its recipient.
 async fn archive(
     State(state): State<AppState>,
+    tenant: Tenant,
     headers: HeaderMap,
     Query(query): Query<TicketQuery>,
     Path(id): Path<Uuid>,
 ) -> Result<Response, ApiError> {
-    let caller = match query.ticket {
-        Some(ticket) => {
-            state
-                .auth
-                .verify_ticket(&ticket, &TicketRequest::TransferArchive { transfer_id: id })
-                .await?
-                .user_id
-        }
-        None => AuthUser::from_headers(&headers, &state).await?.id,
-    };
+    let caller = tenant
+        .caller(
+            &headers,
+            query.ticket.as_deref(),
+            &TicketRequest::TransferArchive { transfer_id: id },
+        )
+        .await?;
     let (transfer, items) = state.files.transfer_archive(caller, id).await?;
     let entries = items
         .into_iter()

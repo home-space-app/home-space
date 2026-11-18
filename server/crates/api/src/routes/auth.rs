@@ -17,7 +17,7 @@ use protocol::{
 use crate::{
     ApiError, AppState,
     browser::{Browser, refresh_cookie},
-    extract::{AuthUser, ClientIp},
+    extract::{AuthUser, ClientIp, Tenant},
 };
 
 pub fn routes() -> Router<AppState> {
@@ -35,16 +35,16 @@ pub fn routes() -> Router<AppState> {
         .route("/tickets", post(ticket))
 }
 
-async fn providers(State(state): State<AppState>) -> Json<Providers> {
-    Json(state.auth.providers())
+async fn providers(tenant: Tenant) -> Json<Providers> {
+    Json(tenant.auth.providers())
 }
 
 /// Sends the browser to the identity provider.
 async fn oidc_start(
-    State(state): State<AppState>,
+    tenant: Tenant,
     Query(query): Query<OidcStartQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let url = state
+    let url = tenant
         .auth
         .oidc_start(&query.redirect_uri, &query.code_challenge)
         .await?;
@@ -53,11 +53,11 @@ async fn oidc_start(
 
 /// Where the identity provider sends the browser back; hands the user on to the client.
 async fn oidc_callback(
-    State(state): State<AppState>,
+    tenant: Tenant,
     Query(query): Query<OidcCallbackQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let code = query.code.as_deref().filter(|code| !code.is_empty());
-    let url = state
+    let url = tenant
         .auth
         .oidc_callback(
             query.state.as_deref().filter(|state| !state.is_empty()),
@@ -75,12 +75,12 @@ async fn oidc_callback(
 }
 
 async fn oidc_exchange(
-    State(state): State<AppState>,
+    tenant: Tenant,
     headers: HeaderMap,
     Json(request): Json<OidcExchangeRequest>,
 ) -> Result<Response, ApiError> {
-    let browser = browser(request.cookie, &headers, &state)?;
-    let pair = state
+    let browser = browser(request.cookie, &headers, &tenant)?;
+    let pair = tenant
         .auth
         .oidc_exchange(
             &request.code,
@@ -88,17 +88,17 @@ async fn oidc_exchange(
             request.device.as_ref(),
         )
         .await?;
-    Ok(session(&state, pair, browser))
+    Ok(session(&tenant, pair, browser))
 }
 
 async fn login(
-    State(state): State<AppState>,
+    tenant: Tenant,
     ClientIp(address): ClientIp,
     headers: HeaderMap,
     Json(request): Json<LoginRequest>,
 ) -> Result<Response, ApiError> {
-    let browser = browser(request.cookie, &headers, &state)?;
-    let pair = state
+    let browser = browser(request.cookie, &headers, &tenant)?;
+    let pair = tenant
         .auth
         .login_from(
             &request.username,
@@ -107,29 +107,29 @@ async fn login(
             address,
         )
         .await?;
-    Ok(session(&state, pair, browser))
+    Ok(session(&tenant, pair, browser))
 }
 
 /// An app sends its refresh token in the body and gets the next one back the same way. A
 /// browser's token is in its cookie, where the next one goes too.
 async fn refresh(
-    State(state): State<AppState>,
+    tenant: Tenant,
     headers: HeaderMap,
     Json(request): Json<RefreshRequest>,
 ) -> Result<Response, ApiError> {
     let from_cookie = request.refresh_token.is_none();
-    let browser = browser(request.cookie || from_cookie, &headers, &state)?;
+    let browser = browser(request.cookie || from_cookie, &headers, &tenant)?;
     let token = request
         .refresh_token
         .as_deref()
         .or_else(|| refresh_cookie(&headers))
         .ok_or(ApiError::Unauthorized)?;
     let refreshed = match browser {
-        Some(_) => state.auth.refresh_shared(token).await,
-        None => state.auth.refresh(token).await,
+        Some(_) => tenant.auth.refresh_shared(token).await,
+        None => tenant.auth.refresh(token).await,
     };
     match (refreshed, browser) {
-        (Ok(pair), browser) => Ok(session(&state, pair, browser)),
+        (Ok(pair), browser) => Ok(session(&tenant, pair, browser)),
         // The token is of no more use, so the browser need not keep it.
         (Err(err @ auth::AuthError::InvalidCredentials), Some(browser)) => {
             Ok(([(SET_COOKIE, browser.forget())], ApiError::from(err)).into_response())
@@ -139,18 +139,18 @@ async fn refresh(
 }
 
 async fn logout(
-    State(state): State<AppState>,
+    tenant: Tenant,
     headers: HeaderMap,
     Json(request): Json<RefreshRequest>,
 ) -> Result<Response, ApiError> {
     let from_cookie = request.refresh_token.is_none();
-    let browser = browser(request.cookie || from_cookie, &headers, &state)?;
+    let browser = browser(request.cookie || from_cookie, &headers, &tenant)?;
     let token = request
         .refresh_token
         .as_deref()
         .or_else(|| refresh_cookie(&headers));
     if let Some(token) = token {
-        state.auth.logout(token).await?;
+        tenant.auth.logout(token).await?;
     }
     Ok(match browser {
         Some(browser) => (StatusCode::NO_CONTENT, [(SET_COOKIE, browser.forget())]).into_response(),
@@ -161,11 +161,11 @@ async fn logout(
 /// Starts a session for an extension of the calling app on the app's device. The extension
 /// keeps the refresh token itself, so it is always in the body and never in a cookie.
 async fn device_session(
-    State(state): State<AppState>,
+    tenant: Tenant,
     user: AuthUser,
     Json(request): Json<DeviceSessionRequest>,
 ) -> Result<Json<TokenPair>, ApiError> {
-    let pair = state
+    let pair = tenant
         .auth
         .start_device_session(user.id, user.session_id, &request.label)
         .await?;
@@ -176,14 +176,16 @@ async fn device_session(
 fn browser(
     uses_cookie: bool,
     headers: &HeaderMap,
-    state: &AppState,
+    tenant: &Tenant,
 ) -> Result<Option<Browser>, ApiError> {
-    uses_cookie.then(|| Browser::of(headers, state)).transpose()
+    uses_cookie
+        .then(|| Browser::of(headers, tenant))
+        .transpose()
 }
 
 /// The response that starts or continues a session. For a browser the refresh token goes
 /// into the cookie and is left out of the body, so that no script ever holds it.
-fn session(state: &AppState, mut pair: TokenPair, browser: Option<Browser>) -> Response {
+fn session(tenant: &Tenant, mut pair: TokenPair, browser: Option<Browser>) -> Response {
     let Some(browser) = browser else {
         return Json(pair).into_response();
     };
@@ -192,7 +194,7 @@ fn session(state: &AppState, mut pair: TokenPair, browser: Option<Browser>) -> R
         // Another tab was handed the next token, and the cookie already holds it.
         Json(pair).into_response()
     } else {
-        let cookie = browser.keep(&token, state.auth.refresh_ttl());
+        let cookie = browser.keep(&token, tenant.auth.refresh_ttl());
         ([(SET_COOKIE, cookie)], Json(pair)).into_response()
     }
 }
@@ -220,11 +222,11 @@ async fn me(State(state): State<AppState>, user: AuthUser) -> Result<Json<Me>, A
 
 /// Replaces the caller's password; their other sessions end, this one stays signed in.
 async fn change_password(
-    State(state): State<AppState>,
+    tenant: Tenant,
     user: AuthUser,
     Json(request): Json<ChangePasswordRequest>,
 ) -> Result<StatusCode, ApiError> {
-    state
+    tenant
         .auth
         .change_password(
             user.id,
@@ -238,6 +240,7 @@ async fn change_password(
 
 async fn ticket(
     State(state): State<AppState>,
+    tenant: Tenant,
     user: AuthUser,
     Json(request): Json<TicketRequest>,
 ) -> Result<Json<TicketResponse>, ApiError> {
@@ -261,7 +264,7 @@ async fn ticket(
         }
         TicketRequest::Events => {}
     }
-    Ok(Json(state.auth.issue_ticket(
+    Ok(Json(tenant.auth.issue_ticket(
         user.id,
         user.session_id,
         &request,

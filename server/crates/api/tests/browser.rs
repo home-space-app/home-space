@@ -72,8 +72,7 @@ fn cookie_token(response: &Response) -> String {
 
 /// Signs alice in from a page of the server itself.
 async fn sign_in(app: &TestApp) -> Response {
-    app.state
-        .auth
+    app.auth
         .create_user("alice", PASSWORD)
         .await
         .expect("create user");
@@ -119,8 +118,7 @@ async fn a_browser_gets_its_refresh_token_in_a_cookie_only(pool: PgPool) {
 #[sqlx::test(migrations = "../../migrations")]
 async fn a_page_served_without_tls_gets_a_cookie_it_can_send_back(pool: PgPool) {
     let app = setup(pool).await;
-    app.state
-        .auth
+    app.auth
         .create_user("alice", PASSWORD)
         .await
         .expect("create user");
@@ -222,8 +220,7 @@ async fn another_site_cannot_use_the_cookie(pool: PgPool) {
 #[sqlx::test(migrations = "../../migrations")]
 async fn another_site_cannot_sign_a_browser_in(pool: PgPool) {
     let app = setup(pool).await;
-    app.state
-        .auth
+    app.auth
         .create_user("alice", PASSWORD)
         .await
         .expect("create user");

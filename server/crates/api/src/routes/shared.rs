@@ -19,7 +19,7 @@ use protocol::{
 
 use crate::{
     ApiError, AppState,
-    extract::{AuthUser, TicketQuery},
+    extract::{AuthUser, Tenant, TicketQuery},
     routes::{
         archive::zip_response,
         content::{Download, ranged},
@@ -47,19 +47,6 @@ async fn readable(state: &AppState, user: UserId, id: Uuid) -> Result<db::Receiv
         Err(ApiError::Gone)
     } else {
         Ok(share)
-    }
-}
-
-/// Who is asking: the user of a ticket for `request`, or of the request's own sign-in.
-async fn caller(
-    state: &AppState,
-    headers: &HeaderMap,
-    ticket: Option<String>,
-    request: &TicketRequest,
-) -> Result<UserId, ApiError> {
-    match ticket {
-        Some(ticket) => Ok(state.auth.verify_ticket(&ticket, request).await?.user_id),
-        None => Ok(AuthUser::from_headers(headers, state).await?.id),
     }
 }
 
@@ -115,6 +102,7 @@ async fn nodes(
 /// A file of the share, answering one `Range` of bytes when asked.
 async fn content(
     State(state): State<AppState>,
+    tenant: Tenant,
     headers: HeaderMap,
     Query(query): Query<TicketQuery>,
     Path((id, node_id)): Path<(Uuid, NodeId)>,
@@ -123,7 +111,9 @@ async fn content(
         share_id: id,
         node_id,
     };
-    let user = caller(&state, &headers, query.ticket, &request).await?;
+    let user = tenant
+        .caller(&headers, query.ticket.as_deref(), &request)
+        .await?;
     let share = readable(&state, user, id).await?;
     let node = state
         .db
@@ -145,13 +135,16 @@ async fn content(
 /// Everything the share holds, or one folder inside it, as one zip.
 async fn archive(
     State(state): State<AppState>,
+    tenant: Tenant,
     headers: HeaderMap,
     Query(query): Query<TicketQuery>,
     Query(archive): Query<ShareArchiveQuery>,
     Path(id): Path<Uuid>,
 ) -> Result<Response, ApiError> {
     let request = TicketRequest::SharedArchive { share_id: id };
-    let user = caller(&state, &headers, query.ticket, &request).await?;
+    let user = tenant
+        .caller(&headers, query.ticket.as_deref(), &request)
+        .await?;
     let share = readable(&state, user, id).await?;
     let entries = state
         .files
