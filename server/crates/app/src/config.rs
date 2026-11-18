@@ -9,6 +9,9 @@ const MIN_SECRET_DISTINCT_CHARS: usize = 10;
 /// What the example configuration used to ship as the secret, and so known to everyone.
 const PLACEHOLDER_SECRET_MARK: &str = "change-me";
 const GENERATE_SECRET: &str = "`openssl rand -base64 48`";
+pub const DEFAULT_OIDC_SCOPES: &str = "openid profile email";
+pub const DEFAULT_OIDC_GROUPS_CLAIM: &str = "groups";
+pub const DEFAULT_OIDC_NAME: &str = "Single sign-on";
 
 /// Where file content is kept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -123,7 +126,7 @@ pub struct Config {
     #[arg(
         long,
         env = "HOMESPACE_OIDC_SCOPES",
-        default_value = "openid profile email"
+        default_value = DEFAULT_OIDC_SCOPES
     )]
     pub oidc_scopes: String,
 
@@ -132,11 +135,11 @@ pub struct Config {
     pub oidc_required_group: Option<String>,
 
     /// ID token claim that lists a user's groups (Auth0 needs a namespaced custom claim).
-    #[arg(long, env = "HOMESPACE_OIDC_GROUPS_CLAIM", default_value = "groups")]
+    #[arg(long, env = "HOMESPACE_OIDC_GROUPS_CLAIM", default_value = DEFAULT_OIDC_GROUPS_CLAIM)]
     pub oidc_groups_claim: String,
 
     /// Name on the sign-in button.
-    #[arg(long, env = "HOMESPACE_OIDC_NAME", default_value = "Single sign-on")]
+    #[arg(long, env = "HOMESPACE_OIDC_NAME", default_value = DEFAULT_OIDC_NAME)]
     pub oidc_name: String,
 
     /// Allow username and password login. Turn off to use only the identity provider.
@@ -147,6 +150,12 @@ pub struct Config {
         action = clap::ArgAction::Set
     )]
     pub password_login: bool,
+
+    /// How requests find their tenant. `single` (the default) serves every request as
+    /// tenant 1, whatever host it was sent to, as before tenants existed. `host` serves each
+    /// tenant on the domains the database lists for it.
+    #[arg(long, env = "HOMESPACE_TENANT_MODE", default_value = "single")]
+    pub tenant_mode: api::TenantMode,
 
     /// How long the change journal keeps entries; clients offline for longer resync fully.
     /// Unset, the journal is only compacted to the latest entry of each node and kept for good.
@@ -161,43 +170,40 @@ impl Config {
             self.transfer_ttl_hours > 0,
             "HOMESPACE_TRANSFER_TTL_HOURS must be at least 1"
         );
-        self.jwt_secrets()
+        self.tenant_settings()
+            .validate()
             .map(drop)
-            .context("invalid configuration")?;
-        self.oidc().map(drop).context("invalid configuration")
+            .context("invalid configuration")
     }
 
-    /// Settings for single sign-on; `None` unless an issuer is configured.
+    /// The settings of tenant 1, which are the server's own unsuffixed settings, so that an
+    /// install from before tenants needs no change.
+    pub fn tenant_settings(&self) -> TenantSettings {
+        TenantSettings {
+            suffix: String::new(),
+            jwt_secret: self.jwt_secret.clone(),
+            jwt_secret_file: self.jwt_secret_file.clone(),
+            jwt_secret_previous: self.jwt_secret_previous.clone(),
+            public_url: self.public_url.clone(),
+            oidc_issuer: self.oidc_issuer.clone(),
+            oidc_client_id: self.oidc_client_id.clone(),
+            oidc_client_secret: self.oidc_client_secret.clone(),
+            oidc_scopes: self.oidc_scopes.clone(),
+            oidc_required_group: self.oidc_required_group.clone(),
+            oidc_groups_claim: self.oidc_groups_claim.clone(),
+            oidc_name: self.oidc_name.clone(),
+            password_login: self.password_login,
+        }
+    }
+
+    /// Settings for single sign-on of tenant 1; `None` unless an issuer is configured.
     pub fn oidc(&self) -> Result<Option<auth::OidcConfig>> {
-        let Some(issuer) = non_empty(&self.oidc_issuer) else {
-            return Ok(None);
-        };
-        let client_id = non_empty(&self.oidc_client_id)
-            .context("HOMESPACE_OIDC_CLIENT_ID is required with HOMESPACE_OIDC_ISSUER")?;
-        let public_url = non_empty(&self.public_url)
-            .context("HOMESPACE_PUBLIC_URL is required with HOMESPACE_OIDC_ISSUER")?;
-        anyhow::ensure!(
-            is_https_or_loopback(issuer),
-            "HOMESPACE_OIDC_ISSUER must use https"
-        );
-        anyhow::ensure!(
-            is_https_or_loopback(public_url),
-            "HOMESPACE_PUBLIC_URL must use https"
-        );
-        Ok(Some(auth::OidcConfig {
-            issuer: issuer.to_owned(),
-            client_id: client_id.to_owned(),
-            client_secret: non_empty(&self.oidc_client_secret).map(str::to_owned),
-            scopes: self
-                .oidc_scopes
-                .split_whitespace()
-                .map(str::to_owned)
-                .collect(),
-            public_url: public_url.to_owned(),
-            required_group: non_empty(&self.oidc_required_group).map(str::to_owned),
-            groups_claim: self.oidc_groups_claim.clone(),
-            display_name: self.oidc_name.clone(),
-        }))
+        self.tenant_settings().oidc()
+    }
+
+    /// The current signing secret of tenant 1 followed by the previous one, if any.
+    pub fn jwt_secrets(&self) -> Result<(Vec<u8>, Vec<Vec<u8>>)> {
+        self.tenant_settings().jwt_secrets()
     }
 
     /// The settings shown to administrators, without secrets.
@@ -229,30 +235,129 @@ impl Config {
             },
         })
     }
+}
+
+/// The settings that may differ per tenant, as given and not yet checked. Tenant 1 has the
+/// server's unsuffixed settings; tenant *n* has the same names with `_n` appended.
+#[derive(Clone, Debug, Default)]
+pub struct TenantSettings {
+    /// Appended to the variable names in messages: empty for tenant 1, `_2` for tenant 2.
+    pub suffix: String,
+    pub jwt_secret: Option<String>,
+    pub jwt_secret_file: Option<PathBuf>,
+    pub jwt_secret_previous: Option<String>,
+    pub public_url: Option<String>,
+    pub oidc_issuer: Option<String>,
+    pub oidc_client_id: Option<String>,
+    pub oidc_client_secret: Option<String>,
+    pub oidc_scopes: String,
+    pub oidc_required_group: Option<String>,
+    pub oidc_groups_claim: String,
+    pub oidc_name: String,
+    pub password_login: bool,
+}
+
+/// A tenant's settings once checked.
+#[derive(Clone, Debug)]
+pub struct TenantConfig {
+    pub jwt_secret: Vec<u8>,
+    pub previous_jwt_secrets: Vec<Vec<u8>>,
+    pub public_url: Option<String>,
+    pub oidc: Option<auth::OidcConfig>,
+    pub password_login: bool,
+}
+
+impl TenantSettings {
+    /// Checks the settings, refusing those that would make the tenant insecure.
+    pub fn validate(&self) -> Result<TenantConfig> {
+        let (jwt_secret, previous_jwt_secrets) = self.jwt_secrets()?;
+        Ok(TenantConfig {
+            jwt_secret,
+            previous_jwt_secrets,
+            public_url: non_empty(&self.public_url).map(str::to_owned),
+            oidc: self.oidc()?,
+            password_login: self.password_login,
+        })
+    }
+
+    /// The name of this tenant's variable `name`.
+    fn var(&self, name: &str) -> String {
+        format!("{name}{}", self.suffix)
+    }
+
+    /// The name of this tenant's variable that holds the path of a file with `name`'s value.
+    fn file_var(&self, name: &str) -> String {
+        format!("{name}{}_FILE", self.suffix)
+    }
+
+    /// Settings for single sign-on; `None` unless an issuer is configured.
+    pub fn oidc(&self) -> Result<Option<auth::OidcConfig>> {
+        let issuer_var = self.var("HOMESPACE_OIDC_ISSUER");
+        let Some(issuer) = non_empty(&self.oidc_issuer) else {
+            return Ok(None);
+        };
+        let client_id = non_empty(&self.oidc_client_id).with_context(|| {
+            format!(
+                "{} is required with {issuer_var}",
+                self.var("HOMESPACE_OIDC_CLIENT_ID")
+            )
+        })?;
+        let public_url_var = self.var("HOMESPACE_PUBLIC_URL");
+        let public_url = non_empty(&self.public_url)
+            .with_context(|| format!("{public_url_var} is required with {issuer_var}"))?;
+        anyhow::ensure!(is_https_or_loopback(issuer), "{issuer_var} must use https");
+        anyhow::ensure!(
+            is_https_or_loopback(public_url),
+            "{public_url_var} must use https"
+        );
+        Ok(Some(auth::OidcConfig {
+            issuer: issuer.to_owned(),
+            client_id: client_id.to_owned(),
+            client_secret: non_empty(&self.oidc_client_secret).map(str::to_owned),
+            scopes: self
+                .oidc_scopes
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect(),
+            public_url: public_url.to_owned(),
+            required_group: non_empty(&self.oidc_required_group).map(str::to_owned),
+            groups_claim: self.oidc_groups_claim.clone(),
+            display_name: self.oidc_name.clone(),
+        }))
+    }
 
     /// The current signing secret followed by the previous one, if any.
     pub fn jwt_secrets(&self) -> Result<(Vec<u8>, Vec<Vec<u8>>)> {
         let current = match (&self.jwt_secret, &self.jwt_secret_file) {
-            (Some(_), Some(_)) => {
-                anyhow::bail!("set only one of HOMESPACE_JWT_SECRET and HOMESPACE_JWT_SECRET_FILE")
-            }
+            (Some(_), Some(_)) => anyhow::bail!(
+                "set only one of {} and {}",
+                self.var("HOMESPACE_JWT_SECRET"),
+                self.file_var("HOMESPACE_JWT_SECRET")
+            ),
             (Some(secret), None) => secret.clone(),
             (None, Some(path)) => std::fs::read_to_string(path)
                 .with_context(|| format!("reading {}", path.display()))?
                 .trim_end_matches(['\r', '\n'])
                 .to_owned(),
-            (None, None) => {
-                anyhow::bail!("HOMESPACE_JWT_SECRET or HOMESPACE_JWT_SECRET_FILE must be set")
-            }
+            (None, None) => anyhow::bail!(
+                "{} or {} must be set",
+                self.var("HOMESPACE_JWT_SECRET"),
+                self.file_var("HOMESPACE_JWT_SECRET")
+            ),
         };
-        check_secret("the JWT secret", &current)?;
+        let name = if self.suffix.is_empty() {
+            "the JWT secret".to_owned()
+        } else {
+            self.var("HOMESPACE_JWT_SECRET")
+        };
+        check_secret(&name, &current)?;
         let previous = match self
             .jwt_secret_previous
             .as_ref()
             .filter(|secret| !secret.is_empty())
         {
             Some(secret) => {
-                check_secret("HOMESPACE_JWT_SECRET_PREVIOUS", secret)?;
+                check_secret(&self.var("HOMESPACE_JWT_SECRET_PREVIOUS"), secret)?;
                 vec![secret.clone().into_bytes()]
             }
             None => Vec::new(),
@@ -284,7 +389,7 @@ fn non_empty(value: &Option<String>) -> Option<&str> {
 }
 
 /// Whether `url` is https, or plain http to this machine for local development.
-fn is_https_or_loopback(url: &str) -> bool {
+pub fn is_https_or_loopback(url: &str) -> bool {
     if url.starts_with("https://") {
         return true;
     }

@@ -73,8 +73,17 @@ pub async fn setup_with(
         access_ttl: time::Duration::minutes(15),
         refresh_ttl: time::Duration::days(30),
     };
+    let auth = configure(AuthService::new(db.clone(), config).expect("auth"));
+    let tenants = api::Tenants::single(api::TenantContext {
+        id: db::TenantId::DEFAULT,
+        name: "Default".to_owned(),
+        domains: Vec::new(),
+        public_url: None,
+        auth: auth.clone(),
+    });
     let state = AppState {
-        auth: configure(AuthService::new(db.clone(), config).expect("auth")),
+        auth,
+        tenants,
         files: FileService::new(db.clone(), store, 1024 * 1024).with_chunk_bytes(UPLOAD_CHUNK),
         hub: Hub::new(),
         search,

@@ -148,6 +148,28 @@ impl AuthService {
         })
     }
 
+    /// A service for another tenant, with that tenant's keys and no identity provider yet.
+    /// It shares with this one what belongs to the process rather than to a tenant: the
+    /// database, the password hashing slots, the used tickets (their ids are unique) and the
+    /// notices of ended sessions (user ids are unique).
+    pub fn for_tenant(&self, config: AuthConfig) -> Self {
+        let keys = Keys::new(
+            config.jwt_secret.clone(),
+            config.previous_jwt_secrets.clone(),
+        );
+        Self {
+            db: self.db.clone(),
+            config,
+            keys,
+            dummy_hash: self.dummy_hash.clone(),
+            oidc: None,
+            password_login: true,
+            ended: self.ended.clone(),
+            used_tickets: Arc::clone(&self.used_tickets),
+            hashing: Arc::clone(&self.hashing),
+        }
+    }
+
     /// Enables sign-in through an identity provider. With `password_login` off, only that
     /// provider can be used to sign in.
     pub fn with_oidc(mut self, oidc: OidcService, password_login: bool) -> Self {

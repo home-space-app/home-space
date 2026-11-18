@@ -53,7 +53,7 @@ pub use shares::{
 };
 pub use sqlx::PgPool;
 pub use storage::{DatabaseInfo, QuotaUsage, StorageUsage, UserStorage};
-pub use tenants::TenantId;
+pub use tenants::{Tenant, TenantDomain, TenantId};
 pub use transfers::{
     ExpiredTransfer, IncomingScope, NewTransfer, SubtreeNode, Transfer, TransferItem,
 };

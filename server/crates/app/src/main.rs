@@ -1,11 +1,12 @@
 mod config;
+mod tenants;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
-use api::{AppState, ServerInfo};
-use auth::{AuthConfig, AuthService, OidcService};
+use api::{AppState, ServerInfo, TenantMode};
+use auth::{AuthConfig, AuthService};
 use db::{Db, TenantId};
 use files::{BlobStore, FileService};
 use notifications::Hub;
@@ -118,16 +119,27 @@ async fn serve(db: Db, config: &Config) -> Result<()> {
         .await
         .context("opening storage root")?;
     let (search, _worker) = SearchIndex::start(db.clone(), store.clone(), Vec::new());
-    let mut auth = auth_service(&db, config)?;
-    if let Some(oidc_config) = config.oidc()? {
-        let oidc = OidcService::discover(oidc_config)
-            .await
-            .context("discovering the OpenID Connect provider")?;
-        tracing::info!(issuer = oidc.issuer(), "single sign-on enabled");
-        auth = auth.with_oidc(oidc, config.password_login);
-    }
+    // Requests are not routed by host yet, so only tenant 1 could be reached.
+    anyhow::ensure!(
+        config.tenant_mode == TenantMode::Single,
+        "HOMESPACE_TENANT_MODE={} is not supported yet",
+        config.tenant_mode
+    );
+    let tenants = tenants::load(
+        &db,
+        config,
+        auth_service(&db, config)?,
+        &tenants::EnvSecrets,
+    )
+    .await?;
+    let auth = tenants
+        .get(TenantId::DEFAULT)
+        .context("tenant 1 is not served")?
+        .auth
+        .clone();
     let state = AppState {
         auth,
+        tenants,
         files: FileService::new(db.clone(), store, config.max_upload_bytes)
             .with_chunk_bytes(config.upload_chunk_bytes)
             .with_transfers(
