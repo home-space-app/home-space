@@ -6,7 +6,7 @@ use tracing_subscriber::EnvFilter;
 
 use api::{AppState, ServerInfo};
 use auth::{AuthConfig, AuthService, OidcService};
-use db::Db;
+use db::{Db, TenantId};
 use files::{BlobStore, FileService};
 use notifications::Hub;
 use search::SearchIndex;
@@ -104,6 +104,7 @@ async fn main() -> Result<()> {
 fn auth_service(db: &Db, config: &Config) -> Result<AuthService> {
     let (jwt_secret, previous_jwt_secrets) = config.jwt_secrets()?;
     let auth_config = AuthConfig {
+        tenant: TenantId::DEFAULT,
         jwt_secret,
         previous_jwt_secrets,
         access_ttl: time::Duration::seconds(config.access_ttl_secs),
@@ -327,7 +328,11 @@ async fn run_user_command(command: UserCommand, db: &Db, config: &Config) -> Res
             println!("created user {} ({}){role}", user.username, user.id);
         }
         UserCommand::List => {
-            for user in db.list_users().await.context("listing users")? {
+            for user in db
+                .list_users(TenantId::DEFAULT)
+                .await
+                .context("listing users")?
+            {
                 let role = if user.is_admin { "\tadmin" } else { "" };
                 let state = match (user.disabled_at, user.delete_at) {
                     (_, Some(at)) => format!("\tdeleted at {at}"),
@@ -339,7 +344,7 @@ async fn run_user_command(command: UserCommand, db: &Db, config: &Config) -> Res
         }
         UserCommand::Admin { username, revoke } => {
             let user = db
-                .find_user_by_username(&username)
+                .find_user_by_username(TenantId::DEFAULT, &username)
                 .await
                 .context("looking up user")?
                 .with_context(|| format!("no such user: {username}"))?;
@@ -357,7 +362,7 @@ async fn run_user_command(command: UserCommand, db: &Db, config: &Config) -> Res
             password_stdin,
         } => {
             let user = db
-                .find_user_by_username(&username)
+                .find_user_by_username(TenantId::DEFAULT, &username)
                 .await
                 .context("looking up user")?
                 .with_context(|| format!("no such user: {username}"))?;

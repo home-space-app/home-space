@@ -433,8 +433,16 @@ mod tests {
 
     async fn fixture(pool: sqlx::PgPool) -> Fixture {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
-        let bob = db.create_user("bob", "x").await.expect("bob").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
+        let bob = db
+            .create_user(crate::TenantId::DEFAULT, "bob", "x")
+            .await
+            .expect("bob")
+            .id;
         let phone = Uuid::now_v7();
         db.register_device(
             bob,
@@ -544,7 +552,11 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn only_the_sender_and_the_recipient_see_a_transfer(pool: sqlx::PgPool) {
         let f = fixture(pool).await;
-        let carol = f.db.create_user("carol", "x").await.expect("carol").id;
+        let carol =
+            f.db.create_user(crate::TenantId::DEFAULT, "carol", "x")
+                .await
+                .expect("carol")
+                .id;
         let new = transfer(
             &f,
             vec![item("a.txt", NodeKind::File, Some(vec![1]))],

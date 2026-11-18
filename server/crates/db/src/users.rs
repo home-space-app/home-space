@@ -1,38 +1,46 @@
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
-use crate::{Db, DbError, FOLDER_MIME, LOST_AND_FOUND, NodeId, User, UserId};
+use crate::{Db, DbError, FOLDER_MIME, LOST_AND_FOUND, NodeId, TenantId, User, UserId};
 
 macro_rules! user_columns {
     () => {
-        "id, username, password_hash, created_at, is_admin, disabled_at, quota_bytes, delete_at"
+        "id, tenant_id, username, password_hash, created_at, is_admin, disabled_at, quota_bytes, delete_at"
     };
 }
 
 impl Db {
-    /// Inserts a new user with their recycle bin and Lost & Found folders; `Conflict` if the
-    /// username is taken.
-    pub async fn create_user(&self, username: &str, password_hash: &str) -> Result<User, DbError> {
+    /// Inserts a new user of `tenant` with their recycle bin and Lost & Found folders;
+    /// `Conflict` if the username is taken in that tenant.
+    pub async fn create_user(
+        &self,
+        tenant: TenantId,
+        username: &str,
+        password_hash: &str,
+    ) -> Result<User, DbError> {
         let mut tx = self.pool().begin().await?;
-        let user = insert_user(&mut tx, username, Some(password_hash)).await?;
+        let user = insert_user(&mut tx, tenant, username, Some(password_hash)).await?;
         tx.commit().await?;
         Ok(user)
     }
 
-    /// Inserts a password-less user linked to an identity provider account. `Conflict` if the
-    /// username or the identity already exists.
+    /// Inserts a password-less user of `tenant` linked to an identity provider account.
+    /// `Conflict` if the username or the identity already exists in that tenant.
     pub async fn create_user_with_identity(
         &self,
+        tenant: TenantId,
         username: &str,
         issuer: &str,
         subject: &str,
         email: Option<&str>,
     ) -> Result<User, DbError> {
         let mut tx = self.pool().begin().await?;
-        let user = insert_user(&mut tx, username, None).await?;
+        let user = insert_user(&mut tx, tenant, username, None).await?;
         sqlx::query(
-            "INSERT INTO user_identities (issuer, subject, user_id, email) VALUES ($1, $2, $3, $4)",
+            "INSERT INTO user_identities (tenant_id, issuer, subject, user_id, email) \
+             VALUES ($1, $2, $3, $4, $5)",
         )
+        .bind(tenant)
         .bind(issuer)
         .bind(subject)
         .bind(user.id)
@@ -43,9 +51,10 @@ impl Db {
         Ok(user)
     }
 
-    /// Finds the user linked to an identity provider account.
+    /// Finds the user of `tenant` linked to an identity provider account.
     pub async fn find_user_by_identity(
         &self,
+        tenant: TenantId,
         issuer: &str,
         subject: &str,
     ) -> Result<Option<User>, DbError> {
@@ -53,8 +62,10 @@ impl Db {
             "SELECT ",
             user_columns!(),
             " FROM users WHERE id = \
-             (SELECT user_id FROM user_identities WHERE issuer = $1 AND subject = $2)"
+             (SELECT user_id FROM user_identities \
+             WHERE tenant_id = $1 AND issuer = $2 AND subject = $3)"
         ))
+        .bind(tenant)
         .bind(issuer)
         .bind(subject)
         .fetch_optional(self.pool())
@@ -62,13 +73,18 @@ impl Db {
         Ok(user)
     }
 
-    /// Finds a user by username.
-    pub async fn find_user_by_username(&self, username: &str) -> Result<Option<User>, DbError> {
+    /// Finds a user of `tenant` by username.
+    pub async fn find_user_by_username(
+        &self,
+        tenant: TenantId,
+        username: &str,
+    ) -> Result<Option<User>, DbError> {
         let user = sqlx::query_as::<_, User>(concat!(
             "SELECT ",
             user_columns!(),
-            " FROM users WHERE username = $1"
+            " FROM users WHERE tenant_id = $1 AND username = $2"
         ))
+        .bind(tenant)
         .bind(username)
         .fetch_optional(self.pool())
         .await?;
@@ -88,13 +104,14 @@ impl Db {
         Ok(user)
     }
 
-    /// Lists all users ordered by username.
-    pub async fn list_users(&self) -> Result<Vec<User>, DbError> {
+    /// Lists the users of `tenant` ordered by username.
+    pub async fn list_users(&self, tenant: TenantId) -> Result<Vec<User>, DbError> {
         let users = sqlx::query_as::<_, User>(concat!(
             "SELECT ",
             user_columns!(),
-            " FROM users ORDER BY username"
+            " FROM users WHERE tenant_id = $1 ORDER BY username"
         ))
+        .bind(tenant)
         .fetch_all(self.pool())
         .await?;
         Ok(users)
@@ -174,14 +191,17 @@ impl Db {
 /// Inserts a user with their recycle bin and Lost & Found folders inside `tx`.
 async fn insert_user(
     tx: &mut Transaction<'_, Postgres>,
+    tenant: TenantId,
     username: &str,
     password_hash: Option<&str>,
 ) -> Result<User, DbError> {
     let user = sqlx::query_as::<_, User>(concat!(
-        "INSERT INTO users (id, username, password_hash) VALUES ($1, $2, $3) RETURNING ",
+        "INSERT INTO users (id, tenant_id, username, password_hash) VALUES ($1, $2, $3, $4) \
+         RETURNING ",
         user_columns!(),
     ))
     .bind(UserId::new())
+    .bind(tenant)
     .bind(username)
     .bind(password_hash)
     .fetch_one(&mut **tx)
@@ -224,12 +244,89 @@ mod tests {
     async fn password_less_users_get_no_password(pool: PgPool) {
         let db = Db::from_pool(pool);
         let user = db
-            .create_user_with_identity("sso", "https://idp.example", "sub", None)
+            .create_user_with_identity(TenantId::DEFAULT, "sso", "https://idp.example", "sub", None)
             .await
             .expect("user");
         let result = db.change_password_hash(user.id, "hash", Uuid::nil()).await;
         assert!(matches!(result, Err(DbError::NotFound)));
         let found = db.find_user(user.id).await.expect("db").expect("user");
         assert!(found.password_hash.is_none());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn usernames_are_unique_per_tenant(pool: PgPool) {
+        let db = Db::from_pool(pool);
+        let other = crate::tenants::add_test_tenant(&db).await;
+        let here = db
+            .create_user(TenantId::DEFAULT, "admin", "hash")
+            .await
+            .expect("user");
+        let there = db.create_user(other, "admin", "hash").await.expect("user");
+        assert_eq!(there.tenant_id, other);
+        assert!(matches!(
+            db.create_user(other, "admin", "hash").await,
+            Err(DbError::Conflict)
+        ));
+        let found = db
+            .find_user_by_username(TenantId::DEFAULT, "admin")
+            .await
+            .expect("db")
+            .expect("user");
+        assert_eq!(found.id, here.id);
+        let listed = db.list_users(other).await.expect("users");
+        assert_eq!(
+            listed.iter().map(|user| user.id).collect::<Vec<_>>(),
+            [there.id]
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn identities_are_per_tenant(pool: PgPool) {
+        let db = Db::from_pool(pool);
+        let other = crate::tenants::add_test_tenant(&db).await;
+        let issuer = "https://idp.example";
+        let here = db
+            .create_user_with_identity(TenantId::DEFAULT, "maria", issuer, "sub", None)
+            .await
+            .expect("user");
+        let there = db
+            .create_user_with_identity(other, "maria", issuer, "sub", None)
+            .await
+            .expect("the same account may sign in to another tenant");
+        let found = db
+            .find_user_by_identity(other, issuer, "sub")
+            .await
+            .expect("db")
+            .expect("user");
+        assert_eq!(found.id, there.id);
+        assert_ne!(found.id, here.id);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn an_identity_takes_its_users_tenant(pool: PgPool) {
+        let db = Db::from_pool(pool.clone());
+        let other = crate::tenants::add_test_tenant(&db).await;
+        let user = db
+            .create_user(TenantId::DEFAULT, "alice", "hash")
+            .await
+            .expect("user");
+        let linked = sqlx::query(
+            "INSERT INTO user_identities (tenant_id, issuer, subject, user_id) \
+             VALUES ($1, 'https://idp.example', 'sub', $2)",
+        )
+        .bind(other)
+        .bind(user.id)
+        .execute(&pool)
+        .await;
+        assert!(linked.is_err());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn new_users_must_name_their_tenant(pool: PgPool) {
+        let inserted = sqlx::query("INSERT INTO users (id, username) VALUES ($1, 'alice')")
+            .bind(UserId::new())
+            .execute(&pool)
+            .await;
+        assert!(inserted.is_err());
     }
 }

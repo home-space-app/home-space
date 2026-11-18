@@ -10,7 +10,7 @@ use time::{Duration, OffsetDateTime};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, broadcast};
 use uuid::Uuid;
 
-use db::{Db, DbError, LiveSession, NewDevice, OidcPending, ShareLink, User, UserId};
+use db::{Db, DbError, LiveSession, NewDevice, OidcPending, ShareLink, TenantId, User, UserId};
 use protocol::{
     DEVICE_SESSION_LABELS, DeviceInfo, NodeId, OidcProvider, Providers, ShareAccess, TicketRequest,
     TicketResponse, TokenPair,
@@ -79,6 +79,8 @@ const ENDED_CAPACITY: usize = 64;
 /// Token settings.
 #[derive(Clone, Debug)]
 pub struct AuthConfig {
+    /// The tenant this service signs users of that tenant in to.
+    pub tenant: TenantId,
     pub jwt_secret: Vec<u8>,
     /// Earlier secrets that still verify tokens, for rotating `jwt_secret`.
     pub previous_jwt_secrets: Vec<Vec<u8>>,
@@ -154,6 +156,11 @@ impl AuthService {
         self
     }
 
+    /// The tenant whose users this service signs in.
+    pub fn tenant(&self) -> TenantId {
+        self.config.tenant
+    }
+
     /// The ways users can sign in on this server.
     pub fn providers(&self) -> Providers {
         Providers {
@@ -172,7 +179,7 @@ impl AuthService {
             password::check_new(password)?;
             let hashed = self.hash_blocking(password).await?;
             self.db
-                .create_user(username, &hashed)
+                .create_user(self.config.tenant, username, &hashed)
                 .await
                 .map_err(|err| match err {
                     DbError::Conflict => AuthError::UsernameTaken,
@@ -217,7 +224,13 @@ impl AuthService {
         let source = format!("session:{session_id}");
         if let Err(until) = self
             .db
-            .begin_login_attempt(&user.username, &source, LOGIN_ATTEMPTS_MEMORY, login_block)
+            .begin_login_attempt(
+                user.tenant_id,
+                &user.username,
+                &source,
+                LOGIN_ATTEMPTS_MEMORY,
+                login_block,
+            )
             .await?
         {
             return Err(too_many_attempts(until));
@@ -227,13 +240,13 @@ impl AuthService {
             Ok(false) => return Err(AuthError::WrongPassword),
             Err(err) => {
                 self.db
-                    .take_back_login_attempt(&user.username, &source, login_block)
+                    .take_back_login_attempt(user.tenant_id, &user.username, &source, login_block)
                     .await?;
                 return Err(err);
             }
         }
         self.db
-            .clear_login_attempts(&user.username, &source)
+            .clear_login_attempts(user.tenant_id, &user.username, &source)
             .await?;
         let hashed = self.hash_blocking(new).await?;
         self.db
@@ -292,7 +305,11 @@ impl AuthService {
             return Err(AuthError::InvalidCredentials);
         }
         let known_device = match device {
-            Some(device) => self.db.is_device_of_username(username, device.id).await?,
+            Some(device) => {
+                self.db
+                    .is_device_of_username(self.config.tenant, username, device.id)
+                    .await?
+            }
             None => false,
         };
         let source = match device {
@@ -305,6 +322,7 @@ impl AuthService {
             && let Err(until) = self
                 .db
                 .begin_login_attempt(
+                    TenantId::SHARED,
                     ANY_USERNAME,
                     address,
                     ADDRESS_ATTEMPTS_MEMORY,
@@ -316,7 +334,13 @@ impl AuthService {
         }
         let begun = self
             .db
-            .begin_login_attempt(username, &source, LOGIN_ATTEMPTS_MEMORY, login_block)
+            .begin_login_attempt(
+                self.config.tenant,
+                username,
+                &source,
+                LOGIN_ATTEMPTS_MEMORY,
+                login_block,
+            )
             .await?;
         let checked = match begun {
             Ok(()) => self.check_password(username, password).await,
@@ -329,7 +353,7 @@ impl AuthService {
                 // An already-blocked request never incremented this counter.
                 if begun.is_ok() && !matches!(err, AuthError::InvalidCredentials) {
                     self.db
-                        .take_back_login_attempt(username, &source, login_block)
+                        .take_back_login_attempt(self.config.tenant, username, &source, login_block)
                         .await?;
                 }
                 // Only a wrong password counts against the address: not a repeated try at a
@@ -338,16 +362,23 @@ impl AuthService {
                     && !matches!(err, AuthError::InvalidCredentials)
                 {
                     self.db
-                        .take_back_login_attempt(ANY_USERNAME, address, address_block)
+                        .take_back_login_attempt(
+                            TenantId::SHARED,
+                            ANY_USERNAME,
+                            address,
+                            address_block,
+                        )
                         .await?;
                 }
                 return Err(err);
             }
         };
-        self.db.clear_login_attempts(username, &source).await?;
+        self.db
+            .clear_login_attempts(self.config.tenant, username, &source)
+            .await?;
         if let Some(address) = address_source {
             self.db
-                .take_back_login_attempt(ANY_USERNAME, address, address_block)
+                .take_back_login_attempt(TenantId::SHARED, ANY_USERNAME, address, address_block)
                 .await?;
         }
         self.start_session(user.id, device).await
@@ -355,7 +386,10 @@ impl AuthService {
 
     /// The user called `username`, if `password` is theirs and they may sign in with it.
     async fn check_password(&self, username: &str, password: &str) -> Result<User, AuthError> {
-        let user = self.db.find_user_by_username(username).await?;
+        let user = self
+            .db
+            .find_user_by_username(self.config.tenant, username)
+            .await?;
         // Always verify against some hash so the timing does not reveal whether the user exists,
         // has a password, or may use password login at all.
         let hash = user
@@ -595,17 +629,27 @@ impl AuthService {
             let source = address.map(attempt_source).unwrap_or_default();
             if let Err(until) = self
                 .db
-                .begin_login_attempt(&key, &source, LOGIN_ATTEMPTS_MEMORY, login_block)
+                .begin_login_attempt(
+                    self.config.tenant,
+                    &key,
+                    &source,
+                    LOGIN_ATTEMPTS_MEMORY,
+                    login_block,
+                )
                 .await?
             {
                 return Err(too_many_attempts(until));
             }
             match self.verify_blocking(password, hash).await {
-                Ok(true) => self.db.clear_login_attempts(&key, &source).await?,
+                Ok(true) => {
+                    self.db
+                        .clear_login_attempts(self.config.tenant, &key, &source)
+                        .await?
+                }
                 Ok(false) => return Err(AuthError::InvalidCredentials),
                 Err(err) => {
                     self.db
-                        .take_back_login_attempt(&key, &source, login_block)
+                        .take_back_login_attempt(self.config.tenant, &key, &source, login_block)
                         .await?;
                     return Err(err);
                 }
@@ -686,6 +730,7 @@ impl AuthService {
         };
         self.db
             .insert_oidc_pending(
+                self.config.tenant,
                 &hash_refresh_token(&state),
                 &pending,
                 OffsetDateTime::now_utc() + OIDC_PENDING_TTL,
@@ -711,7 +756,7 @@ impl AuthService {
         let pending = match state {
             Some(state) => {
                 self.db
-                    .take_oidc_pending(&hash_refresh_token(state))
+                    .take_oidc_pending(self.config.tenant, &hash_refresh_token(state))
                     .await?
             }
             None => None,
@@ -792,7 +837,7 @@ impl AuthService {
     async fn user_for_identity(&self, identity: &Identity) -> Result<UserId, AuthError> {
         let find = || {
             self.db
-                .find_user_by_identity(&identity.issuer, &identity.subject)
+                .find_user_by_identity(self.config.tenant, &identity.issuer, &identity.subject)
         };
         if let Some(user) = find().await? {
             return Ok(user.id);
@@ -803,6 +848,7 @@ impl AuthService {
             match self
                 .db
                 .create_user_with_identity(
+                    self.config.tenant,
                     &username,
                     &identity.issuer,
                     &identity.subject,
@@ -1099,6 +1145,7 @@ mod tests {
 
     fn service(pool: PgPool) -> AuthService {
         let config = AuthConfig {
+            tenant: TenantId::DEFAULT,
             jwt_secret: b"test-secret".to_vec(),
             previous_jwt_secrets: Vec::new(),
             access_ttl: Duration::minutes(15),

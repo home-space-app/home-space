@@ -303,7 +303,11 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn signing_in_again_keeps_the_name_the_user_chose(pool: sqlx::PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
         let id = Uuid::now_v7();
         db.register_device(alice, device(id))
             .await
@@ -320,8 +324,16 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn users_of_one_install_each_get_their_own_device(pool: sqlx::PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
-        let bob = db.create_user("bob", "x").await.expect("bob").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
+        let bob = db
+            .create_user(crate::TenantId::DEFAULT, "bob", "x")
+            .await
+            .expect("bob")
+            .id;
         let id = Uuid::now_v7();
         db.register_device(alice, device(id)).await.expect("alice");
         db.register_device(bob, device(id)).await.expect("bob");
@@ -337,7 +349,11 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn signing_out_a_device_ends_only_its_sessions(pool: sqlx::PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
         let (laptop, phone) = (Uuid::now_v7(), Uuid::now_v7());
         db.register_device(alice, device(laptop))
             .await
@@ -399,7 +415,11 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn a_device_signed_out_for_long_is_forgotten(pool: sqlx::PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
         let id = Uuid::now_v7();
         db.register_device(alice, device(id))
             .await
@@ -413,7 +433,11 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn a_device_signed_out_recently_is_kept(pool: sqlx::PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
         let id = Uuid::now_v7();
         db.register_device(alice, device(id))
             .await
@@ -427,7 +451,11 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn a_signed_in_device_is_kept(pool: sqlx::PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
         let id = Uuid::now_v7();
         db.register_device(alice, device(id))
             .await
@@ -441,7 +469,11 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn touching_a_device_marks_it_seen(pool: sqlx::PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
         let id = Uuid::now_v7();
         db.register_device(alice, device(id))
             .await
@@ -457,7 +489,11 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn a_session_without_a_device_takes_the_one_attached(pool: sqlx::PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
         let id = Uuid::now_v7();
         db.register_device(alice, device(id))
             .await
@@ -473,7 +509,11 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn a_session_keeps_the_device_it_has(pool: sqlx::PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
         let (laptop, other) = (Uuid::now_v7(), Uuid::now_v7());
         db.register_device(alice, device(laptop))
             .await
@@ -494,8 +534,16 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn another_users_device_cannot_be_signed_out(pool: sqlx::PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
-        let bob = db.create_user("bob", "x").await.expect("bob").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
+        let bob = db
+            .create_user(crate::TenantId::DEFAULT, "bob", "x")
+            .await
+            .expect("bob")
+            .id;
         let id = Uuid::now_v7();
         db.register_device(alice, device(id))
             .await
@@ -517,9 +565,21 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn visibility_decides_who_can_send_to_a_device(pool: sqlx::PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
-        let bob = db.create_user("bob", "x").await.expect("bob").id;
-        let carol = db.create_user("carol", "x").await.expect("carol").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
+        let bob = db
+            .create_user(crate::TenantId::DEFAULT, "bob", "x")
+            .await
+            .expect("bob")
+            .id;
+        let carol = db
+            .create_user(crate::TenantId::DEFAULT, "carol", "x")
+            .await
+            .expect("carol")
+            .id;
         let id = Uuid::now_v7();
         db.register_device(alice, device(id))
             .await
@@ -563,8 +623,16 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn a_device_cannot_be_shown_to_its_owner_or_unknown_users(pool: sqlx::PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
-        let bob = db.create_user("bob", "x").await.expect("bob").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
+        let bob = db
+            .create_user(crate::TenantId::DEFAULT, "bob", "x")
+            .await
+            .expect("bob")
+            .id;
         let id = Uuid::now_v7();
         db.register_device(alice, device(id))
             .await

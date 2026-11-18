@@ -1,7 +1,7 @@
 use sqlx::FromRow;
 use time::OffsetDateTime;
 
-use crate::{Db, DbError, UserId};
+use crate::{Db, DbError, TenantId, UserId};
 
 /// A sign-in sent to the identity provider that has not come back yet.
 #[derive(Clone, Debug, FromRow)]
@@ -22,18 +22,21 @@ pub struct OidcCode {
 }
 
 impl Db {
-    /// Remembers a sign-in until the provider sends the user back.
+    /// Remembers a sign-in to `tenant` until the provider sends the user back.
     pub async fn insert_oidc_pending(
         &self,
+        tenant: TenantId,
         state_hash: &[u8],
         pending: &OidcPending,
         expires_at: OffsetDateTime,
     ) -> Result<(), DbError> {
         sqlx::query(
             "INSERT INTO oidc_pending \
-             (state_hash, nonce, idp_pkce_verifier, client_redirect, client_challenge, expires_at) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
+             (tenant_id, state_hash, nonce, idp_pkce_verifier, client_redirect, client_challenge, \
+             expires_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
+        .bind(tenant)
         .bind(state_hash)
         .bind(&pending.nonce)
         .bind(&pending.idp_pkce_verifier)
@@ -45,15 +48,19 @@ impl Db {
         Ok(())
     }
 
-    /// Removes and returns an unexpired pending sign-in, so a `state` works only once.
+    /// Removes and returns an unexpired pending sign-in to `tenant`, so a `state` works only
+    /// once. One sent from another tenant is left alone and not returned.
     pub async fn take_oidc_pending(
         &self,
+        tenant: TenantId,
         state_hash: &[u8],
     ) -> Result<Option<OidcPending>, DbError> {
         let pending = sqlx::query_as::<_, OidcPending>(
-            "DELETE FROM oidc_pending WHERE state_hash = $1 AND expires_at > now() \
+            "DELETE FROM oidc_pending \
+             WHERE tenant_id = $1 AND state_hash = $2 AND expires_at > now() \
              RETURNING nonce, idp_pkce_verifier, client_redirect, client_challenge",
         )
+        .bind(tenant)
         .bind(state_hash)
         .fetch_optional(self.pool())
         .await?;
@@ -102,5 +109,37 @@ impl Db {
             .execute(self.pool())
             .await?;
         Ok(pending.rows_affected() + codes.rows_affected())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sqlx::PgPool;
+    use time::Duration;
+
+    use super::*;
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_pending_sign_in_comes_back_only_to_its_tenant(pool: PgPool) {
+        let db = Db::from_pool(pool);
+        let other = crate::tenants::add_test_tenant(&db).await;
+        let pending = OidcPending {
+            nonce: "nonce".to_owned(),
+            idp_pkce_verifier: "verifier".to_owned(),
+            client_redirect: "https://files.example/".to_owned(),
+            client_challenge: "challenge".to_owned(),
+        };
+        let expires_at = OffsetDateTime::now_utc() + Duration::minutes(10);
+        db.insert_oidc_pending(TenantId::DEFAULT, b"state", &pending, expires_at)
+            .await
+            .expect("insert");
+        let elsewhere = db.take_oidc_pending(other, b"state").await.expect("db");
+        assert!(elsewhere.is_none());
+        let here = db
+            .take_oidc_pending(TenantId::DEFAULT, b"state")
+            .await
+            .expect("db")
+            .expect("still there for its own tenant");
+        assert_eq!(here.nonce, "nonce");
     }
 }

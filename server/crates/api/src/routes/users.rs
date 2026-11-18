@@ -10,14 +10,14 @@ pub fn routes() -> Router<AppState> {
     Router::new().route("/users", get(list))
 }
 
-/// Every user but the caller, by username.
+/// Every user of the caller's tenant but the caller, by username.
 async fn list(
     State(state): State<AppState>,
     user: AuthUser,
 ) -> Result<Json<Vec<UserRef>>, ApiError> {
     let users = state
         .db
-        .list_users()
+        .list_users(state.auth.tenant())
         .await
         .map_err(|err| ApiError::Internal(err.to_string()))?;
     Ok(Json(

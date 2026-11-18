@@ -4,12 +4,14 @@ use sqlx::FromRow;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{NodeId, NodeKind, UserId};
+use crate::{NodeId, NodeKind, TenantId, UserId};
 
 /// A registered user.
 #[derive(Clone, Debug, FromRow)]
 pub struct User {
     pub id: UserId,
+    /// The tenant the user belongs to; usernames are unique within it.
+    pub tenant_id: TenantId,
     pub username: String,
     /// `None` for users who only sign in through an identity provider.
     pub password_hash: Option<String>,

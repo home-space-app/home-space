@@ -540,7 +540,10 @@ mod tests {
     const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789a";
 
     async fn user(db: &Db, name: &str) -> UserId {
-        db.create_user(name, "hash").await.expect("user").id
+        db.create_user(crate::TenantId::DEFAULT, name, "hash")
+            .await
+            .expect("user")
+            .id
     }
 
     async fn node(db: &Db, owner: UserId, parent: Option<NodeId>, kind: NodeKind) -> Node {

@@ -218,7 +218,15 @@ async fn first_sign_in_creates_a_user_and_later_ones_reuse_it(pool: PgPool) {
 
     assert_eq!(first["username"], "alice");
     assert_eq!(first["id"], second["id"]);
-    assert_eq!(app.state.db.list_users().await.expect("users").len(), 1);
+    assert_eq!(
+        app.state
+            .db
+            .list_users(db::TenantId::DEFAULT)
+            .await
+            .expect("users")
+            .len(),
+        1
+    );
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -332,7 +340,14 @@ async fn a_token_for_another_audience_is_rejected(pool: PgPool) {
     .await;
     let (_, params) = client_redirect(&response);
     assert_eq!(params["error"], "login_failed");
-    assert!(app.state.db.list_users().await.expect("users").is_empty());
+    assert!(
+        app.state
+            .db
+            .list_users(db::TenantId::DEFAULT)
+            .await
+            .expect("users")
+            .is_empty()
+    );
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -393,7 +408,14 @@ async fn only_members_of_the_required_group_may_sign_in(pool: PgPool) {
     .await;
     assert_eq!(client_redirect(&outsider).1["error"], "access_denied");
     assert_eq!(client_redirect(&nobody).1["error"], "access_denied");
-    assert!(app.state.db.list_users().await.expect("users").is_empty());
+    assert!(
+        app.state
+            .db
+            .list_users(db::TenantId::DEFAULT)
+            .await
+            .expect("users")
+            .is_empty()
+    );
 
     // Keycloak reports group paths with a leading slash.
     let member = sign_in_and_get_me(&app, &idp, |nonce| {

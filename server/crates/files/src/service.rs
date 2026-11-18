@@ -502,8 +502,16 @@ mod tests {
         let db = Db::from_pool(pool);
         let dir = tempfile::tempdir().expect("tempdir");
         let store = BlobStore::open(dir.path()).await.expect("store");
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
-        let bob = db.create_user("bob", "x").await.expect("bob").id;
+        let alice = db
+            .create_user(db::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
+        let bob = db
+            .create_user(db::TenantId::DEFAULT, "bob", "x")
+            .await
+            .expect("bob")
+            .id;
         Fixture {
             files: FileService::new(db, store, max_upload_bytes),
             alice,

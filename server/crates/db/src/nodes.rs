@@ -1174,7 +1174,11 @@ mod tests {
     }
 
     async fn tree(db: &Db) -> Tree {
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
         let target = folder(db, alice, None, "target").await;
         let photos = folder(db, alice, Some(target.id), "Photos").await;
         let year = folder(db, alice, Some(photos.id), "2024").await;
@@ -1341,7 +1345,11 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn selected_files_with_the_same_name_clash_with_each_other(pool: PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
         let one = folder(&db, alice, None, "one").await;
         let two = folder(&db, alice, None, "two").await;
         let target = folder(&db, alice, None, "target").await;
@@ -1384,7 +1392,11 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn nodes_inside_a_selected_folder_move_along_with_it(pool: PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
         let dir = folder(&db, alice, None, "dir").await;
         let inner = file(&db, alice, dir.id, "a.txt").await;
         let target = folder(&db, alice, None, "target").await;
@@ -1408,8 +1420,16 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn moving_checks_cycles_ownership_and_the_target(pool: PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
-        let bob = db.create_user("bob", "x").await.expect("bob").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
+        let bob = db
+            .create_user(crate::TenantId::DEFAULT, "bob", "x")
+            .await
+            .expect("bob")
+            .id;
         let outer = folder(&db, alice, None, "outer").await;
         let inner = folder(&db, alice, Some(outer.id), "inner").await;
         let plain = file(&db, alice, outer.id, "a.txt").await;
@@ -1457,7 +1477,11 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn a_file_names_the_device_that_wrote_it_and_a_rename_keeps_it(pool: PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
         let laptop = Uuid::now_v7();
         let written = db
             .on_device(Some(laptop))
@@ -1482,7 +1506,11 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn new_content_names_its_device_and_the_version_keeps_the_previous_one(pool: PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
         let (laptop, phone) = (Uuid::now_v7(), Uuid::now_v7());
         db.on_device(Some(laptop))
             .store_file(alice, None, "a.txt", content(1))
@@ -1507,7 +1535,11 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn older_content_is_kept_as_a_version_of_the_device_that_sent_it(pool: PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
         let (laptop, phone) = (Uuid::now_v7(), Uuid::now_v7());
         db.on_device(Some(laptop))
             .store_file(alice, None, "a.txt", content(1))

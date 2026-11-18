@@ -37,7 +37,7 @@ async fn make_admin(app: &TestApp, username: &str) {
     let user = app
         .state
         .db
-        .find_user_by_username(username)
+        .find_user_by_username(db::TenantId::DEFAULT, username)
         .await
         .expect("lookup")
         .expect("user");

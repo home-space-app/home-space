@@ -67,6 +67,7 @@ pub async fn setup_with(
     let store = BlobStore::open(storage.path()).await.expect("store");
     let (search, _worker) = SearchIndex::start(db.clone(), store.clone(), Vec::new());
     let config = AuthConfig {
+        tenant: db::TenantId::DEFAULT,
         jwt_secret: b"integration-test-secret-integration".to_vec(),
         previous_jwt_secrets: Vec::new(),
         access_ttl: time::Duration::minutes(15),
@@ -233,7 +234,7 @@ impl TestApp {
     pub async fn user_id(&self, username: &str) -> db::UserId {
         self.state
             .db
-            .find_user_by_username(username)
+            .find_user_by_username(db::TenantId::DEFAULT, username)
             .await
             .expect("lookup")
             .expect("user")
