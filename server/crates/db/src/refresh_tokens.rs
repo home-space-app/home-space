@@ -1,25 +1,29 @@
 use uuid::Uuid;
 
-use crate::{Db, DbError, RefreshToken};
+use crate::{Db, DbError, RefreshToken, TenantId};
 
 macro_rules! token_columns {
     () => {
-        "id, user_id, family_id, token_hash, expires_at, revoked_at"
+        "t.id, t.user_id, t.family_id, t.token_hash, t.expires_at, t.revoked_at"
     };
 }
 
 impl Db {
-    /// Finds a refresh token by its hash.
+    /// Finds a refresh token of a user of `tenant` by its hash. A token of another tenant is
+    /// not found, so replaying it on this tenant's domain cannot end its session.
     pub async fn find_refresh_token(
         &self,
+        tenant: TenantId,
         token_hash: &[u8],
     ) -> Result<Option<RefreshToken>, DbError> {
         let token = sqlx::query_as::<_, RefreshToken>(concat!(
             "SELECT ",
             token_columns!(),
-            " FROM refresh_tokens WHERE token_hash = $1"
+            " FROM refresh_tokens t JOIN users u ON u.id = t.user_id \
+             WHERE t.token_hash = $1 AND u.tenant_id = $2"
         ))
         .bind(token_hash)
+        .bind(tenant)
         .fetch_optional(self.pool())
         .await?;
         Ok(token)

@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
-use api::{AppState, ServerInfo, TenantMode};
+use api::{AppState, ServerInfo};
 use auth::{AuthConfig, AuthService};
 use db::{Db, TenantId};
 use files::{BlobStore, FileService};
@@ -119,12 +119,6 @@ async fn serve(db: Db, config: &Config) -> Result<()> {
         .await
         .context("opening storage root")?;
     let (search, _worker) = SearchIndex::start(db.clone(), store.clone(), Vec::new());
-    // Requests are not routed by host yet, so only tenant 1 could be reached.
-    anyhow::ensure!(
-        config.tenant_mode == TenantMode::Single,
-        "HOMESPACE_TENANT_MODE={} is not supported yet",
-        config.tenant_mode
-    );
     let tenants = tenants::load(
         &db,
         config,
@@ -132,13 +126,7 @@ async fn serve(db: Db, config: &Config) -> Result<()> {
         &tenants::EnvSecrets,
     )
     .await?;
-    let auth = tenants
-        .get(TenantId::DEFAULT)
-        .context("tenant 1 is not served")?
-        .auth
-        .clone();
     let state = AppState {
-        auth,
         tenants,
         files: FileService::new(db.clone(), store, config.max_upload_bytes)
             .with_chunk_bytes(config.upload_chunk_bytes)
@@ -169,7 +157,7 @@ async fn serve(db: Db, config: &Config) -> Result<()> {
     tokio::spawn(prune(
         state.db.clone(),
         config.changes_retention_days.map(time::Duration::days),
-        state.auth.refresh_ttl(),
+        time::Duration::seconds(config.refresh_ttl_secs),
     ));
     tokio::spawn(expire_uploads(
         state.files.clone(),

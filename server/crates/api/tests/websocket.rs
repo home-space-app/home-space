@@ -35,7 +35,7 @@ async fn sign_in_from(app: &TestApp, username: &str, device: Uuid) -> String {
 
 /// Signs in on `device`, returning the access and the refresh token.
 async fn sign_in_with_refresh(app: &TestApp, username: &str, device: Uuid) -> (String, String) {
-    app.state.auth.create_user(username, PASSWORD).await.ok();
+    app.auth.create_user(username, PASSWORD).await.ok();
     let response = app
         .json(
             Method::POST,
@@ -408,8 +408,7 @@ async fn changing_the_password_closes_every_socket_of_the_user(pool: PgPool) {
         .expect("db")
         .expect("alice");
 
-    app.state
-        .auth
+    app.auth
         .set_password(user.id, "another-password")
         .await
         .expect("set password");

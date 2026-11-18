@@ -88,13 +88,21 @@ impl Db {
         Ok(())
     }
 
-    /// Removes and returns an unexpired login code, so a code works only once.
-    pub async fn take_oidc_code(&self, code_hash: &[u8]) -> Result<Option<OidcCode>, DbError> {
+    /// Removes and returns an unexpired login code of a user of `tenant`, so a code works only
+    /// once. A code of another tenant is left alone.
+    pub async fn take_oidc_code(
+        &self,
+        tenant: TenantId,
+        code_hash: &[u8],
+    ) -> Result<Option<OidcCode>, DbError> {
         let code = sqlx::query_as::<_, OidcCode>(
-            "DELETE FROM oidc_codes WHERE code_hash = $1 AND expires_at > now() \
-             RETURNING user_id, client_challenge",
+            "DELETE FROM oidc_codes c USING users u \
+             WHERE c.code_hash = $1 AND c.expires_at > now() \
+             AND u.id = c.user_id AND u.tenant_id = $2 \
+             RETURNING c.user_id, c.client_challenge",
         )
         .bind(code_hash)
+        .bind(tenant)
         .fetch_optional(self.pool())
         .await?;
         Ok(code)
@@ -141,5 +149,28 @@ mod tests {
             .expect("db")
             .expect("still there for its own tenant");
         assert_eq!(here.nonce, "nonce");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_login_code_is_taken_only_by_its_users_tenant(pool: PgPool) {
+        let db = Db::from_pool(pool);
+        let other = crate::tenants::add_test_tenant(&db).await;
+        let alice = db.create_user(other, "alice", "x").await.expect("alice").id;
+        let expires_at = OffsetDateTime::now_utc() + Duration::seconds(60);
+        db.insert_oidc_code(b"code", alice, "challenge", expires_at)
+            .await
+            .expect("insert");
+
+        let elsewhere = db
+            .take_oidc_code(TenantId::DEFAULT, b"code")
+            .await
+            .expect("db");
+        assert!(elsewhere.is_none());
+        let here = db
+            .take_oidc_code(other, b"code")
+            .await
+            .expect("db")
+            .expect("still there for its own tenant");
+        assert_eq!(here.user_id, alice);
     }
 }

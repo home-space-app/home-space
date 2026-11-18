@@ -51,7 +51,7 @@ struct Session {
 }
 
 async fn sign_in(app: &TestApp, username: &str) -> Session {
-    app.state.auth.create_user(username, PASSWORD).await.ok();
+    app.auth.create_user(username, PASSWORD).await.ok();
     let tokens = app
         .json(
             Method::POST,
@@ -198,11 +198,7 @@ async fn sessions_are_independent_and_a_password_change_ends_them_all(pool: PgPo
     let app = setup(pool).await;
     let laptop = sign_in(&app, "alice").await;
     let phone = sign_in(&app, "alice").await;
-    app.state
-        .auth
-        .create_user("bob", PASSWORD)
-        .await
-        .expect("bob");
+    app.auth.create_user("bob", PASSWORD).await.expect("bob");
     let bob = sign_in(&app, "bob").await;
     assert_ne!(
         decode_session(&laptop.access),
@@ -223,8 +219,7 @@ async fn sessions_are_independent_and_a_password_change_ends_them_all(pool: PgPo
     assert_eq!(status_of(&app, &phone.access).await, StatusCode::OK);
 
     let user_id = phone.user_id.parse().expect("user id");
-    app.state
-        .auth
+    app.auth
         .set_password(user_id, "another-password")
         .await
         .expect("set password");

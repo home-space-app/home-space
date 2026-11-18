@@ -22,7 +22,7 @@ use protocol::{
 
 use crate::{
     ApiError, AppState,
-    extract::{AuthUser, ClientIp},
+    extract::{AuthUser, ClientIp, Tenant},
     routes::{
         archive::zip_response,
         content::{Download, ranged},
@@ -152,6 +152,7 @@ async fn owner_view(state: &AppState, share: db::OwnedShare) -> Result<Share, Ap
 
 async fn create(
     State(state): State<AppState>,
+    tenant: Tenant,
     user: AuthUser,
     Json(request): Json<CreateShare>,
 ) -> Result<(StatusCode, Json<Share>), ApiError> {
@@ -163,7 +164,7 @@ async fn create(
     }
     check_expiry(request.expires_at)?;
     let share = if request.recipients.is_empty() {
-        create_link(&state, user.id, &request, &node_ids).await?
+        create_link(&state, &tenant, user.id, &request, &node_ids).await?
     } else {
         if request.password.is_some() {
             return Err(ApiError::BadRequest(
@@ -186,12 +187,13 @@ async fn create(
 
 async fn create_link(
     state: &AppState,
+    tenant: &Tenant,
     owner: UserId,
     request: &CreateShare,
     node_ids: &[NodeId],
 ) -> Result<db::OwnedShare, ApiError> {
     let password_hash = match request.password.as_deref() {
-        Some(password) => Some(state.auth.hash_share_password(password).await?),
+        Some(password) => Some(tenant.auth.hash_share_password(password).await?),
         None => None,
     };
     let token = auth::new_share_token();
@@ -225,6 +227,7 @@ async fn list(
 
 async fn update(
     State(state): State<AppState>,
+    tenant: Tenant,
     user: AuthUser,
     Path(id): Path<Uuid>,
     Json(request): Json<UpdateShare>,
@@ -248,7 +251,7 @@ async fn update(
         .map(|recipients| check_recipients(user.id, recipients))
         .transpose()?;
     let password_hash = match request.password {
-        Some(Some(password)) => Some(Some(state.auth.hash_share_password(&password).await?)),
+        Some(Some(password)) => Some(Some(tenant.auth.hash_share_password(&password).await?)),
         Some(None) => Some(None),
         None => None,
     };
@@ -290,7 +293,7 @@ async fn resolve(state: &AppState, token: &str) -> Result<db::ShareLink, ApiErro
 /// Whether the request may read `share`: it has no password, or the request carries a valid
 /// access token for its current one.
 fn is_unlocked(
-    state: &AppState,
+    tenant: &Tenant,
     share: &db::ShareLink,
     headers: &HeaderMap,
     query: &ShareAccessQuery,
@@ -300,18 +303,19 @@ fn is_unlocked(
         .and_then(|value| value.to_str().ok())
         .or(query.access.as_deref());
     share.password_hash.is_none()
-        || access.is_some_and(|access| state.auth.verifies_share_access(share, access))
+        || access.is_some_and(|access| tenant.auth.verifies_share_access(share, access))
 }
 
 /// The share link of `token`, when the request may read it.
 async fn readable(
     state: &AppState,
+    tenant: &Tenant,
     token: &str,
     headers: &HeaderMap,
     query: &ShareAccessQuery,
 ) -> Result<db::ShareLink, ApiError> {
     let share = resolve(state, token).await?;
-    if is_unlocked(state, &share, headers, query) {
+    if is_unlocked(tenant, &share, headers, query) {
         Ok(share)
     } else {
         Err(ApiError::Unauthorized)
@@ -320,12 +324,13 @@ async fn readable(
 
 async fn public_share(
     State(state): State<AppState>,
+    tenant: Tenant,
     headers: HeaderMap,
     Path(token): Path<String>,
     Query(query): Query<ShareAccessQuery>,
 ) -> Result<Json<PublicShare>, ApiError> {
     let share = resolve(&state, &token).await?;
-    let unlocked = is_unlocked(&state, &share, &headers, &query);
+    let unlocked = is_unlocked(&tenant, &share, &headers, &query);
     let items = if unlocked {
         let mut items: HashMap<Uuid, Vec<db::Node>> =
             state.db.share_items(&[share.id]).await.map_err(db_error)?;
@@ -351,12 +356,13 @@ async fn public_share(
 
 async fn unlock(
     State(state): State<AppState>,
+    tenant: Tenant,
     ClientIp(address): ClientIp,
     Path(token): Path<String>,
     Json(request): Json<UnlockShare>,
 ) -> Result<Json<ShareAccess>, ApiError> {
     let share = resolve(&state, &token).await?;
-    let access = state
+    let access = tenant
         .auth
         .unlock_share(&share, &request.password, address)
         .await?;
@@ -365,12 +371,13 @@ async fn unlock(
 
 async fn public_nodes(
     State(state): State<AppState>,
+    tenant: Tenant,
     headers: HeaderMap,
     Path(token): Path<String>,
     Query(access): Query<ShareAccessQuery>,
     Query(folder): Query<SharedFolderQuery>,
 ) -> Result<Json<Vec<SharedNode>>, ApiError> {
-    let share = readable(&state, &token, &headers, &access).await?;
+    let share = readable(&state, &tenant, &token, &headers, &access).await?;
     let children = state
         .db
         .shared_children(share.root(), folder.parent_id)
@@ -381,11 +388,12 @@ async fn public_nodes(
 
 async fn public_content(
     State(state): State<AppState>,
+    tenant: Tenant,
     headers: HeaderMap,
     Path((token, id)): Path<(String, NodeId)>,
     Query(access): Query<ShareAccessQuery>,
 ) -> Result<Response, ApiError> {
-    let share = readable(&state, &token, &headers, &access).await?;
+    let share = readable(&state, &tenant, &token, &headers, &access).await?;
     let node = state
         .db
         .shared_node(share.root(), id)
@@ -406,12 +414,13 @@ async fn public_content(
 /// Everything the link shares, or one folder inside it, as one zip.
 async fn public_archive(
     State(state): State<AppState>,
+    tenant: Tenant,
     headers: HeaderMap,
     Path(token): Path<String>,
     Query(access): Query<ShareAccessQuery>,
     Query(archive): Query<ShareArchiveQuery>,
 ) -> Result<Response, ApiError> {
-    let share = readable(&state, &token, &headers, &access).await?;
+    let share = readable(&state, &tenant, &token, &headers, &access).await?;
     let entries = state
         .files
         .share_archive(share.root(), archive.folder_id)

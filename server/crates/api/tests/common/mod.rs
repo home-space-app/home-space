@@ -3,7 +3,7 @@
 
 pub mod idp;
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use axum::{
     Router,
@@ -17,7 +17,7 @@ use tower::ServiceExt;
 
 use api::AppState;
 use auth::{AuthConfig, AuthService};
-use db::Db;
+use db::{Db, TenantDomain, TenantId};
 use files::{BlobStore, FileService};
 use notifications::Hub;
 use search::SearchIndex;
@@ -26,10 +26,24 @@ pub const PASSWORD: &str = "password-123";
 /// Chunk size of resumable uploads in tests, small so a short text spans several chunks.
 pub const UPLOAD_CHUNK: u64 = 4;
 
+/// The domain of tenant 1 in [`setup_two_tenants`].
+pub const HOST_A: &str = "files.example.com";
+/// The domain of the second tenant in [`setup_two_tenants`].
+pub const HOST_B: &str = "cloud.other.org";
+/// A domain whose tenant is recorded but not serving.
+pub const HOST_UNAVAILABLE: &str = "closed.example.net";
+const JWT_SECRET: &[u8] = b"integration-test-secret-integration";
+
+/// The server as one tenant's clients reach it.
+#[derive(Clone)]
 pub struct TestApp {
     pub router: Router,
     pub state: AppState,
-    _storage: tempfile::TempDir,
+    /// The auth service of the tenant this app's requests reach.
+    pub auth: AuthService,
+    /// The `Host` every request is sent to, unless it names its own; `None` sends none.
+    pub host: Option<&'static str>,
+    _storage: Arc<tempfile::TempDir>,
 }
 
 pub struct Response {
@@ -63,26 +77,91 @@ pub async fn setup_with(
     configure: impl FnOnce(AuthService) -> AuthService,
 ) -> TestApp {
     let db = Db::from_pool(pool);
-    let storage = tempfile::tempdir().expect("tempdir");
-    let store = BlobStore::open(storage.path()).await.expect("store");
-    let (search, _worker) = SearchIndex::start(db.clone(), store.clone(), Vec::new());
-    let config = AuthConfig {
-        tenant: db::TenantId::DEFAULT,
-        jwt_secret: b"integration-test-secret-integration".to_vec(),
+    let auth =
+        configure(AuthService::new(db.clone(), auth_config(TenantId::DEFAULT)).expect("auth"));
+    let tenants = api::Tenants::single(tenant(TenantId::DEFAULT, Vec::new(), &auth));
+    build(db, tenants, auth, None).await
+}
+
+/// A server in host mode with two tenants: tenant 1 on [`HOST_A`] and another on
+/// [`HOST_B`], returned as each one's clients reach it. Both are given the same signing
+/// secret, which the server refuses at start-up, so that the tests show tokens are kept
+/// apart by more than their signatures. [`HOST_UNAVAILABLE`] leads to a third tenant that
+/// is not serving.
+pub async fn setup_two_tenants(pool: PgPool) -> (TestApp, TestApp) {
+    let other = add_tenant(&pool, "Other").await;
+    let closed = add_tenant(&pool, "Closed").await;
+    let db = Db::from_pool(pool);
+    let a = AuthService::new(db.clone(), auth_config(TenantId::DEFAULT)).expect("auth");
+    let b = a.for_tenant(auth_config(other));
+    let domains = [
+        domain(HOST_A, TenantId::DEFAULT),
+        domain(HOST_B, other),
+        domain(HOST_UNAVAILABLE, closed),
+    ];
+    let tenants = api::Tenants::new(
+        api::TenantMode::Host,
+        vec![
+            tenant(TenantId::DEFAULT, vec![HOST_A.to_owned()], &a),
+            tenant(other, vec![HOST_B.to_owned()], &b),
+        ],
+        &domains,
+    );
+    let app_a = build(db, tenants, a, Some(HOST_A)).await;
+    let app_b = TestApp {
+        auth: b,
+        host: Some(HOST_B),
+        ..app_a.clone()
+    };
+    (app_a, app_b)
+}
+
+async fn add_tenant(pool: &PgPool, name: &str) -> TenantId {
+    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id")
+        .bind(name)
+        .fetch_one(pool)
+        .await
+        .expect("tenant")
+}
+
+fn domain(domain: &str, tenant_id: TenantId) -> TenantDomain {
+    TenantDomain {
+        domain: domain.to_owned(),
+        tenant_id,
+        is_primary: true,
+    }
+}
+
+fn auth_config(tenant: TenantId) -> AuthConfig {
+    AuthConfig {
+        tenant,
+        jwt_secret: JWT_SECRET.to_vec(),
         previous_jwt_secrets: Vec::new(),
         access_ttl: time::Duration::minutes(15),
         refresh_ttl: time::Duration::days(30),
-    };
-    let auth = configure(AuthService::new(db.clone(), config).expect("auth"));
-    let tenants = api::Tenants::single(api::TenantContext {
-        id: db::TenantId::DEFAULT,
-        name: "Default".to_owned(),
-        domains: Vec::new(),
-        public_url: None,
+    }
+}
+
+fn tenant(id: TenantId, domains: Vec<String>, auth: &AuthService) -> api::TenantContext {
+    api::TenantContext {
+        id,
+        name: format!("Tenant {id}"),
+        public_url: domains.first().map(|domain| format!("https://{domain}")),
+        domains,
         auth: auth.clone(),
-    });
+    }
+}
+
+async fn build(
+    db: Db,
+    tenants: api::Tenants,
+    auth: AuthService,
+    host: Option<&'static str>,
+) -> TestApp {
+    let storage = tempfile::tempdir().expect("tempdir");
+    let store = BlobStore::open(storage.path()).await.expect("store");
+    let (search, _worker) = SearchIndex::start(db.clone(), store.clone(), Vec::new());
     let state = AppState {
-        auth,
         tenants,
         files: FileService::new(db.clone(), store, 1024 * 1024).with_chunk_bytes(UPLOAD_CHUNK),
         hub: Hub::new(),
@@ -115,7 +194,9 @@ pub async fn setup_with(
     TestApp {
         router: api::router(state.clone()),
         state,
-        _storage: storage,
+        auth,
+        host,
+        _storage: Arc::new(storage),
     }
 }
 
@@ -143,6 +224,12 @@ impl TestApp {
         extra_headers: &[(&str, &str)],
     ) -> Response {
         let mut request = Request::builder().method(method).uri(uri);
+        let names_host = extra_headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("host"));
+        if let Some(host) = self.host.filter(|_| !names_host) {
+            request = request.header("host", host);
+        }
         for (name, value) in extra_headers {
             request = request.header(*name, *value);
         }
@@ -197,8 +284,7 @@ impl TestApp {
     }
 
     pub async fn user_token(&self, username: &str) -> String {
-        self.state
-            .auth
+        self.auth
             .create_user(username, PASSWORD)
             .await
             .expect("create user");
@@ -219,7 +305,7 @@ impl TestApp {
     /// Signs `username` in from `device` (creating the user if needed), returning the access
     /// token.
     pub async fn sign_in_from(&self, username: &str, device: uuid::Uuid, name: &str) -> String {
-        self.state.auth.create_user(username, PASSWORD).await.ok();
+        self.auth.create_user(username, PASSWORD).await.ok();
         let response = self
             .json(
                 Method::POST,

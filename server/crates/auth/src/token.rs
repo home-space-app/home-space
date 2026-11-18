@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
-use db::UserId;
+use db::{TenantId, UserId};
 
 use crate::AuthError;
 
@@ -18,10 +18,15 @@ const TYPE_TICKET: &str = "ticket";
 /// The `typ` claim of the access token of an unlocked share link.
 const TYPE_SHARE: &str = "share";
 
-/// Signing keys: tokens are signed with the current secret and verified against the current
-/// and any previous secrets, so the secret can be rotated without ending sessions.
+/// Signing keys of one tenant: tokens are signed with the current secret and verified against
+/// the current and any previous secrets, so the secret can be rotated without ending sessions.
+///
+/// Every token names the tenant in its `tid` claim, and one naming another tenant is refused
+/// even when its signature is good, so a secret two tenants share by mistake still keeps
+/// their tokens apart.
 #[derive(Clone)]
 pub struct Keys {
+    tenant: TenantId,
     current: Vec<u8>,
     previous: Vec<Vec<u8>>,
 }
@@ -29,14 +34,24 @@ pub struct Keys {
 impl std::fmt::Debug for Keys {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Keys")
+            .field("tenant", &self.tenant)
             .field("previous", &self.previous.len())
             .finish_non_exhaustive()
     }
 }
 
 impl Keys {
-    pub fn new(current: Vec<u8>, previous: Vec<Vec<u8>>) -> Self {
-        Self { current, previous }
+    pub fn new(tenant: TenantId, current: Vec<u8>, previous: Vec<Vec<u8>>) -> Self {
+        Self {
+            tenant,
+            current,
+            previous,
+        }
+    }
+
+    /// Whether a token's `tid` claim names the tenant of these keys.
+    fn is_own(&self, tid: i32) -> bool {
+        tid == self.tenant.0
     }
 
     /// Identifier stored in the token header: a truncated hash, never the secret itself.
@@ -86,6 +101,7 @@ pub struct Claims {
 #[serde(deny_unknown_fields)]
 struct AccessClaims {
     typ: String,
+    tid: i32,
     sub: UserId,
     sid: Uuid,
     iat: i64,
@@ -102,6 +118,7 @@ pub fn encode_access(
     let now = OffsetDateTime::now_utc();
     let claims = AccessClaims {
         typ: TYPE_ACCESS.to_owned(),
+        tid: keys.tenant.0,
         sub: user_id,
         sid: session_id,
         iat: now.unix_timestamp(),
@@ -124,7 +141,7 @@ pub fn decode_access(keys: &Keys, token: &str) -> Result<Claims, AuthError> {
     let claims = decode::<AccessClaims>(token, &DecodingKey::from_secret(secret)?, &validation)
         .map(|data| data.claims)
         .map_err(|_| AuthError::InvalidCredentials)?;
-    if claims.typ == TYPE_ACCESS {
+    if claims.typ == TYPE_ACCESS && keys.is_own(claims.tid) {
         Ok(Claims {
             sub: claims.sub,
             sid: claims.sid,
@@ -139,6 +156,7 @@ pub fn decode_access(keys: &Keys, token: &str) -> Result<Claims, AuthError> {
 #[derive(Serialize, Deserialize)]
 struct TicketClaims {
     typ: String,
+    tid: i32,
     sub: UserId,
     sid: Uuid,
     iat: i64,
@@ -159,6 +177,7 @@ pub fn encode_ticket(
     let now = OffsetDateTime::now_utc();
     let claims = TicketClaims {
         typ: TYPE_TICKET.to_owned(),
+        tid: keys.tenant.0,
         sub: user_id,
         sid: session_id,
         iat: now.unix_timestamp(),
@@ -194,7 +213,7 @@ pub fn decode_ticket(keys: &Keys, token: &str, scope: &str) -> Result<TicketGran
     let claims = decode::<TicketClaims>(token, &DecodingKey::from_secret(secret)?, &validation)
         .map(|data| data.claims)
         .map_err(|_| AuthError::InvalidCredentials)?;
-    if claims.typ == TYPE_TICKET && claims.tkt == scope {
+    if claims.typ == TYPE_TICKET && claims.tkt == scope && keys.is_own(claims.tid) {
         Ok(TicketGrant {
             user_id: claims.sub,
             session_id: claims.sid,
@@ -212,6 +231,7 @@ pub fn decode_ticket(keys: &Keys, token: &str, scope: &str) -> Result<TicketGran
 #[serde(deny_unknown_fields)]
 struct ShareClaims {
     typ: String,
+    tid: i32,
     shr: Uuid,
     /// The password version it was granted for.
     pwv: i32,
@@ -236,6 +256,7 @@ pub fn encode_share_access(
     let now = OffsetDateTime::now_utc();
     let claims = ShareClaims {
         typ: TYPE_SHARE.to_owned(),
+        tid: keys.tenant.0,
         shr: grant.share_id,
         pwv: grant.password_version,
         iat: now.unix_timestamp(),
@@ -258,7 +279,7 @@ pub fn decode_share_access(keys: &Keys, token: &str) -> Result<ShareGrant, AuthE
     let claims = decode::<ShareClaims>(token, &DecodingKey::from_secret(secret)?, &validation)
         .map(|data| data.claims)
         .map_err(|_| AuthError::InvalidCredentials)?;
-    if claims.typ == TYPE_SHARE {
+    if claims.typ == TYPE_SHARE && keys.is_own(claims.tid) {
         Ok(ShareGrant {
             share_id: claims.shr,
             password_version: claims.pwv,
@@ -292,7 +313,12 @@ mod tests {
     const SECRET: &[u8] = b"test-secret";
 
     fn keys(secret: &[u8]) -> Keys {
-        Keys::new(secret.to_vec(), Vec::new())
+        Keys::new(TenantId::DEFAULT, secret.to_vec(), Vec::new())
+    }
+
+    /// The keys of another tenant that was given the same secret.
+    fn other_tenant(secret: &[u8]) -> Keys {
+        Keys::new(TenantId(2), secret.to_vec(), Vec::new())
     }
 
     #[test]
@@ -491,6 +517,7 @@ mod tests {
         for typ in [TYPE_TICKET, ""] {
             let claims = AccessClaims {
                 typ: typ.to_owned(),
+                tid: k.tenant.0,
                 sub: UserId::new(),
                 sid: Uuid::now_v7(),
                 iat: now,
@@ -512,6 +539,7 @@ mod tests {
         let k = keys(SECRET);
         let claims = TicketClaims {
             typ: TYPE_ACCESS.to_owned(),
+            tid: k.tenant.0,
             sub: UserId::new(),
             sid: Uuid::now_v7(),
             iat: now,
@@ -538,7 +566,11 @@ mod tests {
             Duration::minutes(5),
         )
         .expect("encode");
-        let rotated = Keys::new(b"new-secret".to_vec(), vec![b"old-secret".to_vec()]);
+        let rotated = Keys::new(
+            TenantId::DEFAULT,
+            b"new-secret".to_vec(),
+            vec![b"old-secret".to_vec()],
+        );
         assert_eq!(decode_access(&rotated, &token).expect("decode").sub, user);
     }
 
@@ -556,7 +588,11 @@ mod tests {
 
     #[test]
     fn new_tokens_use_the_current_secret() {
-        let rotated = Keys::new(b"new-secret".to_vec(), vec![b"old-secret".to_vec()]);
+        let rotated = Keys::new(
+            TenantId::DEFAULT,
+            b"new-secret".to_vec(),
+            vec![b"old-secret".to_vec()],
+        );
         let token = encode_access(
             &rotated,
             UserId::new(),
@@ -571,5 +607,54 @@ mod tests {
     #[test]
     fn refresh_tokens_are_unique() {
         assert_ne!(new_refresh_token(), new_refresh_token());
+    }
+
+    #[test]
+    fn tokens_of_another_tenant_are_refused_even_with_the_same_secret() {
+        let ours = keys(SECRET);
+        let theirs = other_tenant(SECRET);
+        let user = UserId::new();
+        let session = Uuid::now_v7();
+
+        let access = encode_access(&theirs, user, session, Duration::minutes(5)).expect("access");
+        assert!(decode_access(&ours, &access).is_err());
+        assert!(decode_access(&theirs, &access).is_ok());
+
+        let ticket =
+            encode_ticket(&theirs, user, session, "events", Duration::seconds(30)).expect("ticket");
+        assert!(decode_ticket(&ours, &ticket, "events").is_err());
+        assert!(decode_ticket(&theirs, &ticket, "events").is_ok());
+
+        let share = encode_share_access(&theirs, grant(), Duration::hours(1)).expect("share");
+        assert!(decode_share_access(&ours, &share).is_err());
+        assert!(decode_share_access(&theirs, &share).is_ok());
+    }
+
+    #[test]
+    fn tokens_from_before_tenants_are_refused() {
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+        let k = keys(SECRET);
+        let sign = |claims: serde_json::Value| {
+            encode(
+                &k.header(),
+                &claims,
+                &EncodingKey::from_secret(&k.current).expect("key"),
+            )
+            .expect("encode")
+        };
+        let (sub, sid) = (UserId::new(), Uuid::now_v7());
+        let access = sign(serde_json::json!({
+            "typ": TYPE_ACCESS, "sub": sub, "sid": sid, "iat": now, "exp": now + 300,
+        }));
+        assert!(decode_access(&k, &access).is_err());
+        let ticket = sign(serde_json::json!({
+            "typ": TYPE_TICKET, "sub": sub, "sid": sid, "iat": now, "exp": now + 30,
+            "tkt": "events", "jti": Uuid::now_v7(),
+        }));
+        assert!(decode_ticket(&k, &ticket, "events").is_err());
+        let share = sign(serde_json::json!({
+            "typ": TYPE_SHARE, "shr": Uuid::now_v7(), "pwv": 1, "iat": now, "exp": now + 300,
+        }));
+        assert!(decode_share_access(&k, &share).is_err());
     }
 }

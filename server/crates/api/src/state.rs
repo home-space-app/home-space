@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use auth::AuthService;
 use db::Db;
 use files::FileService;
 use notifications::Hub;
@@ -12,10 +11,8 @@ use crate::Tenants;
 #[derive(Clone, Debug)]
 pub struct AppState {
     pub db: Db,
-    /// The auth service of tenant 1, the only tenant requests reach until they are routed
-    /// by host.
-    pub auth: AuthService,
-    /// Every tenant of the server, with its own auth service.
+    /// Every tenant of the server, with its own auth service. Handlers reach the one a
+    /// request was sent to through the [`Tenant`](crate::extract::Tenant) extractor.
     pub tenants: Tenants,
     pub files: FileService,
     pub hub: Hub,

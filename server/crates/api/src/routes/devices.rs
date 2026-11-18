@@ -16,7 +16,10 @@ use protocol::{
     TransferTarget, UserRef,
 };
 
-use crate::{ApiError, AppState, extract::AuthUser};
+use crate::{
+    ApiError, AppState,
+    extract::{AuthUser, Tenant},
+};
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -138,6 +141,7 @@ async fn rename(
 /// the list, signed out, until it has been gone for as long as a session lasts unrefreshed.
 async fn sign_out(
     State(state): State<AppState>,
+    tenant: Tenant,
     user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
@@ -146,7 +150,7 @@ async fn sign_out(
         .sign_out_device(user.id, id)
         .await
         .map_err(db_error)?;
-    state.auth.sessions_ended(user.id);
+    tenant.auth.sessions_ended(user.id);
     state.files.cancel_device_uploads(user.id, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

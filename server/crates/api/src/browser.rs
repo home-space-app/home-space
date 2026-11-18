@@ -2,7 +2,8 @@
 //! the refresh token in a cookie that the page's scripts cannot read.
 //!
 //! A cookie is sent along by the browser whatever page asks, so every request that relies on
-//! it, and the websocket, must come from this server's own pages.
+//! it, and the websocket, must come from this server's own pages, and from the pages of the
+//! tenant the request was sent to.
 
 use std::net::IpAddr;
 
@@ -13,7 +14,7 @@ use axum::http::{
 use protocol::paths;
 use time::Duration;
 
-use crate::{ApiError, AppState};
+use crate::{ApiError, TenantContext};
 
 /// Name of the cookie that holds a browser's refresh token.
 pub const REFRESH_COOKIE: &str = "homespace_refresh";
@@ -28,10 +29,11 @@ pub struct Browser {
 }
 
 impl Browser {
-    /// The browser behind a request that uses the cookie; any other page is refused.
-    pub fn of(headers: &HeaderMap, state: &AppState) -> Result<Self, ApiError> {
+    /// The browser behind a request to `tenant` that uses the cookie; any other page is
+    /// refused.
+    pub fn of(headers: &HeaderMap, tenant: &TenantContext) -> Result<Self, ApiError> {
         let origin = origin(headers).ok_or(ApiError::Forbidden)?;
-        if is_own_origin(origin, headers, state) {
+        if is_own_origin(origin, headers, tenant.public_url.as_deref()) {
             Ok(Self {
                 secure: origin.starts_with(HTTPS),
             })
@@ -65,9 +67,11 @@ impl Browser {
 
 /// Refuses a request that a page of another site made. A request without `Origin` does not
 /// come from a page at all, but from one of the apps.
-pub fn refuse_other_sites(headers: &HeaderMap, state: &AppState) -> Result<(), ApiError> {
+pub fn refuse_other_sites(headers: &HeaderMap, tenant: &TenantContext) -> Result<(), ApiError> {
     match origin(headers) {
-        Some(origin) if !is_own_origin(origin, headers, state) => Err(ApiError::Forbidden),
+        Some(origin) if !is_own_origin(origin, headers, tenant.public_url.as_deref()) => {
+            Err(ApiError::Forbidden)
+        }
         _ => Ok(()),
     }
 }
@@ -89,14 +93,13 @@ fn origin(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// Whether `origin` is this server: the address the request was sent to (`Host`), or the
-/// configured public URL, which covers a proxy that does not pass `Host` on unchanged. Two
+/// tenant's `public_url`, which covers a proxy that does not pass `Host` on unchanged. Two
 /// loopback addresses also count as one, for a development server on another port.
-fn is_own_origin(origin: &str, headers: &HeaderMap, state: &AppState) -> bool {
+fn is_own_origin(origin: &str, headers: &HeaderMap, public_url: Option<&str>) -> bool {
     let Some((_, authority)) = origin.split_once("://") else {
         return false;
     };
     let host = headers.get(HOST).and_then(|value| value.to_str().ok());
-    let public_url = state.info.config.public_url.as_deref();
     host.is_some_and(|host| host.eq_ignore_ascii_case(authority))
         || public_url.is_some_and(|url| url.trim_end_matches('/').eq_ignore_ascii_case(origin))
         || host.is_some_and(|host| is_loopback(host) && is_loopback(authority))
@@ -174,5 +177,16 @@ mod tests {
         ] {
             assert!(!is_loopback(authority), "{authority}");
         }
+    }
+
+    #[test]
+    fn only_the_tenants_own_public_url_counts() {
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, HeaderValue::from_static("homespace:8080"));
+        let ours = Some("https://files.example.com/");
+        assert!(is_own_origin("https://files.example.com", &headers, ours));
+        assert!(is_own_origin("http://homespace:8080", &headers, ours));
+        assert!(!is_own_origin("https://cloud.other.org", &headers, ours));
+        assert!(!is_own_origin("https://files.example.com", &headers, None));
     }
 }

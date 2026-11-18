@@ -23,7 +23,7 @@ use protocol::{
 
 use crate::{
     ApiError, AppState,
-    extract::{AuthUser, TicketQuery},
+    extract::{AuthUser, Tenant, TicketQuery},
     routes::trash::move_response,
 };
 
@@ -203,46 +203,39 @@ pub(crate) async fn publish_stored(
 
 async fn download(
     State(state): State<AppState>,
+    tenant: Tenant,
     headers: HeaderMap,
     Query(query): Query<TicketQuery>,
     Path(id): Path<NodeId>,
 ) -> Result<Response, ApiError> {
-    let owner = match query.ticket {
-        Some(ticket) => {
-            state
-                .auth
-                .verify_ticket(&ticket, &TicketRequest::Download { node_id: id })
-                .await?
-                .user_id
-        }
-        None => AuthUser::from_headers(&headers, &state).await?.id,
-    };
+    let owner = tenant
+        .caller(
+            &headers,
+            query.ticket.as_deref(),
+            &TicketRequest::Download { node_id: id },
+        )
+        .await?;
     let (node, file) = state.files.download(owner, id).await?;
     Ok(attachment(&node.name, &node.mime, node.size, file))
 }
 
 async fn download_version(
     State(state): State<AppState>,
+    tenant: Tenant,
     headers: HeaderMap,
     Query(query): Query<TicketQuery>,
     Path((id, version)): Path<(NodeId, i32)>,
 ) -> Result<Response, ApiError> {
-    let owner = match query.ticket {
-        Some(ticket) => {
-            state
-                .auth
-                .verify_ticket(
-                    &ticket,
-                    &TicketRequest::DownloadVersion {
-                        node_id: id,
-                        version,
-                    },
-                )
-                .await?
-                .user_id
-        }
-        None => AuthUser::from_headers(&headers, &state).await?.id,
-    };
+    let owner = tenant
+        .caller(
+            &headers,
+            query.ticket.as_deref(),
+            &TicketRequest::DownloadVersion {
+                node_id: id,
+                version,
+            },
+        )
+        .await?;
     let (node, meta, file) = state.files.download_version(owner, id, version).await?;
     Ok(attachment(&node.name, &meta.mime, meta.size, file))
 }

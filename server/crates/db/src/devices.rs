@@ -368,17 +368,19 @@ mod tests {
         db.sign_out_device(alice, laptop).await.expect("sign out");
 
         assert_eq!(
-            db.live_session(on_laptop, alice).await.expect("laptop"),
+            db.live_session(crate::TenantId::DEFAULT, on_laptop, alice)
+                .await
+                .expect("laptop"),
             None
         );
         assert!(
-            db.live_session(on_phone, alice)
+            db.live_session(crate::TenantId::DEFAULT, on_phone, alice)
                 .await
                 .expect("phone")
                 .is_some()
         );
         assert!(
-            db.live_session(unnamed, alice)
+            db.live_session(crate::TenantId::DEFAULT, unnamed, alice)
                 .await
                 .expect("unnamed")
                 .is_some()
@@ -502,7 +504,10 @@ mod tests {
 
         db.attach_device(unnamed, alice, id).await.expect("attach");
 
-        let live = db.live_session(unnamed, alice).await.expect("live");
+        let live = db
+            .live_session(crate::TenantId::DEFAULT, unnamed, alice)
+            .await
+            .expect("live");
         assert_eq!(live.map(|live| live.device_id), Some(Some(id)));
     }
 
@@ -527,7 +532,10 @@ mod tests {
             .await
             .expect("attach");
 
-        let live = db.live_session(on_laptop, alice).await.expect("live");
+        let live = db
+            .live_session(crate::TenantId::DEFAULT, on_laptop, alice)
+            .await
+            .expect("live");
         assert_eq!(live.map(|live| live.device_id), Some(Some(laptop)));
     }
 
@@ -555,7 +563,7 @@ mod tests {
             Err(DbError::NotFound)
         ));
         assert!(
-            db.live_session(on_laptop, alice)
+            db.live_session(crate::TenantId::DEFAULT, on_laptop, alice)
                 .await
                 .expect("live")
                 .is_some()
