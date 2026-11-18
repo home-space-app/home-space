@@ -9,6 +9,7 @@ use axum::{
 };
 use serde_json::{Value, json};
 use sqlx::PgPool;
+use uuid::Uuid;
 
 use common::{HOST_UNAVAILABLE, PASSWORD, TestApp, setup_two_tenants};
 
@@ -226,4 +227,125 @@ async fn a_browser_on_one_tenants_page_cannot_use_another_host(pool: PgPool) {
     };
     assert_eq!(from_page_of_a(&a).await, StatusCode::OK);
     assert_eq!(from_page_of_a(&b).await, StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn the_user_picker_lists_only_users_of_the_same_tenant(pool: PgPool) {
+    let (a, b) = setup_two_tenants(pool).await;
+    let alice = a.user_token("alice").await;
+    a.user_token("bob").await;
+    b.user_token("mallory").await;
+
+    let listed = a.get("/api/v1/users", &alice).await.json();
+    let names = listed
+        .as_array()
+        .expect("users")
+        .iter()
+        .map(|user| user["username"].as_str().expect("name").to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["bob"]);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_device_shown_to_everyone_is_hidden_from_other_tenants(pool: PgPool) {
+    let (a, b) = setup_two_tenants(pool).await;
+    let laptop = Uuid::now_v7();
+    let alice = a.sign_in_from("alice", laptop, "Laptop").await;
+    let mallory = b.sign_in_from("mallory", Uuid::now_v7(), "Phone").await;
+    let shown = a
+        .json(
+            Method::PUT,
+            &format!("/api/v1/devices/{laptop}/visibility"),
+            Some(&alice),
+            json!({ "visibility": "everyone" }),
+        )
+        .await;
+    assert_eq!(shown.status, StatusCode::OK);
+
+    let targets = b.get("/api/v1/devices/targets", &mallory).await.json();
+    assert!(
+        targets
+            .as_array()
+            .expect("targets")
+            .iter()
+            .all(|target| target["user"]["username"] == "mallory"),
+        "{targets}"
+    );
+    let sent = b
+        .json(
+            Method::POST,
+            "/api/v1/transfers",
+            Some(&mallory),
+            json!({
+                "recipient_id": a.user_id("alice").await,
+                "recipient_device": laptop,
+                "items": [{ "path": "a.txt", "kind": "file", "size": 1 }],
+            }),
+        )
+        .await;
+    assert_eq!(sent.status, StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_device_cannot_be_shown_to_a_user_of_another_tenant(pool: PgPool) {
+    let (a, b) = setup_two_tenants(pool).await;
+    let laptop = Uuid::now_v7();
+    let alice = a.sign_in_from("alice", laptop, "Laptop").await;
+    b.user_token("mallory").await;
+
+    let shown = a
+        .json(
+            Method::PUT,
+            &format!("/api/v1/devices/{laptop}/visibility"),
+            Some(&alice),
+            json!({ "visibility": "users", "users": [b.user_id("mallory").await] }),
+        )
+        .await;
+    assert_eq!(shown.status, StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn files_cannot_be_shared_with_a_user_of_another_tenant(pool: PgPool) {
+    let (a, b) = setup_two_tenants(pool).await;
+    let alice = a.user_token("alice").await;
+    let mallory = b.user_token("mallory").await;
+    let report = a.upload(&alice, "name=report.pdf", "pdf").await.json()["id"].clone();
+
+    let shared = a
+        .json(
+            Method::POST,
+            "/api/v1/shares",
+            Some(&alice),
+            json!({ "node_ids": [report], "recipients": [b.user_id("mallory").await] }),
+        )
+        .await;
+    assert_eq!(shared.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        b.get("/api/v1/shared", &mallory).await.json(),
+        json!([]),
+        "nothing was shared with mallory"
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_share_link_opens_only_on_its_tenants_host(pool: PgPool) {
+    let (a, b) = setup_two_tenants(pool).await;
+    let alice = a.user_token("alice").await;
+    let report = a.upload(&alice, "name=report.pdf", "pdf").await.json()["id"].clone();
+    let link = a
+        .json(
+            Method::POST,
+            "/api/v1/shares",
+            Some(&alice),
+            json!({ "node_ids": [report] }),
+        )
+        .await;
+    assert_eq!(link.status, StatusCode::CREATED);
+    let token = link.json()["token"].as_str().expect("token").to_owned();
+    let uri = format!("/api/v1/public/shares/{token}");
+
+    let at_home = a.send(Method::GET, &uri, None, Body::empty(), None).await;
+    assert_eq!(at_home.status, StatusCode::OK);
+    let elsewhere = b.send(Method::GET, &uri, None, Body::empty(), None).await;
+    assert_eq!(elsewhere.status, StatusCode::NOT_FOUND);
 }

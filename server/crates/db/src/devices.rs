@@ -41,13 +41,16 @@ pub struct TargetDevice {
     pub signed_in: bool,
 }
 
-/// Whether `$viewer` may see the device `d` and send files to it. Devices of a disabled
+/// Whether `$viewer` may see the device `d` and send files to it. Only devices of users of
+/// the viewer's own tenant are seen, even with visibility `everyone`; devices of a disabled
 /// user, which includes one marked for deletion, are seen by nobody.
 macro_rules! can_see_device {
     ($viewer:literal) => {
         concat!(
-            "EXISTS (SELECT 1 FROM users o WHERE o.id = d.user_id \
-                 AND o.disabled_at IS NULL) \
+            "EXISTS (SELECT 1 FROM users o JOIN users vw ON vw.tenant_id = o.tenant_id \
+                 WHERE o.id = d.user_id AND vw.id = ",
+            $viewer,
+            " AND o.disabled_at IS NULL) \
              AND ((d.user_id = ",
             $viewer,
             " AND d.visibility <> 'hidden') OR d.visibility = 'everyone' \
@@ -114,7 +117,8 @@ impl Db {
     }
 
     /// Sets who can see a device of `user`. `viewers` is kept only for
-    /// [`DeviceVisibility::Users`]; `Invalid` when it names `user` or an unknown user.
+    /// [`DeviceVisibility::Users`]; `Invalid` when it names `user`, an unknown user or a user
+    /// of another tenant.
     /// Returns the users who could see the device before or can see it now, so their lists
     /// of targets can be refreshed.
     pub async fn set_device_visibility(
@@ -153,7 +157,8 @@ impl Db {
             let ids = viewers.iter().map(|viewer| viewer.0).collect::<Vec<_>>();
             let inserted = sqlx::query(
                 "INSERT INTO device_viewers (owner_id, device_id, viewer_id) \
-                 SELECT $1, $2, u.id FROM users u WHERE u.id = ANY($3)",
+                 SELECT $1, $2, u.id FROM users u JOIN users o ON o.tenant_id = u.tenant_id \
+                 WHERE o.id = $1 AND u.id = ANY($3)",
             )
             .bind(user)
             .bind(id)
@@ -170,10 +175,13 @@ impl Db {
         }
         if before == DeviceVisibility::Everyone || visibility == DeviceVisibility::Everyone {
             affected.extend(
-                sqlx::query_scalar::<_, UserId>("SELECT id FROM users WHERE id <> $1")
-                    .bind(user)
-                    .fetch_all(&mut *tx)
-                    .await?,
+                sqlx::query_scalar::<_, UserId>(
+                    "SELECT u.id FROM users u JOIN users o ON o.tenant_id = u.tenant_id \
+                     WHERE o.id = $1 AND u.id <> $1",
+                )
+                .bind(user)
+                .fetch_all(&mut *tx)
+                .await?,
             );
         }
         tx.commit().await?;
@@ -662,5 +670,51 @@ mod tests {
             db.devices(alice).await.expect("devices")[0].visibility,
             DeviceVisibility::Owner
         );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn devices_are_seen_and_shown_only_within_their_tenant(pool: sqlx::PgPool) {
+        let db = Db::from_pool(pool);
+        let other = crate::tenants::add_test_tenant(&db).await;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
+        let bob = db
+            .create_user(crate::TenantId::DEFAULT, "bob", "x")
+            .await
+            .expect("bob")
+            .id;
+        let mallory = db
+            .create_user(other, "mallory", "x")
+            .await
+            .expect("mallory")
+            .id;
+        let id = Uuid::now_v7();
+        db.register_device(alice, device(id))
+            .await
+            .expect("register");
+
+        let affected = db
+            .set_device_visibility(alice, id, DeviceVisibility::Everyone, &[])
+            .await
+            .expect("everyone");
+        assert_eq!(affected, vec![bob]);
+        assert!(
+            db.transfer_targets(mallory)
+                .await
+                .expect("targets")
+                .is_empty()
+        );
+        assert!(!db.can_send_to(mallory, alice, id).await.expect("can send"));
+        assert!(db.can_send_to(bob, alice, id).await.expect("can send"));
+
+        assert!(matches!(
+            db.set_device_visibility(alice, id, DeviceVisibility::Users, &[mallory])
+                .await,
+            Err(DbError::Invalid)
+        ));
+        assert!(db.device_viewers(alice).await.expect("viewers").is_empty());
     }
 }

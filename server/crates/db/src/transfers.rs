@@ -118,7 +118,7 @@ macro_rules! transfer_query {
 impl Db {
     /// Records a transfer and its items. It is ready at once when every file has its bytes.
     /// `NotFound` while the sender or the recipient is disabled or marked for
-    /// deletion.
+    /// deletion, and when they are users of different tenants.
     pub async fn create_transfer(&self, new: NewTransfer) -> Result<Transfer, DbError> {
         let total_bytes = new
             .items
@@ -137,6 +137,17 @@ impl Db {
         };
         let mut tx = self.pool().begin().await?;
         lock_active_users(&mut tx, &[new.sender, new.recipient]).await?;
+        let same_tenant = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM users s JOIN users r ON r.tenant_id = s.tenant_id \
+             WHERE s.id = $1 AND r.id = $2)",
+        )
+        .bind(new.sender)
+        .bind(new.recipient)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !same_tenant {
+            return Err(DbError::NotFound);
+        }
         sqlx::query(
             "INSERT INTO transfers (id, sender_id, sender_device, recipient_id, \
              recipient_device, state, total_bytes, item_count, message, expires_at, ready_at) \

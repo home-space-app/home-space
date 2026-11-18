@@ -277,12 +277,21 @@ async fn remove(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// The share link of `token`: `NotFound` when there is none, `Gone` once it has expired.
-async fn resolve(state: &AppState, token: &str) -> Result<db::ShareLink, ApiError> {
+/// The share link of `token` of the request's tenant: `NotFound` when there is none, `Gone`
+/// once it has expired.
+async fn resolve(
+    state: &AppState,
+    tenant: &Tenant,
+    token: &str,
+) -> Result<db::ShareLink, ApiError> {
     if token.len() > MAX_TOKEN_LEN {
         return Err(ApiError::NotFound);
     }
-    let share = state.db.share_by_token(token).await.map_err(db_error)?;
+    let share = state
+        .db
+        .share_by_token(tenant.id, token)
+        .await
+        .map_err(db_error)?;
     if share.is_expired(OffsetDateTime::now_utc()) {
         Err(ApiError::Gone)
     } else {
@@ -314,7 +323,7 @@ async fn readable(
     headers: &HeaderMap,
     query: &ShareAccessQuery,
 ) -> Result<db::ShareLink, ApiError> {
-    let share = resolve(state, token).await?;
+    let share = resolve(state, tenant, token).await?;
     if is_unlocked(tenant, &share, headers, query) {
         Ok(share)
     } else {
@@ -329,7 +338,7 @@ async fn public_share(
     Path(token): Path<String>,
     Query(query): Query<ShareAccessQuery>,
 ) -> Result<Json<PublicShare>, ApiError> {
-    let share = resolve(&state, &token).await?;
+    let share = resolve(&state, &tenant, &token).await?;
     let unlocked = is_unlocked(&tenant, &share, &headers, &query);
     let items = if unlocked {
         let mut items: HashMap<Uuid, Vec<db::Node>> =
@@ -361,7 +370,7 @@ async fn unlock(
     Path(token): Path<String>,
     Json(request): Json<UnlockShare>,
 ) -> Result<Json<ShareAccess>, ApiError> {
-    let share = resolve(&state, &token).await?;
+    let share = resolve(&state, &tenant, &token).await?;
     let access = tenant
         .auth
         .unlock_share(&share, &request.password, address)
