@@ -49,6 +49,12 @@ Every table hangs off `users`, keyed by UUIDs that are unique across the whole d
 - Not tied to a user: `login_attempts` (keyed by the submitted username, which may not exist),
   `oidc_pending` (a sign-in before we know who it is), `node_changes_pruned`.
 
+"Username" in this plan always means the sign-in name (`users.username`, text), never the user
+id. User ids are UUIDs and stay globally unique, so nothing keyed by a user id needs a tenant.
+The name is the one thing a person types to sign in, so it is what has to become unique per
+tenant. `login_attempts` has to stay keyed by the name too: it also counts names that belong
+to no user, so that throttling does not tell which names exist.
+
 Constraints that are global today and must become per tenant:
 
 | Constraint | Today | With tenants |
