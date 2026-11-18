@@ -31,7 +31,7 @@ up; in short:
 | Request | Change | Why |
 |---|---|---|
 | `tenant_id` on every table | On `users` and the few tables that are not reached through a user | Everything else is already keyed by a user's UUID; the leaks are in the queries that cross users, not in the owner-scoped ones (see [Where tenant_id goes](#where-tenant_id-goes)) |
-| `DEFAULT 1` | Only while migrating, then dropped | A forgotten insert would silently land in tenant 1 |
+| `DEFAULT 1` | Same intent, spelled out: `NOT NULL DEFAULT 1` backfills existing rows, then the default is dropped | New rows must name their tenant (from the parent user or the request), so a forgotten insert fails on `NOT NULL` |
 | `ON DELETE CASCADE` | `ON DELETE RESTRICT`, deletion through a background job | One `DELETE FROM tenants` would wipe every row of a tenant in a single transaction and leave its files on disk |
 | `name` is the domain | Separate `tenant_domains` table, one primary per tenant | A domain can't be renamed safely: OIDC callbacks, security keys of protected folders, share links and installed clients are all bound to it |
 | Tenant from the JWT claim | Tenant from the request's `Host`, confirmed by the claim | Sign-in, OIDC, public share links and `/capabilities` have no token, so the claim can't be the only source |
@@ -143,9 +143,14 @@ Notes:
 
 - **The tenant id is an integer**, as proposed, so that it fits in an environment variable name
   (`HOMESPACE_JWT_SECRET_2`). It is never secret and never the only thing that grants access.
-- **`DEFAULT 1` only during the migration.** Kept, every insert that forgets the tenant would
-  put a user of tenant 2 into tenant 1 without an error. Dropped, it fails with a `NOT NULL`
-  violation in tests.
+- **`NOT NULL`, backfilled with 1, no lasting default.** `ADD COLUMN ... NOT NULL DEFAULT 1`
+  fills every existing row with tenant 1 in the same statement; `ALTER COLUMN ... DROP DEFAULT`
+  right after leaves the column `NOT NULL` without a default. From then on every insert names
+  its tenant: a new user takes the tenant of the request (or of `--tenant` in the CLI), an
+  identity or a pending sign-in takes the tenant of its user or request. An insert that forgets
+  it fails with a `NOT NULL` violation, which tests catch, instead of quietly landing in tenant 1.
+  Rows below a user (nodes, sessions, ...) have no column of their own and take the tenant from
+  their user through `owner_id` / `user_id`.
 - **`ON DELETE RESTRICT`, not `CASCADE`.** A cascade from `tenants` would delete every node,
   version, session and search entry of a tenant in one transaction (long locks on the shared
   tables, a huge WAL burst), and the blobs on disk would stay behind. Deleting a tenant reuses
