@@ -194,7 +194,11 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn a_node_changed_twice_is_listed_once_with_its_current_state(pool: PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
         let start = cursor(&db, alice).await;
         let node = file(&db, alice, None, "a.txt").await;
         let update = NodeUpdate {
@@ -216,7 +220,11 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn binned_and_deleted_nodes_read_as_deleted(pool: PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
         let dir = folder(&db, alice, "dir").await;
         let inner = file(&db, alice, Some(dir.id), "a.txt").await;
         let start = cursor(&db, alice).await;
@@ -231,8 +239,16 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn changes_are_paged_and_scoped_to_their_owner(pool: PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
-        let bob = db.create_user("bob", "x").await.expect("bob").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
+        let bob = db
+            .create_user(crate::TenantId::DEFAULT, "bob", "x")
+            .await
+            .expect("bob")
+            .id;
         let start = cursor(&db, alice).await;
         let first = file(&db, alice, None, "1.txt").await;
         file(&db, bob, None, "bob.txt").await;
@@ -251,7 +267,11 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn compacting_keeps_the_latest_entry_of_each_node(pool: PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
         let start = cursor(&db, alice).await;
         let renamed = file(&db, alice, None, "a.txt").await;
         let kept = file(&db, alice, None, "b.txt").await;
@@ -283,7 +303,11 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn reading_from_before_a_prune_is_refused(pool: PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
         let start = cursor(&db, alice).await;
         file(&db, alice, None, "a.txt").await;
         let pruned = db
@@ -304,7 +328,11 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn a_change_names_the_device_that_made_it_last(pool: PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
         let start = cursor(&db, alice).await;
         let laptop = Uuid::now_v7();
         let first = folder(&db.on_device(Some(laptop)), alice, "a").await;

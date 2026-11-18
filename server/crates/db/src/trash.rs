@@ -308,7 +308,11 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn users_get_a_hidden_trash_folder_named_after_its_id(pool: PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
         let folders = db.special_folders(alice).await.expect("folders");
         let name = sqlx::query_scalar::<_, String>("SELECT name FROM nodes WHERE id = $1")
             .bind(folders.trash_id)
@@ -326,8 +330,16 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn deleting_a_user_removes_their_nodes_and_special_folders(pool: PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
-        let bob = db.create_user("bob", "x").await.expect("bob").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
+        let bob = db
+            .create_user(crate::TenantId::DEFAULT, "bob", "x")
+            .await
+            .expect("bob")
+            .id;
         let binned = file(&db, alice, None, "binned.txt").await;
         file(&db, alice, None, "live.txt").await;
         file(&db, bob, None, "bobs.txt").await;
@@ -356,7 +368,11 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn trashing_removes_the_search_entries_and_restoring_allows_reindexing(pool: PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
         let node = file(&db, alice, None, "a.txt").await;
         db.upsert_name_entry(alice, node.id, "a txt")
             .await

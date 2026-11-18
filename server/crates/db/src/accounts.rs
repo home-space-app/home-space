@@ -256,7 +256,10 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn a_marked_user_is_deleted_only_once_due(pool: PgPool) {
         let db = Db::from_pool(pool.clone());
-        let user = db.create_user("doomed", "hash").await.expect("user");
+        let user = db
+            .create_user(crate::TenantId::DEFAULT, "doomed", "hash")
+            .await
+            .expect("user");
         let later = OffsetDateTime::now_utc() + Duration::minutes(10);
         db.mark_for_deletion(user.id, later).await.expect("mark");
         assert!(db.due_deletions().await.expect("due").is_empty());
@@ -302,7 +305,10 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn a_disabled_user_or_one_marked_for_deletion_gets_no_new_uploads(pool: PgPool) {
         let db = Db::from_pool(pool);
-        let user = db.create_user("doomed", "hash").await.expect("user");
+        let user = db
+            .create_user(crate::TenantId::DEFAULT, "doomed", "hash")
+            .await
+            .expect("user");
         let later = OffsetDateTime::now_utc() + Duration::minutes(10);
         db.mark_for_deletion(user.id, later).await.expect("mark");
         let new = crate::NewUpload {
@@ -336,7 +342,10 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn disabling_keeps_the_first_time_and_enabling_clears_it(pool: PgPool) {
         let db = Db::from_pool(pool);
-        let user = db.create_user("guest", "hash").await.expect("user");
+        let user = db
+            .create_user(crate::TenantId::DEFAULT, "guest", "hash")
+            .await
+            .expect("user");
         db.set_disabled(user.id, true).await.expect("disable");
         let first = db.account(user.id).await.expect("account").disabled_at;
         assert!(first.is_some());

@@ -191,8 +191,16 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn uploads_are_scoped_to_their_owner(pool: sqlx::PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
-        let bob = db.create_user("bob", "x").await.expect("bob").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
+        let bob = db
+            .create_user(crate::TenantId::DEFAULT, "bob", "x")
+            .await
+            .expect("bob")
+            .id;
         let upload = db
             .create_upload(alice, new_upload("a.bin"))
             .await
@@ -207,8 +215,16 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn uploads_can_be_listed_by_device(pool: sqlx::PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
-        let bob = db.create_user("bob", "x").await.expect("bob").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
+        let bob = db
+            .create_user(crate::TenantId::DEFAULT, "bob", "x")
+            .await
+            .expect("bob")
+            .id;
         let laptop = Uuid::now_v7();
         let from_laptop = db
             .create_upload(
@@ -242,7 +258,11 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn invalid_names_are_rejected(pool: sqlx::PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
         assert!(matches!(
             db.create_upload(alice, new_upload("a/b")).await,
             Err(DbError::Invalid)
@@ -252,7 +272,11 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn only_stale_uploads_expire(pool: sqlx::PgPool) {
         let db = Db::from_pool(pool);
-        let alice = db.create_user("alice", "x").await.expect("alice").id;
+        let alice = db
+            .create_user(crate::TenantId::DEFAULT, "alice", "x")
+            .await
+            .expect("alice")
+            .id;
         let upload = db
             .create_upload(alice, new_upload("a.bin"))
             .await

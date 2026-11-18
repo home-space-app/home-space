@@ -199,7 +199,10 @@ mod tests {
     use super::*;
 
     async fn user(db: &Db, name: &str) -> UserId {
-        db.create_user(name, "x").await.expect("user").id
+        db.create_user(crate::TenantId::DEFAULT, name, "x")
+            .await
+            .expect("user")
+            .id
     }
 
     async fn add(db: &Db, owner: UserId, parent: Option<NodeId>, name: &str) -> Node {

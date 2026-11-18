@@ -256,9 +256,7 @@ async fn a_password_change_keeps_the_extensions_of_the_device_that_changed_it(po
 /// The device id is the client's word: a second sign-in that names the same device must not
 /// get a session that outlives a password change, nor touch the first one's extensions.
 #[sqlx::test(migrations = "../../migrations")]
-async fn a_password_change_ends_extensions_of_another_session_naming_the_same_device(
-    pool: PgPool,
-) {
+async fn a_password_change_ends_extensions_of_another_session_naming_the_same_device(pool: PgPool) {
     let app = setup(pool).await;
     let device = Uuid::now_v7();
     let phone = sign_in(&app, Some(device)).await;

@@ -192,7 +192,13 @@ async fn a_password_less_user_gets_no_password(pool: PgPool) {
     let user = app
         .state
         .db
-        .create_user_with_identity("maria", "https://idp.example", "sub", None)
+        .create_user_with_identity(
+            db::TenantId::DEFAULT,
+            "maria",
+            "https://idp.example",
+            "sub",
+            None,
+        )
         .await
         .expect("user");
 

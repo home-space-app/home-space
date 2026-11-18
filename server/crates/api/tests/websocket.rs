@@ -403,7 +403,7 @@ async fn changing_the_password_closes_every_socket_of_the_user(pool: PgPool) {
     let user = app
         .state
         .db
-        .find_user_by_username("alice")
+        .find_user_by_username(db::TenantId::DEFAULT, "alice")
         .await
         .expect("db")
         .expect("alice");
