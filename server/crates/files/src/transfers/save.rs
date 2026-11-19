@@ -49,16 +49,50 @@ impl TransferService {
         self.content.finish_store(owner, staged, stored).await
     }
 
-    #[expect(
-        clippy::cognitive_complexity,
-        reason = "K9 in docs/todo/server-refactoring.md"
-    )]
     async fn save_transfer_as(
         &self,
         caller: UserId,
         id: Uuid,
         parent: Option<NodeId>,
     ) -> Result<SavedTransfer, FilesError> {
+        let (transfer, items) = self.claim_for_saving(caller, id, parent).await?;
+        let mut saved = SavedTransfer {
+            transfer,
+            folders: Vec::new(),
+            files: Vec::new(),
+        };
+        if let Err(err) = self.place_items(caller, &mut saved, &items, parent).await {
+            self.after_failed_save(&saved, &err).await;
+            return Err(err);
+        }
+        self.content.remove_transfer_files(id).await;
+        let mut events = vec![DomainEvent::transfer_changed(&saved.transfer)];
+        events.extend(emitted::saved(&saved.folders, &saved.files));
+        self.content.events.publish(events).await;
+        Ok(saved)
+    }
+
+    /// Makes a transfer that failed before anything was saved ready to save again; one saved in
+    /// part stays saved, with what it placed.
+    async fn after_failed_save(&self, saved: &SavedTransfer, err: &FilesError) {
+        let id = saved.transfer.id;
+        if saved.folders.is_empty() && saved.files.is_empty() {
+            if let Err(err) = self.content.db.reopen_transfer(id).await {
+                tracing::warn!(transfer_id = %id, error = %err, "failed to reopen transfer");
+            }
+        } else {
+            tracing::warn!(transfer_id = %id, error = %err, "transfer saved in part");
+        }
+    }
+
+    /// Checks that `caller` can save ready transfer `id` into `parent` and marks it saved.
+    /// Returns it with its items, each folder before what is in it.
+    async fn claim_for_saving(
+        &self,
+        caller: UserId,
+        id: Uuid,
+        parent: Option<NodeId>,
+    ) -> Result<(Transfer, Vec<TransferItem>), FilesError> {
         let mut transfer = self.received_transfer(caller, id).await?;
         require_ready(&transfer)?;
         if let Some(parent) = parent
@@ -88,49 +122,39 @@ impl TransferService {
             return Err(FilesError::Gone);
         }
         transfer.state = TransferState::Saved;
-        let mut saved = SavedTransfer {
-            transfer,
-            folders: Vec::new(),
-            files: Vec::new(),
-        };
-        let mut placed = HashMap::<String, NodeId>::new();
-        for item in &items {
+        Ok((transfer, items))
+    }
+
+    /// Saves `items` under `parent`, recording each in `saved`; stops at the first that fails.
+    async fn place_items(
+        &self,
+        caller: UserId,
+        saved: &mut SavedTransfer,
+        items: &[TransferItem],
+        parent: Option<NodeId>,
+    ) -> Result<(), FilesError> {
+        let mut placed = HashMap::<&str, NodeId>::new();
+        for item in items {
             let (dir, name) = split_path(&item.path);
             let into = match dir {
                 Some(dir) => Some(*placed.get(dir).ok_or(FilesError::NotFound)?),
                 None => parent,
             };
-            let stored = match item.kind {
+            match item.kind {
                 NodeKind::Folder => {
-                    self.content
-                        .save_folder(caller, into, name)
-                        .await
-                        .map(|folder| {
-                            placed.insert(item.path.clone(), folder.id);
-                            saved.folders.push(folder);
-                        })
+                    let folder = self.content.save_folder(caller, into, name).await?;
+                    placed.insert(&item.path, folder.id);
+                    saved.folders.push(folder);
                 }
-                NodeKind::File => self
-                    .save_file(caller, &saved.transfer, item, into, name)
-                    .await
-                    .map(|outcome| saved.files.push(outcome)),
-            };
-            if let Err(err) = stored {
-                if saved.folders.is_empty() && saved.files.is_empty() {
-                    if let Err(err) = self.content.db.reopen_transfer(id).await {
-                        tracing::warn!(transfer_id = %id, error = %err, "failed to reopen transfer");
-                    }
-                } else {
-                    tracing::warn!(transfer_id = %id, error = %err, "transfer saved in part");
+                NodeKind::File => {
+                    let outcome = self
+                        .save_file(caller, &saved.transfer, item, into, name)
+                        .await?;
+                    saved.files.push(outcome);
                 }
-                return Err(err);
             }
         }
-        self.content.remove_transfer_files(id).await;
-        let mut events = vec![DomainEvent::transfer_changed(&saved.transfer)];
-        events.extend(emitted::saved(&saved.folders, &saved.files));
-        self.content.events.publish(events).await;
-        Ok(saved)
+        Ok(())
     }
 }
 

@@ -1,4 +1,5 @@
 use futures_util::stream;
+use sha2::Sha256;
 use sqlx::PgPool;
 use tokio::io::AsyncReadExt;
 
