@@ -1,8 +1,9 @@
 # Server clean-up and refactoring
 
 **Status (2026-11-19):** phases 1–5 done (guardrails, mechanical splits, API contract, services,
-domain/DB boundary). D6 is re-scoped to the object storage work (see the D6 row). Open: K9, D8,
-and F5's second release, which drops the old `error`/`message` members.
+domain/DB boundary). D6 is re-scoped to the object storage work (see the D6 row). K9 done. Open, each waiting on
+something outside this work: D8 (until a second caller of `ShareService`) and F5's second
+release, which drops the old `error`/`message` members once clients have the first.
 Scope is `server/crates/*` and the error types in `shared/protocol`. The server is ~30.6k lines of
 Rust, about half of it tests.
 
@@ -43,6 +44,7 @@ Line counts are production lines (everything before `#[cfg(test)]`) / whole file
 | K7 | The websocket loop is one `select!` that asks a `Connection` what to do for each event (`on_session_notice`, `on_ping`, `on_message`, `forward`) and acts on the returned `Step`. |
 | K8 | `load_hosts` is `validate_tenants` → `ensure_distinct_secrets` → `discover_all` → `contexts`, with `validate_tenant` and `tenant_auth` for one tenant. |
 | S3, K3, L2, T1 | `db` no longer decides anything about the tree. `db::Tx` (`Db::transaction(owner)`) offers the steps: `lock_node`, `lock_folder`, `lock_nodes`, `nested_in`, `lock_children`, `find_sibling`, `require_folder`, `is_within`, `insert_file`, `relocate`, `set_dates`, `archive_current`, `insert_version`, `bump_version`, `set_content`, `absorb`, `remove_if_empty`, `record_source_device`, `special_folders`, `bin`, `lock_binned`, `forget_trash_entries` (`db/src/nodes/{locks,writes}.rs`, `db/src/trash.rs`). The rules are in `files/src/tree/`: `rules.rs` (numbered names, `ContentFate`, `FileMerge`, clamping client times; pure, table-tested), `conflicts.rs` (`ConflictPlanner`, a pure `settle` per arriving node fed by a small driver, with table tests; replaces the dense `plan_conflicts` loop), `store.rs`, `moves.rs` (`Placer` replaces `place` and its `is_first` flag) and `bin.rs` (delete to bin, restore). Each change is still one transaction. `Cycle`, `LostAndFound` and `Pruned` left `DbError`; the journal returns `ChangesSince::{Kept, Pruned}`. The outcome types (`StoreOutcome`, `MoveBatch`, `BlobOp`, …), `StoreOptions` and `NodeUpdate` moved to `files`. `db/src/nodes.rs` went from 996 to 188 lines and the long-files allowlist is empty. The Postgres tests of moves and stores moved with the code to `files/src/tree/tests.rs`. |
+| K9 | `create_upload` is `resolve_target` (checks the target, returns a `Placement`) and `open_upload` (records it, creates its file). `append_chunk_as` is `write_chunk` (append and running hash), `received_sha256` and `complete_upload`. `save_transfer_as` is `claim_for_saving`, `place_items` and `after_failed_save`. The in-memory upload state moved to `files/src/uploads/slots.rs`. No `#[expect]` names K9 any more; behaviour and tests are unchanged. |
 | L6 | `files/src/store.rs` is `store/{blobs,partials,transfers}.rs`; `ignore_missing` and `rename_into` replace six copies of the same `match`. |
 
 New findings from G1:
@@ -175,7 +177,7 @@ scenario group.
 3. ~~**API contract:** F1, F2, F4, F5, then F3 with D5.~~ Done. Still open: the second F5 release,
    which removes `error` and `message` from `Problem` once the clients in use read `code`/`detail`.
 4. ~~**Services:** S1, S4 (shares, devices, admin), S2 (domain events), then S6 with K1 (auth) and S5 (files).
-   Then D7, D3 and K2, K4, K5.~~ Done, with K7 and K8. K9 and D8 are new and small.
+   Then D7, D3 and K2, K4, K5.~~ Done, with K7 and K8. K9 and D8 are new and small; K9 done.
 5. ~~**Domain/DB boundary:** S3 with K3, then D6 as preparation for `object-storage.md`.~~ S3 and K3 done, with L2, L6 and the rest of T1. D6 moves to the object storage work.
 
 Every step keeps the existing integration tests in `server/crates/api/tests` passing unchanged. Only F1, F2 and F4

@@ -5,20 +5,15 @@
 //! in memory as they arrive so completing a large upload does not reread it; after a restart
 //! or a failed write the hash is rebuilt from the file instead.
 
-use std::{
-    collections::{HashMap, HashSet},
-    fmt,
-    sync::{Arc, Mutex, PoisonError},
-    time::Duration,
-};
+use std::{collections::HashSet, time::Duration};
 
 use bytes::Bytes;
 use futures_util::Stream;
-use sha2::{Digest, Sha256};
+use sha2::Digest;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use db::{NewContent, NewUpload, NodeKind, Upload, UserId};
+use db::{NewContent, NewUpload, NodeId, NodeKind, Upload, UserId};
 use protocol::TransferState;
 
 use events::DomainEvent;
@@ -29,51 +24,20 @@ use crate::{
     tree,
 };
 
+mod slots;
 mod types;
+
+use slots::{Hashing, Uploads};
 pub use types::{ChunkOutcome, UploadStatus, UploadTarget};
 
-/// The running hash of an upload's received bytes.
-struct Hashing {
-    hasher: Sha256,
-    hashed: u64,
-}
-
-/// One upload's in-memory state. Its lock also keeps chunks of the same upload in order.
-type Slot = Arc<tokio::sync::Mutex<Option<Hashing>>>;
-
-/// In-memory state of the uploads in progress on this server.
-#[derive(Clone, Default)]
-pub(crate) struct Uploads {
-    slots: Arc<Mutex<HashMap<Uuid, Slot>>>,
-}
-
-impl fmt::Debug for Uploads {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Uploads").finish_non_exhaustive()
-    }
-}
-
-impl Uploads {
-    fn slot(&self, id: Uuid) -> Slot {
-        let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
-        slots.entry(id).or_default().clone()
-    }
-
-    fn insert(&self, id: Uuid, hashing: Option<Hashing>) {
-        let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
-        slots.insert(id, Arc::new(tokio::sync::Mutex::new(hashing)));
-    }
-
-    pub(crate) fn remove(&self, id: Uuid) {
-        let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
-        slots.remove(&id);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn forget_all(&self) {
-        let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
-        slots.clear();
-    }
+/// Where an upload's bytes go once they have all arrived.
+#[derive(Default)]
+struct Placement {
+    parent_id: Option<NodeId>,
+    node_id: Option<NodeId>,
+    name: String,
+    options: StoreOptions,
+    transfer_item_id: Option<Uuid>,
 }
 
 /// Resumable uploads, of files of the user's tree and of transfers.
@@ -114,10 +78,6 @@ impl UploadService {
     }
 
     /// Starts a resumable upload of `size` bytes from `device`, when the client named one.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "K9 in docs/todo/server-refactoring.md"
-    )]
     pub async fn create_upload(
         &self,
         owner: UserId,
@@ -132,8 +92,41 @@ impl UploadService {
                 limit: self.content.max_upload_bytes,
             });
         }
-        let mut transfer_item_id = None;
-        let (parent_id, node_id, name, options) = match target {
+        let place = self.resolve_target(owner, target, size).await?;
+        if place.transfer_item_id.is_none() {
+            self.content.check_quota(owner, None, size).await?;
+        }
+        let id = Uuid::now_v7();
+        let new = NewUpload {
+            id,
+            parent_id: place.parent_id,
+            node_id: place.node_id,
+            name: place.name,
+            size: i64::try_from(size).unwrap_or(i64::MAX),
+            mime: content_type.map(str::to_owned),
+            modified_at,
+            device_id: device,
+            keep_both: place.options.keep_both,
+            version_of: place.options.version_of,
+            auto_upload: place.options.auto_upload,
+            transfer_item_id: place.transfer_item_id,
+        };
+        self.open_upload(owner, new).await?;
+        Ok(UploadStatus {
+            id,
+            offset: 0,
+            size,
+        })
+    }
+
+    /// Checks that `target` can take `size` bytes and works out where they will go.
+    async fn resolve_target(
+        &self,
+        owner: UserId,
+        target: UploadTarget,
+        size: u64,
+    ) -> Result<Placement, FilesError> {
+        match target {
             UploadTarget::New {
                 parent,
                 name,
@@ -142,14 +135,23 @@ impl UploadService {
                 if let Some(parent) = parent {
                     self.content.db.get_node(owner, parent).await?;
                 }
-                (parent, None, name, options)
+                Ok(Placement {
+                    parent_id: parent,
+                    name,
+                    options,
+                    ..Placement::default()
+                })
             }
             UploadTarget::Replace(id) => {
                 let current = self.content.db.get_node(owner, id).await?;
                 if current.kind != NodeKind::File {
                     return Err(FilesError::NotAFile);
                 }
-                (None, Some(id), current.name, StoreOptions::default())
+                Ok(Placement {
+                    node_id: Some(id),
+                    name: current.name,
+                    ..Placement::default()
+                })
             }
             UploadTarget::TransferItem(item_id) => {
                 let (transfer, item) = self.content.db.sent_transfer_item(owner, item_id).await?;
@@ -165,58 +167,32 @@ impl UploadService {
                         item.size
                     )));
                 }
-                transfer_item_id = Some(item_id);
-                let name = item
-                    .path
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&item.path)
-                    .to_owned();
-                (None, None, name, StoreOptions::default())
+                let name = item.path.rsplit('/').next().unwrap_or(&item.path);
+                Ok(Placement {
+                    name: name.to_owned(),
+                    transfer_item_id: Some(item_id),
+                    ..Placement::default()
+                })
             }
-        };
-        if transfer_item_id.is_none() {
-            self.content.check_quota(owner, None, size).await?;
         }
-        let id = Uuid::now_v7();
-        let new = NewUpload {
-            id,
-            parent_id,
-            node_id,
-            name,
-            size: i64::try_from(size).unwrap_or(i64::MAX),
-            mime: content_type.map(str::to_owned),
-            modified_at,
-            device_id: device,
-            keep_both: options.keep_both,
-            version_of: options.version_of,
-            auto_upload: options.auto_upload,
-            transfer_item_id,
-        };
+    }
+
+    /// Records the upload `new` and creates its empty file, ready for the first chunk.
+    async fn open_upload(&self, owner: UserId, new: NewUpload) -> Result<(), FilesError> {
+        let id = new.id;
+        let for_transfer = new.transfer_item_id.is_some();
         match self.content.db.create_upload(owner, new).await {
             Ok(_) => {}
             // The transfer's recipient is disabled or marked for deletion.
-            Err(db::DbError::NotFound) if transfer_item_id.is_some() => {
-                return Err(FilesError::Gone);
-            }
+            Err(db::DbError::NotFound) if for_transfer => return Err(FilesError::Gone),
             Err(err) => return Err(err.into()),
         }
         if let Err(err) = self.content.store.create_partial(id).await {
             self.forget_upload(id).await;
             return Err(err.into());
         }
-        self.uploads.insert(
-            id,
-            Some(Hashing {
-                hasher: Sha256::new(),
-                hashed: 0,
-            }),
-        );
-        Ok(UploadStatus {
-            id,
-            offset: 0,
-            size,
-        })
+        self.uploads.insert(id, Some(Hashing::new()));
+        Ok(())
     }
 
     /// Reports how many bytes of an upload have arrived.
@@ -401,10 +377,6 @@ impl UploadService {
         }
     }
 
-    #[expect(
-        clippy::cognitive_complexity,
-        reason = "K9 in docs/todo/server-refactoring.md"
-    )]
     async fn append_chunk_as<S>(
         &self,
         owner: UserId,
@@ -419,11 +391,34 @@ impl UploadService {
         let size = declared_size(&upload);
         let slot = self.uploads.slot(id);
         let mut hashing = slot.lock().await;
+        let len = self
+            .write_chunk(&mut hashing, id, offset, size, body)
+            .await?;
+        if len < size {
+            return Ok(ChunkOutcome::Partial { offset: len });
+        }
+        let sha256 = self.received_sha256(hashing.take(), id).await?;
+        let stored = self.complete_upload(owner, &upload, len, sha256).await;
+        drop(hashing);
+        self.forget_upload(id).await;
+        stored
+    }
+
+    /// Appends `body` at `offset`, hashing it on the way when the hash so far is known.
+    /// Returns how many bytes the upload holds now; a failed write leaves the hash unknown.
+    async fn write_chunk<S>(
+        &self,
+        hashing: &mut Option<Hashing>,
+        id: Uuid,
+        offset: u64,
+        size: u64,
+        body: S,
+    ) -> Result<u64, FilesError>
+    where
+        S: Stream<Item = Result<Bytes, BodyError>>,
+    {
         if offset == 0 && hashing.is_none() {
-            *hashing = Some(Hashing {
-                hasher: Sha256::new(),
-                hashed: 0,
-            });
+            *hashing = Some(Hashing::new());
         }
         let appended = self
             .content
@@ -446,33 +441,42 @@ impl UploadService {
             tracing::warn!(upload_id = %id, error = %err, "failed to touch upload");
         }
         appended?;
-        if len < size {
-            return Ok(ChunkOutcome::Partial { offset: len });
-        }
-        let sha256 = match hashing.take() {
-            Some(state) => state.hasher.finalize().to_vec(),
-            None => self
-                .content
-                .store
-                .hash_partial(id)
-                .await?
-                .finalize()
-                .to_vec(),
+        Ok(len)
+    }
+
+    /// The SHA-256 of all the bytes of upload `id`, read back from its file when the running
+    /// hash was lost.
+    async fn received_sha256(
+        &self,
+        hashing: Option<Hashing>,
+        id: Uuid,
+    ) -> Result<Vec<u8>, FilesError> {
+        let hasher = match hashing {
+            Some(state) => state.hasher,
+            None => self.content.store.hash_partial(id).await?,
         };
-        let stored = match upload.transfer_item_id {
+        Ok(hasher.finalize().to_vec())
+    }
+
+    /// Stores the complete upload in the tree or in its transfer.
+    async fn complete_upload(
+        &self,
+        owner: UserId,
+        upload: &Upload,
+        len: u64,
+        sha256: Vec<u8>,
+    ) -> Result<ChunkOutcome, FilesError> {
+        match upload.transfer_item_id {
             Some(item) => self
-                .finish_transfer_upload(owner, &upload, item, sha256)
+                .finish_transfer_upload(owner, upload, item, sha256)
                 .await
                 .map(|ready| ChunkOutcome::Transferred { size: len, ready }),
             None => self
                 .content
-                .publish_stored(self.finish_upload(owner, &upload, len, sha256).await)
+                .publish_stored(self.finish_upload(owner, upload, len, sha256).await)
                 .await
                 .map(ChunkOutcome::Complete),
-        };
-        drop(hashing);
-        self.forget_upload(id).await;
-        stored
+        }
     }
 }
 
