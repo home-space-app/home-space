@@ -1,6 +1,7 @@
 //! HTTP and websocket API for home-space.
 
 mod browser;
+mod dispatch;
 mod error;
 mod extract;
 mod headers;
@@ -9,10 +10,11 @@ mod state;
 mod support;
 mod tenants;
 
+pub use dispatch::EventDispatcher;
 pub use error::ApiError;
 use headers::WebPolicy;
 pub use state::{AppState, ServerInfo};
-pub use tenants::{Resolved, TenantContext, TenantMode, Tenants, normalize_host};
+pub use tenants::{Resolved, SharedServices, TenantContext, TenantMode, Tenants, normalize_host};
 
 use std::path::Path;
 
@@ -29,17 +31,6 @@ use tower_http::{
 use tracing::info_span;
 
 const INDEX_FILE: &str = "index.html";
-
-/// Tells the sender and the recipient of a transfer that it expired.
-pub fn publish_transfer_expired(hub: &notifications::Hub, transfer: &db::ExpiredTransfer) {
-    support::publish::publish_changed(
-        hub,
-        transfer.id,
-        transfer.sender_id,
-        transfer.recipient_id,
-        protocol::TransferState::Expired,
-    );
-}
 
 /// Builds the application router with all routes mounted under `/api/v1`.
 pub fn router(state: AppState) -> Router {

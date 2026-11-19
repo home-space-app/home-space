@@ -15,7 +15,7 @@ use client_core::{
     labels::platform,
     storage::{bytes, usage_breakdown},
 };
-use protocol::{Account, AccountDevice, CreateAccount, ServerStatus, UpdateAccount, UserId};
+use protocol::{Account, AccountDevice, CreateAccount, Patch, ServerStatus, UpdateAccount, UserId};
 
 use super::sidebar::initial;
 use crate::{
@@ -832,7 +832,11 @@ fn EditUserPanel(
         let change = UpdateAccount {
             is_admin: (admin != current.is_admin).then_some(admin),
             disabled: None,
-            quota_bytes: (quota != current.quota_bytes).then_some(quota),
+            quota_bytes: if quota == current.quota_bytes {
+                Patch::Keep
+            } else {
+                Patch::to(quota)
+            },
         };
         busy.set(true);
         spawn_local(async move {

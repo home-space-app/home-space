@@ -2,8 +2,13 @@
 
 use std::{collections::HashMap, fmt, str::FromStr, sync::Arc};
 
+use accounts::{AccountService, DeviceService};
 use auth::AuthService;
-use db::{TenantDomain, TenantId};
+use db::{Db, TenantDomain, TenantId};
+use events::Events;
+use files::{NodeService, UploadService};
+use notifications::Hub;
+use shares::ShareService;
 
 /// How requests find their tenant.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -49,6 +54,52 @@ pub struct TenantContext {
     pub public_url: Option<String>,
     /// Signs its users in with its own keys and identity provider.
     pub auth: AuthService,
+    pub accounts: AccountService,
+    pub devices: DeviceService,
+    pub shares: ShareService,
+}
+
+/// The services of the whole server that each tenant's own services are built on.
+#[derive(Clone, Debug)]
+pub struct SharedServices {
+    pub db: Db,
+    pub nodes: NodeService,
+    pub uploads: UploadService,
+    pub hub: Hub,
+    pub events: Events,
+    /// How long after an administrator deletes an account it is deleted.
+    pub deletion_delay: time::Duration,
+}
+
+impl TenantContext {
+    /// A tenant whose users `auth` signs in, with its services built on `shared`.
+    pub fn new(
+        id: TenantId,
+        name: String,
+        domains: Vec<String>,
+        public_url: Option<String>,
+        auth: AuthService,
+        shared: &SharedServices,
+    ) -> Self {
+        let SharedServices {
+            db,
+            nodes,
+            uploads,
+            hub,
+            events,
+            deletion_delay,
+        } = shared.clone();
+        Self {
+            id,
+            name,
+            domains,
+            public_url,
+            accounts: AccountService::new(db.clone(), auth.clone(), deletion_delay),
+            devices: DeviceService::new(db.clone(), auth.clone(), uploads, hub, events),
+            shares: ShareService::new(db, id, auth.share_passwords(), nodes),
+            auth,
+        }
+    }
 }
 
 /// What a request's host leads to.

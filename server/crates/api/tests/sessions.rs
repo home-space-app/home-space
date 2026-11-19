@@ -244,7 +244,7 @@ async fn expired_session_is_rejected(pool: PgPool) {
         status_of(&app, &alice.access).await,
         StatusCode::UNAUTHORIZED
     );
-    assert_eq!(app.state.db.prune_sessions().await.expect("prune"), 1);
+    assert_eq!(app.db.prune_sessions().await.expect("prune"), 1);
 }
 
 #[sqlx::test(migrations = "../../migrations")]

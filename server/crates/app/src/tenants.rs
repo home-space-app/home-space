@@ -4,7 +4,7 @@
 use std::{collections::HashMap, future::Future, path::PathBuf};
 
 use anyhow::{Context, Result};
-use api::{TenantContext, TenantMode, Tenants};
+use api::{SharedServices, TenantContext, TenantMode, Tenants};
 use auth::{AuthConfig, AuthService, OidcConfig, OidcService};
 use db::{Db, Tenant, TenantDomain, TenantId};
 use tokio::task::JoinSet;
@@ -102,6 +102,7 @@ pub async fn load(
     config: &Config,
     base: AuthService,
     secrets: &impl TenantSecrets,
+    shared: &SharedServices,
 ) -> Result<Tenants> {
     let tenants = db.list_tenants().await.context("listing tenants")?;
     let domains = db
@@ -109,8 +110,8 @@ pub async fn load(
         .await
         .context("listing tenant domains")?;
     match config.tenant_mode {
-        TenantMode::Single => load_single(config, base, &tenants, &domains).await,
-        TenantMode::Host => load_hosts(config, base, secrets, &tenants, &domains).await,
+        TenantMode::Single => load_single(config, base, &tenants, &domains, shared).await,
+        TenantMode::Host => load_hosts(config, base, secrets, &tenants, &domains, shared).await,
     }
 }
 
@@ -119,6 +120,7 @@ async fn load_single(
     base: AuthService,
     tenants: &[Tenant],
     domains: &[TenantDomain],
+    shared: &SharedServices,
 ) -> Result<Tenants> {
     let tenant = single_tenant(tenants)?;
     let settings = config.tenant_settings();
@@ -133,13 +135,14 @@ async fn load_single(
         }
         None => base,
     };
-    Ok(Tenants::single(TenantContext {
-        id: tenant.id,
-        name: tenant.name.clone(),
-        domains: domains_of(domains, tenant.id),
-        public_url: tenant_config.public_url,
+    Ok(Tenants::single(TenantContext::new(
+        tenant.id,
+        tenant.name.clone(),
+        domains_of(domains, tenant.id),
+        tenant_config.public_url,
         auth,
-    }))
+        shared,
+    )))
 }
 
 /// Tenant 1, when it is the only tenant and active, as single mode needs.
@@ -160,41 +163,36 @@ fn single_tenant(tenants: &[Tenant]) -> Result<&Tenant> {
     }
 }
 
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "K8 in docs/todo/server-refactoring.md"
-)]
 async fn load_hosts(
     config: &Config,
     base: AuthService,
     secrets: &impl TenantSecrets,
     tenants: &[Tenant],
     domains: &[TenantDomain],
+    shared: &SharedServices,
 ) -> Result<Tenants> {
+    let configured = validate_tenants(config, secrets, tenants, domains).await;
+    ensure_distinct_secrets(&configured)?;
+    let providers = discover_all(&configured).await;
+    let ready = contexts(config, &base, configured, providers, domains, shared);
+    Ok(Tenants::new(TenantMode::Host, ready, domains))
+}
+
+/// The active tenants whose settings are complete and valid, with those settings. A tenant
+/// left out is logged, so that one tenant's mistake does not take the others down.
+async fn validate_tenants<'a>(
+    config: &Config,
+    secrets: &impl TenantSecrets,
+    tenants: &'a [Tenant],
+    domains: &[TenantDomain],
+) -> Vec<(&'a Tenant, TenantConfig)> {
     let mut configured = Vec::new();
     for tenant in tenants {
         if !tenant.is_active() {
             tracing::info!(tenant = %tenant.id, "tenant is disabled; it is not served");
             continue;
         }
-        let settings = if tenant.id == TenantId::DEFAULT {
-            Ok(config.tenant_settings())
-        } else {
-            tenant_settings(secrets, tenant.id).await
-        };
-        let primary = domains
-            .iter()
-            .find(|domain| domain.tenant_id == tenant.id && domain.is_primary);
-        if primary.is_none() {
-            tracing::warn!(tenant = %tenant.id, "tenant has no primary domain; nobody can reach it");
-        }
-        let checked = settings.and_then(|mut settings| {
-            if settings.public_url.as_deref().is_none_or(str::is_empty) {
-                settings.public_url = primary.map(|domain| public_url(&domain.domain));
-            }
-            settings.validate()
-        });
-        match checked {
+        match validate_tenant(config, secrets, tenant, domains).await {
             Ok(tenant_config) => configured.push((tenant, tenant_config)),
             Err(err) => tracing::error!(
                 tenant = %tenant.id,
@@ -203,43 +201,94 @@ async fn load_hosts(
             ),
         }
     }
-    ensure_distinct_secrets(&configured)?;
+    configured
+}
 
-    let mut providers = discover_all(&configured).await;
+/// The settings of `tenant`: tenant 1's from the server configuration, any other's from its
+/// stored settings and secrets. Without a public URL, it is reached at its primary domain.
+async fn validate_tenant(
+    config: &Config,
+    secrets: &impl TenantSecrets,
+    tenant: &Tenant,
+    domains: &[TenantDomain],
+) -> Result<TenantConfig> {
+    let primary = domains
+        .iter()
+        .find(|domain| domain.tenant_id == tenant.id && domain.is_primary);
+    if primary.is_none() {
+        tracing::warn!(tenant = %tenant.id, "tenant has no primary domain; nobody can reach it");
+    }
+    let mut settings = if tenant.id == TenantId::DEFAULT {
+        config.tenant_settings()
+    } else {
+        tenant_settings(secrets, tenant.id).await?
+    };
+    if settings.public_url.as_deref().is_none_or(str::is_empty) {
+        settings.public_url = primary.map(|domain| public_url(&domain.domain));
+    }
+    settings.validate()
+}
+
+/// The tenants ready to serve: each `configured` one whose identity provider, if it has one,
+/// was discovered.
+fn contexts(
+    config: &Config,
+    base: &AuthService,
+    configured: Vec<(&Tenant, TenantConfig)>,
+    mut providers: HashMap<TenantId, Result<OidcService>>,
+    domains: &[TenantDomain],
+    shared: &SharedServices,
+) -> Vec<TenantContext> {
     let mut ready = Vec::new();
     for (tenant, tenant_config) in configured {
-        let mut auth = base.for_tenant(AuthConfig {
-            tenant: tenant.id,
-            jwt_secret: tenant_config.jwt_secret.clone(),
-            previous_jwt_secrets: tenant_config.previous_jwt_secrets.clone(),
-            access_ttl: time::Duration::seconds(config.access_ttl_secs),
-            refresh_ttl: time::Duration::seconds(config.refresh_ttl_secs),
-        });
-        match providers.remove(&tenant.id) {
-            None => {}
-            Some(Ok(oidc)) => {
-                tracing::info!(tenant = %tenant.id, issuer = oidc.issuer(), "single sign-on enabled");
-                auth = auth.with_oidc(oidc, tenant_config.password_login);
-            }
-            Some(Err(err)) => {
-                tracing::error!(
-                    tenant = %tenant.id,
-                    error = format!("{err:#}"),
-                    "discovering the OpenID Connect provider failed; the tenant is not served"
-                );
-                continue;
-            }
-        }
+        let provider = providers.remove(&tenant.id);
+        let Some(auth) = tenant_auth(config, base, tenant.id, &tenant_config, provider) else {
+            continue;
+        };
         tracing::info!(tenant = %tenant.id, name = tenant.name, "tenant loaded");
-        ready.push(TenantContext {
-            id: tenant.id,
-            name: tenant.name.clone(),
-            domains: domains_of(domains, tenant.id),
-            public_url: tenant_config.public_url,
+        ready.push(TenantContext::new(
+            tenant.id,
+            tenant.name.clone(),
+            domains_of(domains, tenant.id),
+            tenant_config.public_url,
             auth,
-        });
+            shared,
+        ));
     }
-    Ok(Tenants::new(TenantMode::Host, ready, domains))
+    ready
+}
+
+/// The auth service of a tenant, with its own keys and its identity provider when it has
+/// one; `None`, logged, when the provider could not be discovered.
+fn tenant_auth(
+    config: &Config,
+    base: &AuthService,
+    tenant: TenantId,
+    tenant_config: &TenantConfig,
+    provider: Option<Result<OidcService>>,
+) -> Option<AuthService> {
+    let auth = base.for_tenant(AuthConfig {
+        tenant,
+        jwt_secret: tenant_config.jwt_secret.clone(),
+        previous_jwt_secrets: tenant_config.previous_jwt_secrets.clone(),
+        access_ttl: time::Duration::seconds(config.access_ttl_secs),
+        refresh_ttl: time::Duration::seconds(config.refresh_ttl_secs),
+    });
+    match provider {
+        None => Some(auth),
+        Some(Ok(oidc)) => {
+            tracing::info!(%tenant, issuer = oidc.issuer(), "single sign-on enabled");
+            Some(auth.with_oidc(oidc, tenant_config.password_login))
+        }
+        Some(Err(err)) => {
+            tracing::error!(
+                %tenant,
+                error = format!("{err:#}"),
+                "discovering the OpenID Connect provider failed; the tenant is not served"
+            );
+            None
+        }
+    }
 }
 
 /// Discovers the identity provider of every tenant that has one, all at once.

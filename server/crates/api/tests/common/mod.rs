@@ -18,7 +18,8 @@ use tower::ServiceExt;
 use api::AppState;
 use auth::{AuthConfig, AuthService};
 use db::{Db, TenantDomain, TenantId};
-use files::{BlobStore, FileService};
+use events::Events;
+use files::{BlobStore, FileServices, FilesConfig};
 use notifications::Hub;
 use search::SearchIndex;
 
@@ -39,6 +40,8 @@ const JWT_SECRET: &[u8] = b"integration-test-secret-integration";
 pub struct TestApp {
     pub router: Router,
     pub state: AppState,
+    /// The database, for setting up and checking what the API cannot.
+    pub db: Db,
     /// The auth service of the tenant this app's requests reach.
     pub auth: AuthService,
     /// The `Host` every request is sent to, unless it names its own; `None` sends none.
@@ -79,8 +82,10 @@ pub async fn setup_with(
     let db = Db::from_pool(pool);
     let auth =
         configure(AuthService::new(db.clone(), auth_config(TenantId::DEFAULT)).expect("auth"));
-    let tenants = api::Tenants::single(tenant(TenantId::DEFAULT, Vec::new(), &auth));
-    build(db, tenants, auth, None).await
+    build(db, auth.clone(), None, |shared| {
+        api::Tenants::single(tenant(TenantId::DEFAULT, Vec::new(), &auth, shared))
+    })
+    .await
 }
 
 /// A server in host mode with two tenants: tenant 1 on [`HOST_A`] and another on
@@ -99,15 +104,17 @@ pub async fn setup_two_tenants(pool: PgPool) -> (TestApp, TestApp) {
         domain(HOST_B, other),
         domain(HOST_UNAVAILABLE, closed),
     ];
-    let tenants = api::Tenants::new(
-        api::TenantMode::Host,
-        vec![
-            tenant(TenantId::DEFAULT, vec![HOST_A.to_owned()], &a),
-            tenant(other, vec![HOST_B.to_owned()], &b),
-        ],
-        &domains,
-    );
-    let app_a = build(db, tenants, a, Some(HOST_A)).await;
+    let app_a = build(db, a.clone(), Some(HOST_A), |shared| {
+        api::Tenants::new(
+            api::TenantMode::Host,
+            vec![
+                tenant(TenantId::DEFAULT, vec![HOST_A.to_owned()], &a, shared),
+                tenant(other, vec![HOST_B.to_owned()], &b, shared),
+            ],
+            &domains,
+        )
+    })
+    .await;
     let app_b = TestApp {
         auth: b,
         host: Some(HOST_B),
@@ -142,29 +149,51 @@ fn auth_config(tenant: TenantId) -> AuthConfig {
     }
 }
 
-fn tenant(id: TenantId, domains: Vec<String>, auth: &AuthService) -> api::TenantContext {
-    api::TenantContext {
+fn tenant(
+    id: TenantId,
+    domains: Vec<String>,
+    auth: &AuthService,
+    shared: &api::SharedServices,
+) -> api::TenantContext {
+    let public_url = domains.first().map(|domain| format!("https://{domain}"));
+    api::TenantContext::new(
         id,
-        name: format!("Tenant {id}"),
-        public_url: domains.first().map(|domain| format!("https://{domain}")),
+        format!("Tenant {id}"),
         domains,
-        auth: auth.clone(),
-    }
+        public_url,
+        auth.clone(),
+        shared,
+    )
 }
 
 async fn build(
     db: Db,
-    tenants: api::Tenants,
     auth: AuthService,
     host: Option<&'static str>,
+    tenants: impl FnOnce(&api::SharedServices) -> api::Tenants,
 ) -> TestApp {
     let storage = tempfile::tempdir().expect("tempdir");
     let store = BlobStore::open(storage.path()).await.expect("store");
     let (search, _worker) = SearchIndex::start(db.clone(), store.clone(), Vec::new());
+    let hub = Hub::new();
+    let events = Events::new(api::EventDispatcher::new(hub.clone(), search.clone()));
+    let config = FilesConfig {
+        chunk_bytes: UPLOAD_CHUNK,
+        ..FilesConfig::new(1024 * 1024)
+    };
+    let files = FileServices::new(db.clone(), store, config, events.clone());
+    let tenants = tenants(&api::SharedServices {
+        db: db.clone(),
+        nodes: files.nodes.clone(),
+        uploads: files.uploads.clone(),
+        hub: hub.clone(),
+        events,
+        deletion_delay: time::Duration::minutes(10),
+    });
     let state = AppState {
         tenants,
-        files: FileService::new(db.clone(), store, 1024 * 1024).with_chunk_bytes(UPLOAD_CHUNK),
-        hub: Hub::new(),
+        files,
+        hub,
         search,
         info: std::sync::Arc::new(api::ServerInfo {
             version: "0.0.0-test".to_owned(),
@@ -188,12 +217,12 @@ async fn build(
                 storage: protocol::StorageBackend::Local,
             },
         }),
-        db,
         trust_forwarded_for: true,
     };
     TestApp {
         router: api::router(state.clone()),
         state,
+        db,
         auth,
         host,
         _storage: Arc::new(storage),
@@ -327,8 +356,7 @@ impl TestApp {
 
     /// The id of an existing user of this app's tenant.
     pub async fn user_id(&self, username: &str) -> db::UserId {
-        self.state
-            .db
+        self.db
             .find_user_by_username(self.auth.tenant(), username)
             .await
             .expect("lookup")

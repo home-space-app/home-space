@@ -1,9 +1,9 @@
 //! Account management by administrators (`/admin/users`).
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use crate::{StorageUsage, UserId};
+use crate::{Patch, StorageUsage, UserId};
 
 /// One account, as the administration lists it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,13 +56,9 @@ pub struct UpdateAccount {
     pub is_admin: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled: Option<bool>,
-    /// `Some(None)` removes the quota; sent as `"quota_bytes": null`.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "present"
-    )]
-    pub quota_bytes: Option<Option<u64>>,
+    /// [`Patch::Clear`] removes the quota; sent as `"quota_bytes": null`.
+    #[serde(default, skip_serializing_if = "Patch::is_keep")]
+    pub quota_bytes: Patch<u64>,
 }
 
 /// `PUT /admin/users/{id}/password`: a new password for an account that has one. Ends all of
@@ -83,15 +79,6 @@ pub struct AccountDevice {
     pub signed_in: bool,
 }
 
-/// A field that is present, even as `null`, becomes `Some`, telling it apart from a missing one.
-pub(crate) fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    T::deserialize(deserializer).map(Some)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,16 +86,16 @@ mod tests {
     #[test]
     fn a_null_quota_removes_it_and_a_missing_one_keeps_it() {
         let remove: UpdateAccount = serde_json::from_str(r#"{"quota_bytes":null}"#).expect("json");
-        assert_eq!(remove.quota_bytes, Some(None));
+        assert_eq!(remove.quota_bytes, Patch::Clear);
         let keep: UpdateAccount = serde_json::from_str(r#"{"disabled":true}"#).expect("json");
-        assert_eq!(keep.quota_bytes, None);
+        assert_eq!(keep.quota_bytes, Patch::Keep);
         assert_eq!(keep.disabled, Some(true));
     }
 
     #[test]
     fn removing_a_quota_is_sent_as_null() {
         let update = UpdateAccount {
-            quota_bytes: Some(None),
+            quota_bytes: Patch::Clear,
             ..UpdateAccount::default()
         };
         assert_eq!(

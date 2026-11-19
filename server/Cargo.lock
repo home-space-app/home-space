@@ -3,6 +3,22 @@
 version = 4
 
 [[package]]
+name = "accounts"
+version = "0.11.0"
+dependencies = [
+ "auth",
+ "db",
+ "events",
+ "files",
+ "notifications",
+ "protocol",
+ "thiserror 2.0.21",
+ "time",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -86,10 +102,12 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 name = "api"
 version = "0.11.0"
 dependencies = [
+ "accounts",
  "auth",
  "axum",
  "base64 0.23.1",
  "db",
+ "events",
  "files",
  "futures-util",
  "http-body-util",
@@ -100,6 +118,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "shares",
  "sqlx",
  "tempfile",
  "thiserror 2.0.21",
@@ -127,6 +146,7 @@ dependencies = [
  "clap",
  "db",
  "dotenvy",
+ "events",
  "files",
  "notifications",
  "protocol",
@@ -913,6 +933,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "events"
+version = "0.11.0"
+dependencies = [
+ "db",
+ "futures-util",
+ "protocol",
+ "uuid",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -940,6 +970,7 @@ version = "0.11.0"
 dependencies = [
  "bytes",
  "db",
+ "events",
  "futures-util",
  "mime_guess",
  "protocol",
@@ -2646,6 +2677,7 @@ version = "0.11.0"
 dependencies = [
  "bytes",
  "db",
+ "events",
  "files",
  "futures-util",
  "protocol",
@@ -2855,6 +2887,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
+]
+
+[[package]]
+name = "shares"
+version = "0.11.0"
+dependencies = [
+ "auth",
+ "db",
+ "files",
+ "protocol",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

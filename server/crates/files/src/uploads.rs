@@ -7,7 +7,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    fmt, io,
+    fmt,
     sync::{Arc, Mutex, PoisonError},
     time::Duration,
 };
@@ -21,7 +21,12 @@ use uuid::Uuid;
 use db::{NewContent, NewUpload, NodeKind, StoreOptions, StoreOutcome, Upload, UserId};
 use protocol::TransferState;
 
-use crate::{FileService, FilesError, service::new_content};
+use events::DomainEvent;
+
+use crate::{
+    Actor, BodyError, FilesError,
+    content::{ContentStore, new_content},
+};
 
 mod types;
 pub use types::{ChunkOutcome, UploadStatus, UploadTarget};
@@ -70,11 +75,47 @@ impl Uploads {
     }
 }
 
-impl FileService {
+/// Resumable uploads, of files of the user's tree and of transfers.
+#[derive(Clone, Debug)]
+pub struct UploadService {
+    pub(crate) content: ContentStore,
+    uploads: Uploads,
+    /// The chunk size resumable uploads ask clients for.
+    chunk_bytes: u64,
+}
+
+impl UploadService {
+    pub(crate) fn new(content: ContentStore, chunk_bytes: u64) -> Self {
+        Self {
+            content,
+            uploads: Uploads::default(),
+            chunk_bytes: chunk_bytes.max(1),
+        }
+    }
+
+    /// The same service, recording `device` as the maker of the changes made through it.
+    pub(crate) fn acting(&self, device: Option<Uuid>) -> Self {
+        Self {
+            content: self.content.acting(device),
+            uploads: self.uploads.clone(),
+            chunk_bytes: self.chunk_bytes,
+        }
+    }
+
+    /// The chunk size resumable uploads ask clients for.
+    pub fn chunk_bytes(&self) -> u64 {
+        self.chunk_bytes
+    }
+
+    /// Forgets the in-memory state of an upload that is gone.
+    pub(crate) fn forget_slot(&self, id: Uuid) {
+        self.uploads.remove(id);
+    }
+
     /// Starts a resumable upload of `size` bytes from `device`, when the client named one.
     #[expect(
         clippy::too_many_lines,
-        reason = "S5 in docs/todo/server-refactoring.md"
+        reason = "K9 in docs/todo/server-refactoring.md"
     )]
     pub async fn create_upload(
         &self,
@@ -85,9 +126,9 @@ impl FileService {
         content_type: Option<&str>,
         modified_at: Option<OffsetDateTime>,
     ) -> Result<UploadStatus, FilesError> {
-        if size > self.max_upload_bytes {
+        if size > self.content.max_upload_bytes {
             return Err(FilesError::TooLarge {
-                limit: self.max_upload_bytes,
+                limit: self.content.max_upload_bytes,
             });
         }
         let mut transfer_item_id = None;
@@ -98,19 +139,19 @@ impl FileService {
                 options,
             } => {
                 if let Some(parent) = parent {
-                    self.db.get_node(owner, parent).await?;
+                    self.content.db.get_node(owner, parent).await?;
                 }
                 (parent, None, name, options)
             }
             UploadTarget::Replace(id) => {
-                let current = self.db.get_node(owner, id).await?;
+                let current = self.content.db.get_node(owner, id).await?;
                 if current.kind != NodeKind::File {
                     return Err(FilesError::NotAFile);
                 }
                 (None, Some(id), current.name, StoreOptions::default())
             }
             UploadTarget::TransferItem(item_id) => {
-                let (transfer, item) = self.db.sent_transfer_item(owner, item_id).await?;
+                let (transfer, item) = self.content.db.sent_transfer_item(owner, item_id).await?;
                 if transfer.state != TransferState::Uploading {
                     return Err(FilesError::Gone);
                 }
@@ -134,7 +175,7 @@ impl FileService {
             }
         };
         if transfer_item_id.is_none() {
-            self.check_quota(owner, None, size).await?;
+            self.content.check_quota(owner, None, size).await?;
         }
         let id = Uuid::now_v7();
         let new = NewUpload {
@@ -151,7 +192,7 @@ impl FileService {
             auto_upload: options.auto_upload,
             transfer_item_id,
         };
-        match self.db.create_upload(owner, new).await {
+        match self.content.db.create_upload(owner, new).await {
             Ok(_) => {}
             // The transfer's recipient is disabled or marked for deletion.
             Err(db::DbError::NotFound) if transfer_item_id.is_some() => {
@@ -159,7 +200,7 @@ impl FileService {
             }
             Err(err) => return Err(err.into()),
         }
-        if let Err(err) = self.store.create_partial(id).await {
+        if let Err(err) = self.content.store.create_partial(id).await {
             self.forget_upload(id).await;
             return Err(err.into());
         }
@@ -179,8 +220,8 @@ impl FileService {
 
     /// Reports how many bytes of an upload have arrived.
     pub async fn upload_status(&self, owner: UserId, id: Uuid) -> Result<UploadStatus, FilesError> {
-        let upload = self.db.get_upload(owner, id).await?;
-        let offset = self.store.partial_len(id).await?;
+        let upload = self.content.db.get_upload(owner, id).await?;
+        let offset = self.content.store.partial_len(id).await?;
         Ok(UploadStatus {
             id,
             offset,
@@ -190,75 +231,24 @@ impl FileService {
 
     /// Appends a chunk that starts at `offset`; the chunk that completes the upload stores the
     /// file and ends the upload, whether storing succeeds or not.
-    #[expect(
-        clippy::cognitive_complexity,
-        reason = "S5 in docs/todo/server-refactoring.md"
-    )]
     pub async fn append_chunk<S>(
         &self,
-        owner: UserId,
+        actor: Actor,
         id: Uuid,
         offset: u64,
         body: S,
     ) -> Result<ChunkOutcome, FilesError>
     where
-        S: Stream<Item = io::Result<Bytes>>,
+        S: Stream<Item = Result<Bytes, BodyError>>,
     {
-        let upload = self.db.get_upload(owner, id).await?;
-        let size = declared_size(&upload);
-        let slot = self.uploads.slot(id);
-        let mut hashing = slot.lock().await;
-        if offset == 0 && hashing.is_none() {
-            *hashing = Some(Hashing {
-                hasher: Sha256::new(),
-                hashed: 0,
-            });
-        }
-        let appended = self
-            .store
-            .append(id, offset, size, body, |piece| {
-                if let Some(state) = hashing.as_mut() {
-                    state.hasher.update(piece);
-                    state.hashed += piece.len() as u64;
-                }
-            })
-            .await;
-        let len = match &appended {
-            Ok(len) => *len,
-            Err(_) => self.store.partial_len(id).await?,
-        };
-        if hashing.as_ref().is_some_and(|state| state.hashed != len) {
-            *hashing = None;
-        }
-        if let Err(err) = self.db.touch_upload(id).await {
-            tracing::warn!(upload_id = %id, error = %err, "failed to touch upload");
-        }
-        appended?;
-        if len < size {
-            return Ok(ChunkOutcome::Partial { offset: len });
-        }
-        let sha256 = match hashing.take() {
-            Some(state) => state.hasher.finalize().to_vec(),
-            None => self.store.hash_partial(id).await?.finalize().to_vec(),
-        };
-        let stored = match upload.transfer_item_id {
-            Some(item) => self
-                .finish_transfer_upload(owner, &upload, item, sha256)
-                .await
-                .map(|ready| ChunkOutcome::Transferred { size: len, ready }),
-            None => self
-                .finish_upload(owner, &upload, len, sha256)
-                .await
-                .map(ChunkOutcome::Complete),
-        };
-        drop(hashing);
-        self.forget_upload(id).await;
-        stored
+        self.acting(actor.device)
+            .append_chunk_as(actor.user, id, offset, body)
+            .await
     }
 
     /// Abandons an upload and the bytes it has received.
     pub async fn cancel_upload(&self, owner: UserId, id: Uuid) -> Result<(), FilesError> {
-        self.db.get_upload(owner, id).await?;
+        self.content.db.get_upload(owner, id).await?;
         let slot = self.uploads.slot(id);
         let _guard = slot.lock().await;
         self.forget_upload(id).await;
@@ -271,7 +261,7 @@ impl FileService {
         owner: UserId,
         device: Option<Uuid>,
     ) -> Result<Vec<Upload>, FilesError> {
-        Ok(self.db.uploads(owner, device).await?)
+        Ok(self.content.db.uploads(owner, device).await?)
     }
 
     /// Cancels every unfinished upload `device` started; returns how many there were.
@@ -280,7 +270,7 @@ impl FileService {
         owner: UserId,
         device: Uuid,
     ) -> Result<usize, FilesError> {
-        let uploads = self.db.uploads(owner, Some(device)).await?;
+        let uploads = self.content.db.uploads(owner, Some(device)).await?;
         for upload in &uploads {
             match self.cancel_upload(owner, upload.id).await {
                 Ok(()) | Err(FilesError::NotFound) => {}
@@ -295,20 +285,21 @@ impl FileService {
     /// Returns how many uploads and files were removed.
     pub async fn expire_uploads(&self, older_than: Duration) -> Result<usize, FilesError> {
         let before = OffsetDateTime::now_utc() - older_than;
-        let expired = self.db.expire_uploads(before).await?;
+        let expired = self.content.db.expire_uploads(before).await?;
         for &id in &expired {
             self.uploads.remove(id);
-            if let Err(err) = self.store.remove_partial(id).await {
+            if let Err(err) = self.content.store.remove_partial(id).await {
                 tracing::warn!(upload_id = %id, error = %err, "failed to remove expired upload");
             }
         }
         let live = self
+            .content
             .db
             .upload_ids()
             .await?
             .into_iter()
             .collect::<HashSet<_>>();
-        let swept = self.store.sweep(&live, older_than).await?;
+        let swept = self.content.store.sweep(&live, older_than).await?;
         Ok(expired.len() + swept)
     }
 
@@ -321,22 +312,25 @@ impl FileService {
     ) -> Result<StoreOutcome, FilesError> {
         // Checked again because what the owner stores may have grown, or their quota shrunk,
         // since the upload started.
-        self.check_quota(owner, Some(upload.id), size).await?;
-        let staged = self.store.adopt_partial(upload.id, size, sha256);
+        self.content
+            .check_quota(owner, Some(upload.id), size)
+            .await?;
+        let staged = self.content.store.adopt_partial(upload.id, size, sha256);
         let content = |name: &str| -> NewContent {
             new_content(&staged, upload.mime.as_deref(), name, upload.modified_at)
         };
         let stored = match upload.node_id {
             Some(node) => {
-                self.db
+                self.content
+                    .db
                     .replace_file_content(owner, node, content(&upload.name))
                     .await
             }
             None => {
                 if let Some(parent) = upload.parent_id
-                    && let Err(err) = self.db.get_node(owner, parent).await
+                    && let Err(err) = self.content.db.get_node(owner, parent).await
                 {
-                    self.store.discard(staged).await;
+                    self.content.store.discard(staged).await;
                     return Err(err.into());
                 }
                 let options = StoreOptions {
@@ -344,7 +338,8 @@ impl FileService {
                     version_of: upload.version_of,
                     auto_upload: upload.auto_upload,
                 };
-                self.db
+                self.content
+                    .db
                     .store_file_with(
                         owner,
                         upload.parent_id,
@@ -355,7 +350,7 @@ impl FileService {
                     .await
             }
         };
-        self.finish_store(owner, staged, stored).await
+        self.content.finish_store(owner, staged, stored).await
     }
 
     async fn finish_transfer_upload(
@@ -365,18 +360,27 @@ impl FileService {
         item: Uuid,
         sha256: Vec<u8>,
     ) -> Result<Option<db::Transfer>, FilesError> {
-        let (transfer, _) = self.db.sent_transfer_item(owner, item).await?;
+        let (transfer, _) = self.content.db.sent_transfer_item(owner, item).await?;
         if transfer.state != TransferState::Uploading {
             return Err(FilesError::Gone);
         }
-        self.store
+        self.content
+            .store
             .commit_into_transfer(upload.id, transfer.id, item)
             .await?;
-        match self.db.store_transfer_item(item, &sha256).await {
-            Ok(ready) => Ok(ready),
+        match self.content.db.store_transfer_item(item, &sha256).await {
+            Ok(ready) => {
+                if let Some(transfer) = &ready {
+                    self.content
+                        .events
+                        .publish_one(DomainEvent::TransferReady(transfer.clone()))
+                        .await;
+                }
+                Ok(ready)
+            }
             Err(db::DbError::NotFound) => {
                 // Cancelled or expired meanwhile.
-                self.remove_transfer_files(transfer.id).await;
+                self.content.remove_transfer_files(transfer.id).await;
                 Err(FilesError::Gone)
             }
             Err(err) => Err(err.into()),
@@ -392,12 +396,86 @@ impl FileService {
 
     async fn forget_upload(&self, id: Uuid) {
         self.uploads.remove(id);
-        if let Err(err) = self.db.delete_upload(id).await {
+        if let Err(err) = self.content.db.delete_upload(id).await {
             tracing::warn!(upload_id = %id, error = %err, "failed to delete upload record");
         }
-        if let Err(err) = self.store.remove_partial(id).await {
+        if let Err(err) = self.content.store.remove_partial(id).await {
             tracing::warn!(upload_id = %id, error = %err, "failed to remove upload file");
         }
+    }
+
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "K9 in docs/todo/server-refactoring.md"
+    )]
+    async fn append_chunk_as<S>(
+        &self,
+        owner: UserId,
+        id: Uuid,
+        offset: u64,
+        body: S,
+    ) -> Result<ChunkOutcome, FilesError>
+    where
+        S: Stream<Item = Result<Bytes, BodyError>>,
+    {
+        let upload = self.content.db.get_upload(owner, id).await?;
+        let size = declared_size(&upload);
+        let slot = self.uploads.slot(id);
+        let mut hashing = slot.lock().await;
+        if offset == 0 && hashing.is_none() {
+            *hashing = Some(Hashing {
+                hasher: Sha256::new(),
+                hashed: 0,
+            });
+        }
+        let appended = self
+            .content
+            .store
+            .append(id, offset, size, body, |piece| {
+                if let Some(state) = hashing.as_mut() {
+                    state.hasher.update(piece);
+                    state.hashed += piece.len() as u64;
+                }
+            })
+            .await;
+        let len = match &appended {
+            Ok(len) => *len,
+            Err(_) => self.content.store.partial_len(id).await?,
+        };
+        if hashing.as_ref().is_some_and(|state| state.hashed != len) {
+            *hashing = None;
+        }
+        if let Err(err) = self.content.db.touch_upload(id).await {
+            tracing::warn!(upload_id = %id, error = %err, "failed to touch upload");
+        }
+        appended?;
+        if len < size {
+            return Ok(ChunkOutcome::Partial { offset: len });
+        }
+        let sha256 = match hashing.take() {
+            Some(state) => state.hasher.finalize().to_vec(),
+            None => self
+                .content
+                .store
+                .hash_partial(id)
+                .await?
+                .finalize()
+                .to_vec(),
+        };
+        let stored = match upload.transfer_item_id {
+            Some(item) => self
+                .finish_transfer_upload(owner, &upload, item, sha256)
+                .await
+                .map(|ready| ChunkOutcome::Transferred { size: len, ready }),
+            None => self
+                .content
+                .publish_stored(self.finish_upload(owner, &upload, len, sha256).await)
+                .await
+                .map(ChunkOutcome::Complete),
+        };
+        drop(hashing);
+        self.forget_upload(id).await;
+        stored
     }
 }
 

@@ -17,6 +17,8 @@ allowed() {
 
 status=0
 while IFS= read -r file; do
+  # Deleted in the working tree but not yet in the index.
+  [[ -f $file ]] || continue
   length=$(awk '/^#\[cfg\(test\)\]/ { exit } { n++ } END { print n + 0 }' "$file")
   limit=$(allowed "$file")
   limit=${limit:-$LIMIT}

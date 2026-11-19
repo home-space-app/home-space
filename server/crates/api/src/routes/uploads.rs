@@ -1,7 +1,5 @@
 //! Resumable chunked uploads, for files larger than a proxy lets one request carry.
 
-use std::{fmt, io};
-
 use axum::{
     Json, Router,
     body::Body,
@@ -13,7 +11,6 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use futures_util::StreamExt;
 use uuid::Uuid;
 
 use db::StoreOptions;
@@ -26,10 +23,7 @@ use crate::extract::{ApiJson, ApiPath, ApiQuery};
 use crate::{
     ApiError, AppState,
     extract::AuthUser,
-    support::{
-        body::body_stream,
-        publish::{publish_ready, publish_stored},
-    },
+    support::{body::limited_body_stream, outcome::stored},
 };
 
 pub fn routes() -> Router<AppState> {
@@ -74,8 +68,8 @@ async fn list(
     ApiQuery(query): ApiQuery<UploadsQuery>,
 ) -> Result<Json<Vec<UploadInfo>>, ApiError> {
     let uploads = match (query.this_device, user.device_id) {
-        (false, _) => state.files.uploads(user.id, None).await?,
-        (true, Some(device)) => state.files.uploads(user.id, Some(device)).await?,
+        (false, _) => state.files.uploads.uploads(user.id, None).await?,
+        (true, Some(device)) => state.files.uploads.uploads(user.id, Some(device)).await?,
         (true, None) => Vec::new(),
     };
     Ok(Json(uploads.into_iter().map(upload_info).collect()))
@@ -114,6 +108,7 @@ async fn create(
     };
     let status = state
         .files
+        .uploads
         .create_upload(
             user.id,
             user.device_id,
@@ -123,7 +118,7 @@ async fn create(
             request.modified_at,
         )
         .await?;
-    let body = Json(session(status, state.files.chunk_bytes()));
+    let body = Json(session(status, state.files.uploads.chunk_bytes()));
     Ok(with_offset(StatusCode::CREATED, status.offset, body))
 }
 
@@ -132,22 +127,10 @@ async fn status(
     user: AuthUser,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Response, ApiError> {
-    let status = state.files.upload_status(user.id, id).await?;
-    let body = Json(session(status, state.files.chunk_bytes()));
+    let status = state.files.uploads.upload_status(user.id, id).await?;
+    let body = Json(session(status, state.files.uploads.chunk_bytes()));
     Ok(with_offset(StatusCode::OK, status.offset, body))
 }
-
-/// A chunk body longer than the chunk size the server asked for.
-#[derive(Debug)]
-struct ChunkTooLarge;
-
-impl fmt::Display for ChunkTooLarge {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("chunk is larger than the chunk size")
-    }
-}
-
-impl std::error::Error for ChunkTooLarge {}
 
 async fn append(
     State(state): State<AppState>,
@@ -163,29 +146,19 @@ async fn append(
         .ok_or_else(|| {
             ApiError::BadRequest(format!("a numeric {UPLOAD_OFFSET} header is required"))
         })?;
-    let limit = state.files.chunk_bytes();
-    let too_large = ApiError::Files(FilesError::TooLarge { limit });
+    let limit = state.files.uploads.chunk_bytes();
     let declared_len = headers
         .get(CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok());
     if declared_len.is_some_and(|len| len > limit) {
-        return Err(too_large);
+        return Err(FilesError::TooLarge { limit }.into());
     }
-    let mut received = 0u64;
-    let chunk = body_stream(body).map(move |piece| {
-        let piece = piece?;
-        received += piece.len() as u64;
-        if received > limit {
-            Err(io::Error::other(ChunkTooLarge))
-        } else {
-            Ok(piece)
-        }
-    });
+    let chunk = limited_body_stream(body, limit);
     match state
         .files
-        .on_device(user.device_id)
-        .append_chunk(user.id, id, offset, chunk)
+        .uploads
+        .append_chunk(user.actor(), id, offset, chunk)
         .await
     {
         Ok(ChunkOutcome::Partial { offset }) => Ok(with_offset(
@@ -193,8 +166,8 @@ async fn append(
             offset,
             Json(ChunkResult { offset, node: None }),
         )),
-        Ok(ChunkOutcome::Complete(stored)) => {
-            let (status, Json(node)) = publish_stored(&state, user.id, stored).await;
+        Ok(ChunkOutcome::Complete(outcome)) => {
+            let (status, Json(node)) = stored(outcome);
             let offset = u64::try_from(node.size).unwrap_or_default();
             let body = Json(ChunkResult {
                 offset,
@@ -202,10 +175,7 @@ async fn append(
             });
             Ok(with_offset(status, offset, body))
         }
-        Ok(ChunkOutcome::Transferred { size, ready }) => {
-            if let Some(transfer) = ready {
-                publish_ready(&state, transfer);
-            }
+        Ok(ChunkOutcome::Transferred { size, .. }) => {
             let body = Json(ChunkResult {
                 offset: size,
                 node: None,
@@ -216,13 +186,6 @@ async fn append(
             let error = ApiError::Files(FilesError::OffsetMismatch { current });
             Ok(with_offset(StatusCode::CONFLICT, current, error))
         }
-        Err(FilesError::Io(err))
-            if err
-                .get_ref()
-                .is_some_and(|inner| inner.is::<ChunkTooLarge>()) =>
-        {
-            Err(too_large)
-        }
         Err(err) => Err(err.into()),
     }
 }
@@ -232,6 +195,6 @@ async fn cancel(
     user: AuthUser,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    state.files.cancel_upload(user.id, id).await?;
+    state.files.uploads.cancel_upload(user.id, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

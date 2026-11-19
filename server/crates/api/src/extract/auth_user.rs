@@ -4,7 +4,7 @@ use axum::{
 };
 use uuid::Uuid;
 
-use db::{TenantId, UserId};
+use db::UserId;
 
 use super::Tenant;
 use crate::{ApiError, AppState};
@@ -15,8 +15,6 @@ const BEARER_PREFIX: &str = "Bearer ";
 #[derive(Clone, Copy, Debug)]
 pub struct AuthUser {
     pub id: UserId,
-    /// The tenant of the user, which is the tenant the request was sent to.
-    pub tenant: TenantId,
     /// The session the token belongs to.
     pub session_id: Uuid,
     /// The device of that session, when the client named one at sign-in.
@@ -26,6 +24,11 @@ pub struct AuthUser {
 }
 
 impl AuthUser {
+    /// The user and device the changes of this request are made by.
+    pub fn actor(&self) -> files::Actor {
+        files::Actor::new(self.id, self.device_id)
+    }
+
     /// Authenticates from the `Authorization: Bearer` header, with a token `tenant` issued
     /// to one of its own users.
     pub async fn from_headers(headers: &HeaderMap, tenant: &Tenant) -> Result<Self, ApiError> {
@@ -41,7 +44,6 @@ impl AuthUser {
             .map_err(|_| ApiError::Unauthorized)?;
         Ok(Self {
             id: access.claims.sub,
-            tenant: tenant.id,
             session_id: access.claims.sid,
             device_id: access.device_id,
             token_exp: access.claims.exp,

@@ -401,7 +401,6 @@ async fn changing_the_password_closes_every_socket_of_the_user(pool: PgPool) {
     let addr = serve(&app).await;
     let mut socket = connect(addr, &token).await;
     let user = app
-        .state
         .db
         .find_user_by_username(db::TenantId::DEFAULT, "alice")
         .await

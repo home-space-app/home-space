@@ -1,79 +1,29 @@
-use std::{
-    collections::HashMap,
-    net::{IpAddr, Ipv6Addr},
-    sync::{Arc, Mutex, PoisonError},
-    thread::available_parallelism,
-};
+//! The authentication of one tenant, as the API uses it. The work is done by the parts it
+//! is made of: [`PasswordHasher`], [`LoginThrottle`], [`Sessions`], [`Tickets`] and
+//! [`OidcLogin`].
 
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use time::{Duration, OffsetDateTime};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, broadcast};
+use std::net::IpAddr;
+
+use time::Duration;
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use db::{Db, DbError, LiveSession, NewDevice, OidcPending, ShareLink, TenantId, User, UserId};
+use db::{Db, DbError, TenantId, User, UserId};
 use protocol::{
-    DEVICE_SESSION_LABELS, DeviceInfo, NodeId, OidcProvider, Providers, ShareAccess, TicketRequest,
-    TicketResponse, TokenPair,
+    DeviceInfo, OidcProvider, Providers, TicketRequest, TicketResponse, TokenPair,
+    rules::MAX_USERNAME_LEN,
 };
 
 use crate::{
-    AuthError, Claims, OidcService,
-    oidc::{Identity, is_valid_challenge, verifier_matches},
-    password,
-    token::{
-        Keys, ShareGrant, decode_access, decode_share_access, decode_ticket, encode_access,
-        encode_share_access, encode_ticket, hash_refresh_token, new_refresh_token,
-    },
+    AuthError, Claims, OidcService, SharePasswords,
+    hasher::PasswordHasher,
+    oidc_login::OidcLogin,
+    password::MAX_PASSWORD_LEN,
+    sessions::Sessions,
+    throttle::{Counter, LoginThrottle, attempt_source},
+    tickets::Tickets,
+    token::Keys,
 };
-
-use protocol::rules::{MAX_USERNAME_LEN, device_name};
-/// Leading bits of an IPv6 address that name a network; one subscriber usually owns them all.
-const IPV6_NETWORK_BITS: u32 = 64;
-/// The longest password, in bytes. Hashing takes time in proportion to the length, and
-/// nothing anyone types or a password manager makes comes near it.
-use password::MAX_PASSWORD_LEN;
-const TICKET_TTL_SECS: i64 = 30;
-/// How long a share link stays unlocked after its password was given.
-const SHARE_ACCESS_TTL: Duration = Duration::hours(12);
-/// Wrong passwords of a share link are counted under this prefix and the link's id.
-const SHARE_ATTEMPTS_PREFIX: &str = "share:";
-/// How long after a refresh token kept in a cookie was used it may be presented once more
-/// without ending the session: long enough for two tabs that refreshed at the same moment.
-const SHARED_REFRESH_GRACE: Duration = Duration::seconds(10);
-const SCOPE_EVENTS: &str = "events";
-const SCOPE_DOWNLOAD_PREFIX: &str = "download:";
-const DUMMY_PASSWORD: &str = "dummy-password-for-timing";
-const OIDC_PENDING_TTL: Duration = Duration::minutes(10);
-const OIDC_CODE_TTL: Duration = Duration::seconds(60);
-const OIDC_TOKEN_BYTES: usize = 32;
-const USERNAME_ATTEMPTS: u32 = 20;
-const FALLBACK_USERNAME: &str = "user";
-const MAX_PLATFORM_CHARS: usize = 32;
-/// Wrong passwords a username may get before attempts for it have to wait.
-const FREE_LOGIN_FAILURES: u32 = 3;
-/// The first wait, which doubles with every further wrong password.
-const FIRST_LOGIN_BLOCK: Duration = Duration::seconds(30);
-/// The longest wait, so that someone guessing cannot lock the owner out for good.
-const MAX_LOGIN_BLOCK: Duration = Duration::hours(24);
-/// How long failed sign-ins of a username that is not blocked are remembered.
-pub const LOGIN_ATTEMPTS_MEMORY: Duration = Duration::days(1);
-/// The username that wrong passwords from one address are counted under whatever name they
-/// were for. No user has it, and a sign-in with it is refused before anything is counted.
-const ANY_USERNAME: &str = "";
-/// Wrong passwords one address may send, over all usernames, before it has to wait. Well
-/// above what the people of one household mistype, since they may share an address.
-const FREE_ADDRESS_FAILURES: u32 = 20;
-/// The longest wait of an address. Short, because it holds up everyone who shares it.
-const MAX_ADDRESS_BLOCK: Duration = Duration::minutes(15);
-/// How long after its last wrong password an address starts from nothing again.
-const ADDRESS_ATTEMPTS_MEMORY: Duration = Duration::hours(1);
-/// Passwords hashed at once when the number of processors is unknown.
-const FALLBACK_HASHING_SLOTS: usize = 2;
-/// How long a password waits for its turn to be hashed before the request is refused.
-const HASHING_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
-/// Room for session-end notices a slow websocket has not read yet; one that falls further
-/// behind re-checks its session anyway.
-const ENDED_CAPACITY: usize = 64;
 
 /// Token settings.
 #[derive(Clone, Debug)]
@@ -85,6 +35,20 @@ pub struct AuthConfig {
     pub previous_jwt_secrets: Vec<Vec<u8>>,
     pub access_ttl: Duration,
     pub refresh_ttl: Duration,
+}
+
+impl AuthConfig {
+    fn keys(&self) -> Keys {
+        Keys::new(
+            self.tenant,
+            self.jwt_secret.clone(),
+            self.previous_jwt_secrets.clone(),
+        )
+    }
+
+    fn ttls(&self) -> (Duration, Duration) {
+        (self.access_ttl, self.refresh_ttl)
+    }
 }
 
 /// A valid access token: its claims and the device of its session.
@@ -104,84 +68,69 @@ pub struct Grant {
     pub device_id: Option<Uuid>,
 }
 
-/// Login, refresh, logout and user management.
+/// Passwords, sign-in, sessions and tickets of one tenant.
 #[derive(Clone, Debug)]
 pub struct AuthService {
     db: Db,
-    config: AuthConfig,
+    tenant: TenantId,
     keys: Keys,
-    dummy_hash: String,
-    oidc: Option<OidcService>,
+    hasher: PasswordHasher,
+    throttle: LoginThrottle,
+    sessions: Sessions,
+    tickets: Tickets,
+    oidc: Option<OidcLogin>,
     password_login: bool,
-    /// Users some of whose sessions just ended, so open websockets re-check theirs.
-    ended: broadcast::Sender<UserId>,
-    /// Tickets already used, by id, with the time they expire and can be forgotten. Kept in
-    /// memory: after a restart a used ticket would be accepted again, for the rest of its
-    /// [`TICKET_TTL_SECS`] at most.
-    used_tickets: Arc<Mutex<HashMap<Uuid, i64>>>,
-    /// One permit per password that may be hashed at this moment. Hashing takes a processor
-    /// and about 19 MiB each, so without a limit a burst of sign-ins could use up both.
-    hashing: Arc<Semaphore>,
 }
 
 impl AuthService {
     /// Creates the service; fails only if the password hasher cannot run.
     pub fn new(db: Db, config: AuthConfig) -> Result<Self, AuthError> {
-        let dummy_hash = password::hash(DUMMY_PASSWORD)?;
-        let keys = Keys::new(
-            config.tenant,
-            config.jwt_secret.clone(),
-            config.previous_jwt_secrets.clone(),
-        );
+        let keys = config.keys();
         Ok(Self {
-            db,
-            config,
+            sessions: Sessions::new(db.clone(), keys.clone(), config.tenant, config.ttls()),
+            tickets: Tickets::new(keys.clone()),
+            hasher: PasswordHasher::new()?,
+            throttle: LoginThrottle::new(db.clone()),
+            tenant: config.tenant,
             keys,
-            dummy_hash,
+            db,
             oidc: None,
             password_login: true,
-            ended: broadcast::channel(ENDED_CAPACITY).0,
-            used_tickets: Arc::default(),
-            hashing: Arc::new(Semaphore::new(
-                available_parallelism().map_or(FALLBACK_HASHING_SLOTS, usize::from),
-            )),
         })
     }
 
     /// A service for another tenant, with that tenant's keys and no identity provider yet.
     /// It shares with this one what belongs to the process rather than to a tenant: the
-    /// database, the password hashing slots, the used tickets (their ids are unique) and the
+    /// database, the password hashing turns, the used tickets (their ids are unique) and the
     /// notices of ended sessions (user ids are unique).
     pub fn for_tenant(&self, config: AuthConfig) -> Self {
-        let keys = Keys::new(
-            config.tenant,
-            config.jwt_secret.clone(),
-            config.previous_jwt_secrets.clone(),
-        );
+        let keys = config.keys();
         Self {
-            db: self.db.clone(),
-            config,
+            sessions: self
+                .sessions
+                .for_tenant(keys.clone(), config.tenant, config.ttls()),
+            tickets: self.tickets.for_tenant(keys.clone()),
+            hasher: self.hasher.clone(),
+            throttle: self.throttle.clone(),
+            tenant: config.tenant,
             keys,
-            dummy_hash: self.dummy_hash.clone(),
+            db: self.db.clone(),
             oidc: None,
             password_login: true,
-            ended: self.ended.clone(),
-            used_tickets: Arc::clone(&self.used_tickets),
-            hashing: Arc::clone(&self.hashing),
         }
     }
 
     /// Enables sign-in through an identity provider. With `password_login` off, only that
     /// provider can be used to sign in.
     pub fn with_oidc(mut self, oidc: OidcService, password_login: bool) -> Self {
-        self.oidc = Some(oidc);
+        self.oidc = Some(OidcLogin::new(self.db.clone(), self.tenant, oidc));
         self.password_login = password_login;
         self
     }
 
     /// The tenant whose users this service signs in.
     pub fn tenant(&self) -> TenantId {
-        self.config.tenant
+        self.tenant
     }
 
     /// The ways users can sign in on this server.
@@ -189,32 +138,40 @@ impl AuthService {
         Providers {
             password: self.password_login,
             oidc: self.oidc.as_ref().map(|oidc| OidcProvider {
-                name: oidc.display_name().to_owned(),
+                name: oidc.provider.display_name().to_owned(),
             }),
+        }
+    }
+
+    /// What the tenant's share links need of it: hashing their passwords, and signing the
+    /// proof that one was given.
+    pub fn share_passwords(&self) -> SharePasswords {
+        SharePasswords {
+            tenant: self.tenant,
+            keys: self.keys.clone(),
+            hasher: self.hasher.clone(),
+            throttle: self.throttle.clone(),
         }
     }
 
     /// Creates a user after validating username and password.
     pub async fn create_user(&self, username: &str, password: &str) -> Result<User, AuthError> {
         if let Some(problem) = protocol::rules::username_problem(username) {
-            Err(AuthError::InvalidInput(problem))
-        } else {
-            password::check_new(password)?;
-            let hashed = self.hash_blocking(password).await?;
-            self.db
-                .create_user(self.config.tenant, username, &hashed)
-                .await
-                .map_err(|err| match err {
-                    DbError::Conflict => AuthError::UsernameTaken,
-                    other => other.into(),
-                })
+            return Err(AuthError::InvalidInput(problem));
         }
+        let hashed = self.hasher.hash_new(password).await?;
+        self.db
+            .create_user(self.tenant, username, &hashed)
+            .await
+            .map_err(|err| match err {
+                DbError::Conflict => AuthError::UsernameTaken,
+                other => other.into(),
+            })
     }
 
     /// Changes a user's password and revokes their sessions.
     pub async fn set_password(&self, user_id: UserId, password: &str) -> Result<(), AuthError> {
-        password::check_new(password)?;
-        let hashed = self.hash_blocking(password).await?;
+        let hashed = self.hasher.hash_new(password).await?;
         self.db.set_password_hash(user_id, &hashed).await?;
         self.sessions_ended(user_id);
         Ok(())
@@ -239,39 +196,25 @@ impl AuthService {
             .await?
             .ok_or(AuthError::InvalidCredentials)?;
         let hash = user.password_hash.ok_or(AuthError::NoPassword)?;
-        password::check_new(new)?;
+        crate::password::check_new(new)?;
         // No password is that long, so it is not worth a count or the time to hash it.
         if current.len() > MAX_PASSWORD_LEN {
             return Err(AuthError::WrongPassword);
         }
         let source = format!("session:{session_id}");
-        if let Err(until) = self
-            .db
-            .begin_login_attempt(
-                user.tenant_id,
-                &user.username,
-                &source,
-                LOGIN_ATTEMPTS_MEMORY,
-                login_block,
-            )
-            .await?
-        {
-            return Err(too_many_attempts(until));
-        }
-        match self.verify_blocking(current, hash).await {
-            Ok(true) => {}
-            Ok(false) => return Err(AuthError::WrongPassword),
-            Err(err) => {
-                self.db
-                    .take_back_login_attempt(user.tenant_id, &user.username, &source, login_block)
-                    .await?;
-                return Err(err);
-            }
-        }
-        self.db
-            .clear_login_attempts(user.tenant_id, &user.username, &source)
+        let attempt = self
+            .throttle
+            .admit(vec![Counter::key(user.tenant_id, user.username, source)])
             .await?;
-        let hashed = self.hash_blocking(new).await?;
+        let checked = match self.hasher.verify(current, hash).await {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(AuthError::WrongPassword),
+            Err(err) => Err(err),
+        };
+        attempt
+            .settle(checked, |err| matches!(err, AuthError::WrongPassword))
+            .await?;
+        let hashed = self.hasher.hash(new).await?;
         self.db
             .change_password_hash(user_id, &hashed, session_id)
             .await?;
@@ -295,11 +238,11 @@ impl AuthService {
     /// Verifies credentials sent from `address` and starts a session on `device`, when the
     /// client names one.
     ///
-    /// After [`FREE_LOGIN_FAILURES`] wrong passwords for a username from one address, each
-    /// further attempt from there waits twice as long as the one before, starting at
-    /// [`FIRST_LOGIN_BLOCK`]; the correct password starts the count again. Other addresses are
-    /// not held up, so guessing at a username does not lock its owner out. Usernames that do
-    /// not exist are counted the same way, so that a block does not tell which ones do.
+    /// After a few wrong passwords for a username from one address, each further attempt from
+    /// there waits twice as long as the one before; the correct password starts the count
+    /// again. Other addresses are not held up, so guessing at a username does not lock its
+    /// owner out. Usernames that do not exist are counted the same way, so that a block does
+    /// not tell which ones do.
     ///
     /// A device the user has signed in from before is counted on its own instead of with its
     /// address. Its id is known only to that install and the server, so the owner can still
@@ -308,14 +251,8 @@ impl AuthService {
     /// nothing: it is counted with the address.
     ///
     /// An address is also counted over all usernames, so that trying a new name every time
-    /// does not get around the limit: after [`FREE_ADDRESS_FAILURES`] wrong passwords it waits
-    /// in the same doubling steps, up to [`MAX_ADDRESS_BLOCK`], and nothing is hashed or stored
-    /// for it meanwhile. A device the user has signed in from before is not held up by this
-    /// either.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "K1 in docs/todo/server-refactoring.md"
-    )]
+    /// does not get around the limit, and nothing is hashed or stored for it while it waits.
+    /// A device the user has signed in from before is not held up by this either.
     pub async fn login_from(
         &self,
         username: &str,
@@ -331,102 +268,56 @@ impl AuthService {
         {
             return Err(AuthError::InvalidCredentials);
         }
+        let counters = self.login_counters(username, device, address).await?;
+        let attempt = self.throttle.admit(counters).await?;
+        let checked = self.check_password(username, password).await;
+        let user = attempt
+            .settle(checked, |err| matches!(err, AuthError::InvalidCredentials))
+            .await?;
+        self.sessions.start(user.id, device).await
+    }
+
+    /// What a sign-in counts against: the username, from a device the user signed in from
+    /// before or else from the address; and the address as a whole unless it is such a device.
+    async fn login_counters(
+        &self,
+        username: &str,
+        device: Option<&DeviceInfo>,
+        address: Option<IpAddr>,
+    ) -> Result<Vec<Counter>, AuthError> {
         let known_device = match device {
             Some(device) => {
                 self.db
-                    .is_device_of_username(self.config.tenant, username, device.id)
+                    .is_device_of_username(self.tenant, username, device.id)
                     .await?
             }
             None => false,
         };
-        let source = match device {
-            Some(device) if known_device => format!("device:{}", device.id),
-            _ => address.map(attempt_source).unwrap_or_default(),
-        };
-        // The address as a whole, unless the attempt is counted for a known device instead.
-        let address_source = address.filter(|_| !known_device).map(|_| source.as_str());
-        if let Some(address) = address_source
-            && let Err(until) = self
-                .db
-                .begin_login_attempt(
-                    TenantId::SHARED,
-                    ANY_USERNAME,
-                    address,
-                    ADDRESS_ATTEMPTS_MEMORY,
-                    address_block,
-                )
-                .await?
-        {
-            return Err(too_many_attempts(until));
-        }
-        let begun = self
-            .db
-            .begin_login_attempt(
-                self.config.tenant,
-                username,
-                &source,
-                LOGIN_ATTEMPTS_MEMORY,
-                login_block,
-            )
-            .await?;
-        let checked = match begun {
-            Ok(()) => self.check_password(username, password).await,
-            Err(until) => Err(too_many_attempts(until)),
-        };
-        let user = match checked {
-            Ok(user) => user,
-            Err(err) => {
-                // An admitted attempt that could not be checked is not a wrong password.
-                // An already-blocked request never incremented this counter.
-                if begun.is_ok() && !matches!(err, AuthError::InvalidCredentials) {
-                    self.db
-                        .take_back_login_attempt(self.config.tenant, username, &source, login_block)
-                        .await?;
-                }
-                // Only a wrong password counts against the address: not a repeated try at a
-                // username that is waiting, nor a password that was never checked.
-                if let Some(address) = address_source
-                    && !matches!(err, AuthError::InvalidCredentials)
-                {
-                    self.db
-                        .take_back_login_attempt(
-                            TenantId::SHARED,
-                            ANY_USERNAME,
-                            address,
-                            address_block,
-                        )
-                        .await?;
-                }
-                return Err(err);
+        let mut counters = Vec::with_capacity(2);
+        let source = match (device, address) {
+            (Some(device), _) if known_device => format!("device:{}", device.id),
+            (_, Some(address)) => {
+                let source = attempt_source(address);
+                counters.push(Counter::address(source.clone()));
+                source
             }
+            (_, None) => String::new(),
         };
-        self.db
-            .clear_login_attempts(self.config.tenant, username, &source)
-            .await?;
-        if let Some(address) = address_source {
-            self.db
-                .take_back_login_attempt(TenantId::SHARED, ANY_USERNAME, address, address_block)
-                .await?;
-        }
-        self.start_session(user.id, device).await
+        counters.push(Counter::key(self.tenant, username, source));
+        Ok(counters)
     }
 
     /// The user called `username`, if `password` is theirs and they may sign in with it.
     async fn check_password(&self, username: &str, password: &str) -> Result<User, AuthError> {
-        let user = self
-            .db
-            .find_user_by_username(self.config.tenant, username)
-            .await?;
+        let user = self.db.find_user_by_username(self.tenant, username).await?;
         // Always verify against some hash so the timing does not reveal whether the user exists,
         // has a password, or may use password login at all.
         let hash = user
             .as_ref()
             .and_then(|user| user.password_hash.clone())
             .filter(|_| self.password_login);
-        let allowed = hash.is_some();
-        let hash = hash.unwrap_or_else(|| self.dummy_hash.clone());
-        let verified = self.verify_blocking(password, hash).await?;
-        user.filter(|_| verified && allowed)
+        let verified = self.hasher.verify_or_pretend(password, hash).await?;
+        user.filter(|_| verified)
             .ok_or(AuthError::InvalidCredentials)
     }
 
@@ -434,152 +325,65 @@ impl AuthService {
     ///
     /// Presenting an already-used token ends the whole session.
     pub async fn refresh(&self, refresh_token: &str) -> Result<TokenPair, AuthError> {
-        self.refresh_with(refresh_token, false).await
+        self.sessions.refresh(refresh_token, false).await
     }
 
     /// Like [`refresh`](Self::refresh), for a token kept in a browser's cookie, which all of
     /// its tabs share. Two tabs may send the same token at the same moment, so the one that
-    /// comes second within [`SHARED_REFRESH_GRACE`] gets an access token for the session and
-    /// no refresh token: the cookie already holds the one the first tab was given.
+    /// comes second, within seconds, gets an access token for the session and no refresh
+    /// token: the cookie already holds the one the first tab was given.
     pub async fn refresh_shared(&self, refresh_token: &str) -> Result<TokenPair, AuthError> {
-        self.refresh_with(refresh_token, true).await
-    }
-
-    async fn refresh_with(
-        &self,
-        refresh_token: &str,
-        shared: bool,
-    ) -> Result<TokenPair, AuthError> {
-        let stored = self
-            .db
-            .find_refresh_token(self.config.tenant, &hash_refresh_token(refresh_token))
-            .await?
-            .ok_or(AuthError::InvalidCredentials)?;
-        let now = OffsetDateTime::now_utc();
-        if let Some(revoked_at) = stored.revoked_at {
-            if shared && now - revoked_at <= SHARED_REFRESH_GRACE {
-                return self.rejoin_session(stored.user_id, stored.family_id).await;
-            }
-            self.end_session(stored.user_id, stored.family_id).await?;
-            Err(AuthError::InvalidCredentials)
-        } else if stored.expires_at <= now {
-            Err(AuthError::InvalidCredentials)
-        } else if self.db.revoke_refresh_token(stored.id).await? {
-            self.continue_session(stored.user_id, stored.family_id)
-                .await
-        } else if shared {
-            // Another tab revoked it between the two statements above.
-            self.rejoin_session(stored.user_id, stored.family_id).await
-        } else {
-            self.end_session(stored.user_id, stored.family_id).await?;
-            Err(AuthError::InvalidCredentials)
-        }
-    }
-
-    /// An access token for a session that still lives, without a new refresh token.
-    async fn rejoin_session(
-        &self,
-        user_id: UserId,
-        session_id: Uuid,
-    ) -> Result<TokenPair, AuthError> {
-        self.require_session(session_id, user_id).await?;
-        self.pair(user_id, session_id, String::new())
+        self.sessions.refresh(refresh_token, true).await
     }
 
     /// Starts a session labelled `label` for an extension of the app on the device of the
-    /// app's own session `parent`, ending any earlier one with that label `parent` started. The pair's
-    /// refresh token belongs to the extension; the app's own session carries on unchanged.
+    /// app's own session `parent`; see [`Sessions::start_for_extension`].
     pub async fn start_device_session(
         &self,
         user_id: UserId,
         parent: Uuid,
         label: &str,
     ) -> Result<TokenPair, AuthError> {
-        if !DEVICE_SESSION_LABELS.contains(&label) {
-            return Err(AuthError::InvalidInput("unknown device session label"));
-        }
-        self.require_may_sign_in(user_id).await?;
-        let session_id = Uuid::now_v7();
-        let refresh_token = new_refresh_token();
-        let started = self
-            .db
-            .start_device_session(
-                parent,
-                user_id,
-                label,
-                session_id,
-                &hash_refresh_token(&refresh_token),
-                self.refresh_expiry(),
-            )
-            .await?;
-        if started.is_none() {
-            return Err(AuthError::InvalidInput(
-                "only an app session that names its device can start another",
-            ));
-        }
-        // The earlier session with this label may have had a websocket open.
-        self.sessions_ended(user_id);
-        self.pair(user_id, session_id, refresh_token)
+        self.sessions
+            .start_for_extension(user_id, parent, label)
+            .await
     }
 
     /// Ends the session of `refresh_token`, and with the app's own session the sessions of
     /// extensions it started; unknown tokens are ignored.
     pub async fn logout(&self, refresh_token: &str) -> Result<(), AuthError> {
-        if let Some(stored) = self
-            .db
-            .find_refresh_token(self.config.tenant, &hash_refresh_token(refresh_token))
-            .await?
-        {
-            self.end_session(stored.user_id, stored.family_id).await?;
-        }
-        Ok(())
-    }
-
-    async fn end_session(&self, user_id: UserId, session_id: Uuid) -> Result<(), AuthError> {
-        self.db.end_session(session_id).await?;
-        self.sessions_ended(user_id);
-        Ok(())
+        self.sessions.logout(refresh_token).await
     }
 
     /// Tells open websockets that sessions of `user_id` ended, so each checks whether its own
     /// still lives. Call it after ending sessions anywhere else, such as signing out a device.
     pub fn sessions_ended(&self, user_id: UserId) {
-        // An error only means no websocket is open right now.
-        let _ = self.ended.send(user_id);
+        self.sessions.ended(user_id);
     }
 
     /// Notices from [`sessions_ended`](Self::sessions_ended), for every user.
     pub fn ended_sessions(&self) -> broadcast::Receiver<UserId> {
-        self.ended.subscribe()
+        self.sessions.ended_sessions()
     }
 
     /// Whether `grant`'s session still lives.
     pub async fn is_live(&self, grant: &Grant) -> Result<bool, AuthError> {
-        Ok(self
-            .db
-            .live_session(self.config.tenant, grant.session_id, grant.user_id)
-            .await?
-            .is_some())
+        self.sessions.is_live(grant).await
     }
 
     /// Validates an access token: a good signature is not enough, its session must still exist.
     pub async fn verify_access(&self, token: &str) -> Result<Access, AuthError> {
-        let claims = decode_access(&self.keys, token)?;
-        let session = self.require_session(claims.sid, claims.sub).await?;
-        Ok(Access {
-            claims,
-            device_id: session.device_id,
-        })
+        self.sessions.verify_access(token).await
     }
 
     /// Lifetime of access tokens.
     pub fn access_ttl(&self) -> Duration {
-        self.config.access_ttl
+        self.sessions.access_ttl()
     }
 
     /// Lifetime of refresh tokens: how long a session lasts without being refreshed.
     pub fn refresh_ttl(&self) -> Duration {
-        self.config.refresh_ttl
+        self.sessions.refresh_ttl()
     }
 
     /// Issues a short-lived ticket limited to `request`'s scope.
@@ -589,113 +393,24 @@ impl AuthService {
         session_id: Uuid,
         request: &TicketRequest,
     ) -> Result<TicketResponse, AuthError> {
-        let ttl = Duration::seconds(TICKET_TTL_SECS);
-        Ok(TicketResponse {
-            ticket: encode_ticket(&self.keys, user_id, session_id, &scope_of(request), ttl)?,
-            expires_in: TICKET_TTL_SECS,
-        })
+        self.tickets.issue(user_id, session_id, request)
     }
 
-    /// Validates a ticket for `request`'s scope and returns whom it was issued to.
-    ///
-    /// A ticket works once. It reaches the server in a URL, so a copy of it, from a proxy's
-    /// log or the browser's history, must be worth nothing after the request it was made for.
+    /// Validates a ticket for `request`'s scope, once, and returns whom it was issued to.
     pub async fn verify_ticket(
         &self,
         ticket: &str,
         request: &TicketRequest,
     ) -> Result<Grant, AuthError> {
-        let grant = decode_ticket(&self.keys, ticket, &scope_of(request))?;
-        if !self.use_ticket(grant.id, grant.expires_at) {
-            return Err(AuthError::InvalidCredentials);
-        }
+        let ticketed = self.tickets.redeem(ticket, request)?;
         let session = self
-            .require_session(grant.session_id, grant.user_id)
+            .sessions
+            .require(ticketed.session_id, ticketed.user_id)
             .await?;
         Ok(Grant {
-            user_id: grant.user_id,
-            session_id: grant.session_id,
+            user_id: ticketed.user_id,
+            session_id: ticketed.session_id,
             device_id: session.device_id,
-        })
-    }
-
-    /// Marks a ticket used; `false` when it already was. Only tickets that passed validation
-    /// get here, and each is forgotten once it has expired, so the list stays as short as the
-    /// tickets used within one lifetime.
-    fn use_ticket(&self, id: Uuid, expires_at: i64) -> bool {
-        let now = OffsetDateTime::now_utc().unix_timestamp();
-        let mut used = self
-            .used_tickets
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        used.retain(|_, expires_at| *expires_at > now);
-        used.insert(id, expires_at).is_none()
-    }
-
-    /// Hashes the password of a share link, checked like an account password.
-    pub async fn hash_share_password(&self, password: &str) -> Result<String, AuthError> {
-        password::check_new(password)?;
-        self.hash_blocking(password).await
-    }
-
-    /// Unlocks `share` with `password`, returning proof of it for the following requests.
-    ///
-    /// Wrong passwords are throttled like wrong sign-ins, counted per link and per source
-    /// `address`, so the password of one link cannot be guessed by brute force.
-    pub async fn unlock_share(
-        &self,
-        share: &ShareLink,
-        password: &str,
-        address: Option<IpAddr>,
-    ) -> Result<ShareAccess, AuthError> {
-        if let Some(hash) = share.password_hash.clone() {
-            if password.len() > MAX_PASSWORD_LEN {
-                return Err(AuthError::InvalidCredentials);
-            }
-            let key = format!("{SHARE_ATTEMPTS_PREFIX}{}", share.id);
-            let source = address.map(attempt_source).unwrap_or_default();
-            if let Err(until) = self
-                .db
-                .begin_login_attempt(
-                    self.config.tenant,
-                    &key,
-                    &source,
-                    LOGIN_ATTEMPTS_MEMORY,
-                    login_block,
-                )
-                .await?
-            {
-                return Err(too_many_attempts(until));
-            }
-            match self.verify_blocking(password, hash).await {
-                Ok(true) => {
-                    self.db
-                        .clear_login_attempts(self.config.tenant, &key, &source)
-                        .await?
-                }
-                Ok(false) => return Err(AuthError::InvalidCredentials),
-                Err(err) => {
-                    self.db
-                        .take_back_login_attempt(self.config.tenant, &key, &source, login_block)
-                        .await?;
-                    return Err(err);
-                }
-            }
-        }
-        let grant = ShareGrant {
-            share_id: share.id,
-            password_version: share.password_version,
-        };
-        Ok(ShareAccess {
-            access: encode_share_access(&self.keys, grant, SHARE_ACCESS_TTL)?,
-            expires_in: SHARE_ACCESS_TTL.whole_seconds(),
-        })
-    }
-
-    /// Whether `access` unlocks `share` with its current password.
-    pub fn verifies_share_access(&self, share: &ShareLink, access: &str) -> bool {
-        decode_share_access(&self.keys, access).is_ok_and(|grant| {
-            grant.share_id == share.id && grant.password_version == share.password_version
         })
     }
 
@@ -706,109 +421,26 @@ impl AuthService {
         grant: &Grant,
         device: &DeviceInfo,
     ) -> Result<Uuid, AuthError> {
-        if let Some(current) = grant.device_id {
-            Ok(current)
-        } else {
-            let device = new_device(device)?;
-            self.db.register_device(grant.user_id, device).await?;
-            self.db
-                .attach_device(grant.session_id, grant.user_id, device.id)
-                .await?;
-            Ok(device.id)
-        }
-    }
-
-    async fn require_session(
-        &self,
-        session_id: Uuid,
-        user_id: UserId,
-    ) -> Result<LiveSession, AuthError> {
-        self.db
-            .live_session(self.config.tenant, session_id, user_id)
-            .await?
-            .ok_or(AuthError::InvalidCredentials)
+        self.sessions.device(grant, device).await
     }
 
     /// Starts a single sign-on: returns the provider URL to send the user to.
-    ///
-    /// `redirect_uri` is where the client wants to land afterwards and `code_challenge` is the
-    /// S256 PKCE challenge its later [`oidc_exchange`](Self::oidc_exchange) must answer.
     pub async fn oidc_start(
         &self,
         redirect_uri: &str,
         code_challenge: &str,
     ) -> Result<String, AuthError> {
-        let oidc = self.oidc()?;
-        if !oidc.allows_redirect(redirect_uri) {
-            return Err(AuthError::InvalidInput("redirect_uri is not allowed"));
-        }
-        if !is_valid_challenge(code_challenge) {
-            return Err(AuthError::InvalidInput(
-                "code_challenge must be an S256 challenge",
-            ));
-        }
-        let state = random_token();
-        let authorization = oidc.authorize(&state);
-        let pending = OidcPending {
-            nonce: authorization.nonce,
-            idp_pkce_verifier: authorization.pkce_verifier,
-            client_redirect: redirect_uri.to_owned(),
-            client_challenge: code_challenge.to_owned(),
-        };
-        self.db
-            .insert_oidc_pending(
-                self.config.tenant,
-                &hash_refresh_token(&state),
-                &pending,
-                OffsetDateTime::now_utc() + OIDC_PENDING_TTL,
-            )
-            .await?;
-        Ok(authorization.url)
+        self.oidc()?.start(redirect_uri, code_challenge).await
     }
 
-    /// Finishes a single sign-on after the provider sent the user back, returning the client URL
-    /// to redirect to: it carries a one-time `code` or, if the sign-in failed, an `error`.
-    ///
-    /// When `state` is missing, unknown, expired or already used there is no client to send the
-    /// user to, so the browser goes to the web client with `error=login_expired`. This happens
-    /// when the provider resumes a sign-in that already came back once, for example after a
-    /// wrong password and the browser's back button, and the user should get a page that lets
-    /// them start again rather than a bare API error.
+    /// Finishes a single sign-on after the provider sent the user back, returning the client
+    /// URL to redirect to; see [`OidcLogin::callback`].
     pub async fn oidc_callback(
         &self,
         state: Option<&str>,
         code: Option<&str>,
     ) -> Result<String, AuthError> {
-        let oidc = self.oidc()?;
-        let pending = match state {
-            Some(state) => {
-                self.db
-                    .take_oidc_pending(self.config.tenant, &hash_refresh_token(state))
-                    .await?
-            }
-            None => None,
-        };
-        let Some(pending) = pending else {
-            tracing::info!("single sign-on came back with an unknown or used state");
-            return Ok(append_query(
-                &oidc.web_redirect(),
-                ("error", "login_expired".to_owned()),
-            ));
-        };
-        let outcome = match code {
-            Some(code) => self.finish_oidc_login(oidc, code, &pending).await,
-            None => Err(AuthError::OidcDenied),
-        };
-        let params = match outcome {
-            Ok(code) => ("code", code),
-            Err(AuthError::OidcDenied) => ("error", "access_denied".to_owned()),
-            Err(AuthError::AccountDisabled) => ("error", "account_disabled".to_owned()),
-            Err(err) => {
-                tracing::warn!(error = %err, "single sign-on failed");
-                ("error", "login_failed".to_owned())
-            }
-        };
-        Ok(append_query(&pending.client_redirect, params))
+        self.oidc()?.callback(&self.sessions, state, code).await
     }
 
     /// Exchanges the one-time code from the redirect for a session on `device`, when the
@@ -819,342 +451,13 @@ impl AuthService {
         code_verifier: &str,
         device: Option<&DeviceInfo>,
     ) -> Result<TokenPair, AuthError> {
-        self.oidc()?;
-        let stored = self
-            .db
-            .take_oidc_code(self.config.tenant, &hash_refresh_token(code))
-            .await?
-            .ok_or(AuthError::InvalidCredentials)?;
-        if verifier_matches(code_verifier, &stored.client_challenge) {
-            self.start_session(stored.user_id, device).await
-        } else {
-            Err(AuthError::InvalidCredentials)
-        }
+        let user_id = self.oidc()?.exchange(code, code_verifier).await?;
+        self.sessions.start(user_id, device).await
     }
 
-    fn oidc(&self) -> Result<&OidcService, AuthError> {
+    fn oidc(&self) -> Result<&OidcLogin, AuthError> {
         self.oidc.as_ref().ok_or(AuthError::OidcDisabled)
     }
-
-    /// Verifies the provider's answer, provisions the user and stores a login code for them.
-    async fn finish_oidc_login(
-        &self,
-        oidc: &OidcService,
-        code: &str,
-        pending: &OidcPending,
-    ) -> Result<String, AuthError> {
-        let identity = oidc
-            .complete(code, &pending.nonce, &pending.idp_pkce_verifier)
-            .await?;
-        let user_id = self.user_for_identity(&identity).await?;
-        self.require_may_sign_in(user_id).await?;
-        let login_code = random_token();
-        self.db
-            .insert_oidc_code(
-                &hash_refresh_token(&login_code),
-                user_id,
-                &pending.client_challenge,
-                OffsetDateTime::now_utc() + OIDC_CODE_TTL,
-            )
-            .await?;
-        Ok(login_code)
-    }
-
-    /// The local user for a provider account, created on first sign-in.
-    async fn user_for_identity(&self, identity: &Identity) -> Result<UserId, AuthError> {
-        let find = || {
-            self.db
-                .find_user_by_identity(self.config.tenant, &identity.issuer, &identity.subject)
-        };
-        if let Some(user) = find().await? {
-            return Ok(user.id);
-        }
-        let base = username_base(identity);
-        for attempt in 0..USERNAME_ATTEMPTS {
-            let username = username_candidate(&base, attempt);
-            match self
-                .db
-                .create_user_with_identity(
-                    self.config.tenant,
-                    &username,
-                    &identity.issuer,
-                    &identity.subject,
-                    identity.email.as_deref(),
-                )
-                .await
-            {
-                Ok(user) => return Ok(user.id),
-                // Either the name is taken or a concurrent sign-in created this very identity.
-                Err(DbError::Conflict) => {
-                    if let Some(user) = find().await? {
-                        return Ok(user.id);
-                    }
-                }
-                Err(err) => return Err(err.into()),
-            }
-        }
-        Err(AuthError::InvalidInput("no free username for this account"))
-    }
-
-    /// Starts a session, which exists only from here: after a verified password or provider
-    /// login. Tokens cannot create one. A named device is registered to the user first.
-    async fn start_session(
-        &self,
-        user_id: UserId,
-        device: Option<&DeviceInfo>,
-    ) -> Result<TokenPair, AuthError> {
-        self.require_may_sign_in(user_id).await?;
-        let device = device.map(new_device).transpose()?;
-        if let Some(device) = device {
-            self.db.register_device(user_id, device).await?;
-        }
-        let session_id = Uuid::now_v7();
-        let refresh_token = new_refresh_token();
-        self.db
-            .start_session(
-                session_id,
-                user_id,
-                device.map(|device| device.id),
-                &hash_refresh_token(&refresh_token),
-                self.refresh_expiry(),
-            )
-            .await?;
-        self.pair(user_id, session_id, refresh_token)
-    }
-
-    /// Refuses a user who is disabled or marked for deletion, or who is not of this tenant.
-    async fn require_may_sign_in(&self, user_id: UserId) -> Result<(), AuthError> {
-        let user = self
-            .db
-            .find_user(user_id)
-            .await?
-            .filter(|user| user.tenant_id == self.config.tenant)
-            .ok_or(AuthError::InvalidCredentials)?;
-        if user.may_sign_in() {
-            Ok(())
-        } else {
-            Err(AuthError::AccountDisabled)
-        }
-    }
-
-    /// Hands the next refresh token to a session; fails if the session has ended.
-    async fn continue_session(
-        &self,
-        user_id: UserId,
-        session_id: Uuid,
-    ) -> Result<TokenPair, AuthError> {
-        let refresh_token = new_refresh_token();
-        let continued = self
-            .db
-            .continue_session(
-                session_id,
-                user_id,
-                &hash_refresh_token(&refresh_token),
-                self.refresh_expiry(),
-            )
-            .await?;
-        if continued {
-            self.pair(user_id, session_id, refresh_token)
-        } else {
-            Err(AuthError::InvalidCredentials)
-        }
-    }
-
-    fn refresh_expiry(&self) -> OffsetDateTime {
-        OffsetDateTime::now_utc() + self.config.refresh_ttl
-    }
-
-    fn pair(
-        &self,
-        user_id: UserId,
-        session_id: Uuid,
-        refresh_token: String,
-    ) -> Result<TokenPair, AuthError> {
-        Ok(TokenPair {
-            access_token: encode_access(&self.keys, user_id, session_id, self.config.access_ttl)?,
-            refresh_token,
-            expires_in: self.config.access_ttl.whole_seconds(),
-        })
-    }
-
-    async fn hash_blocking(&self, password: &str) -> Result<String, AuthError> {
-        let turn = self.hashing_turn().await?;
-        let password = password.to_owned();
-        tokio::task::spawn_blocking(move || {
-            let _turn = turn;
-            password::hash(&password)
-        })
-        .await?
-    }
-
-    async fn verify_blocking(&self, password: &str, hash: String) -> Result<bool, AuthError> {
-        let turn = self.hashing_turn().await?;
-        let password = password.to_owned();
-        let verified = tokio::task::spawn_blocking(move || {
-            let _turn = turn;
-            password::verify(&password, &hash)
-        })
-        .await?;
-        Ok(verified)
-    }
-
-    /// Waits for a turn to hash a password, which lasts until the permit is dropped. It is
-    /// handed to the hashing thread, so a request that is given up does not free its turn
-    /// while the processor is still at work for it.
-    async fn hashing_turn(&self) -> Result<OwnedSemaphorePermit, AuthError> {
-        turn(&self.hashing, HASHING_WAIT).await
-    }
-}
-
-/// A permit of `slots`, or [`AuthError::Busy`] when none comes free within `wait`.
-async fn turn(
-    slots: &Arc<Semaphore>,
-    wait: std::time::Duration,
-) -> Result<OwnedSemaphorePermit, AuthError> {
-    match tokio::time::timeout(wait, Arc::clone(slots).acquire_owned()).await {
-        Ok(Ok(turn)) => Ok(turn),
-        // The semaphore is never closed, so this is always the wait running out.
-        _ => Err(AuthError::Busy {
-            retry_after: wait.as_secs().max(1),
-        }),
-    }
-}
-
-/// The refusal of a sign-in that must wait until `until`.
-fn too_many_attempts(until: OffsetDateTime) -> AuthError {
-    let wait = until - OffsetDateTime::now_utc();
-    AuthError::TooManyAttempts {
-        retry_after: wait.whole_seconds().max(0).unsigned_abs() + 1,
-    }
-}
-
-/// How long the next sign-in attempt must wait after `failures` wrong passwords in a row:
-/// not at all for the first [`FREE_LOGIN_FAILURES`], then 30 seconds, 1 minute, 2 minutes and
-/// so on, up to [`MAX_LOGIN_BLOCK`].
-fn login_block(failures: u32) -> Option<Duration> {
-    doubling_block(failures, FREE_LOGIN_FAILURES, MAX_LOGIN_BLOCK)
-}
-
-/// How long an address must wait after `failures` wrong passwords, whatever the usernames:
-/// not at all for the first [`FREE_ADDRESS_FAILURES`], then in the same steps as
-/// [`login_block`], up to [`MAX_ADDRESS_BLOCK`].
-fn address_block(failures: u32) -> Option<Duration> {
-    doubling_block(failures, FREE_ADDRESS_FAILURES, MAX_ADDRESS_BLOCK)
-}
-
-/// No wait for the first `free` failures, then [`FIRST_LOGIN_BLOCK`], doubled with every
-/// further one, up to `longest`.
-fn doubling_block(failures: u32, free: u32, longest: Duration) -> Option<Duration> {
-    let doublings = failures.checked_sub(free)?;
-    let factor = 1i32.checked_shl(doublings).filter(|factor| *factor > 0);
-    let wait = factor
-        .and_then(|factor| FIRST_LOGIN_BLOCK.checked_mul(factor))
-        .unwrap_or(longest);
-    Some(wait.min(longest))
-}
-
-/// What failed sign-ins from `address` are counted under: the address itself for IPv4 and
-/// its network for IPv6, where a single client can pick among more addresses than could
-/// ever be blocked one by one.
-fn attempt_source(address: IpAddr) -> String {
-    match address.to_canonical() {
-        IpAddr::V4(v4) => v4.to_string(),
-        IpAddr::V6(v6) => {
-            let network = u128::from(v6) & (u128::MAX << (u128::BITS - IPV6_NETWORK_BITS));
-            format!("{}/{IPV6_NETWORK_BITS}", Ipv6Addr::from(network))
-        }
-    }
-}
-
-/// `device` checked against what the server stores: a name of 1-100 characters, kept without
-/// surrounding blanks, and a platform of 1-32.
-fn new_device(device: &DeviceInfo) -> Result<NewDevice<'_>, AuthError> {
-    let name = device_name(&device.name).ok_or(AuthError::InvalidInput(
-        "device name must be 1-100 characters",
-    ))?;
-    let platform = device.platform.trim();
-    if !(1..=MAX_PLATFORM_CHARS).contains(&platform.chars().count()) {
-        Err(AuthError::InvalidInput(
-            "device platform must be 1-32 characters",
-        ))
-    } else {
-        Ok(NewDevice {
-            id: device.id,
-            name,
-            platform,
-        })
-    }
-}
-
-fn random_token() -> String {
-    let mut bytes = [0u8; OIDC_TOKEN_BYTES];
-    rand::fill(&mut bytes);
-    URL_SAFE_NO_PAD.encode(bytes)
-}
-
-fn append_query(url: &str, (key, value): (&str, impl AsRef<str>)) -> String {
-    // Redirects are validated to carry no query or fragment, so a plain `?` is enough.
-    let value: String =
-        openidconnect::url::form_urlencoded::byte_serialize(value.as_ref().as_bytes()).collect();
-    format!("{url}?{key}={value}")
-}
-
-/// The preferred name for a new user: the provider's username, else the e-mail's local part,
-/// else the subject.
-fn username_base(identity: &Identity) -> String {
-    let from_email = identity
-        .email
-        .as_deref()
-        .and_then(|email| email.split('@').next());
-    let name = identity
-        .username_hint
-        .as_deref()
-        .or(from_email)
-        .unwrap_or(&identity.subject);
-    let cleaned: String = name.trim().chars().filter(|c| !c.is_control()).collect();
-    if cleaned.is_empty() {
-        FALLBACK_USERNAME.to_owned()
-    } else {
-        cleaned
-    }
-}
-
-/// `base`, or `base-2`, `base-3`, ... for later attempts, cut to fit [`MAX_USERNAME_LEN`] bytes.
-fn username_candidate(base: &str, attempt: u32) -> String {
-    let suffix = if attempt == 0 {
-        String::new()
-    } else {
-        format!("-{}", attempt + 1)
-    };
-    let mut name = String::new();
-    for c in base.chars() {
-        if name.len() + c.len_utf8() + suffix.len() > MAX_USERNAME_LEN {
-            break;
-        }
-        name.push(c);
-    }
-    name + &suffix
-}
-
-fn scope_of(request: &TicketRequest) -> String {
-    match request {
-        TicketRequest::Events => SCOPE_EVENTS.to_owned(),
-        TicketRequest::Download { node_id } => download_scope(*node_id),
-        TicketRequest::DownloadVersion { node_id, version } => {
-            format!("{}:v{version}", download_scope(*node_id))
-        }
-        TicketRequest::TransferItem {
-            transfer_id,
-            item_id,
-        } => format!("transfer:{transfer_id}:{item_id}"),
-        TicketRequest::TransferArchive { transfer_id } => format!("transfer:{transfer_id}"),
-        TicketRequest::SharedFile { share_id, node_id } => format!("shared:{share_id}:{node_id}"),
-        TicketRequest::SharedArchive { share_id } => format!("shared:{share_id}"),
-    }
-}
-
-fn download_scope(node_id: NodeId) -> String {
-    format!("{SCOPE_DOWNLOAD_PREFIX}{node_id}")
 }
 
 #[cfg(test)]

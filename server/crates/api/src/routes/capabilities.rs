@@ -12,6 +12,6 @@ pub fn routes() -> Router<AppState> {
 
 async fn capabilities(State(state): State<AppState>, _user: AuthUser) -> Json<Capabilities> {
     Json(Capabilities {
-        upload_chunk_bytes: state.files.chunk_bytes(),
+        upload_chunk_bytes: state.files.uploads.chunk_bytes(),
     })
 }

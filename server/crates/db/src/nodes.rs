@@ -147,7 +147,7 @@ impl Db {
     ) -> Result<MoveOutcome, DbError> {
         let mut tx = self.begin().await?;
         let current = lock_node(&mut tx, owner, id).await?;
-        let new_parent = update.parent_id.unwrap_or(current.parent_id);
+        let new_parent = update.parent_id.apply(current.parent_id);
         let name = update.name.unwrap_or_else(|| current.name.clone());
         let mut effects = Effects::default();
         let node = if new_parent == current.parent_id {

@@ -1,6 +1,21 @@
+use std::{net::IpAddr, sync::Arc};
+
 use sqlx::PgPool;
+use time::OffsetDateTime;
+use tokio::sync::Semaphore;
+
+use protocol::NodeId;
 
 use super::*;
+use crate::{
+    hasher::turn,
+    oidc::Identity,
+    oidc_login::{FALLBACK_USERNAME, append_query, username_base, username_candidate},
+    throttle::{
+        FIRST_LOGIN_BLOCK, FREE_ADDRESS_FAILURES, MAX_ADDRESS_BLOCK, MAX_LOGIN_BLOCK,
+        address_block, attempt_source, login_block,
+    },
+};
 
 fn service(pool: PgPool) -> AuthService {
     let config = AuthConfig {
@@ -609,10 +624,10 @@ async fn used_tickets_are_forgotten_once_they_expire(pool: PgPool) {
     let auth = service(pool);
     let now = OffsetDateTime::now_utc().unix_timestamp();
     let (expired, live) = (Uuid::now_v7(), Uuid::now_v7());
-    assert!(auth.use_ticket(expired, now - 1));
-    assert!(auth.use_ticket(live, now + 30));
-    assert!(!auth.use_ticket(live, now + 30));
-    let used = auth.used_tickets.lock().expect("lock");
+    assert!(auth.tickets.use_once(expired, now - 1));
+    assert!(auth.tickets.use_once(live, now + 30));
+    assert!(!auth.tickets.use_once(live, now + 30));
+    let used = auth.tickets.used.lock().expect("lock");
     assert_eq!(used.keys().collect::<Vec<_>>(), [&live]);
 }
 
@@ -725,7 +740,7 @@ async fn unchecked_logins_do_not_block_the_username_or_address(pool: PgPool) {
     auth.create_user("alice", "password-1").await.expect("user");
     // A closed semaphore refuses hashing immediately through the same Busy path as
     // a timeout. Restore capacity after three unchecked attempts.
-    auth.hashing.close();
+    auth.hasher.slots.close();
     let home = address("192.0.2.1");
     for _ in 0..3 {
         assert!(matches!(
@@ -735,7 +750,7 @@ async fn unchecked_logins_do_not_block_the_username_or_address(pool: PgPool) {
     }
     assert_eq!(address_failures(&pool, "192.0.2.1").await, 0);
     let mut auth = auth;
-    auth.hashing = Arc::new(Semaphore::new(1));
+    auth.hasher.slots = Arc::new(Semaphore::new(1));
     auth.login_from("alice", "password-1", None, home)
         .await
         .expect("not blocked");
@@ -750,7 +765,7 @@ async fn unchecked_password_changes_do_not_block_the_session(pool: PgPool) {
         .await
         .expect("login");
     let session = grant_of(&auth, &pair).await.session_id;
-    auth.hashing.close();
+    auth.hasher.slots.close();
     for _ in 0..3 {
         assert!(matches!(
             auth.change_password(user.id, session, "password-1", "password-2")
@@ -758,7 +773,7 @@ async fn unchecked_password_changes_do_not_block_the_session(pool: PgPool) {
             Err(AuthError::Busy { .. })
         ));
     }
-    auth.hashing = Arc::new(Semaphore::new(1));
+    auth.hasher.slots = Arc::new(Semaphore::new(1));
     auth.change_password(user.id, session, "password-1", "password-2")
         .await
         .expect("not blocked");
@@ -773,12 +788,12 @@ async fn unchecked_and_blocked_attempts_preserve_real_failures(pool: PgPool) {
             Err(AuthError::InvalidCredentials)
         ));
     }
-    auth.hashing.close();
+    auth.hasher.slots.close();
     assert!(matches!(
         auth.login("alice", "password-1", None).await,
         Err(AuthError::Busy { .. })
     ));
-    auth.hashing = Arc::new(Semaphore::new(1));
+    auth.hasher.slots = Arc::new(Semaphore::new(1));
     assert!(matches!(
         auth.login("alice", "wrong", None).await,
         Err(AuthError::InvalidCredentials)

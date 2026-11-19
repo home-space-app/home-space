@@ -49,8 +49,7 @@ async fn changes_before_the_pruned_journal_are_gone(pool: PgPool) {
     let token = app.user_token("alice").await;
     let start = cursor_of(&app.get("/api/v1/changes", &token).await);
     app.upload(&token, "name=a.txt", "a").await;
-    app.state
-        .db
+    app.db
         .prune_changes(time::OffsetDateTime::now_utc() + time::Duration::seconds(1))
         .await
         .expect("prune");

@@ -1,8 +1,8 @@
 use sqlx::PgPool;
 
 use super::*;
-use crate::NewNode;
 use crate::SharePermission;
+use crate::{NewNode, SharedAccess};
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789a";
 
@@ -107,7 +107,7 @@ async fn changing_the_password_raises_its_version(pool: PgPool) {
         alice,
         share.id,
         ShareUpdate {
-            password_hash: Some(Some("phc")),
+            password_hash: crate::Patch::Set("phc"),
             ..ShareUpdate::default()
         },
     )
@@ -158,7 +158,7 @@ async fn changing_the_expiry_keeps_the_password(pool: PgPool) {
         alice,
         share.id,
         ShareUpdate {
-            expires_at: Some(Some(expires_at)),
+            expires_at: crate::Patch::Set(expires_at),
             ..ShareUpdate::default()
         },
     )

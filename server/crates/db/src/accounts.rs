@@ -4,7 +4,7 @@ use sqlx::FromRow;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{Db, DbError, StorageUsage, UserId};
+use crate::{Db, DbError, StorageUsage, TenantId, UserId};
 
 /// One account in the administration's user list.
 #[derive(Clone, Debug, PartialEq, Eq, FromRow)]
@@ -52,22 +52,29 @@ macro_rules! account_select {
 }
 
 impl Db {
-    /// Every account, ordered by username.
-    pub async fn accounts(&self) -> Result<Vec<Account>, DbError> {
-        let accounts =
-            sqlx::query_as::<_, Account>(concat!(account_select!(), " ORDER BY u.username"))
-                .fetch_all(self.pool())
-                .await?;
+    /// Every account of `tenant`, ordered by username.
+    pub async fn accounts(&self, tenant: TenantId) -> Result<Vec<Account>, DbError> {
+        let accounts = sqlx::query_as::<_, Account>(concat!(
+            account_select!(),
+            " WHERE u.tenant_id = $1 ORDER BY u.username"
+        ))
+        .bind(tenant)
+        .fetch_all(self.pool())
+        .await?;
         Ok(accounts)
     }
 
-    /// One account; `NotFound` if there is no such user.
-    pub async fn account(&self, id: UserId) -> Result<Account, DbError> {
-        sqlx::query_as::<_, Account>(concat!(account_select!(), " WHERE u.id = $1"))
-            .bind(id)
-            .fetch_optional(self.pool())
-            .await?
-            .ok_or(DbError::NotFound)
+    /// One account of `tenant`; `NotFound` if the tenant has no such user.
+    pub async fn account(&self, tenant: TenantId, id: UserId) -> Result<Account, DbError> {
+        sqlx::query_as::<_, Account>(concat!(
+            account_select!(),
+            " WHERE u.id = $1 AND u.tenant_id = $2"
+        ))
+        .bind(id)
+        .bind(tenant)
+        .fetch_optional(self.pool())
+        .await?
+        .ok_or(DbError::NotFound)
     }
 
     /// Sets or, with `None`, removes a user's quota; `NotFound` if there is no such user.
@@ -273,7 +280,7 @@ mod tests {
         // Marking again keeps the first time.
         assert_eq!(
             db.mark_for_deletion(user.id, earlier).await.expect("mark"),
-            db.account(user.id)
+            db.account(user.tenant_id, user.id)
                 .await
                 .expect("account")
                 .delete_at
@@ -347,16 +354,26 @@ mod tests {
             .await
             .expect("user");
         db.set_disabled(user.id, true).await.expect("disable");
-        let first = db.account(user.id).await.expect("account").disabled_at;
+        let first = db
+            .account(user.tenant_id, user.id)
+            .await
+            .expect("account")
+            .disabled_at;
         assert!(first.is_some());
         db.set_disabled(user.id, true).await.expect("disable");
         assert_eq!(
-            db.account(user.id).await.expect("account").disabled_at,
+            db.account(user.tenant_id, user.id)
+                .await
+                .expect("account")
+                .disabled_at,
             first
         );
         db.set_disabled(user.id, false).await.expect("enable");
         assert_eq!(
-            db.account(user.id).await.expect("account").disabled_at,
+            db.account(user.tenant_id, user.id)
+                .await
+                .expect("account")
+                .disabled_at,
             None
         );
     }

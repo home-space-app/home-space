@@ -6,9 +6,10 @@ use std::fmt::Write;
 
 use db::MoveBatch;
 use protocol::{
-    Account, Conflict, MoveResponse, Node, Share, ShareRecipient, SharedNode, StorageUsage,
-    TransferItem, TransferSummary, UserRef,
+    Account, Conflict, MoveResponse, Node, PublicShare, ReceivedShare, Share, ShareRecipient,
+    SharedNode, StorageUsage, TransferItem, TransferSummary, UserRef,
 };
+use shares::{LinkView, ReceivedDetails, ShareDetails};
 
 pub(crate) fn shared_node(node: db::Node) -> SharedNode {
     SharedNode {
@@ -116,16 +117,13 @@ fn to_u64(value: i64) -> u64 {
     u64::try_from(value).unwrap_or_default()
 }
 
-pub(crate) fn quota(bytes: Option<u64>) -> Option<i64> {
-    bytes.map(|bytes| i64::try_from(bytes).unwrap_or(i64::MAX))
-}
-
 /// The owner's view of a share, with its live items and recipients.
-pub(crate) fn owner_share(
-    share: db::OwnedShare,
-    items: Vec<db::Node>,
-    recipients: Vec<db::ShareRecipient>,
-) -> Share {
+pub(crate) fn owner_share(details: ShareDetails) -> Share {
+    let ShareDetails {
+        share,
+        items,
+        recipients,
+    } = details;
     Share {
         id: share.id,
         items: items.into_iter().map(Node::from).collect(),
@@ -135,6 +133,34 @@ pub(crate) fn owner_share(
         expires_at: share.expires_at,
         created_at: share.created_at,
         recipients: recipients.into_iter().map(share_recipient).collect(),
+    }
+}
+
+/// A link as its visitors see it.
+pub(crate) fn public_share(view: LinkView) -> PublicShare {
+    PublicShare {
+        needs_password: view.items.is_none(),
+        items: view
+            .items
+            .map(|items| items.into_iter().map(shared_node).collect()),
+        owner: view.link.owner_name,
+        item_count: u32::try_from(view.link.item_count).unwrap_or(u32::MAX),
+        expires_at: view.link.expires_at,
+    }
+}
+
+/// A share made for the caller, with its live items.
+pub(crate) fn received_share(details: ReceivedDetails) -> ReceivedShare {
+    let share = details.share;
+    ReceivedShare {
+        id: share.id,
+        owner: UserRef {
+            id: share.owner_id,
+            username: share.owner_name,
+        },
+        items: details.items.into_iter().map(shared_node).collect(),
+        expires_at: share.expires_at,
+        shared_at: share.shared_at,
     }
 }
 

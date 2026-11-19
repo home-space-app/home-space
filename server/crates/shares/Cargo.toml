@@ -1,0 +1,19 @@
+[package]
+name = "shares"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+auth.workspace = true
+db.workspace = true
+files.workspace = true
+protocol.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

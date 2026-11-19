@@ -7,11 +7,11 @@
 //! [`SHARE_ACCESS`](crate::paths::SHARE_ACCESS) header, or the `access` query parameter where
 //! headers cannot be sent. An expired link answers 410 Gone, a removed one 404.
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{Node, NodeId, NodeKind, UserId, UserRef, admin::present};
+use crate::{Node, NodeId, NodeKind, Patch, UserId, UserRef};
 
 /// Body of `POST /shares`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,14 +37,14 @@ pub struct CreateShare {
 /// password or the expiry.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateShare {
+    #[serde(default, skip_serializing_if = "Patch::is_keep")]
+    pub password: Patch<String>,
     #[serde(
         default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "present"
+        skip_serializing_if = "Patch::is_keep",
+        with = "crate::patch::rfc3339"
     )]
-    pub password: Option<Option<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "maybe_time")]
-    pub expires_at: Option<Option<OffsetDateTime>>,
+    pub expires_at: Patch<OffsetDateTime>,
     /// Everyone a share with users is for from now on; never empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recipients: Option<Vec<UserId>>,
@@ -203,26 +203,6 @@ pub struct ShareAccessQuery {
     pub access: Option<String>,
 }
 
-/// An optional time that tells a missing field (`None`) from `null` (`Some(None)`).
-mod maybe_time {
-    use super::{Deserialize, Deserializer, OffsetDateTime, Serializer};
-
-    pub fn serialize<S: Serializer>(
-        value: &Option<Option<OffsetDateTime>>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        time::serde::rfc3339::option::serialize(&value.flatten(), serializer)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Option<Option<OffsetDateTime>>, D::Error> {
-        #[derive(Deserialize)]
-        struct Time(#[serde(with = "time::serde::rfc3339::option")] Option<OffsetDateTime>);
-        Time::deserialize(deserializer).map(|Time(time)| Some(time))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,9 +210,9 @@ mod tests {
     #[test]
     fn an_update_tells_a_missing_expiry_from_a_removed_one() {
         let missing: UpdateShare = serde_json::from_str("{}").expect("json");
-        assert_eq!(missing.expires_at, None);
+        assert_eq!(missing.expires_at, Patch::Keep);
         let removed: UpdateShare = serde_json::from_str(r#"{"expires_at":null}"#).expect("json");
-        assert_eq!(removed.expires_at, Some(None));
+        assert_eq!(removed.expires_at, Patch::Clear);
     }
 
     #[test]
@@ -240,14 +220,14 @@ mod tests {
         let update: UpdateShare =
             serde_json::from_str(r#"{"expires_at":"2026-11-19T14:30:00Z"}"#).expect("json");
         let expected = OffsetDateTime::from_unix_timestamp(1_795_098_600).expect("time");
-        assert_eq!(update.expires_at, Some(Some(expected)));
+        assert_eq!(update.expires_at, Patch::Set(expected));
     }
 
     #[test]
     fn an_update_round_trips() {
         let update = UpdateShare {
-            password: Some(None),
-            expires_at: Some(None),
+            password: Patch::Clear,
+            expires_at: Patch::Clear,
             recipients: None,
         };
         let json = serde_json::to_string(&update).expect("json");

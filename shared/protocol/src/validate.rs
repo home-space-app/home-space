@@ -169,7 +169,10 @@ impl Validate for CreateShare {
 impl Validate for UpdateShare {
     fn validate(&self) -> Result<(), Vec<FieldError>> {
         let mut found = Violations::default();
-        found.check("/expires_at", future_problem(self.expires_at.flatten()));
+        found.check(
+            "/expires_at",
+            future_problem(self.expires_at.value().copied()),
+        );
         if let Some(recipients) = &self.recipients {
             found.check("/recipients", recipients_problem(recipients));
         }

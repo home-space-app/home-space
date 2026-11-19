@@ -42,6 +42,6 @@ pub fn routes() -> Router<AppState> {
 async fn health(
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> Result<Json<Health>, ApiError> {
-    state.db.ping().await?;
+    state.files.ping().await?;
     Ok(Json(Health::ok()))
 }

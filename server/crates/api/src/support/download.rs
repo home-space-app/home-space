@@ -29,6 +29,17 @@ pub(crate) struct Download<'a> {
     pub size: u64,
 }
 
+impl<'a> Download<'a> {
+    /// A stored file, under its own name and type.
+    pub(crate) fn of(node: &'a db::Node) -> Self {
+        Self {
+            name: &node.name,
+            mime: Some(&node.mime),
+            size: u64::try_from(node.size).unwrap_or_default(),
+        }
+    }
+}
+
 /// `file` as an attachment called `download.name`, the whole of it or the one range the
 /// request's `Range` header asks for. A range that cannot be satisfied answers 416.
 pub(crate) async fn ranged(
@@ -95,21 +106,6 @@ fn parse_range(value: &str, size: u64) -> Option<(u64, u64)> {
         (start, end) => (start.parse().ok()?, end.parse::<u64>().ok()?.min(size - 1)),
     };
     (start <= end && start < size).then_some((start, end))
-}
-
-pub(crate) fn attachment(name: &str, mime: &str, size: i64, file: tokio::fs::File) -> Response {
-    let content_type = if mime.is_empty() { FALLBACK_MIME } else { mime };
-    let disposition = format!("attachment; filename*=UTF-8''{}", percent_encode(name));
-    let mut response = Response::new(Body::from_stream(ReaderStream::new(file)));
-    let headers = response.headers_mut();
-    headers.insert(CONTENT_LENGTH, HeaderValue::from(size.unsigned_abs()));
-    if let Ok(value) = HeaderValue::from_str(content_type) {
-        headers.insert(CONTENT_TYPE, value);
-    }
-    if let Ok(value) = HeaderValue::from_str(&disposition) {
-        headers.insert(CONTENT_DISPOSITION, value);
-    }
-    response
 }
 
 pub(crate) fn percent_encode(value: &str) -> String {

@@ -13,7 +13,7 @@ use common::{Response, TestApp, UPLOAD_CHUNK, setup};
 
 async fn set_quota(app: &TestApp, username: &str, bytes: Option<i64>) {
     let id = app.user_id(username).await;
-    app.state.db.set_quota(id, bytes).await.expect("quota");
+    app.db.set_quota(id, bytes).await.expect("quota");
 }
 
 fn assert_quota_exceeded(response: &Response) {

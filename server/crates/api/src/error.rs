@@ -7,12 +7,12 @@ pub use response::with_instance;
 
 use protocol::{AsProblem, FieldError, Problem, ProblemType};
 
+use accounts::AccountError;
 use auth::AuthError;
-use db::DbError;
 use files::FilesError;
 use search::SearchError;
+use shares::ShareError;
 
-const INTERRUPTED_BODY: &str = "the request body was cut off";
 /// What `too-many-connections` asks a client to wait: a connection is free again once one of
 /// the account's other sockets closes, which a client cannot see, so it tries again later.
 const RECONNECT_AFTER_SECS: u64 = 30;
@@ -27,12 +27,6 @@ pub enum ApiError {
     Forbidden,
     #[error("not found")]
     NotFound,
-    /// The share has expired.
-    #[error("no longer available")]
-    Gone,
-    /// The changes asked for were pruned.
-    #[error("these changes are no longer kept; list everything again")]
-    ChangesPruned,
     #[error("too many connections are open for this account")]
     TooManyConnections,
     /// No tenant answers on the host the request was sent to.
@@ -41,9 +35,6 @@ pub enum ApiError {
     /// The tenant of the host is disabled, being deleted, or not configured.
     #[error("this site is not available")]
     TenantUnavailable,
-    /// An account marked for deletion was to be enabled.
-    #[error("the account is marked for deletion; cancel the deletion to enable it")]
-    MarkedForDeletion,
     /// The request cannot be read: the body, query, path or a header.
     #[error("{0}")]
     BadRequest(String),
@@ -66,6 +57,10 @@ pub enum ApiError {
     Files(#[from] FilesError),
     #[error(transparent)]
     Search(#[from] SearchError),
+    #[error(transparent)]
+    Accounts(#[from] AccountError),
+    #[error(transparent)]
+    Shares(#[from] ShareError),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -74,19 +69,6 @@ pub enum ApiError {
 fn describe(errors: &[FieldError]) -> String {
     let details: Vec<&str> = errors.iter().map(|error| error.detail.as_str()).collect();
     details.join("; ")
-}
-
-/// The one mapping of a database error to a response: a missing row is a 404, pruned changes
-/// are gone, and anything else is the server's fault. A database error that means something
-/// more specific in one place is mapped there, before it gets here.
-impl From<DbError> for ApiError {
-    fn from(err: DbError) -> Self {
-        match err {
-            DbError::NotFound => Self::NotFound,
-            DbError::Pruned => Self::ChangesPruned,
-            other => Self::Internal(other.to_string()),
-        }
-    }
 }
 
 /// The fields a request's [`Validate`](protocol::Validate) found at fault.
@@ -103,23 +85,11 @@ impl ApiError {
         Self::Invalid(vec![FieldError::new(pointer, detail)])
     }
 
-    /// Whether the request body stopped arriving, as when the client or a proxy in front of
-    /// the server drops the connection mid-upload. Bytes received so far are kept.
-    fn is_interrupted_body(&self) -> bool {
-        matches!(
-            self,
-            Self::Files(FilesError::Io(err))
-                if err.get_ref().is_some_and(|inner| inner.is::<axum::Error>())
-        )
-    }
-
     /// The problem this error answers with.
     pub fn problem(&self) -> Problem {
         let kind = self.problem_type();
         let detail = if kind.hides_detail() {
             kind.title().to_owned()
-        } else if kind == ProblemType::BodyInterrupted {
-            INTERRUPTED_BODY.to_owned()
         } else {
             self.to_string()
         };
@@ -131,19 +101,13 @@ impl ApiError {
 
 impl AsProblem for ApiError {
     fn problem_type(&self) -> ProblemType {
-        if self.is_interrupted_body() {
-            return ProblemType::BodyInterrupted;
-        }
         match self {
             Self::Unauthorized => ProblemType::Unauthorized,
             Self::Forbidden => ProblemType::Forbidden,
             Self::NotFound => ProblemType::NotFound,
-            Self::Gone => ProblemType::Gone,
-            Self::ChangesPruned => ProblemType::ChangesPruned,
             Self::TooManyConnections => ProblemType::TooManyConnections,
             Self::UnknownHost => ProblemType::UnknownHost,
             Self::TenantUnavailable => ProblemType::TenantUnavailable,
-            Self::MarkedForDeletion => ProblemType::MarkedForDeletion,
             Self::BadRequest(_) => ProblemType::BadRequest,
             Self::UnsupportedMediaType(_) => ProblemType::UnsupportedMediaType,
             Self::BodyTooLarge(_) => ProblemType::TooLarge,
@@ -153,6 +117,8 @@ impl AsProblem for ApiError {
             Self::Auth(err) => err.problem_type(),
             Self::Files(err) => err.problem_type(),
             Self::Search(err) => err.problem_type(),
+            Self::Accounts(err) => err.problem_type(),
+            Self::Shares(err) => err.problem_type(),
             Self::Internal(_) => ProblemType::Internal,
         }
     }
@@ -164,6 +130,8 @@ impl AsProblem for ApiError {
             Self::Auth(err) => err.extend(problem),
             Self::Files(err) => err.extend(problem),
             Self::Search(err) => err.extend(problem),
+            Self::Accounts(err) => err.extend(problem),
+            Self::Shares(err) => err.extend(problem),
             _ => {}
         }
     }

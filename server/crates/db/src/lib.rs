@@ -44,12 +44,12 @@ pub use nodes::{
     NodeProperties, NodeUpdate, StoreOptions, StoreOutcome,
 };
 pub use oidc::{OidcCode, OidcPending};
-pub use protocol::{NodeId, NodeKind, OnConflict, SharePermission, UserId};
+pub use protocol::{NodeId, NodeKind, OnConflict, Patch, SharePermission, UserId};
 pub use search::{ContentState, RankedNode};
 pub use sessions::LiveSession;
 pub use shares::{
     NewShareLink, NewUserShare, OwnedShare, ReceivedShare, ShareLink, ShareRecipient, ShareUpdate,
-    SharedRoot,
+    SharedAccess, SharedRoot,
 };
 pub use sqlx::PgPool;
 pub use storage::{DatabaseInfo, QuotaUsage, StorageUsage, UserStorage};

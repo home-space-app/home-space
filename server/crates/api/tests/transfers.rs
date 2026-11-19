@@ -851,7 +851,13 @@ async fn expired_transfers_are_removed_with_their_bytes(pool: PgPool) {
         StatusCode::GONE
     );
 
-    let expired = app.state.files.expire_transfers().await.expect("expire");
+    let expired = app
+        .state
+        .files
+        .transfers
+        .expire_transfers()
+        .await
+        .expect("expire");
 
     assert_eq!(expired.len(), 1);
     assert!(!transfers_dir(&app).join(&id).exists());
@@ -879,11 +885,7 @@ async fn nothing_is_sent_to_a_disabled_user_or_one_marked_for_deletion(pool: PgP
     let waiting = item_id(&created.json(), "a.txt");
 
     let later = time::OffsetDateTime::now_utc() + time::Duration::minutes(10);
-    app.state
-        .db
-        .mark_for_deletion(alice, later)
-        .await
-        .expect("mark");
+    app.db.mark_for_deletion(alice, later).await.expect("mark");
 
     // Alice's devices are no longer offered, and sending to one anyway is refused.
     assert_eq!(targets(&app, &u.bob).await.len(), 1);
@@ -908,17 +910,13 @@ async fn nothing_is_sent_to_a_disabled_user_or_one_marked_for_deletion(pool: PgP
             .is_empty()
     );
 
-    app.state.db.cancel_deletion(alice).await.expect("cancel");
+    app.db.cancel_deletion(alice).await.expect("cancel");
     assert_eq!(targets(&app, &u.bob).await.len(), 2);
     let sent = send(&app, &u.bob, "alice", u.alice_laptop, item.clone()).await;
     assert_eq!(sent.status, StatusCode::CREATED);
 
     // A disabled user gets nothing either.
-    app.state
-        .db
-        .set_disabled(alice, true)
-        .await
-        .expect("disable");
+    app.db.set_disabled(alice, true).await.expect("disable");
     assert_eq!(targets(&app, &u.bob).await.len(), 1);
     let refused = send(&app, &u.bob, "alice", u.alice_laptop, item).await;
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
@@ -936,7 +934,7 @@ async fn saving_a_transfer_counts_against_the_recipients_quota(pool: PgPool) {
     )
     .await;
     let alice = app.user_id("alice").await;
-    app.state.db.set_quota(alice, Some(3)).await.expect("quota");
+    app.db.set_quota(alice, Some(3)).await.expect("quota");
     let created = send(
         &app,
         &u.bob,
@@ -964,7 +962,7 @@ async fn saving_a_transfer_counts_against_the_recipients_quota(pool: PgPool) {
     assert_eq!(refused.json()["error"], "quota_exceeded");
 
     // Still ready: once there is room, it saves.
-    app.state.db.set_quota(alice, Some(5)).await.expect("quota");
+    app.db.set_quota(alice, Some(5)).await.expect("quota");
     let saved = post(&app, &format!("{TRANSFERS}/{id}/save"), &u.alice).await;
     assert_eq!(saved, StatusCode::OK);
 }

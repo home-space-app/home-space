@@ -6,4 +6,4 @@ pub(crate) mod body;
 pub(crate) mod convert;
 pub(crate) mod disk;
 pub(crate) mod download;
-pub(crate) mod publish;
+pub(crate) mod outcome;

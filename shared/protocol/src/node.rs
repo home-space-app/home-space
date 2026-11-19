@@ -1,8 +1,8 @@
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::NodeId;
+use crate::{NodeId, Patch};
 
 /// Whether a node is a folder or a file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -159,19 +159,9 @@ pub struct ContentQuery {
 pub struct UpdateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub parent_id: Option<Option<NodeId>>,
-}
-
-fn present<'de, D>(deserializer: D) -> Result<Option<Option<NodeId>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Option::<NodeId>::deserialize(deserializer).map(Some)
+    /// [`Patch::Clear`] moves the node to the root.
+    #[serde(default, skip_serializing_if = "Patch::is_keep")]
+    pub parent_id: Patch<NodeId>,
 }
 
 #[cfg(test)]
@@ -206,16 +196,16 @@ mod tests {
         let id = Uuid::nil();
         let value: UpdateRequest =
             serde_json::from_str(&format!(r#"{{"parent_id":"{id}"}}"#)).expect("value");
-        assert_eq!(absent.parent_id, None);
-        assert_eq!(null.parent_id, Some(None));
-        assert_eq!(value.parent_id, Some(Some(NodeId(id))));
+        assert_eq!(absent.parent_id, Patch::Keep);
+        assert_eq!(null.parent_id, Patch::Clear);
+        assert_eq!(value.parent_id, Patch::Set(NodeId(id)));
     }
 
     #[test]
     fn update_serialization_round_trips_move_to_root() {
         let request = UpdateRequest {
             name: None,
-            parent_id: Some(None),
+            parent_id: Patch::Clear,
         };
         let json = serde_json::to_string(&request).expect("json");
         assert_eq!(json, r#"{"parent_id":null}"#);
