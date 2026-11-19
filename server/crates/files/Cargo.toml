@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 bytes.workspace = true
 db.workspace = true
+events.workspace = true
 futures-util.workspace = true
 mime_guess.workspace = true
 protocol.workspace = true

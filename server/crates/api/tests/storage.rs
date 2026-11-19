@@ -35,13 +35,12 @@ async fn store_some_files(app: &TestApp, token: &str) {
 
 async fn make_admin(app: &TestApp, username: &str) {
     let user = app
-        .state
         .db
         .find_user_by_username(db::TenantId::DEFAULT, username)
         .await
         .expect("lookup")
         .expect("user");
-    app.state.db.set_admin(user.id, true).await.expect("admin");
+    app.db.set_admin(user.id, true).await.expect("admin");
 }
 
 fn usage(value: &Value) -> (u64, u64, u64) {

@@ -7,7 +7,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use protocol::{
     Capabilities, ChangesQuery, ChangesResponse, ClientMessage, CreateFolderRequest, DeviceInfo,
     DeviceSessionRequest, FileVersion, Health, ListQuery, LoginRequest, Me, MoveRequest,
-    MoveResponse, Node, NodeId, NodeProperties, OidcExchangeRequest, OnConflict, Problem,
+    MoveResponse, Node, NodeId, NodeProperties, OidcExchangeRequest, OnConflict, Patch, Problem,
     Providers, RefreshRequest, RestoreRequest, SearchHit, SearchQuery, TicketRequest,
     TicketResponse, TokenPair, TrashItem, UpdateRequest, paths,
 };
@@ -365,7 +365,7 @@ impl Client {
             id,
             &UpdateRequest {
                 name: Some(name.to_owned()),
-                parent_id: None,
+                parent_id: Patch::Keep,
             },
         )
         .await
@@ -377,7 +377,7 @@ impl Client {
             id,
             &UpdateRequest {
                 name: None,
-                parent_id: Some(parent),
+                parent_id: Patch::to(parent),
             },
         )
         .await
@@ -394,7 +394,7 @@ impl Client {
             id,
             &UpdateRequest {
                 name: Some(name.to_owned()),
-                parent_id: Some(parent),
+                parent_id: Patch::to(parent),
             },
         )
         .await

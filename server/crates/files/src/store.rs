@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use db::{NodeId, UserId};
 
-use crate::FilesError;
+use crate::{BodyError, FilesError};
 
 const BLOBS_DIR: &str = "blobs";
 const VERSIONS_DIR: &str = "versions";
@@ -74,7 +74,7 @@ impl BlobStore {
     /// Streams `body` into a temp file, hashing it and enforcing `max_bytes`.
     pub async fn stage<S>(&self, body: S, max_bytes: u64) -> Result<StagedBlob, FilesError>
     where
-        S: Stream<Item = io::Result<Bytes>>,
+        S: Stream<Item = Result<Bytes, BodyError>>,
     {
         let path = self.root.join(TMP_DIR).join(NodeId::new().to_string());
         let staged = Self::write_stream(&path, body, max_bytes).await;
@@ -213,7 +213,7 @@ impl BlobStore {
         mut on_written: impl FnMut(&[u8]),
     ) -> Result<u64, FilesError>
     where
-        S: Stream<Item = io::Result<Bytes>>,
+        S: Stream<Item = Result<Bytes, BodyError>>,
     {
         let mut file = match fs::OpenOptions::new()
             .append(true)
@@ -454,7 +454,7 @@ impl BlobStore {
         max_bytes: u64,
     ) -> Result<(u64, Vec<u8>), FilesError>
     where
-        S: Stream<Item = io::Result<Bytes>>,
+        S: Stream<Item = Result<Bytes, BodyError>>,
     {
         futures_util::pin_mut!(body);
         let mut file = fs::File::create(path).await?;
@@ -495,7 +495,7 @@ mod tests {
 
     use super::*;
 
-    fn body(parts: &[&'static str]) -> impl Stream<Item = io::Result<Bytes>> + use<> {
+    fn body(parts: &[&'static str]) -> impl Stream<Item = Result<Bytes, BodyError>> + use<> {
         stream::iter(
             parts
                 .iter()

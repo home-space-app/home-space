@@ -7,7 +7,7 @@ use wiremock::{
 };
 
 use api_client::Client;
-use protocol::{CreateShare, NodeId, UpdateShare, UserId, paths};
+use protocol::{CreateShare, NodeId, Patch, UpdateShare, UserId, paths};
 
 const SHARE_ID: &str = "00000000-0000-0000-0000-0000000000a1";
 const NODE_ID: &str = "00000000-0000-0000-0000-000000000002";
@@ -124,7 +124,7 @@ async fn update_share_sends_only_what_changes() {
         .update_share(
             share_id(),
             &UpdateShare {
-                password: Some(None),
+                password: Patch::Clear,
                 ..UpdateShare::default()
             },
         )

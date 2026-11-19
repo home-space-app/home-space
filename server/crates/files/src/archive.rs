@@ -6,7 +6,7 @@ use time::OffsetDateTime;
 
 use db::{NodeId, NodeKind, SharedRoot};
 
-use crate::{FileService, FilesError};
+use crate::{FilesError, NodeService};
 
 /// The most entries one zip of a share may hold.
 pub const MAX_ARCHIVE_ENTRIES: usize = 10_000;
@@ -23,7 +23,7 @@ pub struct ArchiveEntry {
     pub source: Option<PathBuf>,
 }
 
-impl FileService {
+impl NodeService {
     /// Everything a reader can reach through `share`, or inside its folder `folder`, as the
     /// entries of a zip. Shared items with the same name get a number, as `name (2)`.
     pub async fn share_archive(
@@ -33,13 +33,14 @@ impl FileService {
     ) -> Result<Vec<ArchiveEntry>, FilesError> {
         let roots = match folder {
             Some(id) => {
-                let node = self.db.shared_node(share, id).await?;
+                let node = self.content.db.shared_node(share, id).await?;
                 if node.kind != NodeKind::Folder {
                     return Err(FilesError::NotFound);
                 }
                 vec![node]
             }
             None => self
+                .content
                 .db
                 .share_items(&[share.id])
                 .await?
@@ -55,7 +56,7 @@ impl FileService {
             }
             let name = unique_name(&root.name, &names);
             names.insert(name.clone());
-            for entry in self.db.subtree(share.owner_id, root.id).await? {
+            for entry in self.content.db.subtree(share.owner_id, root.id).await? {
                 let node = entry.node;
                 if !seen.insert(node.id) {
                     continue;
@@ -66,7 +67,7 @@ impl FileService {
                     kind: node.kind,
                     size: if is_file { node.size } else { 0 },
                     modified_at: Some(node.updated_at),
-                    source: is_file.then(|| self.store.blob_path(share.owner_id, node.id)),
+                    source: is_file.then(|| self.content.store.blob_path(share.owner_id, node.id)),
                 });
                 if entries.len() > MAX_ARCHIVE_ENTRIES {
                     return Err(FilesError::TooManyItems {

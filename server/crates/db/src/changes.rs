@@ -339,7 +339,7 @@ mod tests {
         let second = folder(&db.on_device(Some(laptop)), alice, "b").await;
         let update = NodeUpdate {
             name: Some("c".to_owned()),
-            parent_id: None,
+            parent_id: crate::Patch::Keep,
         };
         db.update_node(alice, second.id, update)
             .await

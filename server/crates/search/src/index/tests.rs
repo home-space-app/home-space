@@ -5,7 +5,7 @@ use futures_util::stream;
 use sqlx::PgPool;
 
 use db::StoreOutcome;
-use files::FileService;
+use files::{Actor, FileServices, FilesConfig};
 
 use super::*;
 use crate::provider::ExtractError;
@@ -40,7 +40,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 struct Fixture {
     index: SearchIndex,
     _worker: Worker,
-    files: FileService,
+    files: FileServices,
     db: Db,
     alice: UserId,
     bob: UserId,
@@ -67,7 +67,12 @@ async fn fixture(pool: PgPool, providers: Vec<Arc<dyn ContentProvider>>) -> Fixt
     Fixture {
         index,
         _worker: worker,
-        files: FileService::new(db.clone(), store, 1024 * 1024),
+        files: FileServices::new(
+            db.clone(),
+            store,
+            FilesConfig::new(1024 * 1024),
+            events::Events::none(),
+        ),
         db,
         alice,
         bob,
@@ -75,14 +80,15 @@ async fn fixture(pool: PgPool, providers: Vec<Arc<dyn ContentProvider>>) -> Fixt
     }
 }
 
-fn body(text: &'static str) -> impl futures_util::Stream<Item = std::io::Result<Bytes>> {
+fn body(text: &'static str) -> impl futures_util::Stream<Item = Result<Bytes, files::BodyError>> {
     stream::iter([Ok(Bytes::from_static(text.as_bytes()))])
 }
 
 async fn upload(fx: &Fixture, parent: Option<NodeId>, name: &str, text: &'static str) -> Node {
     let node = fx
         .files
-        .upload(fx.alice, parent, name, None, None, body(text))
+        .nodes
+        .upload(Actor::user(fx.alice), parent, name, None, None, body(text))
         .await
         .expect("upload")
         .into_node();
@@ -133,7 +139,8 @@ async fn hits_report_their_location(pool: PgPool) {
     let fx = fixture(pool, Vec::new()).await;
     let folder = fx
         .files
-        .create_folder(fx.alice, None, "trips")
+        .nodes
+        .create_folder(Actor::user(fx.alice), None, "trips")
         .await
         .expect("folder");
     upload(&fx, Some(folder.id), "paris.txt", "x").await;
@@ -178,7 +185,15 @@ async fn users_only_find_their_own_nodes(pool: PgPool) {
 async fn catch_up_indexes_nodes_created_without_the_index(pool: PgPool) {
     let fx = fixture(pool, Vec::new()).await;
     fx.files
-        .upload(fx.alice, None, "legacy.txt", None, None, body("x"))
+        .nodes
+        .upload(
+            Actor::user(fx.alice),
+            None,
+            "legacy.txt",
+            None,
+            None,
+            body("x"),
+        )
         .await
         .expect("upload");
     assert!(names(&fx.index, fx.alice, "legacy").await.is_empty());
@@ -221,8 +236,9 @@ async fn files_without_a_matching_provider_keep_name_only_entries(pool: PgPool) 
     let fx = fixture(pool, vec![Arc::new(Plain)]).await;
     let node = fx
         .files
+        .nodes
         .upload(
-            fx.alice,
+            Actor::user(fx.alice),
             None,
             "photo.jpg",
             Some("image/jpeg"),
@@ -247,7 +263,8 @@ async fn catch_up_re_extracts_content_that_changed(pool: PgPool) {
     fx.index.enqueue_content(fx.alice, node.id);
     eventually_finds(&fx, "alpha", &["notes.txt"]).await;
     fx.files
-        .replace_content(fx.alice, node.id, None, None, body("bravo"))
+        .nodes
+        .replace_content(Actor::user(fx.alice), node.id, None, None, body("bravo"))
         .await
         .expect("replace");
     let report = fx.index.catch_up().await.expect("catch up");
@@ -264,7 +281,15 @@ async fn a_new_version_replaces_the_indexed_content(pool: PgPool) {
     eventually_finds(&fx, "alpha", &["notes.txt"]).await;
     let outcome = fx
         .files
-        .upload(fx.alice, None, "notes.txt", None, None, body("bravo"))
+        .nodes
+        .upload(
+            Actor::user(fx.alice),
+            None,
+            "notes.txt",
+            None,
+            None,
+            body("bravo"),
+        )
         .await
         .expect("upload");
     assert!(matches!(outcome, StoreOutcome::Versioned { .. }));

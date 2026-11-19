@@ -353,7 +353,7 @@ async fn a_file_names_the_device_that_wrote_it_and_a_rename_keeps_it(pool: PgPoo
         .into_node();
     let update = NodeUpdate {
         name: Some("b.txt".to_owned()),
-        parent_id: None,
+        parent_id: crate::Patch::Keep,
     };
 
     let renamed = db

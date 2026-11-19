@@ -10,13 +10,10 @@ use super::*;
 
 #[test]
 fn a_cut_off_body_is_a_bad_request_not_a_server_error() {
-    let cut = io::Error::other(axum::Error::new(io::Error::from(
-        io::ErrorKind::ConnectionReset,
-    )));
-    let problem = ApiError::Files(FilesError::Io(cut)).problem();
+    let problem = ApiError::Files(files::BodyError::Interrupted.into()).problem();
     assert_eq!(problem.kind(), Some(ProblemType::BodyInterrupted));
     assert_eq!(problem.status, Some(400));
-    assert_eq!(problem.detail(), INTERRUPTED_BODY);
+    assert_eq!(problem.detail(), "the request body was cut off");
 }
 
 #[test]
@@ -46,22 +43,6 @@ fn a_full_quota_is_insufficient_storage_with_the_numbers() {
     assert_eq!(problem.status, Some(507));
     assert_eq!(problem.code(), Some(ErrorCode::QuotaExceeded));
     assert_eq!((problem.quota, problem.available), (Some(10), Some(2)));
-}
-
-#[test]
-fn database_errors_map_to_one_status_each() {
-    assert!(matches!(
-        ApiError::from(DbError::NotFound),
-        ApiError::NotFound
-    ));
-    assert!(matches!(
-        ApiError::from(DbError::Pruned),
-        ApiError::ChangesPruned
-    ));
-    assert!(matches!(
-        ApiError::from(DbError::Conflict),
-        ApiError::Internal(_)
-    ));
 }
 
 #[test]

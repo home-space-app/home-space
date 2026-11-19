@@ -3,7 +3,7 @@
 use sqlx::FromRow;
 use uuid::Uuid;
 
-use crate::{Db, DbError, UserId};
+use crate::{Db, DbError, TenantId, UserId};
 
 /// Bytes a user stores, split the way they can free it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, FromRow)]
@@ -121,14 +121,15 @@ impl Db {
         Ok(usage)
     }
 
-    /// What every user stores, ordered by username.
-    pub async fn storage_by_user(&self) -> Result<Vec<UserStorage>, DbError> {
+    /// What every user of `tenant` stores, ordered by username.
+    pub async fn storage_by_user(&self, tenant: TenantId) -> Result<Vec<UserStorage>, DbError> {
         let users = sqlx::query_as::<_, UserStorage>(concat!(
             "SELECT u.id, u.username, u.is_admin, \
              u.password_hash IS NULL AS external, ",
             usage_select!(),
-            " FROM users u ORDER BY u.username"
+            " FROM users u WHERE u.tenant_id = $1 ORDER BY u.username"
         ))
+        .bind(tenant)
         .fetch_all(self.pool())
         .await?;
         Ok(users)

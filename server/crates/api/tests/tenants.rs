@@ -349,3 +349,48 @@ async fn a_share_link_opens_only_on_its_tenants_host(pool: PgPool) {
     let elsewhere = b.send(Method::GET, &uri, None, Body::empty(), None).await;
     assert_eq!(elsewhere.status, StatusCode::NOT_FOUND);
 }
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn an_administrator_manages_only_the_accounts_of_their_own_tenant(pool: PgPool) {
+    let (a, b) = setup_two_tenants(pool).await;
+    a.user_token("alice").await;
+    let alice = a.user_id("alice").await;
+    let admin = b.user_token("bob").await;
+    let bob = b.user_id("bob").await;
+    b.db.set_admin(bob, true).await.expect("admin");
+
+    let listed = b.get("/api/v1/admin/users", &admin).await.json();
+    assert!(only_bob(&listed), "{listed}");
+
+    let path = format!("/api/v1/admin/users/{alice}");
+    assert_eq!(b.get(&path, &admin).await.status, StatusCode::NOT_FOUND);
+    let disable = b
+        .json(
+            Method::PATCH,
+            &path,
+            Some(&admin),
+            json!({ "disabled": true }),
+        )
+        .await;
+    assert_eq!(disable.status, StatusCode::NOT_FOUND);
+    let delete = b
+        .send(Method::DELETE, &path, Some(&admin), Body::empty(), None)
+        .await;
+    assert_eq!(delete.status, StatusCode::NOT_FOUND);
+    // Alice was left alone: she still signs in.
+    sign_in(&a, "alice").await;
+
+    let status = b.get("/api/v1/admin/status", &admin).await.json();
+    assert!(only_bob(&status["users"]), "{status}");
+}
+
+/// Whether a list of accounts holds tenant B's administrator alone.
+fn only_bob(accounts: &Value) -> bool {
+    let names: Vec<&str> = accounts
+        .as_array()
+        .expect("accounts")
+        .iter()
+        .filter_map(|account| account["username"].as_str())
+        .collect();
+    names == ["bob"]
+}

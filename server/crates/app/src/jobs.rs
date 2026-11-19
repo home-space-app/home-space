@@ -8,8 +8,7 @@ use tokio::time::{MissedTickBehavior, interval};
 
 use api::AppState;
 use db::Db;
-use files::FileService;
-use notifications::Hub;
+use files::FileServices;
 use search::SearchIndex;
 
 use crate::config::Config;
@@ -18,11 +17,12 @@ const MINUTE: Duration = Duration::from_secs(60);
 const HOUR: Duration = Duration::from_secs(3600);
 const DAY: Duration = Duration::from_secs(24 * 3600);
 
-/// Starts every background job of the server.
-pub fn spawn(state: &AppState, config: &Config) {
+/// Starts every background job of the server; the clean-ups of the database's own records
+/// work on `db` directly.
+pub fn spawn(db: &Db, state: &AppState, config: &Config) {
     tokio::spawn(catch_up_search(state.search.clone()));
     tokio::spawn(prune(
-        state.db.clone(),
+        db.clone(),
         config.changes_retention_days.map(time::Duration::days),
         time::Duration::seconds(config.refresh_ttl_secs),
     ));
@@ -30,7 +30,7 @@ pub fn spawn(state: &AppState, config: &Config) {
         state.files.clone(),
         Duration::from_secs(config.upload_expiry_hours.saturating_mul(HOUR.as_secs())),
     ));
-    tokio::spawn(expire_transfers(state.files.clone(), state.hub.clone()));
+    tokio::spawn(expire_transfers(state.files.clone()));
     tokio::spawn(delete_users(state.files.clone()));
 }
 
@@ -105,7 +105,7 @@ async fn prune_once(db: &Db, retention: Option<time::Duration>, device_retention
 }
 
 /// Ends resumable uploads idle for longer than `expiry`, hourly.
-async fn expire_uploads(files: FileService, expiry: Duration) {
+async fn expire_uploads(files: FileServices, expiry: Duration) {
     let mut hourly = interval(HOUR);
     loop {
         hourly.tick().await;
@@ -114,31 +114,31 @@ async fn expire_uploads(files: FileService, expiry: Duration) {
                 "expired unfinished uploads",
                 "expiring unfinished uploads failed",
             ),
-            files.expire_uploads(expiry).await,
+            files.uploads.expire_uploads(expiry).await,
         );
     }
 }
 
-/// Removes transfers to devices whose time ran out and tells both sides, hourly.
-async fn expire_transfers(files: FileService, hub: Hub) {
+/// Removes transfers to devices whose time ran out, hourly; the file service tells both sides.
+async fn expire_transfers(files: FileServices) {
     let mut hourly = interval(HOUR);
     loop {
         hourly.tick().await;
-        let expired = files.expire_transfers().await;
         report(
             ("expired transfers", "expiring transfers failed"),
-            expired.as_ref().map(Vec::len),
+            files
+                .transfers
+                .expire_transfers()
+                .await
+                .map(|expired| expired.len()),
         );
-        for transfer in expired.iter().flatten() {
-            api::publish_transfer_expired(&hub, transfer);
-        }
     }
 }
 
 /// Deletes users whose deletion an administrator scheduled and did not take back, with all
 /// their files; every minute, so a deletion happens close to the time the administration
 /// shows for it.
-async fn delete_users(files: FileService) {
+async fn delete_users(files: FileServices) {
     let mut every_minute = interval(MINUTE);
     every_minute.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {

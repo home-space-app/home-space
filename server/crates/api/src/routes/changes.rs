@@ -19,7 +19,8 @@ async fn changes(
 ) -> Result<Json<ChangesResponse>, ApiError> {
     let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let batch = state
-        .db
+        .files
+        .nodes
         .changes(user.id, query.since, i64::from(limit))
         .await?;
     Ok(Json(ChangesResponse {

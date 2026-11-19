@@ -1,6 +1,6 @@
 //! Shares as the database stores them, and the values that create or change one.
 
-use crate::{SharePermission, UserId};
+use crate::{Patch, SharePermission, UserId};
 use sqlx::FromRow;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -21,18 +21,31 @@ pub struct ShareLink {
     pub item_count: i64,
 }
 
-impl ShareLink {
-    /// Whether the link stopped working at `now`.
-    pub fn is_expired(&self, now: OffsetDateTime) -> bool {
-        self.expires_at.is_some_and(|expires_at| expires_at <= now)
-    }
+/// What a link and a share with named users have in common for whoever reads them: whose
+/// tree they reach, and until when.
+pub trait SharedAccess {
+    /// What the share reaches.
+    fn root(&self) -> SharedRoot;
 
-    /// What the link reaches.
-    pub fn root(&self) -> SharedRoot {
+    fn expires_at(&self) -> Option<OffsetDateTime>;
+
+    /// Whether the share stopped working at `now`.
+    fn is_expired(&self, now: OffsetDateTime) -> bool {
+        self.expires_at()
+            .is_some_and(|expires_at| expires_at <= now)
+    }
+}
+
+impl SharedAccess for ShareLink {
+    fn root(&self) -> SharedRoot {
         SharedRoot {
             id: self.id,
             owner_id: self.owner_id,
         }
+    }
+
+    fn expires_at(&self) -> Option<OffsetDateTime> {
+        self.expires_at
     }
 }
 
@@ -54,18 +67,16 @@ pub struct ReceivedShare {
     pub shared_at: OffsetDateTime,
 }
 
-impl ReceivedShare {
-    /// Whether the share stopped working at `now`.
-    pub fn is_expired(&self, now: OffsetDateTime) -> bool {
-        self.expires_at.is_some_and(|expires_at| expires_at <= now)
-    }
-
-    /// What the share reaches.
-    pub fn root(&self) -> SharedRoot {
+impl SharedAccess for ReceivedShare {
+    fn root(&self) -> SharedRoot {
         SharedRoot {
             id: self.id,
             owner_id: self.owner_id,
         }
+    }
+
+    fn expires_at(&self) -> Option<OffsetDateTime> {
+        self.expires_at
     }
 }
 
@@ -122,13 +133,13 @@ pub struct NewShareLink<'a> {
     pub expires_at: Option<OffsetDateTime>,
 }
 
-/// Changes to a share; `None` leaves a value as it is.
+/// Changes to a share; [`Patch::Keep`] and `None` leave a value as it is.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ShareUpdate<'a> {
-    /// The password of a link; `Some(None)` removes it. Ignored for a share without a link.
-    pub password_hash: Option<Option<&'a str>>,
-    /// `Some(None)` makes the share never expire.
-    pub expires_at: Option<Option<OffsetDateTime>>,
+    /// The password of a link; [`Patch::Clear`] removes it. Ignored for a share without a link.
+    pub password_hash: Patch<&'a str>,
+    /// [`Patch::Clear`] makes the share never expire.
+    pub expires_at: Patch<OffsetDateTime>,
     /// Everyone the share is for from now on; users already in it keep when they were added.
     pub recipients: Option<&'a [UserId]>,
 }

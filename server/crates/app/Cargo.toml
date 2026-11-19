@@ -16,6 +16,7 @@ auth.workspace = true
 axum.workspace = true
 clap.workspace = true
 db.workspace = true
+events.workspace = true
 dotenvy.workspace = true
 files.workspace = true
 notifications.workspace = true

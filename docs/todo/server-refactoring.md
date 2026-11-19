@@ -1,7 +1,7 @@
 # Server clean-up and refactoring
 
-**Status (2026-11-19):** phases 1–3 done (guardrails, mechanical splits, API contract), phases 4–5
-open. F5 waits for its second release, which drops the old `error`/`message` members.
+**Status (2026-11-19):** phases 1–4 done (guardrails, mechanical splits, API contract, services),
+phase 5 open. F5 waits for its second release, which drops the old `error`/`message` members.
 Scope is `server/crates/*` and the error types in `shared/protocol`. The server is ~30.6k lines of
 Rust, about half of it tests.
 
@@ -32,6 +32,15 @@ Line counts are production lines (everything before `#[cfg(test)]`) / whole file
 | F4 | 37 problem types in `protocol::ProblemType`, one row each (status, slug, code, title). Status changes: input that parses but is not acceptable is 422 (was 400); enabling an account marked for deletion is 409 `marked-for-deletion` (was 400); `AuthError::Oidc` is 502 `identity-provider-failed` (was 500); `OidcDenied` is 403 (was 500); `too-many-connections` sends `Retry-After: 30`. The `conflict`s are told apart by type (`name-taken`, `lost-and-found`, `offset-mismatch`, `transfer-not-ready`). A protocol test checks `docs/api-errors.md` against the table. |
 | F5 (first release) | The server sends `error` and `message` next to `code` and `detail`. `api-client` and the web upload read `Problem` through `code()` and `detail()`, which also read an old server's body. `ErrorCode` is unchanged, so clients branching on it behave as before. |
 | D5 | `protocol::AsProblem` (`problem_type`, `extend`) is implemented by `AuthError`, `FilesError` and `SearchError` in their own crates with exhaustive matches, and by `ApiError`, which only delegates. A new variant does not compile until it names a problem type. |
+| S1, S4 | New crates `accounts` (`AccountService`, `DeviceService`) and `shares` (`ShareService`). They are built per tenant in `TenantContext::new` from the process-wide `SharedServices`, next to `auth`. Every route makes one service call; the share rules (link vs. users, not for the owner, token length, expiry), the admin rules (not yourself, marked for deletion, no password) and the device rules live in the services, each with its own error type implementing `AsProblem`. `AdminUser` calls `AccountService::require_admin`. `ShareLink` and `ReceivedShare` share `db::SharedAccess` (root, expiry), so the service has one `live` check and one `file`/`archive`/`children` path for both (D3, second half). **Fix found on the way:** the admin account queries were not scoped by tenant, so an administrator of one tenant could list, change and delete the accounts of another. `db::accounts`, `db::account` and `db::storage_by_user` now take the tenant, and `AccountService` checks the account before every change (test `an_administrator_manages_only_the_accounts_of_their_own_tenant`). |
+| S2, K5 | New crate `events`: `DomainEvent` (node created/updated/moved/deleted, content changed, trash changed, devices changed, transfer ready/changed) and `EventSink`/`Events`. The file, device and transfer services publish their own events; `api::EventDispatcher` is the one place that turns them into search index updates and hub messages, in the same order the handlers used. Handlers no longer know about search or the hub, `support/publish.rs` and `api::publish_transfer_expired` are gone, and the expiry job no longer needs the hub. Handlers pick the status from the outcome (`support/outcome.rs`). |
+| S5, D7 | `FileService` is split over a shared crate-private `ContentStore` (database, blob store, quota, `finish_store`, events) into `NodeService`, `VersionService`, `TrashService`, `UploadService` and `TransferService`, bundled in `FileServices` (`FilesConfig` replaces the `with_*` builders). Changes take an explicit `files::Actor { user, device }` instead of `on_device` cloning; `AuthUser::actor()` builds it. `files/transfers.rs` is split into `transfers/{manifest,save}.rs`. `AppState` holds services only: `db` is gone, the change journal is `NodeService::changes`, the health check is `FileServices::ping`, and the maintenance jobs get the database from `main`. |
+| S6, K1 | `AuthService` is a facade over `PasswordHasher`, `LoginThrottle`, `Sessions`, `Tickets` and `OidcLogin` (`auth/src/{hasher,throttle,sessions,tickets,oidc_login}.rs`); 1168 → 462 lines. `LoginThrottle::admit(counters)` returns an `Attempt` settled once with the outcome: a success clears the counts, a wrong password stays counted, anything else is taken back. The three compensating `take_back_login_attempt` calls of `login_from`, `change_password` and `unlock_share` are gone, and the existing tests are unchanged apart from where they reach into the internals. Share passwords and share-access tokens are `auth::SharePasswords`, which `ShareService` holds instead of the whole `AuthService`. |
+| D3 | The owner's downloads (file and version) go through `support::download::ranged` like shares and transfers, so they resume with `Range`; `attachment` is gone. |
+| K2, T9 | `files::BodyError { Interrupted, TooLarge }` is the error of every request body stream; `support::body::limited_body_stream` enforces the chunk size. `FilesError::BodyInterrupted` replaces the `axum::Error` downcast and `ChunkTooLarge` is gone. |
+| K4 | `protocol::Patch<T> { Keep, Clear, Set(T) }`, with its own serde (missing, `null`, value), replaces every `Option<Option<T>>`: `UpdateShare.{password,expires_at}`, `UpdateAccount.quota_bytes`, `UpdateRequest.parent_id`, `db::ShareUpdate` and `db::NodeUpdate`. The wire format is unchanged; the clients build `Patch` too. |
+| K7 | The websocket loop is one `select!` that asks a `Connection` what to do for each event (`on_session_notice`, `on_ping`, `on_message`, `forward`) and acts on the returned `Step`. |
+| K8 | `load_hosts` is `validate_tenants` → `ensure_distinct_secrets` → `discover_all` → `contexts`, with `validate_tenant` and `tenant_auth` for one tenant. |
 
 New findings from G1:
 
@@ -39,6 +48,13 @@ New findings from G1:
 |---|---|---|---|
 | K7 | M | `api/src/routes/ws.rs` `session` | Cognitive complexity 28. The socket loop handles pings, idle, expiry, session end and messages in one `select!`. Split it into one handler per event. |
 | K8 | S | `app/src/tenants.rs` `load_hosts` | Cognitive complexity 52. It validates, discovers OIDC and builds contexts in one loop. Split it into `validate_tenants`, `discover_all` and `contexts`. |
+
+New findings from phase 4:
+
+| ID | Size | Where | Finding |
+|---|---|---|---|
+| K9 | S | `files/src/uploads.rs` `create_upload` (too long), `append_chunk_as`, `files/src/transfers/save.rs` `save_transfer_as` (complexity) | Still flagged after S5. Each mixes checking the target, writing bytes and recording the outcome; split them into named steps. |
+| D8 | S | `shares` (`ShareService`) | The share rules that need stored state are in the service now, but the service still receives the request type of the wire (`CreateShare`, `UpdateShare`). Fine while the API is the only caller; give it its own input type when a second caller appears. |
 
 ## Ground rules
 
@@ -155,8 +171,8 @@ scenario group.
    for K2. K7 and K8 are new and can go with phase 4.
 3. ~~**API contract:** F1, F2, F4, F5, then F3 with D5.~~ Done. Still open: the second F5 release,
    which removes `error` and `message` from `Problem` once the clients in use read `code`/`detail`.
-4. **Services:** S1, S4 (shares, devices, admin), S2 (domain events), then S6 with K1 (auth) and S5 (files).
-   Then D7, D3 and K2, K4, K5.
+4. ~~**Services:** S1, S4 (shares, devices, admin), S2 (domain events), then S6 with K1 (auth) and S5 (files).
+   Then D7, D3 and K2, K4, K5.~~ Done, with K7 and K8. K9 and D8 are new and small.
 5. **Domain/DB boundary:** S3 with K3, then D6 as preparation for `object-storage.md`.
 
 Every step keeps the existing integration tests in `server/crates/api/tests` passing unchanged. Only F1, F2 and F4

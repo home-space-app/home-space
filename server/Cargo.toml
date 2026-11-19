@@ -10,10 +10,13 @@ publish = false
 
 [workspace.dependencies]
 db = { path = "crates/db" }
+events = { path = "crates/events" }
+accounts = { path = "crates/accounts" }
 auth = { path = "crates/auth" }
 files = { path = "crates/files" }
 notifications = { path = "crates/notifications" }
 search = { path = "crates/search" }
+shares = { path = "crates/shares" }
 api = { path = "crates/api" }
 protocol = { path = "../shared/protocol", features = ["server"] }
 

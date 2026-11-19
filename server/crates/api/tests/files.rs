@@ -31,6 +31,29 @@ async fn uploaded_file_downloads_with_same_content(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn an_interrupted_download_of_ones_own_file_resumes(pool: PgPool) {
+    let app = setup(pool).await;
+    let token = app.user_token("alice").await;
+    let created = app.upload(&token, "name=hello.txt", "hello world").await;
+    let uri = format!("/api/v1/files/{}/content", id_of(&created));
+
+    let rest = app
+        .send_with(
+            Method::GET,
+            &uri,
+            Some(&token),
+            Body::empty(),
+            None,
+            &[("range", "bytes=6-")],
+        )
+        .await;
+
+    assert_eq!(rest.status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(rest.body, b"world");
+    assert_eq!(rest.headers["content-range"], "bytes 6-10/11");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn declared_content_type_is_stored_as_mime(pool: PgPool) {
     let app = setup(pool).await;
     let token = app.user_token("alice").await;

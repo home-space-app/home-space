@@ -219,8 +219,7 @@ async fn first_sign_in_creates_a_user_and_later_ones_reuse_it(pool: PgPool) {
     assert_eq!(first["username"], "alice");
     assert_eq!(first["id"], second["id"]);
     assert_eq!(
-        app.state
-            .db
+        app.db
             .list_users(db::TenantId::DEFAULT)
             .await
             .expect("users")
@@ -340,8 +339,7 @@ async fn a_token_for_another_audience_is_rejected(pool: PgPool) {
     let (_, params) = client_redirect(&response);
     assert_eq!(params["error"], "login_failed");
     assert!(
-        app.state
-            .db
+        app.db
             .list_users(db::TenantId::DEFAULT)
             .await
             .expect("users")
@@ -408,8 +406,7 @@ async fn only_members_of_the_required_group_may_sign_in(pool: PgPool) {
     assert_eq!(client_redirect(&outsider).1["error"], "access_denied");
     assert_eq!(client_redirect(&nobody).1["error"], "access_denied");
     assert!(
-        app.state
-            .db
+        app.db
             .list_users(db::TenantId::DEFAULT)
             .await
             .expect("users")

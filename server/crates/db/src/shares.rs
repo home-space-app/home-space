@@ -11,7 +11,7 @@ use crate::{Db, DbError, Node, NodeId, NodeKind, TenantId, UserId};
 mod types;
 pub use types::{
     NewShareLink, NewUserShare, OwnedShare, ReceivedShare, ShareLink, ShareRecipient, ShareUpdate,
-    SharedRoot,
+    SharedAccess, SharedRoot,
 };
 
 macro_rules! share_columns {
@@ -293,14 +293,15 @@ impl Db {
         )
         .bind(id)
         .bind(owner)
-        .bind(update.expires_at.is_some())
-        .bind(update.expires_at.flatten())
+        .bind(!update.expires_at.is_keep())
+        .bind(update.expires_at.value().copied())
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() == 0 {
             return Err(DbError::NotFound);
         }
-        if let Some(password_hash) = update.password_hash {
+        if !update.password_hash.is_keep() {
+            let password_hash = update.password_hash.value().copied();
             sqlx::query(
                 "UPDATE share_links SET password_hash = $2, \
                    password_version = password_version + 1 \

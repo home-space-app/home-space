@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use protocol::{CreateShare, Node, NodeId, NodeKind, Share, UpdateShare, UserId, UserRef};
+use protocol::{CreateShare, Node, NodeId, NodeKind, Patch, Share, UpdateShare, UserId, UserRef};
 use time::{Date, Duration, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset};
 
 /// Fewest characters of a link password, as the server requires.
@@ -312,7 +312,7 @@ impl ShareDraft {
 
     /// The first thing that keeps the draft from being saved at `now`.
     pub fn check(&self, now: OffsetDateTime) -> Result<(), DraftError> {
-        let expiry_changed = self.expiry_change(now).is_some();
+        let expiry_changed = !self.expiry_change(now).is_keep();
         if self.audience == Audience::People && self.recipients.is_empty() {
             Err(DraftError::NoRecipients)
         } else if self.editing_password() && self.password.chars().count() < MIN_SHARE_PASSWORD_LEN
@@ -352,13 +352,13 @@ impl ShareDraft {
     pub fn update_request(&self, now: OffsetDateTime) -> Result<UpdateShare, DraftError> {
         self.check(now)?;
         let password = if self.audience == Audience::People {
-            None
+            Patch::Keep
         } else if self.editing_password() {
-            Some(Some(self.password.clone()))
+            Patch::Set(self.password.clone())
         } else if self.had_password && !self.require_password {
-            Some(None)
+            Patch::Clear
         } else {
-            None
+            Patch::Keep
         };
         let ids = self.recipient_ids();
         let recipients_changed = self.audience == Audience::People
@@ -372,11 +372,11 @@ impl ShareDraft {
         })
     }
 
-    fn expiry_change(&self, now: OffsetDateTime) -> Option<Option<OffsetDateTime>> {
+    fn expiry_change(&self, now: OffsetDateTime) -> Patch<OffsetDateTime> {
         let expires_at = self.expires_at(now);
         match self.saved {
-            Some((_, saved)) if saved == expires_at => None,
-            _ => Some(expires_at),
+            Some((_, saved)) if saved == expires_at => Patch::Keep,
+            _ => Patch::to(expires_at),
         }
     }
 }
@@ -721,12 +721,15 @@ mod tests {
         let mut draft = ShareDraft::of(&share(vec![], false, Some(NOW + Duration::days(7))));
         draft.expiry = Expiry::Day;
         draft.expiry = Expiry::Week;
-        assert_eq!(draft.update_request(NOW).expect("request").expires_at, None);
+        assert_eq!(
+            draft.update_request(NOW).expect("request").expires_at,
+            Patch::Keep
+        );
         let later = NOW + Duration::days(2);
         draft.expiry = Expiry::Month;
         assert_eq!(
             draft.update_request(later).expect("request").expires_at,
-            Some(Some(later + Duration::days(30)))
+            Patch::Set(later + Duration::days(30))
         );
     }
 
@@ -743,7 +746,7 @@ mod tests {
         draft.set_require_password(false);
         assert_eq!(
             draft.update_request(NOW).expect("request").password,
-            Some(None)
+            Patch::Clear
         );
     }
 
@@ -754,7 +757,7 @@ mod tests {
         draft.password = "new secret".to_owned();
         assert_eq!(
             draft.update_request(NOW).expect("request").password,
-            Some(Some("new secret".to_owned()))
+            Patch::Set("new secret".to_owned())
         );
     }
 
@@ -764,7 +767,10 @@ mod tests {
             ShareDraft::of(&share(vec![], false, Some(datetime!(2026-11-01 10:00 UTC))));
         draft.set_require_password(true);
         draft.password = "long enough".to_owned();
-        assert_eq!(draft.update_request(NOW).expect("request").expires_at, None);
+        assert_eq!(
+            draft.update_request(NOW).expect("request").expires_at,
+            Patch::Keep
+        );
     }
 
     #[test]
@@ -774,7 +780,7 @@ mod tests {
         draft.expiry = Expiry::Never;
         assert_eq!(
             draft.update_request(NOW).expect("request").expires_at,
-            Some(None)
+            Patch::Clear
         );
     }
 

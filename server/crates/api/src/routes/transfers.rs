@@ -13,7 +13,7 @@ use db::IncomingScope;
 use files::ArchiveEntry;
 use protocol::{
     CreateTransfer, CreatedTransfer, CreatedTransferItem, IncomingQuery, Node, NodeKind,
-    SaveTransfer, TicketRequest, Transfer, TransferState, TransferSummary,
+    SaveTransfer, TicketRequest, Transfer, TransferSummary,
 };
 
 use crate::extract::{ApiJson, ApiPath, ApiQuery};
@@ -24,7 +24,7 @@ use crate::{
         archive::zip_response,
         convert::{summary, transfer_item},
         download::{Download, ranged},
-        publish::{publish_changed, publish_ready, publish_saved},
+        outcome::saved_at_top,
     },
 };
 
@@ -41,16 +41,6 @@ pub fn routes() -> Router<AppState> {
         .route("/transfers/{id}/save", post(save))
 }
 
-fn publish_finished(state: &AppState, transfer: &db::Transfer) {
-    publish_changed(
-        &state.hub,
-        transfer.id,
-        transfer.sender_id,
-        transfer.recipient_id,
-        transfer.state,
-    );
-}
-
 async fn create(
     State(state): State<AppState>,
     user: AuthUser,
@@ -58,6 +48,7 @@ async fn create(
 ) -> Result<(StatusCode, Json<CreatedTransfer>), ApiError> {
     let (transfer, items) = state
         .files
+        .transfers
         .create_transfer(user.id, user.device_id, request)
         .await?;
     let created = CreatedTransfer {
@@ -72,9 +63,6 @@ async fn create(
             })
             .collect(),
     };
-    if transfer.state == TransferState::Ready {
-        publish_ready(&state, transfer);
-    }
     Ok((StatusCode::CREATED, Json(created)))
 }
 
@@ -90,7 +78,13 @@ async fn incoming(
         (true, None) => None,
     };
     let transfers = match scope {
-        Some(scope) => state.files.incoming_transfers(user.id, scope).await?,
+        Some(scope) => {
+            state
+                .files
+                .transfers
+                .incoming_transfers(user.id, scope)
+                .await?
+        }
         None => Vec::new(),
     };
     Ok(Json(transfers.into_iter().map(summary).collect()))
@@ -102,6 +96,7 @@ async fn outgoing(
 ) -> Result<Json<Vec<TransferSummary>>, ApiError> {
     let transfers = state
         .files
+        .transfers
         .outgoing_transfers(user.id, user.device_id)
         .await?;
     Ok(Json(transfers.into_iter().map(summary).collect()))
@@ -112,7 +107,7 @@ async fn get_transfer(
     user: AuthUser,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<Transfer>, ApiError> {
-    let (transfer, items) = state.files.transfer(user.id, id).await?;
+    let (transfer, items) = state.files.transfers.transfer(user.id, id).await?;
     Ok(Json(Transfer {
         summary: summary(transfer),
         items: items.into_iter().map(transfer_item).collect(),
@@ -124,8 +119,7 @@ async fn cancel(
     user: AuthUser,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    let transfer = state.files.cancel_transfer(user.id, id).await?;
-    publish_finished(&state, &transfer);
+    state.files.transfers.cancel_transfer(user.id, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -134,8 +128,7 @@ async fn decline(
     user: AuthUser,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    let transfer = state.files.decline_transfer(user.id, id).await?;
-    publish_finished(&state, &transfer);
+    state.files.transfers.decline_transfer(user.id, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -144,8 +137,7 @@ async fn received(
     user: AuthUser,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    let transfer = state.files.confirm_transfer(user.id, id).await?;
-    publish_finished(&state, &transfer);
+    state.files.transfers.confirm_transfer(user.id, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -159,12 +151,10 @@ async fn save(
     let parent = body.and_then(|Json(body)| body.parent_id);
     let saved = state
         .files
-        .on_device(user.device_id)
-        .save_transfer(user.id, id, parent)
+        .transfers
+        .save_transfer(user.actor(), id, parent)
         .await?;
-    publish_finished(&state, &saved.transfer);
-    let top = publish_saved(&state, user.id, parent, saved.folders, saved.files).await;
-    Ok(Json(top))
+    Ok(Json(saved_at_top(parent, saved.folders, saved.files)))
 }
 
 /// A file of a ready transfer, for its recipient. Answers one `Range` of bytes when asked,
@@ -186,7 +176,11 @@ async fn content(
             },
         )
         .await?;
-    let (item, file) = state.files.open_transfer_item(caller, id, item_id).await?;
+    let (item, file) = state
+        .files
+        .transfers
+        .open_transfer_item(caller, id, item_id)
+        .await?;
     let name = item.path.rsplit('/').next().unwrap_or(&item.path);
     let download = Download {
         name,
@@ -211,7 +205,7 @@ async fn archive(
             &TicketRequest::TransferArchive { transfer_id: id },
         )
         .await?;
-    let (transfer, items) = state.files.transfer_archive(caller, id).await?;
+    let (transfer, items) = state.files.transfers.transfer_archive(caller, id).await?;
     let entries = items
         .into_iter()
         .map(|(item, path)| ArchiveEntry {

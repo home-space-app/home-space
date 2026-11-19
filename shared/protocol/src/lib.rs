@@ -10,6 +10,7 @@ mod event;
 mod health;
 mod ids;
 mod node;
+pub mod patch;
 pub mod paths;
 mod problem;
 mod problem_type;
@@ -44,6 +45,7 @@ pub use node::{
     Conflict, ContentQuery, CreateFolderRequest, FileVersion, ListQuery, MoveRequest, MoveResponse,
     Node, NodeKind, NodeProperties, OnConflict, UpdateRequest, UploadQuery,
 };
+pub use patch::Patch;
 pub use problem::{AsProblem, FieldError, PROBLEM_CONTENT_TYPE, Problem};
 pub use problem_type::{PROBLEMS_BASE, ProblemType};
 pub use search::{SearchHit, SearchQuery};

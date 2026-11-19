@@ -200,20 +200,8 @@ fn session(tenant: &Tenant, mut pair: TokenPair, browser: Option<Browser>) -> Re
     }
 }
 
-async fn me(State(state): State<AppState>, user: AuthUser) -> Result<Json<Me>, ApiError> {
-    let found = state
-        .db
-        .find_user(user.id)
-        .await?
-        .ok_or(ApiError::Unauthorized)?;
-    let folders = state.db.special_folders(user.id).await?;
-    Ok(Json(Me {
-        id: found.id,
-        username: found.username,
-        lost_and_found_id: folders.lost_and_found_id,
-        is_admin: found.is_admin,
-        external: found.password_hash.is_none(),
-    }))
+async fn me(tenant: Tenant, user: AuthUser) -> Result<Json<Me>, ApiError> {
+    Ok(Json(tenant.accounts.me(user.id).await?))
 }
 
 /// Replaces the caller's password; their other sessions end, this one stays signed in.
@@ -242,17 +230,17 @@ async fn ticket(
 ) -> Result<Json<TicketResponse>, ApiError> {
     match request {
         TicketRequest::Download { node_id } | TicketRequest::DownloadVersion { node_id, .. } => {
-            state.files.get(user.id, node_id).await?;
+            state.files.nodes.get(user.id, node_id).await?;
         }
         TicketRequest::TransferItem { transfer_id, .. }
         | TicketRequest::TransferArchive { transfer_id } => {
-            let (transfer, _) = state.files.transfer(user.id, transfer_id).await?;
+            let (transfer, _) = state.files.transfers.transfer(user.id, transfer_id).await?;
             if transfer.recipient_id != user.id {
                 return Err(ApiError::Forbidden);
             }
         }
         TicketRequest::SharedFile { share_id, .. } | TicketRequest::SharedArchive { share_id } => {
-            state.db.received_share(user.id, share_id).await?;
+            tenant.shares.received(user.id, share_id).await?;
         }
         TicketRequest::Events => {}
     }

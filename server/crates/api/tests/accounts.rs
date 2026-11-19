@@ -20,7 +20,7 @@ const NEW_PASSWORD: &str = "another-password-456";
 async fn admin(app: &TestApp, username: &str) -> String {
     let token = app.user_token(username).await;
     let id = app.user_id(username).await;
-    app.state.db.set_admin(id, true).await.expect("admin");
+    app.db.set_admin(id, true).await.expect("admin");
     token
 }
 
@@ -190,7 +190,6 @@ async fn a_password_less_user_gets_no_password(pool: PgPool) {
     let app = setup(pool).await;
     let token = admin(&app, "sam").await;
     let user = app
-        .state
         .db
         .create_user_with_identity(
             db::TenantId::DEFAULT,
@@ -212,13 +211,7 @@ async fn a_password_less_user_gets_no_password(pool: PgPool) {
         .await;
 
     assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY);
-    let found = app
-        .state
-        .db
-        .find_user(user.id)
-        .await
-        .expect("db")
-        .expect("user");
+    let found = app.db.find_user(user.id).await.expect("db").expect("user");
     assert!(found.password_hash.is_none());
 }
 
@@ -272,9 +265,8 @@ async fn the_deletion_job_removes_a_due_user_and_their_files(pool: PgPool) {
 
     delete(&app, &token, &format!("{USERS}/{id}")).await;
     // Bring the deletion forward so that it is due now.
-    app.state.db.cancel_deletion(id).await.expect("cancel");
-    app.state
-        .db
+    app.db.cancel_deletion(id).await.expect("cancel");
+    app.db
         .mark_for_deletion(
             id,
             time::OffsetDateTime::now_utc() - time::Duration::seconds(1),
@@ -285,7 +277,7 @@ async fn the_deletion_job_removes_a_due_user_and_their_files(pool: PgPool) {
     let deleted = app.state.files.delete_due_users().await.expect("job");
 
     assert_eq!(deleted, vec![id]);
-    assert!(app.state.db.find_user(id).await.expect("db").is_none());
+    assert!(app.db.find_user(id).await.expect("db").is_none());
     assert!(!blobs.exists() && !versions.exists());
     let list = app.get(USERS, &token).await.json();
     assert_eq!(list.as_array().expect("list").len(), 1);

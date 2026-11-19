@@ -346,7 +346,6 @@ async fn the_recycle_bin_folder_is_invisible_to_the_node_api(pool: PgPool) {
     let app = setup(pool).await;
     let alice = app.user_token("alice").await;
     let trash = app
-        .state
         .db
         .special_folders(user_id(&app, &alice).await)
         .await
@@ -463,7 +462,7 @@ async fn other_users_cannot_see_or_touch_binned_files(pool: PgPool) {
     let listing = app.get("/api/v1/trash", &alice).await.json();
     assert_eq!(listing.as_array().map(Vec::len), Some(1));
     let alice_id = user_id(&app, &alice).await;
-    assert!(app.state.db.special_folders(alice_id).await.is_ok());
+    assert!(app.db.special_folders(alice_id).await.is_ok());
 }
 
 #[sqlx::test(migrations = "../../migrations")]

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use db::{Node, NodeId, NodeKind, SharedRoot, StoreOptions, StoreOutcome, UserId};
 
-use crate::{FileService, FilesError, MAX_ARCHIVE_ENTRIES, service::new_content};
+use crate::{Actor, FilesError, MAX_ARCHIVE_ENTRIES, NodeService, content::new_content, emitted};
 
 /// What saving copies of shared items made in the reader's tree.
 #[derive(Debug, Default)]
@@ -15,64 +15,20 @@ pub struct SavedCopy {
     pub files: Vec<StoreOutcome>,
 }
 
-impl FileService {
+impl NodeService {
     /// Copies `node_ids`, each reachable through `share`, into `caller`'s folder `parent` (the
     /// root when `None`), folders with everything inside. A name that is taken at the top gets
     /// a number. The whole copy must fit in `caller`'s quota.
     pub async fn copy_shared(
         &self,
-        caller: UserId,
+        actor: Actor,
         share: SharedRoot,
         node_ids: &[NodeId],
         parent: Option<NodeId>,
     ) -> Result<SavedCopy, FilesError> {
-        if let Some(parent) = parent
-            && self.db.get_node(caller, parent).await?.kind != NodeKind::Folder
-        {
-            return Err(FilesError::NotAFile);
-        }
-        let mut trees = Vec::with_capacity(node_ids.len());
-        for &id in node_ids {
-            let root = self.db.shared_node(share, id).await?;
-            trees.push(self.db.subtree(share.owner_id, root.id).await?);
-        }
-        let count: usize = trees.iter().map(Vec::len).sum();
-        if count > MAX_ARCHIVE_ENTRIES {
-            return Err(FilesError::TooManyItems {
-                limit: MAX_ARCHIVE_ENTRIES,
-            });
-        }
-        let bytes = trees
-            .iter()
-            .flatten()
-            .filter(|entry| entry.node.kind == NodeKind::File)
-            .map(|entry| u64::try_from(entry.node.size).unwrap_or(0))
-            .sum();
-        self.check_quota(caller, None, bytes).await?;
-
-        let mut saved = SavedCopy::default();
-        for tree in trees {
-            let mut placed = HashMap::<String, NodeId>::new();
-            for entry in tree {
-                let into = match entry.rel.rsplit_once('/') {
-                    Some((dir, _)) => Some(*placed.get(dir).ok_or(FilesError::NotFound)?),
-                    None => parent,
-                };
-                let node = entry.node;
-                match node.kind {
-                    NodeKind::Folder => {
-                        let folder = self.save_folder(caller, into, &node.name).await?;
-                        placed.insert(entry.rel, folder.id);
-                        saved.folders.push(folder);
-                    }
-                    NodeKind::File => {
-                        let outcome = self.copy_file(caller, share.owner_id, &node, into).await?;
-                        saved.files.push(outcome);
-                    }
-                }
-            }
-        }
-        Ok(saved)
+        self.acting(actor.device)
+            .copy_shared_as(actor.user, share, node_ids, parent)
+            .await
     }
 
     async fn copy_file(
@@ -83,6 +39,7 @@ impl FileService {
         parent: Option<NodeId>,
     ) -> Result<StoreOutcome, FilesError> {
         let staged = self
+            .content
             .store
             .stage_copy(
                 owner,
@@ -97,9 +54,70 @@ impl FileService {
             ..StoreOptions::default()
         };
         let stored = self
+            .content
             .db
             .store_file_with(caller, parent, &node.name, content, options)
             .await;
-        self.finish_store(caller, staged, stored).await
+        self.content.finish_store(caller, staged, stored).await
+    }
+
+    async fn copy_shared_as(
+        &self,
+        caller: UserId,
+        share: SharedRoot,
+        node_ids: &[NodeId],
+        parent: Option<NodeId>,
+    ) -> Result<SavedCopy, FilesError> {
+        if let Some(parent) = parent
+            && self.content.db.get_node(caller, parent).await?.kind != NodeKind::Folder
+        {
+            return Err(FilesError::NotAFile);
+        }
+        let mut trees = Vec::with_capacity(node_ids.len());
+        for &id in node_ids {
+            let root = self.content.db.shared_node(share, id).await?;
+            trees.push(self.content.db.subtree(share.owner_id, root.id).await?);
+        }
+        let count: usize = trees.iter().map(Vec::len).sum();
+        if count > MAX_ARCHIVE_ENTRIES {
+            return Err(FilesError::TooManyItems {
+                limit: MAX_ARCHIVE_ENTRIES,
+            });
+        }
+        let bytes = trees
+            .iter()
+            .flatten()
+            .filter(|entry| entry.node.kind == NodeKind::File)
+            .map(|entry| u64::try_from(entry.node.size).unwrap_or(0))
+            .sum();
+        self.content.check_quota(caller, None, bytes).await?;
+
+        let mut saved = SavedCopy::default();
+        for tree in trees {
+            let mut placed = HashMap::<String, NodeId>::new();
+            for entry in tree {
+                let into = match entry.rel.rsplit_once('/') {
+                    Some((dir, _)) => Some(*placed.get(dir).ok_or(FilesError::NotFound)?),
+                    None => parent,
+                };
+                let node = entry.node;
+                match node.kind {
+                    NodeKind::Folder => {
+                        let folder = self.content.save_folder(caller, into, &node.name).await?;
+                        placed.insert(entry.rel, folder.id);
+                        saved.folders.push(folder);
+                    }
+                    NodeKind::File => {
+                        let outcome = self.copy_file(caller, share.owner_id, &node, into).await?;
+                        saved.files.push(outcome);
+                    }
+                }
+            }
+        }
+        self.content
+            .events
+            .publish(emitted::saved(&saved.folders, &saved.files))
+            .await;
+        Ok(saved)
     }
 }

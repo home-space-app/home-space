@@ -7,8 +7,7 @@ use axum::{
     routing::{get, post, put},
 };
 
-use db::{MoveOutcome, NodeUpdate};
-use notifications::Event;
+use db::NodeUpdate;
 use protocol::{
     ContentQuery, CreateFolderRequest, FileVersion, ListQuery, MoveRequest, MoveResponse, Node,
     NodeId, NodeProperties, TicketRequest, UpdateRequest, UploadQuery,
@@ -21,8 +20,8 @@ use crate::{
     support::{
         body::{body_stream, declared_type},
         convert::move_response,
-        download::attachment,
-        publish::{publish_changes, publish_stored},
+        download::{Download, ranged},
+        outcome::stored,
     },
 };
 
@@ -57,7 +56,7 @@ async fn list(
     user: AuthUser,
     ApiQuery(query): ApiQuery<ListQuery>,
 ) -> Result<Json<Vec<Node>>, ApiError> {
-    let nodes = state.files.list(user.id, query.parent_id).await?;
+    let nodes = state.files.nodes.list(user.id, query.parent_id).await?;
     Ok(Json(nodes.into_iter().map(Node::from).collect()))
 }
 
@@ -66,7 +65,7 @@ async fn get_node(
     user: AuthUser,
     ApiPath(id): ApiPath<NodeId>,
 ) -> Result<Json<Node>, ApiError> {
-    Ok(Json(state.files.get(user.id, id).await?.into()))
+    Ok(Json(state.files.nodes.get(user.id, id).await?.into()))
 }
 
 async fn ancestors(
@@ -74,7 +73,7 @@ async fn ancestors(
     user: AuthUser,
     ApiPath(id): ApiPath<NodeId>,
 ) -> Result<Json<Vec<Node>>, ApiError> {
-    let nodes = state.files.ancestors(user.id, id).await?;
+    let nodes = state.files.nodes.ancestors(user.id, id).await?;
     Ok(Json(nodes.into_iter().map(Node::from).collect()))
 }
 
@@ -83,7 +82,7 @@ async fn properties(
     user: AuthUser,
     ApiPath(id): ApiPath<NodeId>,
 ) -> Result<Json<NodeProperties>, ApiError> {
-    let properties = state.files.properties(user.id, id).await?;
+    let properties = state.files.nodes.properties(user.id, id).await?;
     Ok(Json(NodeProperties {
         source_device: properties.source_device,
     }))
@@ -96,15 +95,10 @@ async fn create_folder(
 ) -> Result<(StatusCode, Json<Node>), ApiError> {
     let node = state
         .files
-        .on_device(user.device_id)
-        .create_folder(user.id, request.parent_id, &request.name)
+        .nodes
+        .create_folder(user.actor(), request.parent_id, &request.name)
         .await?;
-    state.index_name(&node).await;
-    let node = Node::from(node);
-    state
-        .hub
-        .publish(user.id, Event::NodeCreated { node: node.clone() });
-    Ok((StatusCode::CREATED, Json(node)))
+    Ok((StatusCode::CREATED, Json(node.into())))
 }
 
 async fn upload(
@@ -116,9 +110,9 @@ async fn upload(
 ) -> Result<(StatusCode, Json<Node>), ApiError> {
     let outcome = state
         .files
-        .on_device(user.device_id)
+        .nodes
         .upload(
-            user.id,
+            user.actor(),
             query.parent_id,
             &query.name,
             declared_type(&headers),
@@ -126,7 +120,7 @@ async fn upload(
             body_stream(body),
         )
         .await?;
-    Ok(publish_stored(&state, user.id, outcome).await)
+    Ok(stored(outcome))
 }
 
 async fn replace_content(
@@ -139,17 +133,16 @@ async fn replace_content(
 ) -> Result<Json<Node>, ApiError> {
     let outcome = state
         .files
-        .on_device(user.device_id)
+        .nodes
         .replace_content(
-            user.id,
+            user.actor(),
             id,
             declared_type(&headers),
             query.modified_at,
             body_stream(body),
         )
         .await?;
-    let (_, Json(node)) = publish_stored(&state, user.id, outcome).await;
-    Ok(Json(node))
+    Ok(Json(outcome.into_node().into()))
 }
 
 async fn download(
@@ -166,8 +159,8 @@ async fn download(
             &TicketRequest::Download { node_id: id },
         )
         .await?;
-    let (node, file) = state.files.download(owner, id).await?;
-    Ok(attachment(&node.name, &node.mime, node.size, file))
+    let (node, file) = state.files.nodes.download(owner, id).await?;
+    ranged(&headers, Download::of(&node), file).await
 }
 
 async fn download_version(
@@ -187,8 +180,17 @@ async fn download_version(
             },
         )
         .await?;
-    let (node, meta, file) = state.files.download_version(owner, id, version).await?;
-    Ok(attachment(&node.name, &meta.mime, meta.size, file))
+    let (node, meta, file) = state
+        .files
+        .versions
+        .download_version(owner, id, version)
+        .await?;
+    let download = Download {
+        name: &node.name,
+        mime: Some(&meta.mime),
+        size: u64::try_from(meta.size).unwrap_or_default(),
+    };
+    ranged(&headers, download, file).await
 }
 
 async fn list_versions(
@@ -196,7 +198,7 @@ async fn list_versions(
     user: AuthUser,
     ApiPath(id): ApiPath<NodeId>,
 ) -> Result<Json<Vec<FileVersion>>, ApiError> {
-    let versions = state.files.versions(user.id, id).await?;
+    let versions = state.files.versions.versions(user.id, id).await?;
     Ok(Json(versions.into_iter().map(FileVersion::from).collect()))
 }
 
@@ -205,7 +207,11 @@ async fn delete_version(
     user: AuthUser,
     ApiPath((id, version)): ApiPath<(NodeId, i32)>,
 ) -> Result<StatusCode, ApiError> {
-    state.files.delete_version(user.id, id, version).await?;
+    state
+        .files
+        .versions
+        .delete_version(user.id, id, version)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -219,13 +225,8 @@ async fn update(
         name: request.name,
         parent_id: request.parent_id,
     };
-    let outcome = state
-        .files
-        .on_device(user.device_id)
-        .update(user.id, id, changes)
-        .await?;
-    let node = publish_moved(&state, user.id, outcome).await;
-    Ok(Json(node))
+    let outcome = state.files.nodes.update(user.actor(), id, changes).await?;
+    Ok(Json(outcome.node.into()))
 }
 
 async fn move_nodes(
@@ -235,38 +236,15 @@ async fn move_nodes(
 ) -> Result<Json<MoveResponse>, ApiError> {
     let batch = state
         .files
-        .on_device(user.device_id)
+        .nodes
         .move_nodes(
-            user.id,
+            user.actor(),
             &request.ids,
             request.parent_id,
             request.on_conflict,
         )
         .await?;
-    publish_changes(
-        &state,
-        user.id,
-        &batch.updated,
-        &batch.deleted,
-        batch.content_changed.clone(),
-    )
-    .await;
-    if batch.binned {
-        state.hub.publish(user.id, Event::TrashChanged);
-    }
     Ok(Json(move_response(batch)))
-}
-
-async fn publish_moved(state: &AppState, owner: db::UserId, outcome: MoveOutcome) -> Node {
-    publish_changes(
-        state,
-        owner,
-        &outcome.updated,
-        &outcome.deleted,
-        outcome.content_changed,
-    )
-    .await;
-    outcome.node.into()
 }
 
 async fn delete(
@@ -274,19 +252,6 @@ async fn delete(
     user: AuthUser,
     ApiPath(id): ApiPath<NodeId>,
 ) -> Result<StatusCode, ApiError> {
-    let node = state
-        .files
-        .on_device(user.device_id)
-        .delete(user.id, id)
-        .await?
-        .node;
-    state.hub.publish(
-        user.id,
-        Event::NodeDeleted {
-            id: node.id,
-            parent_id: node.parent_id,
-        },
-    );
-    state.hub.publish(user.id, Event::TrashChanged);
+    state.files.trash.delete(user.actor(), id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

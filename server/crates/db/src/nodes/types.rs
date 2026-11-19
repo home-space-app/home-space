@@ -1,6 +1,6 @@
 //! Values passed to and returned by the node queries.
 
-use crate::{Node, NodeId, NodeKind};
+use crate::{Node, NodeId, NodeKind, Patch};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -135,11 +135,10 @@ pub struct DeletedNodes {
     pub versions: Vec<Uuid>,
 }
 
-/// Changes to apply to a node; `None` leaves a field untouched.
-///
-/// `parent_id: Some(None)` moves the node to the root.
+/// Changes to apply to a node; `None` and [`Patch::Keep`] leave a field untouched.
 #[derive(Clone, Debug, Default)]
 pub struct NodeUpdate {
     pub name: Option<String>,
-    pub parent_id: Option<Option<NodeId>>,
+    /// [`Patch::Clear`] moves the node to the root.
+    pub parent_id: Patch<NodeId>,
 }
