@@ -1,14 +1,21 @@
-//! Request extractors: which tenant a request was sent to, who sent it, and from where.
+//! Request extractors: which tenant a request was sent to, who sent it, from where, and the
+//! body, query and path, each refused as a problem when it cannot be read or is not valid.
 
 mod admin_user;
 mod auth_user;
 mod client_ip;
+mod json;
+mod path;
+mod query;
 mod tenant;
 
 pub use admin_user::AdminUser;
 pub use auth_user::AuthUser;
 pub use client_ip::ClientIp;
+pub use json::ApiJson;
+pub use path::ApiPath;
 pub use protocol::TicketQuery;
+pub use query::ApiQuery;
 pub use tenant::Tenant;
 
 use axum::http::HeaderMap;

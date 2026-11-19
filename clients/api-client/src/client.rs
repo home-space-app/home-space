@@ -6,10 +6,10 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use protocol::{
     Capabilities, ChangesQuery, ChangesResponse, ClientMessage, CreateFolderRequest, DeviceInfo,
-    DeviceSessionRequest, ErrorBody, FileVersion, Health, ListQuery, LoginRequest, Me, MoveRequest,
-    MoveResponse, Node, NodeId, NodeProperties, OidcExchangeRequest, OnConflict, Providers,
-    RefreshRequest, RestoreRequest, SearchHit, SearchQuery, TicketRequest, TicketResponse,
-    TokenPair, TrashItem, UpdateRequest, paths,
+    DeviceSessionRequest, FileVersion, Health, ListQuery, LoginRequest, Me, MoveRequest,
+    MoveResponse, Node, NodeId, NodeProperties, OidcExchangeRequest, OnConflict, Problem,
+    Providers, RefreshRequest, RestoreRequest, SearchHit, SearchQuery, TicketRequest,
+    TicketResponse, TokenPair, TrashItem, UpdateRequest, paths,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use protocol::{ContentQuery, UploadQuery};
@@ -728,15 +728,21 @@ pub(crate) async fn expect_success(response: Response) -> Result<(), ApiError> {
 
 pub(crate) async fn error_from(response: Response) -> ApiError {
     let status = response.status();
-    match response.json::<ErrorBody>().await {
-        _ if status == StatusCode::UNAUTHORIZED => ApiError::Unauthorized,
-        Ok(body) => ApiError::Api {
-            code: body.error,
-            message: body.message,
-        },
-        Err(_) => ApiError::Status {
+    if status == StatusCode::UNAUTHORIZED {
+        return ApiError::Unauthorized;
+    }
+    // A server error is a problem with a code; any other body, such as a proxy's, is not.
+    if let Ok(problem) = response.json::<Problem>().await
+        && let Some(code) = problem.code()
+    {
+        ApiError::Api {
+            code,
+            message: problem.detail().to_owned(),
+        }
+    } else {
+        ApiError::Status {
             status: status.as_u16(),
             reason: status.canonical_reason().unwrap_or_default().to_owned(),
-        },
+        }
     }
 }

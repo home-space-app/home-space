@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use axum::{
     Router,
     extract::{
-        Query, State, WebSocketUpgrade,
+        State, WebSocketUpgrade,
         ws::{CloseFrame, Message, WebSocket, close_code},
     },
     http::HeaderMap,
@@ -28,6 +28,7 @@ use db::UserId;
 use notifications::{Event, Presence};
 use protocol::{ClientMessage, DeviceInfo, TicketRequest};
 
+use crate::extract::ApiQuery;
 use crate::{
     ApiError, AppState,
     browser::refuse_other_sites,
@@ -61,7 +62,7 @@ async fn upgrade(
     State(state): State<AppState>,
     tenant: Tenant,
     headers: HeaderMap,
-    Query(query): Query<TicketQuery>,
+    ApiQuery(query): ApiQuery<TicketQuery>,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
     // A page of another site must not open the user's events, however the socket signs in.

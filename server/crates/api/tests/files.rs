@@ -244,7 +244,7 @@ async fn invalid_names_are_rejected(pool: PgPool) {
     let app = setup(pool).await;
     let token = app.user_token("alice").await;
     let response = app.upload(&token, "name=..", "1").await;
-    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -277,7 +277,7 @@ async fn moving_a_folder_into_its_child_is_rejected(pool: PgPool) {
         )
         .await;
 
-    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[sqlx::test(migrations = "../../migrations")]

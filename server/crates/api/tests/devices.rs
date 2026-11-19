@@ -106,7 +106,7 @@ async fn a_device_can_be_renamed_but_not_to_a_blank_name(pool: PgPool) {
         .json(Method::PATCH, &uri, Some(&token), json!({ "name": "Work" }))
         .await;
 
-    assert_eq!(blank.status, StatusCode::BAD_REQUEST);
+    assert_eq!(blank.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(renamed.status, StatusCode::NO_CONTENT);
     assert_eq!(devices(&app, &token).await[0]["name"], "Work");
 }

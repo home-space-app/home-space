@@ -5,7 +5,7 @@ use std::{fmt, io};
 use axum::{
     Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, Path, Query, State},
+    extract::{DefaultBodyLimit, State},
     http::{
         HeaderMap, HeaderName, HeaderValue, StatusCode,
         header::{CACHE_CONTROL, CONTENT_LENGTH},
@@ -22,6 +22,7 @@ use protocol::{
     ChunkResult, CreateUpload, UploadInfo, UploadSession, UploadsQuery, paths::UPLOAD_OFFSET,
 };
 
+use crate::extract::{ApiJson, ApiPath, ApiQuery};
 use crate::{
     ApiError, AppState,
     extract::AuthUser,
@@ -70,7 +71,7 @@ fn session(status: UploadStatus, chunk_size: u64) -> UploadSession {
 async fn list(
     State(state): State<AppState>,
     user: AuthUser,
-    Query(query): Query<UploadsQuery>,
+    ApiQuery(query): ApiQuery<UploadsQuery>,
 ) -> Result<Json<Vec<UploadInfo>>, ApiError> {
     let uploads = match (query.this_device, user.device_id) {
         (false, _) => state.files.uploads(user.id, None).await?,
@@ -96,7 +97,7 @@ fn upload_info(upload: db::Upload) -> UploadInfo {
 async fn create(
     State(state): State<AppState>,
     user: AuthUser,
-    Json(request): Json<CreateUpload>,
+    ApiJson(request): ApiJson<CreateUpload>,
 ) -> Result<Response, ApiError> {
     let target = match (request.transfer_item_id, request.node_id) {
         (Some(item), _) => UploadTarget::TransferItem(item),
@@ -129,7 +130,7 @@ async fn create(
 async fn status(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<Uuid>,
+    ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Response, ApiError> {
     let status = state.files.upload_status(user.id, id).await?;
     let body = Json(session(status, state.files.chunk_bytes()));
@@ -152,7 +153,7 @@ async fn append(
     State(state): State<AppState>,
     user: AuthUser,
     headers: HeaderMap,
-    Path(id): Path<Uuid>,
+    ApiPath(id): ApiPath<Uuid>,
     body: Body,
 ) -> Result<Response, ApiError> {
     let offset = headers
@@ -229,7 +230,7 @@ async fn append(
 async fn cancel(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<Uuid>,
+    ApiPath(id): ApiPath<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     state.files.cancel_upload(user.id, id).await?;
     Ok(StatusCode::NO_CONTENT)

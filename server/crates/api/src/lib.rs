@@ -50,7 +50,9 @@ fn api(state: AppState) -> Router {
     Router::new()
         .nest(
             API_PREFIX,
-            routes::routes().fallback(|| async { ApiError::NotFound }),
+            routes::routes()
+                .fallback(|| async { ApiError::NotFound })
+                .method_not_allowed_fallback(|| async { ApiError::MethodNotAllowed }),
         )
         .with_state(state)
 }
@@ -59,6 +61,7 @@ fn api(state: AppState) -> Router {
 /// span. It comes last, because a layer only covers the routes that exist when it is added.
 fn finish(router: Router, web: WebPolicy) -> Router {
     router
+        .layer(from_fn(error::with_instance))
         .layer(from_fn(move |request: Request, next: Next| {
             headers::secure(web.clone(), request, next)
         }))

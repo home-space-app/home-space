@@ -2,7 +2,7 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
+    extract::State,
     http::{HeaderMap, StatusCode},
     response::Response,
     routing::{get, post},
@@ -16,6 +16,7 @@ use protocol::{
     SaveTransfer, TicketRequest, Transfer, TransferState, TransferSummary,
 };
 
+use crate::extract::{ApiJson, ApiPath, ApiQuery};
 use crate::{
     ApiError, AppState,
     extract::{AuthUser, Tenant, TicketQuery},
@@ -53,7 +54,7 @@ fn publish_finished(state: &AppState, transfer: &db::Transfer) {
 async fn create(
     State(state): State<AppState>,
     user: AuthUser,
-    Json(request): Json<CreateTransfer>,
+    ApiJson(request): ApiJson<CreateTransfer>,
 ) -> Result<(StatusCode, Json<CreatedTransfer>), ApiError> {
     let (transfer, items) = state
         .files
@@ -81,7 +82,7 @@ async fn create(
 async fn incoming(
     State(state): State<AppState>,
     user: AuthUser,
-    Query(query): Query<IncomingQuery>,
+    ApiQuery(query): ApiQuery<IncomingQuery>,
 ) -> Result<Json<Vec<TransferSummary>>, ApiError> {
     let scope = match (query.this_device, user.device_id) {
         (false, device) => Some(IncomingScope::AllExceptFrom(device)),
@@ -109,7 +110,7 @@ async fn outgoing(
 async fn get_transfer(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<Uuid>,
+    ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<Transfer>, ApiError> {
     let (transfer, items) = state.files.transfer(user.id, id).await?;
     Ok(Json(Transfer {
@@ -121,7 +122,7 @@ async fn get_transfer(
 async fn cancel(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<Uuid>,
+    ApiPath(id): ApiPath<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     let transfer = state.files.cancel_transfer(user.id, id).await?;
     publish_finished(&state, &transfer);
@@ -131,7 +132,7 @@ async fn cancel(
 async fn decline(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<Uuid>,
+    ApiPath(id): ApiPath<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     let transfer = state.files.decline_transfer(user.id, id).await?;
     publish_finished(&state, &transfer);
@@ -141,7 +142,7 @@ async fn decline(
 async fn received(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<Uuid>,
+    ApiPath(id): ApiPath<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     let transfer = state.files.confirm_transfer(user.id, id).await?;
     publish_finished(&state, &transfer);
@@ -152,7 +153,7 @@ async fn received(
 async fn save(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<Uuid>,
+    ApiPath(id): ApiPath<Uuid>,
     body: Option<Json<SaveTransfer>>,
 ) -> Result<Json<Vec<Node>>, ApiError> {
     let parent = body.and_then(|Json(body)| body.parent_id);
@@ -172,8 +173,8 @@ async fn content(
     State(state): State<AppState>,
     tenant: Tenant,
     headers: HeaderMap,
-    Query(query): Query<TicketQuery>,
-    Path((id, item_id)): Path<(Uuid, Uuid)>,
+    ApiQuery(query): ApiQuery<TicketQuery>,
+    ApiPath((id, item_id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Response, ApiError> {
     let caller = tenant
         .caller(
@@ -200,8 +201,8 @@ async fn archive(
     State(state): State<AppState>,
     tenant: Tenant,
     headers: HeaderMap,
-    Query(query): Query<TicketQuery>,
-    Path(id): Path<Uuid>,
+    ApiQuery(query): ApiQuery<TicketQuery>,
+    ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Response, ApiError> {
     let caller = tenant
         .caller(

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-/// Machine-readable error category.
+/// Coarse machine-readable category of an error, sent as a problem's `code`. Clients that
+/// need the exact failure use the problem's `type` ([`ProblemType`](crate::ProblemType)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
@@ -20,13 +21,6 @@ pub enum ErrorCode {
     /// such as emptying the recycle bin, or a larger quota lets it through.
     QuotaExceeded,
     Internal,
-}
-
-/// Body of every error response.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ErrorBody {
-    pub error: ErrorCode,
-    pub message: String,
 }
 
 #[cfg(test)]

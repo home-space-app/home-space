@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
+    extract::State,
     http::{HeaderMap, StatusCode},
     response::Response,
     routing::{get, patch, post},
@@ -19,6 +19,7 @@ use protocol::{
     SharedFolderQuery, SharedNode, SharesQuery, UnlockShare, UpdateShare, paths::SHARE_ACCESS,
 };
 
+use crate::extract::{ApiJson, ApiPath, ApiQuery};
 use crate::{
     ApiError, AppState,
     extract::{AuthUser, ClientIp, Tenant},
@@ -29,10 +30,6 @@ use crate::{
     },
 };
 
-/// The most items one share may hold.
-const MAX_SHARE_ITEMS: usize = 1000;
-/// The most users one share may be for.
-const MAX_RECIPIENTS: usize = 100;
 /// No token is longer; anything longer is refused before the database is asked.
 const MAX_TOKEN_LEN: usize = 128;
 
@@ -56,30 +53,16 @@ fn unique<T: Copy + Eq + std::hash::Hash>(ids: &[T]) -> Vec<T> {
     ids.iter().copied().filter(|id| seen.insert(*id)).collect()
 }
 
-/// `recipients` without repeats; refuses none, too many, or the owner.
+/// `recipients` without repeats; refuses the owner. Their number was checked with the request.
 fn check_recipients(owner: UserId, recipients: &[UserId]) -> Result<Vec<UserId>, ApiError> {
     let recipients = unique(recipients);
-    if recipients.is_empty() || recipients.len() > MAX_RECIPIENTS {
-        Err(ApiError::BadRequest(format!(
-            "a share is for 1 to {MAX_RECIPIENTS} users"
-        )))
-    } else if recipients.contains(&owner) {
-        Err(ApiError::BadRequest(
-            "a share cannot be for its owner".to_owned(),
+    if recipients.contains(&owner) {
+        Err(ApiError::invalid(
+            "/recipients",
+            "a share cannot be for its owner",
         ))
     } else {
         Ok(recipients)
-    }
-}
-
-/// Refuses an expiry that has already passed.
-fn check_expiry(expires_at: Option<OffsetDateTime>) -> Result<(), ApiError> {
-    if expires_at.is_some_and(|expires_at| expires_at <= OffsetDateTime::now_utc()) {
-        Err(ApiError::BadRequest(
-            "the expiry must be in the future".to_owned(),
-        ))
-    } else {
-        Ok(())
     }
 }
 
@@ -112,23 +95,12 @@ async fn create(
     State(state): State<AppState>,
     tenant: Tenant,
     user: AuthUser,
-    Json(request): Json<CreateShare>,
+    ApiJson(request): ApiJson<CreateShare>,
 ) -> Result<(StatusCode, Json<Share>), ApiError> {
     let node_ids = unique(&request.node_ids);
-    if node_ids.is_empty() || node_ids.len() > MAX_SHARE_ITEMS {
-        return Err(ApiError::BadRequest(format!(
-            "a share holds 1 to {MAX_SHARE_ITEMS} items"
-        )));
-    }
-    check_expiry(request.expires_at)?;
     let share = if request.recipients.is_empty() {
         create_link(&state, &tenant, user.id, &request, &node_ids).await?
     } else {
-        if request.password.is_some() {
-            return Err(ApiError::BadRequest(
-                "a share with users has no password".to_owned(),
-            ));
-        }
         let recipients = check_recipients(user.id, &request.recipients)?;
         let new = NewUserShare {
             id: Uuid::now_v7(),
@@ -168,7 +140,7 @@ async fn create_link(
 async fn list(
     State(state): State<AppState>,
     user: AuthUser,
-    Query(query): Query<SharesQuery>,
+    ApiQuery(query): ApiQuery<SharesQuery>,
 ) -> Result<Json<Vec<Share>>, ApiError> {
     let shares = state.db.owned_shares(user.id, query.node_id).await?;
     Ok(Json(owner_views(&state, shares).await?))
@@ -178,20 +150,21 @@ async fn update(
     State(state): State<AppState>,
     tenant: Tenant,
     user: AuthUser,
-    Path(id): Path<Uuid>,
-    Json(request): Json<UpdateShare>,
+    ApiPath(id): ApiPath<Uuid>,
+    ApiJson(request): ApiJson<UpdateShare>,
 ) -> Result<Json<Share>, ApiError> {
-    check_expiry(request.expires_at.flatten())?;
     let current = state.db.owned_share(user.id, id).await?;
     let is_link = current.token.is_some();
     if is_link && request.recipients.is_some() {
-        return Err(ApiError::BadRequest(
-            "a link is not for named users".to_owned(),
+        return Err(ApiError::invalid(
+            "/recipients",
+            "a link is not for named users",
         ));
     }
     if !is_link && request.password.is_some() {
-        return Err(ApiError::BadRequest(
-            "a share with users has no password".to_owned(),
+        return Err(ApiError::invalid(
+            "/password",
+            "a share with users has no password",
         ));
     }
     let recipients = request
@@ -216,7 +189,7 @@ async fn update(
 async fn remove(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<Uuid>,
+    ApiPath(id): ApiPath<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     state.db.delete_share(user.id, id).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -276,8 +249,8 @@ async fn public_share(
     State(state): State<AppState>,
     tenant: Tenant,
     headers: HeaderMap,
-    Path(token): Path<String>,
-    Query(query): Query<ShareAccessQuery>,
+    ApiPath(token): ApiPath<String>,
+    ApiQuery(query): ApiQuery<ShareAccessQuery>,
 ) -> Result<Json<PublicShare>, ApiError> {
     let share = resolve(&state, &tenant, &token).await?;
     let unlocked = is_unlocked(&tenant, &share, &headers, &query);
@@ -307,8 +280,8 @@ async fn unlock(
     State(state): State<AppState>,
     tenant: Tenant,
     ClientIp(address): ClientIp,
-    Path(token): Path<String>,
-    Json(request): Json<UnlockShare>,
+    ApiPath(token): ApiPath<String>,
+    ApiJson(request): ApiJson<UnlockShare>,
 ) -> Result<Json<ShareAccess>, ApiError> {
     let share = resolve(&state, &tenant, &token).await?;
     let access = tenant
@@ -322,9 +295,9 @@ async fn public_nodes(
     State(state): State<AppState>,
     tenant: Tenant,
     headers: HeaderMap,
-    Path(token): Path<String>,
-    Query(access): Query<ShareAccessQuery>,
-    Query(folder): Query<SharedFolderQuery>,
+    ApiPath(token): ApiPath<String>,
+    ApiQuery(access): ApiQuery<ShareAccessQuery>,
+    ApiQuery(folder): ApiQuery<SharedFolderQuery>,
 ) -> Result<Json<Vec<SharedNode>>, ApiError> {
     let share = readable(&state, &tenant, &token, &headers, &access).await?;
     let children = state
@@ -338,8 +311,8 @@ async fn public_content(
     State(state): State<AppState>,
     tenant: Tenant,
     headers: HeaderMap,
-    Path((token, id)): Path<(String, NodeId)>,
-    Query(access): Query<ShareAccessQuery>,
+    ApiPath((token, id)): ApiPath<(String, NodeId)>,
+    ApiQuery(access): ApiQuery<ShareAccessQuery>,
 ) -> Result<Response, ApiError> {
     let share = readable(&state, &tenant, &token, &headers, &access).await?;
     let node = state.db.shared_node(share.root(), id).await?;
@@ -360,9 +333,9 @@ async fn public_archive(
     State(state): State<AppState>,
     tenant: Tenant,
     headers: HeaderMap,
-    Path(token): Path<String>,
-    Query(access): Query<ShareAccessQuery>,
-    Query(archive): Query<ShareArchiveQuery>,
+    ApiPath(token): ApiPath<String>,
+    ApiQuery(access): ApiQuery<ShareAccessQuery>,
+    ApiQuery(archive): ApiQuery<ShareArchiveQuery>,
 ) -> Result<Response, ApiError> {
     let share = readable(&state, &tenant, &token, &headers, &access).await?;
     let entries = state

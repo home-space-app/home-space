@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::State,
     http::StatusCode,
     routing::{delete, get, post},
 };
@@ -9,6 +9,7 @@ use db::{MoveBatch, UserId};
 use notifications::Event;
 use protocol::{MoveResponse, Node, NodeId, NodeKind, RestoreRequest, TrashItem};
 
+use crate::extract::{ApiJson, ApiPath};
 use crate::{
     ApiError, AppState,
     extract::AuthUser,
@@ -45,7 +46,7 @@ async fn list(
 async fn restore(
     State(state): State<AppState>,
     user: AuthUser,
-    Json(request): Json<RestoreRequest>,
+    ApiJson(request): ApiJson<RestoreRequest>,
 ) -> Result<Json<MoveResponse>, ApiError> {
     let mut batch = state
         .files
@@ -111,7 +112,7 @@ async fn empty(State(state): State<AppState>, user: AuthUser) -> Result<StatusCo
 async fn purge(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<NodeId>,
+    ApiPath(id): ApiPath<NodeId>,
 ) -> Result<StatusCode, ApiError> {
     state
         .files

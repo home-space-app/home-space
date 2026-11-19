@@ -1,6 +1,7 @@
 # Server clean-up and refactoring
 
-**Status (2026-11-19):** phases 1–2 done (guardrails and mechanical splits), phases 3–5 open.
+**Status (2026-11-19):** phases 1–3 done (guardrails, mechanical splits, API contract), phases 4–5
+open. F5 waits for its second release, which drops the old `error`/`message` members.
 Scope is `server/crates/*` and the error types in `shared/protocol`. The server is ~30.6k lines of
 Rust, about half of it tests.
 
@@ -25,6 +26,12 @@ Line counts are production lines (everything before `#[cfg(test)]`) / whole file
 | D2 | `api/src/support/{archive,body,convert,disk,download,publish}.rs`. Route modules no longer import each other. `publish_transfer_expired` reuses the transfer publisher. |
 | D4 (partly) | Conversions and clamping live in `support/convert.rs`. The device list still builds `Device` inline, because it needs the hub's online state. |
 | K6 | `request_host` and `forwarded_for` share `last_header` and `last_entry`, with new unit tests for the host. |
+| F1 | Every error is `application/problem+json` (`protocol::Problem`): `type`, `title`, `status`, `detail`, `instance` (filled in by the `error::with_instance` middleware), `code`, and the extension members `retry_after`, `limit`, `quota`/`available`, `current_offset` and `errors`. Types and statuses are listed in [`docs/api-errors.md`](../api-errors.md). |
+| F2 | `ApiJson`, `ApiQuery` and `ApiPath` (`api/src/extract/{json,query,path}.rs`) turn axum's rejections into problems: 400 when the input cannot be read, 415 for a wrong media type, 413 for a body too large. The API router answers unknown paths and wrong methods (405, with `Allow`) as problems. A 416 is a problem with `Content-Range`. |
+| F3 | `protocol::Validate` on every JSON body and query, checked by `ApiJson`/`ApiQuery`. Failures are one 422 `validation-failed` with every field at fault in `errors[]` (JSON Pointers). The rules live in `protocol::rules` and the services use the same functions (usernames, passwords, device names). Node names are checked before the database `CHECK`, which stays as the last line of defence; a NUL in a name is now a 422, not a 500. The share limits moved out of the routes. Rules that need stored state (a share for its owner, link vs. user share) stay in the routes as `ApiError::invalid(pointer, detail)` until S1. |
+| F4 | 37 problem types in `protocol::ProblemType`, one row each (status, slug, code, title). Status changes: input that parses but is not acceptable is 422 (was 400); enabling an account marked for deletion is 409 `marked-for-deletion` (was 400); `AuthError::Oidc` is 502 `identity-provider-failed` (was 500); `OidcDenied` is 403 (was 500); `too-many-connections` sends `Retry-After: 30`. The `conflict`s are told apart by type (`name-taken`, `lost-and-found`, `offset-mismatch`, `transfer-not-ready`). A protocol test checks `docs/api-errors.md` against the table. |
+| F5 (first release) | The server sends `error` and `message` next to `code` and `detail`. `api-client` and the web upload read `Problem` through `code()` and `detail()`, which also read an old server's body. `ErrorCode` is unchanged, so clients branching on it behave as before. |
+| D5 | `protocol::AsProblem` (`problem_type`, `extend`) is implemented by `AuthError`, `FilesError` and `SearchError` in their own crates with exhaustive matches, and by `ApiError`, which only delegates. A new variant does not compile until it names a problem type. |
 
 New findings from G1:
 
@@ -146,8 +153,8 @@ scenario group.
 1. ~~**Guardrails:** G1, G2.~~ Done.
 2. ~~**Mechanical, no behaviour change:** L5 test move, T1–T8, D1, D2, D4, L10, L11, K6.~~ Done. T9 waits
    for K2. K7 and K8 are new and can go with phase 4.
-3. **API contract:** F1, F2, F4, F5, then F3 with D5. These change the wire format, so they need the
-   client updates in the same release.
+3. ~~**API contract:** F1, F2, F4, F5, then F3 with D5.~~ Done. Still open: the second F5 release,
+   which removes `error` and `message` from `Problem` once the clients in use read `code`/`detail`.
 4. **Services:** S1, S4 (shares, devices, admin), S2 (domain events), then S6 with K1 (auth) and S5 (files).
    Then D7, D3 and K2, K4, K5.
 5. **Domain/DB boundary:** S3 with K3, then D6 as preparation for `object-storage.md`.

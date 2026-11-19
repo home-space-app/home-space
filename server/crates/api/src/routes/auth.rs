@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    extract::State,
     http::{
         HeaderMap, StatusCode,
         header::{CACHE_CONTROL, REFERRER_POLICY, SET_COOKIE},
@@ -14,6 +14,7 @@ use protocol::{
     TokenPair,
 };
 
+use crate::extract::{ApiJson, ApiQuery};
 use crate::{
     ApiError, AppState,
     browser::{Browser, refresh_cookie},
@@ -42,7 +43,7 @@ async fn providers(tenant: Tenant) -> Json<Providers> {
 /// Sends the browser to the identity provider.
 async fn oidc_start(
     tenant: Tenant,
-    Query(query): Query<OidcStartQuery>,
+    ApiQuery(query): ApiQuery<OidcStartQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let url = tenant
         .auth
@@ -54,7 +55,7 @@ async fn oidc_start(
 /// Where the identity provider sends the browser back; hands the user on to the client.
 async fn oidc_callback(
     tenant: Tenant,
-    Query(query): Query<OidcCallbackQuery>,
+    ApiQuery(query): ApiQuery<OidcCallbackQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let code = query.code.as_deref().filter(|code| !code.is_empty());
     let url = tenant
@@ -77,7 +78,7 @@ async fn oidc_callback(
 async fn oidc_exchange(
     tenant: Tenant,
     headers: HeaderMap,
-    Json(request): Json<OidcExchangeRequest>,
+    ApiJson(request): ApiJson<OidcExchangeRequest>,
 ) -> Result<Response, ApiError> {
     let browser = browser(request.cookie, &headers, &tenant)?;
     let pair = tenant
@@ -95,7 +96,7 @@ async fn login(
     tenant: Tenant,
     ClientIp(address): ClientIp,
     headers: HeaderMap,
-    Json(request): Json<LoginRequest>,
+    ApiJson(request): ApiJson<LoginRequest>,
 ) -> Result<Response, ApiError> {
     let browser = browser(request.cookie, &headers, &tenant)?;
     let pair = tenant
@@ -115,7 +116,7 @@ async fn login(
 async fn refresh(
     tenant: Tenant,
     headers: HeaderMap,
-    Json(request): Json<RefreshRequest>,
+    ApiJson(request): ApiJson<RefreshRequest>,
 ) -> Result<Response, ApiError> {
     let from_cookie = request.refresh_token.is_none();
     let browser = browser(request.cookie || from_cookie, &headers, &tenant)?;
@@ -141,7 +142,7 @@ async fn refresh(
 async fn logout(
     tenant: Tenant,
     headers: HeaderMap,
-    Json(request): Json<RefreshRequest>,
+    ApiJson(request): ApiJson<RefreshRequest>,
 ) -> Result<Response, ApiError> {
     let from_cookie = request.refresh_token.is_none();
     let browser = browser(request.cookie || from_cookie, &headers, &tenant)?;
@@ -163,7 +164,7 @@ async fn logout(
 async fn device_session(
     tenant: Tenant,
     user: AuthUser,
-    Json(request): Json<DeviceSessionRequest>,
+    ApiJson(request): ApiJson<DeviceSessionRequest>,
 ) -> Result<Json<TokenPair>, ApiError> {
     let pair = tenant
         .auth
@@ -219,7 +220,7 @@ async fn me(State(state): State<AppState>, user: AuthUser) -> Result<Json<Me>, A
 async fn change_password(
     tenant: Tenant,
     user: AuthUser,
-    Json(request): Json<ChangePasswordRequest>,
+    ApiJson(request): ApiJson<ChangePasswordRequest>,
 ) -> Result<StatusCode, ApiError> {
     tenant
         .auth
@@ -237,7 +238,7 @@ async fn ticket(
     State(state): State<AppState>,
     tenant: Tenant,
     user: AuthUser,
-    Json(request): Json<TicketRequest>,
+    ApiJson(request): ApiJson<TicketRequest>,
 ) -> Result<Json<TicketResponse>, ApiError> {
     match request {
         TicketRequest::Download { node_id } | TicketRequest::DownloadVersion { node_id, .. } => {

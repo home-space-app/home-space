@@ -707,7 +707,7 @@ async fn moving_validates_the_target_and_ownership(pool: PgPool) {
     let file = upload(&app, &alice, &dir, "a.txt", "x").await;
 
     let cycle = move_nodes(&app, &alice, &[&dir], Some(&inner), None).await;
-    assert_eq!(cycle.status, StatusCode::BAD_REQUEST);
+    assert_eq!(cycle.status, StatusCode::UNPROCESSABLE_ENTITY);
     let foreign = move_nodes(&app, &bob, &[&file], None, None).await;
     assert_eq!(foreign.status, StatusCode::NOT_FOUND);
     let not_a_folder = move_nodes(&app, &alice, &[&inner], Some(&file), None).await;

@@ -273,7 +273,7 @@ async fn a_device_cannot_be_shown_to_its_owner_or_by_someone_else(pool: PgPool) 
     let to_self = json!({ "visibility": "users", "users": [alice] });
     assert_eq!(
         set_visibility(&app, &u.alice, u.alice_laptop, to_self).await,
-        StatusCode::BAD_REQUEST
+        StatusCode::UNPROCESSABLE_ENTITY
     );
     let everyone = json!({ "visibility": "everyone" });
     assert_eq!(
@@ -798,7 +798,7 @@ async fn an_upload_must_match_its_item(pool: PgPool) {
         )
         .await;
 
-    assert_eq!(wrong_size.status, StatusCode::BAD_REQUEST);
+    assert_eq!(wrong_size.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(by_someone_else.status, StatusCode::NOT_FOUND);
 }
 
@@ -817,7 +817,7 @@ async fn a_manifest_with_bad_paths_is_rejected(pool: PgPool) {
         json!([file("a"), file("a")]),
     ] {
         let response = send(&app, &u.alice, "alice", u.alice_phone, items.clone()).await;
-        assert_eq!(response.status, StatusCode::BAD_REQUEST, "{items}");
+        assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY, "{items}");
     }
     assert!(
         std::fs::read_dir(transfers_dir(&app))

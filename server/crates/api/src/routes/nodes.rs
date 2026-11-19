@@ -1,7 +1,7 @@
 use axum::{
     Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, Path, Query, State},
+    extract::{DefaultBodyLimit, State},
     http::{HeaderMap, StatusCode},
     response::Response,
     routing::{get, post, put},
@@ -14,6 +14,7 @@ use protocol::{
     NodeId, NodeProperties, TicketRequest, UpdateRequest, UploadQuery,
 };
 
+use crate::extract::{ApiJson, ApiPath, ApiQuery};
 use crate::{
     ApiError, AppState,
     extract::{AuthUser, Tenant, TicketQuery},
@@ -54,7 +55,7 @@ pub fn routes() -> Router<AppState> {
 async fn list(
     State(state): State<AppState>,
     user: AuthUser,
-    Query(query): Query<ListQuery>,
+    ApiQuery(query): ApiQuery<ListQuery>,
 ) -> Result<Json<Vec<Node>>, ApiError> {
     let nodes = state.files.list(user.id, query.parent_id).await?;
     Ok(Json(nodes.into_iter().map(Node::from).collect()))
@@ -63,7 +64,7 @@ async fn list(
 async fn get_node(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<NodeId>,
+    ApiPath(id): ApiPath<NodeId>,
 ) -> Result<Json<Node>, ApiError> {
     Ok(Json(state.files.get(user.id, id).await?.into()))
 }
@@ -71,7 +72,7 @@ async fn get_node(
 async fn ancestors(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<NodeId>,
+    ApiPath(id): ApiPath<NodeId>,
 ) -> Result<Json<Vec<Node>>, ApiError> {
     let nodes = state.files.ancestors(user.id, id).await?;
     Ok(Json(nodes.into_iter().map(Node::from).collect()))
@@ -80,7 +81,7 @@ async fn ancestors(
 async fn properties(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<NodeId>,
+    ApiPath(id): ApiPath<NodeId>,
 ) -> Result<Json<NodeProperties>, ApiError> {
     let properties = state.files.properties(user.id, id).await?;
     Ok(Json(NodeProperties {
@@ -91,7 +92,7 @@ async fn properties(
 async fn create_folder(
     State(state): State<AppState>,
     user: AuthUser,
-    Json(request): Json<CreateFolderRequest>,
+    ApiJson(request): ApiJson<CreateFolderRequest>,
 ) -> Result<(StatusCode, Json<Node>), ApiError> {
     let node = state
         .files
@@ -110,7 +111,7 @@ async fn upload(
     State(state): State<AppState>,
     user: AuthUser,
     headers: HeaderMap,
-    Query(query): Query<UploadQuery>,
+    ApiQuery(query): ApiQuery<UploadQuery>,
     body: Body,
 ) -> Result<(StatusCode, Json<Node>), ApiError> {
     let outcome = state
@@ -132,8 +133,8 @@ async fn replace_content(
     State(state): State<AppState>,
     user: AuthUser,
     headers: HeaderMap,
-    Path(id): Path<NodeId>,
-    Query(query): Query<ContentQuery>,
+    ApiPath(id): ApiPath<NodeId>,
+    ApiQuery(query): ApiQuery<ContentQuery>,
     body: Body,
 ) -> Result<Json<Node>, ApiError> {
     let outcome = state
@@ -155,8 +156,8 @@ async fn download(
     State(state): State<AppState>,
     tenant: Tenant,
     headers: HeaderMap,
-    Query(query): Query<TicketQuery>,
-    Path(id): Path<NodeId>,
+    ApiQuery(query): ApiQuery<TicketQuery>,
+    ApiPath(id): ApiPath<NodeId>,
 ) -> Result<Response, ApiError> {
     let owner = tenant
         .caller(
@@ -173,8 +174,8 @@ async fn download_version(
     State(state): State<AppState>,
     tenant: Tenant,
     headers: HeaderMap,
-    Query(query): Query<TicketQuery>,
-    Path((id, version)): Path<(NodeId, i32)>,
+    ApiQuery(query): ApiQuery<TicketQuery>,
+    ApiPath((id, version)): ApiPath<(NodeId, i32)>,
 ) -> Result<Response, ApiError> {
     let owner = tenant
         .caller(
@@ -193,7 +194,7 @@ async fn download_version(
 async fn list_versions(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<NodeId>,
+    ApiPath(id): ApiPath<NodeId>,
 ) -> Result<Json<Vec<FileVersion>>, ApiError> {
     let versions = state.files.versions(user.id, id).await?;
     Ok(Json(versions.into_iter().map(FileVersion::from).collect()))
@@ -202,7 +203,7 @@ async fn list_versions(
 async fn delete_version(
     State(state): State<AppState>,
     user: AuthUser,
-    Path((id, version)): Path<(NodeId, i32)>,
+    ApiPath((id, version)): ApiPath<(NodeId, i32)>,
 ) -> Result<StatusCode, ApiError> {
     state.files.delete_version(user.id, id, version).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -211,8 +212,8 @@ async fn delete_version(
 async fn update(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<NodeId>,
-    Json(request): Json<UpdateRequest>,
+    ApiPath(id): ApiPath<NodeId>,
+    ApiJson(request): ApiJson<UpdateRequest>,
 ) -> Result<Json<Node>, ApiError> {
     let changes = NodeUpdate {
         name: request.name,
@@ -230,7 +231,7 @@ async fn update(
 async fn move_nodes(
     State(state): State<AppState>,
     user: AuthUser,
-    Json(request): Json<MoveRequest>,
+    ApiJson(request): ApiJson<MoveRequest>,
 ) -> Result<Json<MoveResponse>, ApiError> {
     let batch = state
         .files
@@ -271,7 +272,7 @@ async fn publish_moved(state: &AppState, owner: db::UserId, outcome: MoveOutcome
 async fn delete(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<NodeId>,
+    ApiPath(id): ApiPath<NodeId>,
 ) -> Result<StatusCode, ApiError> {
     let node = state
         .files

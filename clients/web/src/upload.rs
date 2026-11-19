@@ -7,7 +7,7 @@ use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use web_sys::{Blob, File, FilePropertyBag, ProgressEvent, XmlHttpRequest};
 
 use api_client::{ApiError, Client};
-use protocol::{ChunkResult, CreateUpload, ErrorBody, ErrorCode, Node, NodeId, paths};
+use protocol::{ChunkResult, CreateUpload, ErrorCode, Node, NodeId, Problem, paths};
 
 use crate::session::storage;
 
@@ -302,21 +302,23 @@ fn decode<T: DeserializeOwned>(outcome: &Outcome) -> Result<T, ApiError> {
 
 fn failure(outcome: &Outcome) -> ApiError {
     if outcome.status == STATUS_UNAUTHORIZED {
-        ApiError::Unauthorized
+        return ApiError::Unauthorized;
+    }
+    // A server error is a problem with a code; any other body, such as a proxy's, is not.
+    if let Ok(problem) = serde_json::from_str::<Problem>(&outcome.body)
+        && let Some(code) = problem.code()
+    {
+        ApiError::Api {
+            code,
+            message: problem.detail().to_owned(),
+        }
+    } else if outcome.status == 0 {
+        // Status 0 is a request that got no response at all.
+        ApiError::Transport("the upload got no response".to_owned())
     } else {
-        match serde_json::from_str::<ErrorBody>(&outcome.body) {
-            Ok(body) => ApiError::Api {
-                code: body.error,
-                message: body.message,
-            },
-            // Status 0 is a request that got no response at all.
-            Err(_) if outcome.status == 0 => {
-                ApiError::Transport("the upload got no response".to_owned())
-            }
-            Err(_) => ApiError::Status {
-                status: outcome.status,
-                reason: String::new(),
-            },
+        ApiError::Status {
+            status: outcome.status,
+            reason: String::new(),
         }
     }
 }

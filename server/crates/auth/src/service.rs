@@ -26,7 +26,7 @@ use crate::{
     },
 };
 
-const MAX_USERNAME_LEN: usize = 64;
+use protocol::rules::{MAX_USERNAME_LEN, device_name};
 /// Leading bits of an IPv6 address that name a network; one subscriber usually owns them all.
 const IPV6_NETWORK_BITS: u32 = 64;
 /// The longest password, in bytes. Hashing takes time in proportion to the length, and
@@ -48,7 +48,6 @@ const OIDC_CODE_TTL: Duration = Duration::seconds(60);
 const OIDC_TOKEN_BYTES: usize = 32;
 const USERNAME_ATTEMPTS: u32 = 20;
 const FALLBACK_USERNAME: &str = "user";
-const MAX_DEVICE_NAME_CHARS: usize = 100;
 const MAX_PLATFORM_CHARS: usize = 32;
 /// Wrong passwords a username may get before attempts for it have to wait.
 const FREE_LOGIN_FAILURES: u32 = 3;
@@ -197,8 +196,8 @@ impl AuthService {
 
     /// Creates a user after validating username and password.
     pub async fn create_user(&self, username: &str, password: &str) -> Result<User, AuthError> {
-        if username.is_empty() || username.len() > MAX_USERNAME_LEN {
-            Err(AuthError::InvalidInput("username must be 1-64 characters"))
+        if let Some(problem) = protocol::rules::username_problem(username) {
+            Err(AuthError::InvalidInput(problem))
         } else {
             password::check_new(password)?;
             let hashed = self.hash_blocking(password).await?;
@@ -1085,14 +1084,6 @@ fn new_device(device: &DeviceInfo) -> Result<NewDevice<'_>, AuthError> {
             platform,
         })
     }
-}
-
-/// `name` as a device name, or `None` when it is blank or too long.
-pub fn device_name(name: &str) -> Option<&str> {
-    let name = name.trim();
-    (1..=MAX_DEVICE_NAME_CHARS)
-        .contains(&name.chars().count())
-        .then_some(name)
 }
 
 fn random_token() -> String {

@@ -127,7 +127,7 @@ async fn a_link_needs_at_least_one_item(pool: PgPool) {
 
     let response = share(&app, &alice, json!({ "node_ids": [] })).await;
 
-    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -156,7 +156,7 @@ async fn an_expiry_in_the_past_is_refused(pool: PgPool) {
     )
     .await;
 
-    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -881,7 +881,7 @@ async fn a_share_with_users_takes_no_password(pool: PgPool) {
     )
     .await;
 
-    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -898,7 +898,7 @@ async fn a_share_is_not_for_its_owner(pool: PgPool) {
     )
     .await;
 
-    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -968,7 +968,7 @@ async fn a_link_is_not_given_recipients(pool: PgPool) {
         )
         .await;
 
-    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[sqlx::test(migrations = "../../migrations")]
