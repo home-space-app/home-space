@@ -11,7 +11,7 @@ use axum::{
             ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, RANGE,
         },
     },
-    response::{IntoResponse, Response},
+    response::Response,
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
@@ -40,13 +40,7 @@ pub(crate) async fn ranged(
     let range = match request.get(RANGE).and_then(|value| value.to_str().ok()) {
         Some(value) => match parse_range(value, size) {
             Some(range) => Some(range),
-            None => {
-                let mut response = StatusCode::RANGE_NOT_SATISFIABLE.into_response();
-                if let Ok(value) = HeaderValue::from_str(&format!("{BYTES} */{size}")) {
-                    response.headers_mut().insert(CONTENT_RANGE, value);
-                }
-                return Ok(response);
-            }
+            None => return Err(ApiError::RangeNotSatisfiable { size }),
         },
         None => None,
     };

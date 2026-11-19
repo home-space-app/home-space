@@ -3,7 +3,7 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::State,
     http::StatusCode,
     routing::{delete, get, put},
 };
@@ -16,6 +16,7 @@ use protocol::{
     UpdateAccount, UserStorage,
 };
 
+use crate::extract::{ApiJson, ApiPath};
 use crate::{
     ApiError, AppState,
     extract::{AdminUser, Tenant},
@@ -26,7 +27,6 @@ use crate::{
 };
 
 const NOT_YOURSELF: &str = "administrators cannot disable, delete or demote themselves";
-const NO_PASSWORD: &str = "this account signs in through single sign-on and has no password";
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -46,9 +46,7 @@ pub fn routes() -> Router<AppState> {
 /// `set_disabled` refuses to enable an account that is marked for deletion.
 fn marked_for_deletion(err: DbError) -> ApiError {
     match err {
-        DbError::Conflict => ApiError::BadRequest(
-            "The account is marked for deletion; cancel the deletion to enable it.".to_owned(),
-        ),
+        DbError::Conflict => ApiError::MarkedForDeletion,
         other => other.into(),
     }
 }
@@ -65,7 +63,7 @@ async fn list_accounts(
 async fn get_account(
     State(state): State<AppState>,
     _admin: AdminUser,
-    Path(id): Path<UserId>,
+    ApiPath(id): ApiPath<UserId>,
 ) -> Result<Json<Account>, ApiError> {
     Ok(Json(account(state.db.account(id).await?)))
 }
@@ -75,7 +73,7 @@ async fn create_account(
     State(state): State<AppState>,
     tenant: Tenant,
     _admin: AdminUser,
-    Json(request): Json<CreateAccount>,
+    ApiJson(request): ApiJson<CreateAccount>,
 ) -> Result<(StatusCode, Json<Account>), ApiError> {
     let user = tenant
         .auth
@@ -99,11 +97,14 @@ async fn update_account(
     State(state): State<AppState>,
     tenant: Tenant,
     admin: AdminUser,
-    Path(id): Path<UserId>,
-    Json(request): Json<UpdateAccount>,
+    ApiPath(id): ApiPath<UserId>,
+    ApiJson(request): ApiJson<UpdateAccount>,
 ) -> Result<Json<Account>, ApiError> {
-    if id == admin.id && (request.is_admin == Some(false) || request.disabled == Some(true)) {
-        return Err(ApiError::BadRequest(NOT_YOURSELF.to_owned()));
+    if id == admin.id && request.is_admin == Some(false) {
+        return Err(ApiError::invalid("/is_admin", NOT_YOURSELF));
+    }
+    if id == admin.id && request.disabled == Some(true) {
+        return Err(ApiError::invalid("/disabled", NOT_YOURSELF));
     }
     // Fails for an unknown user before anything is changed.
     state.db.account(id).await?;
@@ -131,12 +132,12 @@ async fn set_password(
     State(state): State<AppState>,
     tenant: Tenant,
     _admin: AdminUser,
-    Path(id): Path<UserId>,
-    Json(request): Json<SetPassword>,
+    ApiPath(id): ApiPath<UserId>,
+    ApiJson(request): ApiJson<SetPassword>,
 ) -> Result<StatusCode, ApiError> {
     let user = state.db.find_user(id).await?.ok_or(ApiError::NotFound)?;
     if user.password_hash.is_none() {
-        return Err(ApiError::Auth(AuthError::InvalidInput(NO_PASSWORD)));
+        return Err(ApiError::Auth(AuthError::NoPassword));
     }
     tenant.auth.set_password(id, &request.password).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -146,7 +147,7 @@ async fn set_password(
 async fn account_devices(
     State(state): State<AppState>,
     _admin: AdminUser,
-    Path(id): Path<UserId>,
+    ApiPath(id): ApiPath<UserId>,
 ) -> Result<Json<Vec<AccountDevice>>, ApiError> {
     state.db.account(id).await?;
     let devices = state.db.devices(id).await?;
@@ -170,10 +171,11 @@ async fn delete_account(
     State(state): State<AppState>,
     tenant: Tenant,
     admin: AdminUser,
-    Path(id): Path<UserId>,
+    ApiPath(id): ApiPath<UserId>,
 ) -> Result<Json<Account>, ApiError> {
     if id == admin.id {
-        return Err(ApiError::BadRequest(NOT_YOURSELF.to_owned()));
+        // The account to delete is the request's path, so the pointer is the request itself.
+        return Err(ApiError::invalid("", NOT_YOURSELF));
     }
     let minutes = i64::try_from(state.info.config.user_deletion_delay_minutes).unwrap_or(i64::MAX);
     let delete_at = OffsetDateTime::now_utc().saturating_add(Duration::minutes(minutes));
@@ -186,7 +188,7 @@ async fn delete_account(
 async fn cancel_deletion(
     State(state): State<AppState>,
     _admin: AdminUser,
-    Path(id): Path<UserId>,
+    ApiPath(id): ApiPath<UserId>,
 ) -> Result<Json<Account>, ApiError> {
     state.db.cancel_deletion(id).await?;
     Ok(Json(account(state.db.account(id).await?)))

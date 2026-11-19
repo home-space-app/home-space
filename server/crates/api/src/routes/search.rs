@@ -1,11 +1,8 @@
-use axum::{
-    Json, Router,
-    extract::{Query, State},
-    routing::get,
-};
+use axum::{Json, Router, extract::State, routing::get};
 
 use protocol::{SearchHit, SearchQuery};
 
+use crate::extract::ApiQuery;
 use crate::{ApiError, AppState, extract::AuthUser};
 
 pub fn routes() -> Router<AppState> {
@@ -15,7 +12,7 @@ pub fn routes() -> Router<AppState> {
 async fn search(
     State(state): State<AppState>,
     user: AuthUser,
-    Query(query): Query<SearchQuery>,
+    ApiQuery(query): ApiQuery<SearchQuery>,
 ) -> Result<Json<Vec<SearchHit>>, ApiError> {
     Ok(Json(
         state.search.search(user.id, &query.q, query.limit).await?,

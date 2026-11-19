@@ -3,6 +3,7 @@
 use tokio::task;
 
 use db::DbError;
+use protocol::{AsProblem, ProblemType};
 
 use crate::provider::ExtractError;
 
@@ -17,4 +18,13 @@ pub enum SearchError {
     Extract(#[from] ExtractError),
     #[error("content extraction task failed: {0}")]
     Task(#[from] task::JoinError),
+}
+
+/// Every search failure is the server's own: the query itself cannot be wrong.
+impl AsProblem for SearchError {
+    fn problem_type(&self) -> ProblemType {
+        match self {
+            Self::Db(_) | Self::Io(_) | Self::Extract(_) | Self::Task(_) => ProblemType::Internal,
+        }
+    }
 }

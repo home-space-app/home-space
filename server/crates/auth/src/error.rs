@@ -1,3 +1,5 @@
+use protocol::{AsProblem, Problem, ProblemType};
+
 /// Errors returned by the authentication layer.
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
@@ -45,6 +47,33 @@ pub enum AuthError {
     Join(#[from] tokio::task::JoinError),
     #[error(transparent)]
     Db(#[from] db::DbError),
+}
+
+impl AsProblem for AuthError {
+    fn problem_type(&self) -> ProblemType {
+        match self {
+            Self::InvalidCredentials => ProblemType::Unauthorized,
+            Self::TooManyAttempts { .. } => ProblemType::TooManyAttempts,
+            Self::Busy { .. } => ProblemType::ServerBusy,
+            Self::WrongPassword => ProblemType::WrongPassword,
+            Self::NoPassword => ProblemType::NoPassword,
+            Self::AccountDisabled => ProblemType::AccountDisabled,
+            Self::UsernameTaken => ProblemType::UsernameTaken,
+            Self::InvalidInput(_) => ProblemType::ValidationFailed,
+            Self::OidcDisabled => ProblemType::SsoDisabled,
+            Self::OidcDenied => ProblemType::SsoAccessDenied,
+            Self::Oidc(_) => ProblemType::IdentityProviderFailed,
+            Self::Hashing(_) | Self::Token(_) | Self::Join(_) | Self::Db(_) => {
+                ProblemType::Internal
+            }
+        }
+    }
+
+    fn extend(&self, problem: &mut Problem) {
+        if let Self::TooManyAttempts { retry_after } | Self::Busy { retry_after } = self {
+            problem.retry_after = Some(*retry_after);
+        }
+    }
 }
 
 /// `seconds` in the largest unit that keeps it readable, rounded up.

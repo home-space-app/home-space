@@ -11,6 +11,9 @@ mod health;
 mod ids;
 mod node;
 pub mod paths;
+mod problem;
+mod problem_type;
+pub mod rules;
 mod search;
 mod share;
 mod storage;
@@ -18,6 +21,7 @@ mod ticket;
 mod transfer;
 mod trash;
 mod upload;
+mod validate;
 
 pub use admin::{Account, AccountDevice, CreateAccount, SetPassword, UpdateAccount};
 pub use auth::{
@@ -32,7 +36,7 @@ pub use device::{
     PLATFORM_MACOS, PLATFORM_WEB, PLATFORM_WINDOWS, RenameDevice, SetDeviceVisibility,
     TargetDevice, TransferTarget, UserRef,
 };
-pub use error::{ErrorBody, ErrorCode};
+pub use error::ErrorCode;
 pub use event::{ClientMessage, Event};
 pub use health::Health;
 pub use ids::{NodeId, UserId};
@@ -40,6 +44,8 @@ pub use node::{
     Conflict, ContentQuery, CreateFolderRequest, FileVersion, ListQuery, MoveRequest, MoveResponse,
     Node, NodeKind, NodeProperties, OnConflict, UpdateRequest, UploadQuery,
 };
+pub use problem::{AsProblem, FieldError, PROBLEM_CONTENT_TYPE, Problem};
+pub use problem_type::{PROBLEMS_BASE, ProblemType};
 pub use search::{SearchHit, SearchQuery};
 pub use share::{
     CopyShared, CreateShare, PublicShare, ReceivedShare, Share, ShareAccess, ShareAccessQuery,
@@ -57,3 +63,4 @@ pub use transfer::{
 };
 pub use trash::{RestoreRequest, TrashItem};
 pub use upload::{ChunkResult, CreateUpload, UploadInfo, UploadSession, UploadsQuery};
+pub use validate::Validate;

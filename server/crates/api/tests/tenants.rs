@@ -301,7 +301,7 @@ async fn a_device_cannot_be_shown_to_a_user_of_another_tenant(pool: PgPool) {
             json!({ "visibility": "users", "users": [b.user_id("mallory").await] }),
         )
         .await;
-    assert_eq!(shown.status, StatusCode::BAD_REQUEST);
+    assert_eq!(shown.status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[sqlx::test(migrations = "../../migrations")]

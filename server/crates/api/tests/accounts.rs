@@ -154,10 +154,10 @@ async fn administrators_cannot_lock_themselves_out(pool: PgPool) {
 
     for change in [json!({ "disabled": true }), json!({ "is_admin": false })] {
         let (status, _) = patch(&app, &token, sam, change).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     }
     let (status, _) = delete(&app, &token, &format!("{USERS}/{sam}")).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -211,7 +211,7 @@ async fn a_password_less_user_gets_no_password(pool: PgPool) {
         )
         .await;
 
-    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY);
     let found = app
         .state
         .db
@@ -302,8 +302,9 @@ async fn marking_for_deletion_disables_and_cancelling_enables(pool: PgPool) {
 
     let (_, body) = delete(&app, &token, &format!("{USERS}/{id}")).await;
     assert_eq!(body["disabled"], true);
-    let (status, _) = patch(&app, &token, id, json!({ "disabled": false })).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, body) = patch(&app, &token, id, json!({ "disabled": false })).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["type"], "/api/v1/problems/marked-for-deletion");
     assert_eq!(login(&app, "peter", PASSWORD).await, StatusCode::FORBIDDEN);
 
     let (_, body) = delete(&app, &token, &format!("{USERS}/{id}/deletion")).await;

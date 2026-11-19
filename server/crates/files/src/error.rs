@@ -1,4 +1,5 @@
 use db::DbError;
+use protocol::{AsProblem, Problem, ProblemType};
 
 /// Errors returned by file operations.
 #[derive(Debug, thiserror::Error)]
@@ -61,6 +62,41 @@ impl From<DbError> for FilesError {
             DbError::Cycle => Self::Cycle,
             DbError::LostAndFound => Self::LostAndFound,
             other => Self::Db(other),
+        }
+    }
+}
+
+impl AsProblem for FilesError {
+    fn problem_type(&self) -> ProblemType {
+        match self {
+            Self::NotFound => ProblemType::NotFound,
+            Self::Conflict => ProblemType::NameTaken,
+            Self::InvalidName => ProblemType::InvalidName,
+            Self::Cycle => ProblemType::MoveIntoItself,
+            Self::LostAndFound => ProblemType::LostAndFound,
+            Self::NotAFile => ProblemType::NotAFile,
+            Self::TooLarge { .. } => ProblemType::TooLarge,
+            Self::QuotaExceeded { .. } => ProblemType::QuotaExceeded,
+            Self::OffsetMismatch { .. } => ProblemType::OffsetMismatch,
+            Self::Forbidden => ProblemType::Forbidden,
+            Self::Gone => ProblemType::TransferGone,
+            Self::NotReady => ProblemType::TransferNotReady,
+            Self::InvalidTransfer(_) => ProblemType::InvalidTransfer,
+            Self::TooManyItems { .. } => ProblemType::TooManyItems,
+            Self::Io(_) | Self::Db(_) => ProblemType::Internal,
+        }
+    }
+
+    fn extend(&self, problem: &mut Problem) {
+        match *self {
+            Self::TooLarge { limit } => problem.limit = Some(limit),
+            Self::TooManyItems { limit } => problem.limit = u64::try_from(limit).ok(),
+            Self::QuotaExceeded { quota, available } => {
+                problem.quota = Some(quota);
+                problem.available = Some(available);
+            }
+            Self::OffsetMismatch { current } => problem.current_offset = Some(current),
+            _ => {}
         }
     }
 }

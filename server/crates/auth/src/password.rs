@@ -2,22 +2,13 @@ use argon2::{Argon2, PasswordHasher, PasswordVerifier, password_hash::phc::Passw
 
 use crate::AuthError;
 
-const MIN_PASSWORD_LEN: usize = 8;
-/// The longest password, in bytes. Hashing takes time in proportion to the length, and
-/// nothing anyone types or a password manager makes comes near it.
-pub const MAX_PASSWORD_LEN: usize = 1024;
-/// Checks a password someone wants to set: 8 to 1024 characters.
+pub use protocol::rules::MAX_PASSWORD_LEN;
+
+/// Checks a password someone wants to set against [`protocol::rules::password_problem`].
 pub fn check_new(password: &str) -> Result<(), AuthError> {
-    if password.len() < MIN_PASSWORD_LEN {
-        Err(AuthError::InvalidInput(
-            "password must be at least 8 characters",
-        ))
-    } else if password.len() > MAX_PASSWORD_LEN {
-        Err(AuthError::InvalidInput(
-            "password must be at most 1024 characters",
-        ))
-    } else {
-        Ok(())
+    match protocol::rules::password_problem(password) {
+        Some(problem) => Err(AuthError::InvalidInput(problem)),
+        None => Ok(()),
     }
 }
 

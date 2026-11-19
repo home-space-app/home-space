@@ -516,7 +516,11 @@ async fn redirects_to_other_sites_are_rejected(pool: PgPool) {
         "javascript:alert(1)",
     ] {
         let response = request_start(&app, redirect, &challenge()).await;
-        assert_eq!(response.status, StatusCode::BAD_REQUEST, "{redirect}");
+        assert_eq!(
+            response.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{redirect}"
+        );
     }
 }
 
@@ -525,7 +529,7 @@ async fn a_malformed_challenge_is_rejected(pool: PgPool) {
     let idp = FakeIdp::start().await;
     let app = setup_oidc(pool, &idp, DEFAULTS).await;
     let response = request_start(&app, WEB_REDIRECT, "too-short").await;
-    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[sqlx::test(migrations = "../../migrations")]

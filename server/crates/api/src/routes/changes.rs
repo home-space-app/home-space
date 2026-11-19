@@ -1,11 +1,8 @@
-use axum::{
-    Json, Router,
-    extract::{Query, State},
-    routing::get,
-};
+use axum::{Json, Router, extract::State, routing::get};
 
 use protocol::{Change, ChangesQuery, ChangesResponse, Node};
 
+use crate::extract::ApiQuery;
 use crate::{ApiError, AppState, extract::AuthUser};
 
 const DEFAULT_LIMIT: u32 = 500;
@@ -18,7 +15,7 @@ pub fn routes() -> Router<AppState> {
 async fn changes(
     State(state): State<AppState>,
     user: AuthUser,
-    Query(query): Query<ChangesQuery>,
+    ApiQuery(query): ApiQuery<ChangesQuery>,
 ) -> Result<Json<ChangesResponse>, ApiError> {
     let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let batch = state

@@ -131,19 +131,19 @@ async fn only_the_apps_own_session_on_a_named_device_may_start_one(pool: PgPool)
     let unnamed = sign_in(&app, None).await;
     assert_eq!(
         extension(&app, &unnamed.access, "share").await.err(),
-        Some(StatusCode::BAD_REQUEST)
+        Some(StatusCode::UNPROCESSABLE_ENTITY)
     );
     let phone = sign_in(&app, Some(Uuid::now_v7())).await;
     assert_eq!(
         extension(&app, &phone.access, "photos").await.err(),
-        Some(StatusCode::BAD_REQUEST)
+        Some(StatusCode::UNPROCESSABLE_ENTITY)
     );
     let share = extension(&app, &phone.access, "share")
         .await
         .expect("share");
     assert_eq!(
         extension(&app, &share.access, "files").await.err(),
-        Some(StatusCode::BAD_REQUEST)
+        Some(StatusCode::UNPROCESSABLE_ENTITY)
     );
 }
 

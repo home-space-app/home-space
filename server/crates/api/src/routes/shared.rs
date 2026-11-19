@@ -3,7 +3,7 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
+    extract::State,
     http::HeaderMap,
     response::Response,
     routing::{get, post},
@@ -17,6 +17,7 @@ use protocol::{
     TicketRequest, UserRef,
 };
 
+use crate::extract::{ApiJson, ApiPath, ApiQuery};
 use crate::{
     ApiError, AppState,
     extract::{AuthUser, Tenant, TicketQuery},
@@ -27,9 +28,6 @@ use crate::{
         publish::publish_saved,
     },
 };
-
-/// The most items one copy may name.
-const MAX_COPY_ITEMS: usize = 1000;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -86,8 +84,8 @@ async fn list(
 async fn nodes(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<Uuid>,
-    Query(folder): Query<SharedFolderQuery>,
+    ApiPath(id): ApiPath<Uuid>,
+    ApiQuery(folder): ApiQuery<SharedFolderQuery>,
 ) -> Result<Json<Vec<SharedNode>>, ApiError> {
     let share = readable(&state, user.id, id).await?;
     let children = state
@@ -102,8 +100,8 @@ async fn content(
     State(state): State<AppState>,
     tenant: Tenant,
     headers: HeaderMap,
-    Query(query): Query<TicketQuery>,
-    Path((id, node_id)): Path<(Uuid, NodeId)>,
+    ApiQuery(query): ApiQuery<TicketQuery>,
+    ApiPath((id, node_id)): ApiPath<(Uuid, NodeId)>,
 ) -> Result<Response, ApiError> {
     let request = TicketRequest::SharedFile {
         share_id: id,
@@ -131,9 +129,9 @@ async fn archive(
     State(state): State<AppState>,
     tenant: Tenant,
     headers: HeaderMap,
-    Query(query): Query<TicketQuery>,
-    Query(archive): Query<ShareArchiveQuery>,
-    Path(id): Path<Uuid>,
+    ApiQuery(query): ApiQuery<TicketQuery>,
+    ApiQuery(archive): ApiQuery<ShareArchiveQuery>,
+    ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Response, ApiError> {
     let request = TicketRequest::SharedArchive { share_id: id };
     let user = tenant
@@ -152,14 +150,9 @@ async fn archive(
 async fn copy(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<Uuid>,
-    Json(request): Json<CopyShared>,
+    ApiPath(id): ApiPath<Uuid>,
+    ApiJson(request): ApiJson<CopyShared>,
 ) -> Result<Json<Vec<Node>>, ApiError> {
-    if request.node_ids.is_empty() || request.node_ids.len() > MAX_COPY_ITEMS {
-        return Err(ApiError::BadRequest(format!(
-            "a copy holds 1 to {MAX_COPY_ITEMS} items"
-        )));
-    }
     let share = readable(&state, user.id, id).await?;
     let saved = state
         .files

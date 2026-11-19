@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::State,
     http::StatusCode,
     routing::{get, patch, put},
 };
@@ -16,6 +16,7 @@ use protocol::{
     TransferTarget, UserRef,
 };
 
+use crate::extract::{ApiJson, ApiPath};
 use crate::{
     ApiError, AppState,
     extract::{AuthUser, Tenant},
@@ -32,7 +33,7 @@ pub fn routes() -> Router<AppState> {
 /// `set_device_visibility` refuses a viewer who is not a user of the tenant, or is the owner.
 fn invalid_viewer(err: DbError) -> ApiError {
     match err {
-        DbError::Invalid => ApiError::BadRequest("unknown user, or the device's owner".to_owned()),
+        DbError::Invalid => ApiError::invalid("/users", "unknown user, or the device's owner"),
         other => other.into(),
     }
 }
@@ -101,8 +102,8 @@ async fn targets(
 async fn set_visibility(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<Uuid>,
-    Json(request): Json<SetDeviceVisibility>,
+    ApiPath(id): ApiPath<Uuid>,
+    ApiJson(request): ApiJson<SetDeviceVisibility>,
 ) -> Result<StatusCode, ApiError> {
     let viewers = if request.visibility == DeviceVisibility::Users {
         request.users.as_slice()
@@ -124,11 +125,11 @@ async fn set_visibility(
 async fn rename(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<Uuid>,
-    Json(request): Json<RenameDevice>,
+    ApiPath(id): ApiPath<Uuid>,
+    ApiJson(request): ApiJson<RenameDevice>,
 ) -> Result<StatusCode, ApiError> {
-    let name = auth::device_name(&request.name)
-        .ok_or_else(|| ApiError::BadRequest("device name must be 1-100 characters".to_owned()))?;
+    // Checked with the request; this only takes the blanks off.
+    let name = protocol::rules::device_name(&request.name).unwrap_or(&request.name);
     state.db.rename_device(user.id, id, name).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -139,7 +140,7 @@ async fn sign_out(
     State(state): State<AppState>,
     tenant: Tenant,
     user: AuthUser,
-    Path(id): Path<Uuid>,
+    ApiPath(id): ApiPath<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     state.db.sign_out_device(user.id, id).await?;
     tenant.auth.sessions_ended(user.id);
