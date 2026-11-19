@@ -16,10 +16,13 @@ use protocol::{
     UpdateAccount, UserStorage,
 };
 
-use super::storage::{disk_space, usage};
 use crate::{
     ApiError, AppState,
     extract::{AdminUser, Tenant},
+    support::{
+        convert::{account, quota, usage},
+        disk::disk_space,
+    },
 };
 
 const NOT_YOURSELF: &str = "administrators cannot disable, delete or demote themselves";
@@ -40,38 +43,14 @@ pub fn routes() -> Router<AppState> {
         .route("/admin/users/{id}/deletion", delete(cancel_deletion))
 }
 
-fn db_error(err: DbError) -> ApiError {
+/// `set_disabled` refuses to enable an account that is marked for deletion.
+fn marked_for_deletion(err: DbError) -> ApiError {
     match err {
-        DbError::NotFound => ApiError::NotFound,
         DbError::Conflict => ApiError::BadRequest(
             "The account is marked for deletion; cancel the deletion to enable it.".to_owned(),
         ),
-        other => ApiError::Internal(other.to_string()),
+        other => other.into(),
     }
-}
-
-fn to_u64(value: i64) -> u64 {
-    u64::try_from(value).unwrap_or_default()
-}
-
-fn account(found: db::Account) -> Account {
-    Account {
-        id: found.id,
-        username: found.username,
-        is_admin: found.is_admin,
-        external: found.external,
-        created_at: found.created_at,
-        disabled: found.disabled_at.is_some(),
-        quota_bytes: found.quota_bytes.map(to_u64),
-        delete_at: found.delete_at,
-        usage: usage(found.usage),
-        devices: u32::try_from(found.devices).unwrap_or(u32::MAX),
-        last_seen_at: found.last_seen_at,
-    }
-}
-
-fn quota(bytes: Option<u64>) -> Option<i64> {
-    bytes.map(|bytes| i64::try_from(bytes).unwrap_or(i64::MAX))
 }
 
 /// Every account, by username.
@@ -79,7 +58,7 @@ async fn list_accounts(
     State(state): State<AppState>,
     _admin: AdminUser,
 ) -> Result<Json<Vec<Account>>, ApiError> {
-    let accounts = state.db.accounts().await.map_err(db_error)?;
+    let accounts = state.db.accounts().await?;
     Ok(Json(accounts.into_iter().map(account).collect()))
 }
 
@@ -88,7 +67,7 @@ async fn get_account(
     _admin: AdminUser,
     Path(id): Path<UserId>,
 ) -> Result<Json<Account>, ApiError> {
-    Ok(Json(account(state.db.account(id).await.map_err(db_error)?)))
+    Ok(Json(account(state.db.account(id).await?)))
 }
 
 /// Creates an account that signs in with a password.
@@ -103,16 +82,15 @@ async fn create_account(
         .create_user(request.username.trim(), &request.password)
         .await?;
     if request.is_admin {
-        state.db.set_admin(user.id, true).await.map_err(db_error)?;
+        state.db.set_admin(user.id, true).await?;
     }
     if request.quota_bytes.is_some() {
         state
             .db
             .set_quota(user.id, quota(request.quota_bytes))
-            .await
-            .map_err(db_error)?;
+            .await?;
     }
-    let created = state.db.account(user.id).await.map_err(db_error)?;
+    let created = state.db.account(user.id).await?;
     Ok((StatusCode::CREATED, Json(account(created))))
 }
 
@@ -128,28 +106,24 @@ async fn update_account(
         return Err(ApiError::BadRequest(NOT_YOURSELF.to_owned()));
     }
     // Fails for an unknown user before anything is changed.
-    state.db.account(id).await.map_err(db_error)?;
+    state.db.account(id).await?;
     if let Some(is_admin) = request.is_admin {
-        state.db.set_admin(id, is_admin).await.map_err(db_error)?;
+        state.db.set_admin(id, is_admin).await?;
     }
     if let Some(bytes) = request.quota_bytes {
-        state
-            .db
-            .set_quota(id, quota(bytes))
-            .await
-            .map_err(db_error)?;
+        state.db.set_quota(id, quota(bytes)).await?;
     }
     if let Some(disabled) = request.disabled {
         state
             .db
             .set_disabled(id, disabled)
             .await
-            .map_err(db_error)?;
+            .map_err(marked_for_deletion)?;
         if disabled {
             tenant.auth.sessions_ended(id);
         }
     }
-    Ok(Json(account(state.db.account(id).await.map_err(db_error)?)))
+    Ok(Json(account(state.db.account(id).await?)))
 }
 
 /// Sets a new password for an account that has one, ending all its sessions.
@@ -160,12 +134,7 @@ async fn set_password(
     Path(id): Path<UserId>,
     Json(request): Json<SetPassword>,
 ) -> Result<StatusCode, ApiError> {
-    let user = state
-        .db
-        .find_user(id)
-        .await
-        .map_err(db_error)?
-        .ok_or(ApiError::NotFound)?;
+    let user = state.db.find_user(id).await?.ok_or(ApiError::NotFound)?;
     if user.password_hash.is_none() {
         return Err(ApiError::Auth(AuthError::InvalidInput(NO_PASSWORD)));
     }
@@ -179,8 +148,8 @@ async fn account_devices(
     _admin: AdminUser,
     Path(id): Path<UserId>,
 ) -> Result<Json<Vec<AccountDevice>>, ApiError> {
-    state.db.account(id).await.map_err(db_error)?;
-    let devices = state.db.devices(id).await.map_err(db_error)?;
+    state.db.account(id).await?;
+    let devices = state.db.devices(id).await?;
     Ok(Json(
         devices
             .into_iter()
@@ -208,13 +177,9 @@ async fn delete_account(
     }
     let minutes = i64::try_from(state.info.config.user_deletion_delay_minutes).unwrap_or(i64::MAX);
     let delete_at = OffsetDateTime::now_utc().saturating_add(Duration::minutes(minutes));
-    state
-        .db
-        .mark_for_deletion(id, delete_at)
-        .await
-        .map_err(db_error)?;
+    state.db.mark_for_deletion(id, delete_at).await?;
     tenant.auth.sessions_ended(id);
-    Ok(Json(account(state.db.account(id).await.map_err(db_error)?)))
+    Ok(Json(account(state.db.account(id).await?)))
 }
 
 /// Takes back a pending deletion; the user may sign in again unless disabled.
@@ -223,17 +188,16 @@ async fn cancel_deletion(
     _admin: AdminUser,
     Path(id): Path<UserId>,
 ) -> Result<Json<Account>, ApiError> {
-    state.db.cancel_deletion(id).await.map_err(db_error)?;
-    Ok(Json(account(state.db.account(id).await.map_err(db_error)?)))
+    state.db.cancel_deletion(id).await?;
+    Ok(Json(account(state.db.account(id).await?)))
 }
 
 async fn status(
     State(state): State<AppState>,
     _admin: AdminUser,
 ) -> Result<Json<ServerStatus>, ApiError> {
-    let internal = |err: db::DbError| ApiError::Internal(err.to_string());
-    let users = state.db.storage_by_user().await.map_err(internal)?;
-    let database = state.db.database_info().await.map_err(internal)?;
+    let users = state.db.storage_by_user().await?;
+    let database = state.db.database_info().await?;
     Ok(Json(ServerStatus {
         version: state.info.version.clone(),
         started_at: state.info.started_at,

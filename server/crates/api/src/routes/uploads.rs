@@ -25,9 +25,9 @@ use protocol::{
 use crate::{
     ApiError, AppState,
     extract::AuthUser,
-    routes::{
-        nodes::{body_stream, publish_stored},
-        transfers::publish_ready,
+    support::{
+        body::body_stream,
+        publish::{publish_ready, publish_stored},
     },
 };
 

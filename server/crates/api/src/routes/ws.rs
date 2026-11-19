@@ -113,6 +113,10 @@ struct Feeds {
     ended: Receiver<UserId>,
 }
 
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "K7 in docs/todo/server-refactoring.md"
+)]
 async fn session(
     state: AppState,
     auth: AuthService,

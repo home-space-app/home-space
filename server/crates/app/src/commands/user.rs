@@ -1,0 +1,124 @@
+//! `homespace user`: managing the users of the default tenant.
+
+use anyhow::{Context, Result};
+
+use db::{Db, TenantId, User};
+
+use crate::{cli::UserCommand, config::Config, server::auth_service};
+
+pub async fn run(command: UserCommand, db: &Db, config: &Config) -> Result<()> {
+    match command {
+        UserCommand::Add {
+            username,
+            admin,
+            password_stdin,
+        } => add(db, config, &username, admin, password_stdin).await,
+        UserCommand::List => list(db).await,
+        UserCommand::Admin { username, revoke } => set_admin(db, &username, !revoke).await,
+        UserCommand::Passwd {
+            username,
+            password_stdin,
+        } => set_password(db, config, &username, password_stdin).await,
+    }
+}
+
+async fn add(
+    db: &Db,
+    config: &Config,
+    username: &str,
+    admin: bool,
+    password_stdin: bool,
+) -> Result<()> {
+    let password = read_new_password(password_stdin)?;
+    let user = auth_service(db, config)?
+        .create_user(username, &password)
+        .await
+        .context("creating user")?;
+    if admin {
+        db.set_admin(user.id, true)
+            .await
+            .context("making the user an administrator")?;
+    }
+    let role = if admin { " as an administrator" } else { "" };
+    println!("created user {} ({}){role}", user.username, user.id);
+    Ok(())
+}
+
+async fn list(db: &Db) -> Result<()> {
+    let users = db
+        .list_users(TenantId::DEFAULT)
+        .await
+        .context("listing users")?;
+    for user in users {
+        let role = if user.is_admin { "\tadmin" } else { "" };
+        let state = match (user.disabled_at, user.delete_at) {
+            (_, Some(at)) => format!("\tdeleted at {at}"),
+            (Some(_), None) => "\tdisabled".to_owned(),
+            (None, None) => String::new(),
+        };
+        println!("{}\t{}{role}{state}", user.id, user.username);
+    }
+    Ok(())
+}
+
+async fn set_admin(db: &Db, username: &str, is_admin: bool) -> Result<()> {
+    let user = find(db, username).await?;
+    db.set_admin(user.id, is_admin)
+        .await
+        .context("changing administrator rights")?;
+    if is_admin {
+        println!("{username} is now an administrator");
+    } else {
+        println!("{username} is no longer an administrator");
+    }
+    Ok(())
+}
+
+async fn set_password(
+    db: &Db,
+    config: &Config,
+    username: &str,
+    password_stdin: bool,
+) -> Result<()> {
+    let user = find(db, username).await?;
+    let password = read_new_password(password_stdin)?;
+    auth_service(db, config)?
+        .set_password(user.id, &password)
+        .await
+        .context("changing password")?;
+    println!("password updated for {username}");
+    Ok(())
+}
+
+async fn find(db: &Db, username: &str) -> Result<User> {
+    db.find_user_by_username(TenantId::DEFAULT, username)
+        .await
+        .context("looking up user")?
+        .with_context(|| format!("no such user: {username}"))
+}
+
+fn read_new_password(from_stdin: bool) -> Result<String> {
+    if !from_stdin {
+        return prompt_new_password();
+    }
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .context("reading password from standard input")?;
+    let password = line.trim_end_matches(['\r', '\n']);
+    if password.is_empty() {
+        anyhow::bail!("no password on standard input");
+    }
+    Ok(password.to_owned())
+}
+
+fn prompt_new_password() -> Result<String> {
+    let password = rpassword::prompt_password("Password: ").context("reading password")?;
+    let confirmation =
+        rpassword::prompt_password("Confirm password: ").context("reading password")?;
+    if password == confirmation {
+        Ok(password)
+    } else {
+        Err(anyhow::anyhow!("passwords do not match"))
+    }
+}

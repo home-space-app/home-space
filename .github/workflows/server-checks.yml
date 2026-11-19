@@ -1,0 +1,42 @@
+# Guardrails of the server clean-up (docs/todo/server-refactoring.md, G1 and G2): no clippy
+# warnings, which include the function length and complexity limits, and no source file longer
+# than its limit.
+name: Server checks
+
+on:
+  pull_request:
+    paths: ["server/**", "shared/**", ".github/workflows/server-checks.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: server-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+          key: server-checks
+      - name: Formatting
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: File length
+        run: ./scripts/check-file-length.sh

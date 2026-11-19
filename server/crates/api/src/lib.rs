@@ -6,6 +6,7 @@ mod extract;
 mod headers;
 mod routes;
 mod state;
+mod support;
 mod tenants;
 
 pub use error::ApiError;
@@ -31,14 +32,13 @@ const INDEX_FILE: &str = "index.html";
 
 /// Tells the sender and the recipient of a transfer that it expired.
 pub fn publish_transfer_expired(hub: &notifications::Hub, transfer: &db::ExpiredTransfer) {
-    let event = protocol::Event::TransferChanged {
-        id: transfer.id,
-        state: protocol::TransferState::Expired,
-    };
-    hub.publish(transfer.sender_id, event.clone());
-    if transfer.recipient_id != transfer.sender_id {
-        hub.publish(transfer.recipient_id, event);
-    }
+    support::publish::publish_changed(
+        hub,
+        transfer.id,
+        transfer.sender_id,
+        transfer.recipient_id,
+        protocol::TransferState::Expired,
+    );
 }
 
 /// Builds the application router with all routes mounted under `/api/v1`.

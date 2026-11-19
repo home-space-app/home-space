@@ -256,6 +256,10 @@ impl FileService {
 
     /// Moves the files of a ready transfer into the recipient's tree under `parent` (the root
     /// when `None`), keeping its folders. A name that is taken at the top gets a number.
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "S5 in docs/todo/server-refactoring.md"
+    )]
     pub async fn save_transfer(
         &self,
         caller: UserId,

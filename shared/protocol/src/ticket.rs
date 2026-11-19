@@ -43,6 +43,12 @@ pub struct TicketResponse {
     pub expires_in: i64,
 }
 
+/// Query carrying a short-lived ticket, for requests that cannot send headers.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TicketQuery {
+    pub ticket: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

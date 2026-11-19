@@ -160,6 +160,10 @@ fn single_tenant(tenants: &[Tenant]) -> Result<&Tenant> {
     }
 }
 
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "K8 in docs/todo/server-refactoring.md"
+)]
 async fn load_hosts(
     config: &Config,
     base: AuthService,

@@ -7,33 +7,19 @@ use axum::{
 
 use db::{MoveBatch, UserId};
 use notifications::Event;
-use protocol::{Conflict, MoveResponse, Node, NodeId, NodeKind, RestoreRequest, TrashItem};
+use protocol::{MoveResponse, Node, NodeId, NodeKind, RestoreRequest, TrashItem};
 
-use crate::{ApiError, AppState, extract::AuthUser, routes::nodes::publish_changes};
+use crate::{
+    ApiError, AppState,
+    extract::AuthUser,
+    support::{convert::move_response, publish::publish_changes},
+};
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/trash", get(list).delete(empty))
         .route("/trash/restore", post(restore))
         .route("/trash/{id}", delete(purge))
-}
-
-/// Converts the outcome of a move or restore to its wire form.
-pub(super) fn move_response(batch: MoveBatch) -> MoveResponse {
-    MoveResponse {
-        moved: batch.moved.into_iter().map(Node::from).collect(),
-        skipped: batch.skipped.into_iter().map(|node| node.id).collect(),
-        conflicts: batch
-            .conflicts
-            .into_iter()
-            .map(|conflict| Conflict {
-                source: conflict.source.into(),
-                path: conflict.path,
-                existing: conflict.existing.map(Node::from),
-            })
-            .collect(),
-        target: batch.target.map(Node::from),
-    }
 }
 
 async fn list(

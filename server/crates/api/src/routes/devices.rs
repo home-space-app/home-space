@@ -29,11 +29,11 @@ pub fn routes() -> Router<AppState> {
         .route("/devices/{id}/visibility", put(set_visibility))
 }
 
-fn db_error(err: DbError) -> ApiError {
+/// `set_device_visibility` refuses a viewer who is not a user of the tenant, or is the owner.
+fn invalid_viewer(err: DbError) -> ApiError {
     match err {
-        DbError::NotFound => ApiError::NotFound,
         DbError::Invalid => ApiError::BadRequest("unknown user, or the device's owner".to_owned()),
-        other => ApiError::Internal(other.to_string()),
+        other => other.into(),
     }
 }
 
@@ -41,9 +41,9 @@ async fn list(
     State(state): State<AppState>,
     user: AuthUser,
 ) -> Result<Json<Vec<Device>>, ApiError> {
-    let devices = state.db.devices(user.id).await.map_err(db_error)?;
+    let devices = state.db.devices(user.id).await?;
     let mut viewers: HashMap<Uuid, Vec<UserRef>> = HashMap::new();
-    for (device, viewer) in state.db.device_viewers(user.id).await.map_err(db_error)? {
+    for (device, viewer) in state.db.device_viewers(user.id).await? {
         viewers.entry(device).or_default().push(viewer);
     }
     Ok(Json(
@@ -71,7 +71,7 @@ async fn targets(
     State(state): State<AppState>,
     user: AuthUser,
 ) -> Result<Json<Vec<TransferTarget>>, ApiError> {
-    let devices = state.db.transfer_targets(user.id).await.map_err(db_error)?;
+    let devices = state.db.transfer_targets(user.id).await?;
     let mut targets: Vec<TransferTarget> = Vec::new();
     for device in devices {
         let entry = TargetDevice {
@@ -113,7 +113,7 @@ async fn set_visibility(
         .db
         .set_device_visibility(user.id, id, request.visibility, viewers)
         .await
-        .map_err(db_error)?;
+        .map_err(invalid_viewer)?;
     state.hub.publish(user.id, Event::DevicesChanged);
     for viewer in affected {
         state.hub.publish(viewer, Event::DevicesChanged);
@@ -129,11 +129,7 @@ async fn rename(
 ) -> Result<StatusCode, ApiError> {
     let name = auth::device_name(&request.name)
         .ok_or_else(|| ApiError::BadRequest("device name must be 1-100 characters".to_owned()))?;
-    state
-        .db
-        .rename_device(user.id, id, name)
-        .await
-        .map_err(db_error)?;
+    state.db.rename_device(user.id, id, name).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -145,11 +141,7 @@ async fn sign_out(
     user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    state
-        .db
-        .sign_out_device(user.id, id)
-        .await
-        .map_err(db_error)?;
+    state.db.sign_out_device(user.id, id).await?;
     tenant.auth.sessions_ended(user.id);
     state.files.cancel_device_uploads(user.id, id).await?;
     Ok(StatusCode::NO_CONTENT)

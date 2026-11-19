@@ -1,0 +1,3 @@
+# Guardrails from docs/todo/server-refactoring.md (G1). Lower these as the backlog shrinks.
+too-many-lines-threshold = 80
+cognitive-complexity-threshold = 20

@@ -20,8 +20,10 @@ use zip::{CompressionMethod, DateTime, ZipWriter, write::SimpleFileOptions};
 use files::ArchiveEntry;
 use protocol::NodeKind;
 
-use crate::routes::nodes::percent_encode;
+use super::download::percent_encode;
 
+/// Names the zip of a share with several items, before the owner's name.
+const SHARED_BY: &str = "Shared by";
 const ZIP_MIME: &str = "application/zip";
 const ZIP_EXTENSION: &str = ".zip";
 /// How much of an archive is gathered before it is sent on.
@@ -100,4 +102,13 @@ fn write_archive(out: impl Write, entries: &[ArchiveEntry]) -> zip::result::ZipR
     }
     zip.finish()?.into_inner().flush()?;
     Ok(())
+}
+
+/// The name of a share's zip: its only top-level entry, or who shared it.
+pub(crate) fn archive_name(owner_name: &str, entries: &[files::ArchiveEntry]) -> String {
+    let mut top = entries.iter().filter(|entry| !entry.path.contains('/'));
+    match (top.next(), top.next()) {
+        (Some(only), None) => only.path.clone(),
+        _ => format!("{SHARED_BY} {owner_name}"),
+    }
 }

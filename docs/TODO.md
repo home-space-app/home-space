@@ -5,6 +5,7 @@ Future improvements. Each item links to its write-up in [`todo/`](todo/).
 | Priority | Size | Name |
 |---|---|---|
 | High | L | [Sharing: done; groups, write access and share events left](todo/sharing.md) |
+| High | L | [Server clean-up: split long files and god services, separate API, business and DB, RFC 9457 errors](todo/server-refactoring.md) |
 | High | L | [Mobile feature parity: device management, sort choice, iOS breadcrumb](todo/mobile-feature-parity.md) |
 | Medium | L | [Native Tailscale: the server and apps join a tailnet by themselves, so the server is reachable from anywhere without being public](todo/tailscale.md) |
 | Medium | L | [Send to device: done; desktop and web OS notifications left](todo/send-to-device.md) |
