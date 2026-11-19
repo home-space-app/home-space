@@ -203,14 +203,9 @@ async fn me(State(state): State<AppState>, user: AuthUser) -> Result<Json<Me>, A
     let found = state
         .db
         .find_user(user.id)
-        .await
-        .map_err(|err| ApiError::Internal(err.to_string()))?
+        .await?
         .ok_or(ApiError::Unauthorized)?;
-    let folders = state
-        .db
-        .special_folders(user.id)
-        .await
-        .map_err(|err| ApiError::Internal(err.to_string()))?;
+    let folders = state.db.special_folders(user.id).await?;
     Ok(Json(Me {
         id: found.id,
         username: found.username,
@@ -256,11 +251,7 @@ async fn ticket(
             }
         }
         TicketRequest::SharedFile { share_id, .. } | TicketRequest::SharedArchive { share_id } => {
-            state
-                .db
-                .received_share(user.id, share_id)
-                .await
-                .map_err(super::shares::db_error)?;
+            state.db.received_share(user.id, share_id).await?;
         }
         TicketRequest::Events => {}
     }

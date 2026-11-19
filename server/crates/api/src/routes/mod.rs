@@ -1,9 +1,7 @@
 mod admin;
-mod archive;
 mod auth;
 mod capabilities;
 mod changes;
-mod content;
 mod devices;
 mod nodes;
 mod search;
@@ -44,10 +42,6 @@ pub fn routes() -> Router<AppState> {
 async fn health(
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> Result<Json<Health>, ApiError> {
-    state
-        .db
-        .ping()
-        .await
-        .map_err(|err| ApiError::Internal(err.to_string()))?;
+    state.db.ping().await?;
     Ok(Json(Health::ok()))
 }

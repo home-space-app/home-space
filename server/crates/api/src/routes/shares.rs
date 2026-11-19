@@ -13,19 +13,19 @@ use axum::{
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use db::{DbError, NewShareLink, NewUserShare, NodeKind, SharePermission, ShareUpdate, UserId};
+use db::{NewShareLink, NewUserShare, NodeKind, SharePermission, ShareUpdate, UserId};
 use protocol::{
     CreateShare, NodeId, PublicShare, Share, ShareAccess, ShareAccessQuery, ShareArchiveQuery,
-    ShareRecipient, SharedFolderQuery, SharedNode, SharesQuery, UnlockShare, UpdateShare, UserRef,
-    paths::SHARE_ACCESS,
+    SharedFolderQuery, SharedNode, SharesQuery, UnlockShare, UpdateShare, paths::SHARE_ACCESS,
 };
 
 use crate::{
     ApiError, AppState,
     extract::{AuthUser, ClientIp, Tenant},
-    routes::{
-        archive::zip_response,
-        content::{Download, ranged},
+    support::{
+        archive::{archive_name, zip_response},
+        convert::{owner_share, shared_node},
+        download::{Download, ranged},
     },
 };
 
@@ -33,8 +33,6 @@ use crate::{
 const MAX_SHARE_ITEMS: usize = 1000;
 /// The most users one share may be for.
 const MAX_RECIPIENTS: usize = 100;
-/// Names the zip of a link with several items, before the owner's name.
-const SHARED_BY: &str = "Shared by";
 /// No token is longer; anything longer is refused before the database is asked.
 const MAX_TOKEN_LEN: usize = 128;
 
@@ -50,24 +48,6 @@ pub fn routes() -> Router<AppState> {
             get(public_content),
         )
         .route("/public/shares/{token}/archive", get(public_archive))
-}
-
-pub(super) fn db_error(err: DbError) -> ApiError {
-    match err {
-        DbError::NotFound => ApiError::NotFound,
-        other => ApiError::Internal(other.to_string()),
-    }
-}
-
-pub(super) fn shared_node(node: db::Node) -> SharedNode {
-    SharedNode {
-        id: node.id,
-        kind: node.kind,
-        name: node.name,
-        size: node.size,
-        mime: node.mime,
-        updated_at: node.updated_at,
-    }
 }
 
 /// `ids` without repeats, in their first order.
@@ -109,36 +89,14 @@ async fn owner_views(
     shares: Vec<db::OwnedShare>,
 ) -> Result<Vec<Share>, ApiError> {
     let ids: Vec<Uuid> = shares.iter().map(|share| share.id).collect();
-    let mut items = state.db.share_items(&ids).await.map_err(db_error)?;
-    let mut recipients = state.db.share_recipients(&ids).await.map_err(db_error)?;
+    let mut items = state.db.share_items(&ids).await?;
+    let mut recipients = state.db.share_recipients(&ids).await?;
     Ok(shares
         .into_iter()
-        .map(|share| Share {
-            id: share.id,
-            items: items
-                .remove(&share.id)
-                .unwrap_or_default()
-                .into_iter()
-                .map(protocol::Node::from)
-                .collect(),
-            has_password: share.has_password,
-            permission: share.permission,
-            token: share.token,
-            expires_at: share.expires_at,
-            created_at: share.created_at,
-            recipients: recipients
-                .remove(&share.id)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|recipient| ShareRecipient {
-                    user: UserRef {
-                        id: recipient.user_id,
-                        username: recipient.username,
-                    },
-                    permission: recipient.permission,
-                    added_at: recipient.created_at,
-                })
-                .collect(),
+        .map(|share| {
+            let share_items = items.remove(&share.id).unwrap_or_default();
+            let share_recipients = recipients.remove(&share.id).unwrap_or_default();
+            owner_share(share, share_items, share_recipients)
         })
         .collect())
 }
@@ -179,8 +137,7 @@ async fn create(
         state
             .db
             .create_user_share(user.id, new, &node_ids, &recipients)
-            .await
-            .map_err(db_error)?
+            .await?
     };
     Ok((StatusCode::CREATED, Json(owner_view(&state, share).await?)))
 }
@@ -204,11 +161,7 @@ async fn create_link(
         permission: SharePermission::Read,
         expires_at: request.expires_at,
     };
-    let link = state
-        .db
-        .create_share_link(owner, new, node_ids)
-        .await
-        .map_err(db_error)?;
+    let link = state.db.create_share_link(owner, new, node_ids).await?;
     Ok(link.into())
 }
 
@@ -217,11 +170,7 @@ async fn list(
     user: AuthUser,
     Query(query): Query<SharesQuery>,
 ) -> Result<Json<Vec<Share>>, ApiError> {
-    let shares = state
-        .db
-        .owned_shares(user.id, query.node_id)
-        .await
-        .map_err(db_error)?;
+    let shares = state.db.owned_shares(user.id, query.node_id).await?;
     Ok(Json(owner_views(&state, shares).await?))
 }
 
@@ -233,7 +182,7 @@ async fn update(
     Json(request): Json<UpdateShare>,
 ) -> Result<Json<Share>, ApiError> {
     check_expiry(request.expires_at.flatten())?;
-    let current = state.db.owned_share(user.id, id).await.map_err(db_error)?;
+    let current = state.db.owned_share(user.id, id).await?;
     let is_link = current.token.is_some();
     if is_link && request.recipients.is_some() {
         return Err(ApiError::BadRequest(
@@ -260,11 +209,7 @@ async fn update(
         expires_at: request.expires_at,
         recipients: recipients.as_deref(),
     };
-    let share = state
-        .db
-        .update_share(user.id, id, update)
-        .await
-        .map_err(db_error)?;
+    let share = state.db.update_share(user.id, id, update).await?;
     Ok(Json(owner_view(&state, share).await?))
 }
 
@@ -273,7 +218,7 @@ async fn remove(
     user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    state.db.delete_share(user.id, id).await.map_err(db_error)?;
+    state.db.delete_share(user.id, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -287,11 +232,7 @@ async fn resolve(
     if token.len() > MAX_TOKEN_LEN {
         return Err(ApiError::NotFound);
     }
-    let share = state
-        .db
-        .share_by_token(tenant.id, token)
-        .await
-        .map_err(db_error)?;
+    let share = state.db.share_by_token(tenant.id, token).await?;
     if share.is_expired(OffsetDateTime::now_utc()) {
         Err(ApiError::Gone)
     } else {
@@ -341,8 +282,7 @@ async fn public_share(
     let share = resolve(&state, &tenant, &token).await?;
     let unlocked = is_unlocked(&tenant, &share, &headers, &query);
     let items = if unlocked {
-        let mut items: HashMap<Uuid, Vec<db::Node>> =
-            state.db.share_items(&[share.id]).await.map_err(db_error)?;
+        let mut items: HashMap<Uuid, Vec<db::Node>> = state.db.share_items(&[share.id]).await?;
         Some(
             items
                 .remove(&share.id)
@@ -390,8 +330,7 @@ async fn public_nodes(
     let children = state
         .db
         .shared_children(share.root(), folder.parent_id)
-        .await
-        .map_err(db_error)?;
+        .await?;
     Ok(Json(children.into_iter().map(shared_node).collect()))
 }
 
@@ -403,11 +342,7 @@ async fn public_content(
     Query(access): Query<ShareAccessQuery>,
 ) -> Result<Response, ApiError> {
     let share = readable(&state, &tenant, &token, &headers, &access).await?;
-    let node = state
-        .db
-        .shared_node(share.root(), id)
-        .await
-        .map_err(db_error)?;
+    let node = state.db.shared_node(share.root(), id).await?;
     if node.kind != NodeKind::File {
         return Err(ApiError::NotFound);
     }
@@ -436,15 +371,6 @@ async fn public_archive(
         .await?;
     let name = archive_name(&share.owner_name, &entries);
     Ok(zip_response(&name, entries))
-}
-
-/// The name of a share's zip: its only top-level entry, or who shared it.
-pub(super) fn archive_name(owner_name: &str, entries: &[files::ArchiveEntry]) -> String {
-    let mut top = entries.iter().filter(|entry| !entry.path.contains('/'));
-    match (top.next(), top.next()) {
-        (Some(only), None) => only.path.clone(),
-        _ => format!("{SHARED_BY} {owner_name}"),
-    }
 }
 
 #[cfg(test)]

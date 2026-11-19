@@ -15,11 +15,7 @@ async fn list(
     State(state): State<AppState>,
     user: AuthUser,
 ) -> Result<Json<Vec<UserRef>>, ApiError> {
-    let users = state
-        .db
-        .list_users(user.tenant)
-        .await
-        .map_err(|err| ApiError::Internal(err.to_string()))?;
+    let users = state.db.list_users(user.tenant).await?;
     Ok(Json(
         users
             .into_iter()

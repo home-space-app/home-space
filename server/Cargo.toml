@@ -49,3 +49,9 @@ url = "2"
 wiremock = "0.6.5"
 zip = { version = "9.5.0", default-features = false, features = ["time"] }
 uuid = { version = "1.29.0", features = ["v7", "serde"] }
+
+[workspace.lints.clippy]
+# docs/todo/server-refactoring.md (G1): long and tangled functions are flagged; existing ones
+# carry an `#[expect]` naming the finding that will fix them.
+too_many_lines = "warn"
+cognitive_complexity = "warn"

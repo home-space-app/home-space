@@ -4,7 +4,6 @@ use axum::{
     routing::get,
 };
 
-use db::DbError;
 use protocol::{Change, ChangesQuery, ChangesResponse, Node};
 
 use crate::{ApiError, AppState, extract::AuthUser};
@@ -25,11 +24,7 @@ async fn changes(
     let batch = state
         .db
         .changes(user.id, query.since, i64::from(limit))
-        .await
-        .map_err(|err| match err {
-            DbError::Pruned => ApiError::Gone,
-            other => ApiError::Internal(other.to_string()),
-        })?;
+        .await?;
     Ok(Json(ChangesResponse {
         changes: batch
             .changes

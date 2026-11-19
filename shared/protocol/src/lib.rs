@@ -50,7 +50,7 @@ pub use storage::{
     DatabaseStatus, DiskSpace, DiskStatus, OidcStatus, ServerConfig, ServerStatus, Storage,
     StorageBackend, StorageUsage, UserStorage,
 };
-pub use ticket::{TicketRequest, TicketResponse};
+pub use ticket::{TicketQuery, TicketRequest, TicketResponse};
 pub use transfer::{
     CreateTransfer, CreatedTransfer, CreatedTransferItem, IncomingQuery, NewTransferItem,
     SaveTransfer, Transfer, TransferItem, TransferState, TransferSummary,

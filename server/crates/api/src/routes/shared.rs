@@ -20,11 +20,11 @@ use protocol::{
 use crate::{
     ApiError, AppState,
     extract::{AuthUser, Tenant, TicketQuery},
-    routes::{
-        archive::zip_response,
-        content::{Download, ranged},
-        shares::{archive_name, db_error, shared_node},
-        transfers::publish_saved,
+    support::{
+        archive::{archive_name, zip_response},
+        convert::shared_node,
+        download::{Download, ranged},
+        publish::publish_saved,
     },
 };
 
@@ -42,7 +42,7 @@ pub fn routes() -> Router<AppState> {
 
 /// The share `id` made for `user`: `NotFound` when there is none, `Gone` once it has expired.
 async fn readable(state: &AppState, user: UserId, id: Uuid) -> Result<db::ReceivedShare, ApiError> {
-    let share = state.db.received_share(user, id).await.map_err(db_error)?;
+    let share = state.db.received_share(user, id).await?;
     if share.is_expired(OffsetDateTime::now_utc()) {
         Err(ApiError::Gone)
     } else {
@@ -57,10 +57,9 @@ async fn list(
     let shares = state
         .db
         .received_shares(user.id, OffsetDateTime::now_utc())
-        .await
-        .map_err(db_error)?;
+        .await?;
     let ids: Vec<Uuid> = shares.iter().map(|share| share.id).collect();
-    let mut items = state.db.share_items(&ids).await.map_err(db_error)?;
+    let mut items = state.db.share_items(&ids).await?;
     Ok(Json(
         shares
             .into_iter()
@@ -94,8 +93,7 @@ async fn nodes(
     let children = state
         .db
         .shared_children(share.root(), folder.parent_id)
-        .await
-        .map_err(db_error)?;
+        .await?;
     Ok(Json(children.into_iter().map(shared_node).collect()))
 }
 
@@ -115,11 +113,7 @@ async fn content(
         .caller(&headers, query.ticket.as_deref(), &request)
         .await?;
     let share = readable(&state, user, id).await?;
-    let node = state
-        .db
-        .shared_node(share.root(), node_id)
-        .await
-        .map_err(db_error)?;
+    let node = state.db.shared_node(share.root(), node_id).await?;
     if node.kind != NodeKind::File {
         return Err(ApiError::NotFound);
     }

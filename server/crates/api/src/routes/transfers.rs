@@ -1,7 +1,5 @@
 //! Files and folders sent to a device.
 
-use std::fmt::Write as _;
-
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -13,19 +11,19 @@ use uuid::Uuid;
 
 use db::IncomingScope;
 use files::ArchiveEntry;
-use notifications::Event;
 use protocol::{
-    CreateTransfer, CreatedTransfer, CreatedTransferItem, IncomingQuery, Node, NodeId, NodeKind,
-    SaveTransfer, TicketRequest, Transfer, TransferItem, TransferState, TransferSummary, UserRef,
+    CreateTransfer, CreatedTransfer, CreatedTransferItem, IncomingQuery, Node, NodeKind,
+    SaveTransfer, TicketRequest, Transfer, TransferState, TransferSummary,
 };
 
 use crate::{
     ApiError, AppState,
     extract::{AuthUser, Tenant, TicketQuery},
-    routes::{
+    support::{
         archive::zip_response,
-        content::{Download, ranged},
-        nodes::publish_stored,
+        convert::{summary, transfer_item},
+        download::{Download, ranged},
+        publish::{publish_changed, publish_ready, publish_saved},
     },
 };
 
@@ -42,96 +40,9 @@ pub fn routes() -> Router<AppState> {
         .route("/transfers/{id}/save", post(save))
 }
 
-pub(crate) fn summary(transfer: db::Transfer) -> TransferSummary {
-    TransferSummary {
-        id: transfer.id,
-        sender: UserRef {
-            id: transfer.sender_id,
-            username: transfer.sender_name,
-        },
-        sender_device: transfer.sender_device,
-        sender_device_name: transfer.sender_device_name,
-        recipient: UserRef {
-            id: transfer.recipient_id,
-            username: transfer.recipient_name,
-        },
-        recipient_device: transfer.recipient_device,
-        recipient_device_name: transfer.recipient_device_name,
-        state: transfer.state,
-        total_bytes: u64::try_from(transfer.total_bytes).unwrap_or_default(),
-        item_count: u32::try_from(transfer.item_count).unwrap_or_default(),
-        file_count: u32::try_from(transfer.file_count).unwrap_or_default(),
-        name: transfer.name,
-        mime: transfer.mime,
-        message: transfer.message,
-        created_at: transfer.created_at,
-        expires_at: transfer.expires_at,
-    }
-}
-
-fn item(item: db::TransferItem) -> TransferItem {
-    TransferItem {
-        id: item.id,
-        path: item.path,
-        kind: item.kind,
-        size: u64::try_from(item.size).unwrap_or_default(),
-        sha256: item.sha256.as_deref().map(to_hex),
-        mime: item.mime,
-        modified_at: item.modified_at,
-    }
-}
-
-fn to_hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .fold(String::with_capacity(bytes.len() * 2), |mut hex, byte| {
-            let _ = write!(hex, "{byte:02x}");
-            hex
-        })
-}
-
-/// Tells the recipient a transfer is ready, and the sender that it is.
-pub(crate) fn publish_ready(state: &AppState, transfer: db::Transfer) {
-    let (id, sender) = (transfer.id, transfer.sender_id);
-    let recipient = transfer.recipient_id;
-    state.hub.publish(
-        recipient,
-        Event::TransferReceived {
-            transfer: summary(transfer),
-        },
-    );
-    if sender != recipient {
-        state.hub.publish(
-            sender,
-            Event::TransferChanged {
-                id,
-                state: TransferState::Ready,
-            },
-        );
-    }
-}
-
-/// Tells both sides a transfer changed state.
-pub(crate) fn publish_changed(
-    state: &AppState,
-    id: Uuid,
-    sender: db::UserId,
-    recipient: db::UserId,
-    to: TransferState,
-) {
-    state
-        .hub
-        .publish(sender, Event::TransferChanged { id, state: to });
-    if recipient != sender {
-        state
-            .hub
-            .publish(recipient, Event::TransferChanged { id, state: to });
-    }
-}
-
 fn publish_finished(state: &AppState, transfer: &db::Transfer) {
     publish_changed(
-        state,
+        &state.hub,
         transfer.id,
         transfer.sender_id,
         transfer.recipient_id,
@@ -203,7 +114,7 @@ async fn get_transfer(
     let (transfer, items) = state.files.transfer(user.id, id).await?;
     Ok(Json(Transfer {
         summary: summary(transfer),
-        items: items.into_iter().map(item).collect(),
+        items: items.into_iter().map(transfer_item).collect(),
     }))
 }
 
@@ -253,36 +164,6 @@ async fn save(
     publish_finished(&state, &saved.transfer);
     let top = publish_saved(&state, user.id, parent, saved.folders, saved.files).await;
     Ok(Json(top))
-}
-
-/// Tells `owner`'s devices about folders and files saved into their tree under `parent`, and
-/// answers the ones at the top.
-pub(super) async fn publish_saved(
-    state: &AppState,
-    owner: db::UserId,
-    parent: Option<NodeId>,
-    folders: Vec<db::Node>,
-    files: Vec<db::StoreOutcome>,
-) -> Vec<Node> {
-    let mut top = Vec::new();
-    for folder in folders {
-        state.index_name(&folder).await;
-        let is_top = folder.parent_id == parent;
-        let node = Node::from(folder);
-        state
-            .hub
-            .publish(owner, Event::NodeCreated { node: node.clone() });
-        if is_top {
-            top.push(node);
-        }
-    }
-    for outcome in files {
-        let (_, Json(node)) = publish_stored(state, owner, outcome).await;
-        if node.parent_id == parent {
-            top.push(node);
-        }
-    }
-    top
 }
 
 /// A file of a ready transfer, for its recipient. Answers one `Range` of bytes when asked,

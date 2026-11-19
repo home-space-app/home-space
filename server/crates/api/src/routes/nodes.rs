@@ -1,20 +1,13 @@
-use std::io;
-
 use axum::{
     Json, Router,
     body::Body,
     extract::{DefaultBodyLimit, Path, Query, State},
-    http::{
-        HeaderMap, HeaderValue, StatusCode,
-        header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE},
-    },
+    http::{HeaderMap, StatusCode},
     response::Response,
     routing::{get, post, put},
 };
-use futures_util::TryStreamExt;
-use tokio_util::io::ReaderStream;
 
-use db::{MoveOutcome, NodeUpdate, StoreOutcome};
+use db::{MoveOutcome, NodeUpdate};
 use notifications::Event;
 use protocol::{
     ContentQuery, CreateFolderRequest, FileVersion, ListQuery, MoveRequest, MoveResponse, Node,
@@ -24,10 +17,13 @@ use protocol::{
 use crate::{
     ApiError, AppState,
     extract::{AuthUser, Tenant, TicketQuery},
-    routes::trash::move_response,
+    support::{
+        body::{body_stream, declared_type},
+        convert::move_response,
+        download::attachment,
+        publish::{publish_changes, publish_stored},
+    },
 };
-
-const FALLBACK_MIME: &str = "application/octet-stream";
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -53,18 +49,6 @@ pub fn routes() -> Router<AppState> {
                 .layer(DefaultBodyLimit::disable())
                 .get(download),
         )
-}
-
-pub(crate) fn body_stream(
-    body: Body,
-) -> impl futures_util::Stream<Item = io::Result<axum::body::Bytes>> {
-    body.into_data_stream().map_err(io::Error::other)
-}
-
-pub(crate) fn declared_type(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
 }
 
 async fn list(
@@ -167,40 +151,6 @@ async fn replace_content(
     Ok(Json(node))
 }
 
-pub(crate) async fn publish_stored(
-    state: &AppState,
-    owner: db::UserId,
-    outcome: StoreOutcome,
-) -> (StatusCode, Json<Node>) {
-    match outcome {
-        StoreOutcome::Created(node) => {
-            state.index_name(&node).await;
-            state.search.enqueue_content(owner, node.id);
-            let node = Node::from(node);
-            state
-                .hub
-                .publish(owner, Event::NodeCreated { node: node.clone() });
-            (StatusCode::CREATED, Json(node))
-        }
-        StoreOutcome::Archived { node, .. } => {
-            let node = Node::from(node);
-            state
-                .hub
-                .publish(owner, Event::NodeUpdated { node: node.clone() });
-            (StatusCode::OK, Json(node))
-        }
-        StoreOutcome::Versioned { node, .. } => {
-            state.search.enqueue_content(owner, node.id);
-            let node = Node::from(node);
-            state
-                .hub
-                .publish(owner, Event::NodeUpdated { node: node.clone() });
-            (StatusCode::OK, Json(node))
-        }
-        StoreOutcome::Unchanged(node) => (StatusCode::OK, Json(node.into())),
-    }
-}
-
 async fn download(
     State(state): State<AppState>,
     tenant: Tenant,
@@ -238,21 +188,6 @@ async fn download_version(
         .await?;
     let (node, meta, file) = state.files.download_version(owner, id, version).await?;
     Ok(attachment(&node.name, &meta.mime, meta.size, file))
-}
-
-fn attachment(name: &str, mime: &str, size: i64, file: tokio::fs::File) -> Response {
-    let content_type = if mime.is_empty() { FALLBACK_MIME } else { mime };
-    let disposition = format!("attachment; filename*=UTF-8''{}", percent_encode(name));
-    let mut response = Response::new(Body::from_stream(ReaderStream::new(file)));
-    let headers = response.headers_mut();
-    headers.insert(CONTENT_LENGTH, HeaderValue::from(size.unsigned_abs()));
-    if let Ok(value) = HeaderValue::from_str(content_type) {
-        headers.insert(CONTENT_TYPE, value);
-    }
-    if let Ok(value) = HeaderValue::from_str(&disposition) {
-        headers.insert(CONTENT_DISPOSITION, value);
-    }
-    response
 }
 
 async fn list_versions(
@@ -333,35 +268,6 @@ async fn publish_moved(state: &AppState, owner: db::UserId, outcome: MoveOutcome
     outcome.node.into()
 }
 
-/// Indexes and announces what a move or restore changed.
-pub(super) async fn publish_changes(
-    state: &AppState,
-    owner: db::UserId,
-    updated: &[db::Node],
-    deleted: &[db::Node],
-    content_changed: Vec<NodeId>,
-) {
-    for node in updated {
-        state.index_name(node).await;
-        let event = Event::NodeUpdated {
-            node: node.clone().into(),
-        };
-        state.hub.publish(owner, event);
-    }
-    for node in deleted {
-        state.hub.publish(
-            owner,
-            Event::NodeDeleted {
-                id: node.id,
-                parent_id: node.parent_id,
-            },
-        );
-    }
-    for id in content_changed {
-        state.search.enqueue_content(owner, id);
-    }
-}
-
 async fn delete(
     State(state): State<AppState>,
     user: AuthUser,
@@ -382,17 +288,4 @@ async fn delete(
     );
     state.hub.publish(user.id, Event::TrashChanged);
     Ok(StatusCode::NO_CONTENT)
-}
-
-pub(crate) fn percent_encode(value: &str) -> String {
-    value
-        .bytes()
-        .map(|byte| {
-            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-                char::from(byte).to_string()
-            } else {
-                format!("%{byte:02X}")
-            }
-        })
-        .collect()
 }

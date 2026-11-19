@@ -5,6 +5,7 @@ use axum::{
 };
 
 use auth::AuthError;
+use db::DbError;
 use files::FilesError;
 use protocol::{ErrorBody, ErrorCode};
 use search::SearchError;
@@ -40,6 +41,19 @@ pub enum ApiError {
     Search(#[from] SearchError),
     #[error("internal error: {0}")]
     Internal(String),
+}
+
+/// The one mapping of a database error to a response: a missing row is a 404, pruned changes
+/// are gone, and anything else is the server's fault. A database error that means something
+/// more specific in one place is mapped there, before it gets here.
+impl From<DbError> for ApiError {
+    fn from(err: DbError) -> Self {
+        match err {
+            DbError::NotFound => Self::NotFound,
+            DbError::Pruned => Self::Gone,
+            other => Self::Internal(other.to_string()),
+        }
+    }
 }
 
 impl ApiError {
@@ -178,6 +192,19 @@ mod tests {
             error.status_and_code(),
             (StatusCode::INSUFFICIENT_STORAGE, ErrorCode::QuotaExceeded)
         );
+    }
+
+    #[test]
+    fn database_errors_map_to_one_status_each() {
+        assert!(matches!(
+            ApiError::from(DbError::NotFound),
+            ApiError::NotFound
+        ));
+        assert!(matches!(ApiError::from(DbError::Pruned), ApiError::Gone));
+        assert!(matches!(
+            ApiError::from(DbError::Conflict),
+            ApiError::Internal(_)
+        ));
     }
 
     #[test]
