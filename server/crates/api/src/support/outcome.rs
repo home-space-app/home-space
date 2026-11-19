@@ -3,7 +3,7 @@
 
 use axum::{Json, http::StatusCode};
 
-use db::StoreOutcome;
+use files::StoreOutcome;
 use protocol::{Node, NodeId};
 
 /// The stored file, `201 Created` when it is new and `200 OK` when an existing one changed.

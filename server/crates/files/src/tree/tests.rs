@@ -1,6 +1,18 @@
 use sqlx::PgPool;
+use time::OffsetDateTime;
+use uuid::Uuid;
 
-use super::*;
+use db::{Db, NewContent, NewNode, Node, NodeId, NodeKind, OnConflict, Patch, TenantId, UserId};
+
+use super::{NodeUpdate, StoreOptions, move_nodes, store_file, update_node};
+use crate::FilesError;
+
+async fn store(db: &Db, owner: UserId, name: &str, content: NewContent) -> Node {
+    store_file(db, owner, None, name, content, StoreOptions::default())
+        .await
+        .expect("store")
+        .into_node()
+}
 
 async fn add(db: &Db, owner: UserId, parent: Option<NodeId>, kind: NodeKind, name: &str) -> Node {
     let new = NewNode {
@@ -37,7 +49,7 @@ struct Tree {
 
 async fn tree(db: &Db) -> Tree {
     let alice = db
-        .create_user(crate::TenantId::DEFAULT, "alice", "x")
+        .create_user(TenantId::DEFAULT, "alice", "x")
         .await
         .expect("alice")
         .id;
@@ -67,15 +79,15 @@ async fn aborting_a_move_lists_nested_conflicts_and_changes_nothing(pool: PgPool
     let db = Db::from_pool(pool);
     let tree = tree(&db).await;
 
-    let batch = db
-        .move_nodes(
-            tree.alice,
-            &[tree.source_photos.id],
-            Some(tree.target.id),
-            OnConflict::Abort,
-        )
-        .await
-        .expect("move");
+    let batch = move_nodes(
+        &db,
+        tree.alice,
+        &[tree.source_photos.id],
+        Some(tree.target.id),
+        OnConflict::Abort,
+    )
+    .await
+    .expect("move");
 
     assert!(batch.moved.is_empty());
     assert_eq!(batch.conflicts.len(), 1);
@@ -103,15 +115,15 @@ async fn moving_without_conflicts_merges_folders_even_when_aborting(pool: PgPool
         .await
         .expect("remove clash");
 
-    let batch = db
-        .move_nodes(
-            tree.alice,
-            &[tree.source_photos.id],
-            Some(tree.target.id),
-            OnConflict::Abort,
-        )
-        .await
-        .expect("move");
+    let batch = move_nodes(
+        &db,
+        tree.alice,
+        &[tree.source_photos.id],
+        Some(tree.target.id),
+        OnConflict::Abort,
+    )
+    .await
+    .expect("move");
 
     assert!(batch.conflicts.is_empty());
     assert_eq!(batch.moved.len(), 1);
@@ -130,15 +142,15 @@ async fn skipping_a_move_bins_clashing_files_and_removes_emptied_folders(pool: P
     let db = Db::from_pool(pool);
     let tree = tree(&db).await;
 
-    let batch = db
-        .move_nodes(
-            tree.alice,
-            &[tree.source_photos.id],
-            Some(tree.target.id),
-            OnConflict::Skip,
-        )
-        .await
-        .expect("move");
+    let batch = move_nodes(
+        &db,
+        tree.alice,
+        &[tree.source_photos.id],
+        Some(tree.target.id),
+        OnConflict::Skip,
+    )
+    .await
+    .expect("move");
 
     assert!(batch.conflicts.is_empty());
     assert!(batch.binned);
@@ -187,15 +199,15 @@ async fn overriding_a_move_merges_clashing_files_without_binning(pool: PgPool) {
     let db = Db::from_pool(pool);
     let tree = tree(&db).await;
 
-    let batch = db
-        .move_nodes(
-            tree.alice,
-            &[tree.source_photos.id],
-            Some(tree.target.id),
-            OnConflict::Override,
-        )
-        .await
-        .expect("move");
+    let batch = move_nodes(
+        &db,
+        tree.alice,
+        &[tree.source_photos.id],
+        Some(tree.target.id),
+        OnConflict::Override,
+    )
+    .await
+    .expect("move");
 
     assert!(!batch.binned);
     assert!(batch.skipped.is_empty());
@@ -208,7 +220,7 @@ async fn overriding_a_move_merges_clashing_files_without_binning(pool: PgPool) {
 async fn selected_files_with_the_same_name_clash_with_each_other(pool: PgPool) {
     let db = Db::from_pool(pool);
     let alice = db
-        .create_user(crate::TenantId::DEFAULT, "alice", "x")
+        .create_user(TenantId::DEFAULT, "alice", "x")
         .await
         .expect("alice")
         .id;
@@ -220,16 +232,14 @@ async fn selected_files_with_the_same_name_clash_with_each_other(pool: PgPool) {
     let other = file(&db, alice, two.id, "other.txt").await;
     let ids = [a.id, b.id, other.id];
 
-    let aborted = db
-        .move_nodes(alice, &ids, Some(target.id), OnConflict::Abort)
+    let aborted = move_nodes(&db, alice, &ids, Some(target.id), OnConflict::Abort)
         .await
         .expect("abort");
     assert_eq!(aborted.conflicts.len(), 2);
     assert!(aborted.conflicts.iter().all(|c| c.existing.is_none()));
     assert!(aborted.conflicts.iter().all(|c| c.path == "same.txt"));
 
-    let skipped = db
-        .move_nodes(alice, &ids, Some(target.id), OnConflict::Skip)
+    let skipped = move_nodes(&db, alice, &ids, Some(target.id), OnConflict::Skip)
         .await
         .expect("skip");
     assert_eq!(skipped.skipped.len(), 2);
@@ -255,7 +265,7 @@ async fn selected_files_with_the_same_name_clash_with_each_other(pool: PgPool) {
 async fn nodes_inside_a_selected_folder_move_along_with_it(pool: PgPool) {
     let db = Db::from_pool(pool);
     let alice = db
-        .create_user(crate::TenantId::DEFAULT, "alice", "x")
+        .create_user(TenantId::DEFAULT, "alice", "x")
         .await
         .expect("alice")
         .id;
@@ -263,15 +273,15 @@ async fn nodes_inside_a_selected_folder_move_along_with_it(pool: PgPool) {
     let inner = file(&db, alice, dir.id, "a.txt").await;
     let target = folder(&db, alice, None, "target").await;
 
-    let batch = db
-        .move_nodes(
-            alice,
-            &[inner.id, dir.id, dir.id],
-            Some(target.id),
-            OnConflict::Abort,
-        )
-        .await
-        .expect("move");
+    let batch = move_nodes(
+        &db,
+        alice,
+        &[inner.id, dir.id, dir.id],
+        Some(target.id),
+        OnConflict::Abort,
+    )
+    .await
+    .expect("move");
 
     assert_eq!(batch.moved.len(), 1);
     assert_eq!(batch.moved[0].id, dir.id);
@@ -283,12 +293,12 @@ async fn nodes_inside_a_selected_folder_move_along_with_it(pool: PgPool) {
 async fn moving_checks_cycles_ownership_and_the_target(pool: PgPool) {
     let db = Db::from_pool(pool);
     let alice = db
-        .create_user(crate::TenantId::DEFAULT, "alice", "x")
+        .create_user(TenantId::DEFAULT, "alice", "x")
         .await
         .expect("alice")
         .id;
     let bob = db
-        .create_user(crate::TenantId::DEFAULT, "bob", "x")
+        .create_user(TenantId::DEFAULT, "bob", "x")
         .await
         .expect("bob")
         .id;
@@ -297,30 +307,27 @@ async fn moving_checks_cycles_ownership_and_the_target(pool: PgPool) {
     let plain = file(&db, alice, outer.id, "a.txt").await;
     let move_to = |ids: Vec<NodeId>, parent: Option<NodeId>, owner| {
         let db = db.clone();
-        async move {
-            db.move_nodes(owner, &ids, parent, OnConflict::Override)
-                .await
-        }
+        async move { move_nodes(&db, owner, &ids, parent, OnConflict::Override).await }
     };
     assert!(matches!(
         move_to(vec![outer.id], Some(inner.id), alice).await,
-        Err(DbError::Cycle)
+        Err(FilesError::Cycle)
     ));
     assert!(matches!(
         move_to(vec![outer.id], Some(outer.id), alice).await,
-        Err(DbError::Cycle)
+        Err(FilesError::Cycle)
     ));
     assert!(matches!(
         move_to(vec![plain.id], Some(plain.id), alice).await,
-        Err(DbError::NotFound)
+        Err(FilesError::NotFound)
     ));
     assert!(matches!(
         move_to(vec![plain.id], Some(inner.id), bob).await,
-        Err(DbError::NotFound)
+        Err(FilesError::NotFound)
     ));
     assert!(matches!(
         move_to(vec![plain.id, NodeId::new()], Some(inner.id), alice).await,
-        Err(DbError::NotFound)
+        Err(FilesError::NotFound)
     ));
     let root = move_to(vec![plain.id], None, alice).await.expect("to root");
     assert!(root.target.is_none());
@@ -340,24 +347,18 @@ fn content(byte: u8) -> NewContent {
 async fn a_file_names_the_device_that_wrote_it_and_a_rename_keeps_it(pool: PgPool) {
     let db = Db::from_pool(pool);
     let alice = db
-        .create_user(crate::TenantId::DEFAULT, "alice", "x")
+        .create_user(TenantId::DEFAULT, "alice", "x")
         .await
         .expect("alice")
         .id;
     let laptop = Uuid::now_v7();
-    let written = db
-        .on_device(Some(laptop))
-        .store_file(alice, None, "a.txt", content(1))
-        .await
-        .expect("store")
-        .into_node();
+    let written = store(&db.on_device(Some(laptop)), alice, "a.txt", content(1)).await;
     let update = NodeUpdate {
         name: Some("b.txt".to_owned()),
-        parent_id: crate::Patch::Keep,
+        parent_id: Patch::Keep,
     };
 
-    let renamed = db
-        .update_node(alice, written.id, update)
+    let renamed = update_node(&db, alice, written.id, update)
         .await
         .expect("rename");
 
@@ -369,22 +370,14 @@ async fn a_file_names_the_device_that_wrote_it_and_a_rename_keeps_it(pool: PgPoo
 async fn new_content_names_its_device_and_the_version_keeps_the_previous_one(pool: PgPool) {
     let db = Db::from_pool(pool);
     let alice = db
-        .create_user(crate::TenantId::DEFAULT, "alice", "x")
+        .create_user(TenantId::DEFAULT, "alice", "x")
         .await
         .expect("alice")
         .id;
     let (laptop, phone) = (Uuid::now_v7(), Uuid::now_v7());
-    db.on_device(Some(laptop))
-        .store_file(alice, None, "a.txt", content(1))
-        .await
-        .expect("first");
+    store(&db.on_device(Some(laptop)), alice, "a.txt", content(1)).await;
 
-    let node = db
-        .on_device(Some(phone))
-        .store_file(alice, None, "a.txt", content(2))
-        .await
-        .expect("second")
-        .into_node();
+    let node = store(&db.on_device(Some(phone)), alice, "a.txt", content(2)).await;
 
     let versions = db.list_versions(alice, node.id).await.expect("versions");
     assert_eq!(node.edited_on, Some(phone));
@@ -398,26 +391,18 @@ async fn new_content_names_its_device_and_the_version_keeps_the_previous_one(poo
 async fn older_content_is_kept_as_a_version_of_the_device_that_sent_it(pool: PgPool) {
     let db = Db::from_pool(pool);
     let alice = db
-        .create_user(crate::TenantId::DEFAULT, "alice", "x")
+        .create_user(TenantId::DEFAULT, "alice", "x")
         .await
         .expect("alice")
         .id;
     let (laptop, phone) = (Uuid::now_v7(), Uuid::now_v7());
-    db.on_device(Some(laptop))
-        .store_file(alice, None, "a.txt", content(1))
-        .await
-        .expect("first");
+    store(&db.on_device(Some(laptop)), alice, "a.txt", content(1)).await;
     let older = NewContent {
         modified_at: Some(OffsetDateTime::UNIX_EPOCH),
         ..content(2)
     };
 
-    let node = db
-        .on_device(Some(phone))
-        .store_file(alice, None, "a.txt", older)
-        .await
-        .expect("older")
-        .into_node();
+    let node = store(&db.on_device(Some(phone)), alice, "a.txt", older).await;
 
     let versions = db.list_versions(alice, node.id).await.expect("versions");
     assert_eq!(node.edited_on, Some(laptop));
@@ -425,26 +410,4 @@ async fn older_content_is_kept_as_a_version_of_the_device_that_sent_it(pool: PgP
         versions.iter().map(|v| v.edited_on).collect::<Vec<_>>(),
         [Some(phone)]
     );
-}
-
-#[test]
-fn the_number_goes_before_the_extension() {
-    assert_eq!(numbered_name("IMG_0001.HEIC", 1), "IMG_0001 (1).HEIC");
-    assert_eq!(numbered_name("a.tar.gz", 2), "a.tar (2).gz");
-    assert_eq!(numbered_name("notes", 3), "notes (3)");
-}
-
-#[test]
-fn a_leading_dot_or_an_overlong_extension_is_not_an_extension() {
-    assert_eq!(numbered_name(".bashrc", 1), ".bashrc (1)");
-    let long = format!("a.{}", "x".repeat(40));
-    assert_eq!(numbered_name(&long, 1), format!("{long} (1)"));
-}
-
-#[test]
-fn a_numbered_name_stays_within_the_limit_on_names() {
-    let name = format!("{}.jpg", "é".repeat(MAX_NAME_CHARS - 4));
-    let numbered = numbered_name(&name, 12);
-    assert_eq!(numbered.chars().count(), MAX_NAME_CHARS);
-    assert!(numbered.ends_with(" (12).jpg"));
 }

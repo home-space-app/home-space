@@ -13,7 +13,7 @@ use axum::{
 };
 use uuid::Uuid;
 
-use db::StoreOptions;
+use files::StoreOptions;
 use files::{ChunkOutcome, FilesError, UploadStatus, UploadTarget};
 use protocol::{
     ChunkResult, CreateUpload, UploadInfo, UploadSession, UploadsQuery, paths::UPLOAD_OFFSET,

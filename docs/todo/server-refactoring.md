@@ -1,7 +1,8 @@
 # Server clean-up and refactoring
 
-**Status (2026-11-19):** phases 1–4 done (guardrails, mechanical splits, API contract, services),
-phase 5 open. F5 waits for its second release, which drops the old `error`/`message` members.
+**Status (2026-11-19):** phases 1–5 done (guardrails, mechanical splits, API contract, services,
+domain/DB boundary). D6 is re-scoped to the object storage work (see the D6 row). Open: K9, D8,
+and F5's second release, which drops the old `error`/`message` members.
 Scope is `server/crates/*` and the error types in `shared/protocol`. The server is ~30.6k lines of
 Rust, about half of it tests.
 
@@ -41,6 +42,8 @@ Line counts are production lines (everything before `#[cfg(test)]`) / whole file
 | K4 | `protocol::Patch<T> { Keep, Clear, Set(T) }`, with its own serde (missing, `null`, value), replaces every `Option<Option<T>>`: `UpdateShare.{password,expires_at}`, `UpdateAccount.quota_bytes`, `UpdateRequest.parent_id`, `db::ShareUpdate` and `db::NodeUpdate`. The wire format is unchanged; the clients build `Patch` too. |
 | K7 | The websocket loop is one `select!` that asks a `Connection` what to do for each event (`on_session_notice`, `on_ping`, `on_message`, `forward`) and acts on the returned `Step`. |
 | K8 | `load_hosts` is `validate_tenants` → `ensure_distinct_secrets` → `discover_all` → `contexts`, with `validate_tenant` and `tenant_auth` for one tenant. |
+| S3, K3, L2, T1 | `db` no longer decides anything about the tree. `db::Tx` (`Db::transaction(owner)`) offers the steps: `lock_node`, `lock_folder`, `lock_nodes`, `nested_in`, `lock_children`, `find_sibling`, `require_folder`, `is_within`, `insert_file`, `relocate`, `set_dates`, `archive_current`, `insert_version`, `bump_version`, `set_content`, `absorb`, `remove_if_empty`, `record_source_device`, `special_folders`, `bin`, `lock_binned`, `forget_trash_entries` (`db/src/nodes/{locks,writes}.rs`, `db/src/trash.rs`). The rules are in `files/src/tree/`: `rules.rs` (numbered names, `ContentFate`, `FileMerge`, clamping client times; pure, table-tested), `conflicts.rs` (`ConflictPlanner`, a pure `settle` per arriving node fed by a small driver, with table tests; replaces the dense `plan_conflicts` loop), `store.rs`, `moves.rs` (`Placer` replaces `place` and its `is_first` flag) and `bin.rs` (delete to bin, restore). Each change is still one transaction. `Cycle`, `LostAndFound` and `Pruned` left `DbError`; the journal returns `ChangesSince::{Kept, Pruned}`. The outcome types (`StoreOutcome`, `MoveBatch`, `BlobOp`, …), `StoreOptions` and `NodeUpdate` moved to `files`. `db/src/nodes.rs` went from 996 to 188 lines and the long-files allowlist is empty. The Postgres tests of moves and stores moved with the code to `files/src/tree/tests.rs`. |
+| L6 | `files/src/store.rs` is `store/{blobs,partials,transfers}.rs`; `ignore_missing` and `rename_into` replace six copies of the same `match`. |
 
 New findings from G1:
 
@@ -140,7 +143,7 @@ scenario group.
 | D3 | S | **Two download implementations.** `nodes::attachment` serves the owner's own files and versions without `Range`. `content::ranged` serves shares and transfers with `Range`. So an owner's interrupted download cannot resume, but a visitor's can. `ShareLink` and `ReceivedShare` also duplicate `is_expired` and `root`. | Use one `support::download` (ranged) everywhere. Add one `SharedAccess` trait or shared struct for the expiry and root logic. |
 | D4 | S | **db → protocol conversion is done three ways:** `From` impls, free functions in routes (`shared_node`, `account`, `owner_views`), and inline struct literals (`devices::list`). Numbers are silently clamped in each place (`unwrap_or(u32::MAX)`, `unwrap_or_default()`, `to_u64`, `quota`). | Put all `From`/`TryFrom` in `api/src/support/convert.rs`. Decide once whether a negative size is a bug (log it) or 0. |
 | D5 | M | **`ApiError::status_and_code` breaks open/closed.** It knows every variant of `AuthError`, `FilesError` and `SearchError`, and ends in `Self::Auth(_) \| Self::Files(_) \| … => 500`. A new variant silently becomes a 500. For example, `AuthError::Oidc` (identity provider unreachable) is a 500 today, not a 502. | Each crate's error implements a small `ProblemKind` trait (`status()`, `type_slug()`, `title()`) with an **exhaustive** match. `ApiError` only delegates. Done together with **F1**. |
-| D6 | M | **No abstraction where one is planned.** `BlobStore` is a concrete local-filesystem struct, but `object-storage.md` adds S3 and Azure. | Add a `BlobStore` trait with a `LocalBlobStore`. Add no other traits until a second implementation exists (KISS). |
+| D6 | M | **No abstraction where one is planned.** `BlobStore` is a concrete local-filesystem struct, but `object-storage.md` adds S3 and Azure. | **Re-scoped (phase 5).** A trait taken from today's API would hold exactly what [object-storage.md](object-storage.md) says does not carry over: `rename` (`archive`, `promote`), `append`, and `tokio::fs::File` returned to `download`, versions, shares, transfers, zips and search. The trait that plan needs is the lower `Backend` (`put`/`get`/`delete`/parts) under immutable blob ids. Introduce it with that work, starting with its step that returns a byte stream (`Blob { size, stream }`) instead of a file handle. Until then, no trait (KISS). L6 split the store so that step is smaller. |
 | D7 | S | **`AppState` is one bag** (`db`, `files`, `hub`, `search`, `tenants`) handed to every handler, so any handler can reach anything. | After S1, S2 and S5, `AppState` holds services only, not `db`. That makes the layering in rule 3 enforceable. |
 
 ## K: Complex or "trying to be smart" code
@@ -173,7 +176,7 @@ scenario group.
    which removes `error` and `message` from `Problem` once the clients in use read `code`/`detail`.
 4. ~~**Services:** S1, S4 (shares, devices, admin), S2 (domain events), then S6 with K1 (auth) and S5 (files).
    Then D7, D3 and K2, K4, K5.~~ Done, with K7 and K8. K9 and D8 are new and small.
-5. **Domain/DB boundary:** S3 with K3, then D6 as preparation for `object-storage.md`.
+5. ~~**Domain/DB boundary:** S3 with K3, then D6 as preparation for `object-storage.md`.~~ S3 and K3 done, with L2, L6 and the rest of T1. D6 moves to the object storage work.
 
 Every step keeps the existing integration tests in `server/crates/api/tests` passing unchanged. Only F1, F2 and F4
 (response shape) may update test assertions, and then only for the body format.

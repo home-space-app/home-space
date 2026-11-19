@@ -1,4 +1,3 @@
 # Files whose production part is longer than 500 lines, with the length they may not grow past
 # and the finding in docs/todo/server-refactoring.md that splits them. Lower a number when a
 # file shrinks; remove the line once it is within the limit.
-crates/db/src/nodes.rs 996 L2/S3

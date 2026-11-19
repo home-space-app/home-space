@@ -12,14 +12,13 @@ use tokio::fs;
 use uuid::Uuid;
 
 use db::{
-    ExpiredTransfer, IncomingScope, NewTransfer, Node, NodeKind, StoreOutcome, Transfer,
-    TransferItem, UserId,
+    ExpiredTransfer, IncomingScope, NewTransfer, Node, NodeKind, Transfer, TransferItem, UserId,
 };
 use protocol::{CreateTransfer, TransferState};
 
 use events::DomainEvent;
 
-use crate::{FilesError, UploadService, content::ContentStore};
+use crate::{FilesError, StoreOutcome, UploadService, content::ContentStore};
 
 mod manifest;
 mod save;

@@ -6,16 +6,13 @@ use time::OffsetDateTime;
 use tokio::fs;
 use uuid::Uuid;
 
-use db::{
-    ChangeBatch, MoveBatch, MoveOutcome, Node, NodeId, NodeKind, NodeProperties, NodeUpdate,
-    OnConflict, StoreOutcome, UserId,
-};
+use db::{ChangeBatch, ChangesSince, Node, NodeId, NodeKind, NodeProperties, OnConflict, UserId};
 use events::DomainEvent;
 
 use crate::{
-    Actor, BodyError, FilesError,
+    Actor, BodyError, FilesError, MoveBatch, MoveOutcome, NodeUpdate, StoreOptions, StoreOutcome,
     content::{ContentStore, new_content},
-    emitted,
+    emitted, tree,
 };
 
 /// A user's folders and files.
@@ -44,7 +41,10 @@ impl NodeService {
         since: Option<i64>,
         limit: i64,
     ) -> Result<ChangeBatch, FilesError> {
-        Ok(self.content.db.changes(owner, since, limit).await?)
+        match self.content.db.changes(owner, since, limit).await? {
+            ChangesSince::Kept(batch) => Ok(batch),
+            ChangesSince::Pruned => Err(FilesError::ChangesPruned),
+        }
     }
 
     /// The largest file a single upload may hold.
@@ -159,7 +159,8 @@ impl NodeService {
             .await
     }
 
-    /// Moves several nodes into `parent` (the root when `None`); see [`Db::move_nodes`].
+    /// Moves several nodes into `parent` (the root when `None`). Folders merge into
+    /// same-named folders; `on_conflict` decides what happens to files whose name is taken.
     pub async fn move_nodes(
         &self,
         actor: Actor,
@@ -202,16 +203,15 @@ impl NodeService {
             self.content.db.get_node(owner, parent).await?;
         }
         let staged = self.content.stage_within_quota(owner, body).await?;
-        let stored = self
-            .content
-            .db
-            .store_file(
-                owner,
-                parent,
-                name,
-                new_content(&staged, content_type, name, modified_at),
-            )
-            .await;
+        let stored = tree::store_file(
+            &self.content.db,
+            owner,
+            parent,
+            name,
+            new_content(&staged, content_type, name, modified_at),
+            StoreOptions::default(),
+        )
+        .await;
         self.content
             .publish_stored(self.content.finish_store(owner, staged, stored).await)
             .await
@@ -233,15 +233,13 @@ impl NodeService {
             return Err(FilesError::NotAFile);
         }
         let staged = self.content.stage_within_quota(owner, body).await?;
-        let stored = self
-            .content
-            .db
-            .replace_file_content(
-                owner,
-                id,
-                new_content(&staged, content_type, &current.name, modified_at),
-            )
-            .await;
+        let stored = tree::replace_content(
+            &self.content.db,
+            owner,
+            id,
+            new_content(&staged, content_type, &current.name, modified_at),
+        )
+        .await;
         self.content
             .publish_stored(self.content.finish_store(owner, staged, stored).await)
             .await
@@ -253,7 +251,7 @@ impl NodeService {
         id: NodeId,
         update: NodeUpdate,
     ) -> Result<MoveOutcome, FilesError> {
-        let outcome = self.content.db.update_node(owner, id, update).await?;
+        let outcome = tree::update_node(&self.content.db, owner, id, update).await?;
         self.content.apply_blob_ops(owner, &outcome.blob_ops).await;
         self.content.events.publish(emitted::moved(&outcome)).await;
         Ok(outcome)
@@ -266,11 +264,7 @@ impl NodeService {
         parent: Option<NodeId>,
         on_conflict: OnConflict,
     ) -> Result<MoveBatch, FilesError> {
-        let batch = self
-            .content
-            .db
-            .move_nodes(owner, ids, parent, on_conflict)
-            .await?;
+        let batch = tree::move_nodes(&self.content.db, owner, ids, parent, on_conflict).await?;
         self.content.apply_blob_ops(owner, &batch.blob_ops).await;
         self.content
             .events

@@ -2,10 +2,10 @@
 
 use uuid::Uuid;
 
-use db::{MoveBatch, NodeId, OnConflict, TrashOutcome, TrashedNode, UserId};
+use db::{NodeId, OnConflict, TrashedNode, UserId};
 use events::DomainEvent;
 
-use crate::{Actor, FilesError, content::ContentStore, emitted};
+use crate::{Actor, FilesError, MoveBatch, TrashOutcome, content::ContentStore, emitted, tree};
 
 /// A user's recycle bin.
 #[derive(Clone, Debug)]
@@ -35,8 +35,9 @@ impl TrashService {
         Ok(self.content.db.list_trash(owner).await?)
     }
 
-    /// Moves binned files to Lost & Found; see [`Db::restore`]. Clients never see the bin
-    /// folder, so files still in it report no parent.
+    /// Moves binned files to Lost & Found under their own names; `on_conflict` decides what
+    /// happens to files whose name is taken there. Clients never see the bin folder, so files
+    /// still in it report no parent.
     pub async fn restore(
         &self,
         actor: Actor,
@@ -61,7 +62,7 @@ impl TrashService {
     }
 
     async fn delete_as(&self, owner: UserId, id: NodeId) -> Result<TrashOutcome, FilesError> {
-        let outcome = self.content.db.trash_node(owner, id).await?;
+        let outcome = tree::trash_node(&self.content.db, owner, id).await?;
         self.content
             .events
             .publish(vec![
@@ -78,7 +79,7 @@ impl TrashService {
         ids: &[NodeId],
         on_conflict: OnConflict,
     ) -> Result<MoveBatch, FilesError> {
-        let mut batch = self.content.db.restore(owner, ids, on_conflict).await?;
+        let mut batch = tree::restore(&self.content.db, owner, ids, on_conflict).await?;
         self.content.apply_blob_ops(owner, &batch.blob_ops).await;
         let bin = self.content.db.special_folders(owner).await?.trash_id;
         let binned = batch

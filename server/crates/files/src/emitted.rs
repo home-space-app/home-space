@@ -1,6 +1,8 @@
 //! The domain events each kind of change publishes.
 
-use db::{MoveBatch, MoveOutcome, Node, NodeKind, StoreOutcome};
+use db::{Node, NodeKind};
+
+use crate::{MoveBatch, MoveOutcome, StoreOutcome};
 use events::DomainEvent;
 
 /// What storing a file changed: a new file, new content, or only an older version kept.

@@ -10,15 +10,6 @@ pub enum DbError {
     /// A value violated a check constraint (e.g. invalid node name).
     #[error("invalid value")]
     Invalid,
-    /// Moving a folder into itself or one of its descendants.
-    #[error("cycle")]
-    Cycle,
-    /// Deleting Lost & Found or a folder that contains it.
-    #[error("Lost & Found cannot be deleted")]
-    LostAndFound,
-    /// Reading the change journal from before what was pruned from it.
-    #[error("changes were pruned")]
-    Pruned,
     #[error("migration failed: {0}")]
     Migrate(#[from] sqlx::migrate::MigrateError),
     #[error("database error: {0}")]

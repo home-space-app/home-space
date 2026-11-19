@@ -7,12 +7,14 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use db::{
-    BlobOp, Db, DeletedNodes, FOLDER_MIME, NewContent, NewNode, Node, NodeId, NodeKind, QuotaUsage,
-    StoreOutcome, UserId,
+    Db, DeletedNodes, FOLDER_MIME, NewContent, NewNode, Node, NodeId, NodeKind, QuotaUsage, UserId,
 };
 use events::Events;
 
-use crate::{BlobStore, BodyError, FilesError, emitted, store::StagedBlob};
+use crate::{
+    BlobOp, BlobStore, BodyError, FilesError, StoreOutcome, emitted, store::StagedBlob,
+    tree::rules::numbered_folder_name,
+};
 
 pub(crate) const FALLBACK_MIME: &str = "application/octet-stream";
 /// How many numbered names (`Photos (2)`, `Photos (3)`, ...) are tried for a taken one.
@@ -123,13 +125,13 @@ impl ContentStore {
         &self,
         owner: UserId,
         staged: StagedBlob,
-        stored: Result<StoreOutcome, db::DbError>,
+        stored: Result<StoreOutcome, FilesError>,
     ) -> Result<StoreOutcome, FilesError> {
         let outcome = match stored {
             Ok(outcome) => outcome,
             Err(err) => {
                 self.store.discard(staged).await;
-                return Err(err.into());
+                return Err(err);
             }
         };
         let committed = match &outcome {
@@ -209,7 +211,7 @@ impl ContentStore {
         name: &str,
     ) -> Result<Node, FilesError> {
         for n in 0..MAX_NUMBERED_NAMES {
-            let candidate = numbered(name, n);
+            let candidate = numbered_folder_name(name, n);
             match self.insert_folder(owner, parent, &candidate).await {
                 Err(FilesError::Conflict) => {}
                 other => return other,
@@ -258,24 +260,4 @@ pub(crate) fn resolve_mime(declared: Option<&str>, name: &str) -> String {
                 .map(|mime| mime.essence_str().to_owned())
         })
         .unwrap_or_else(|| FALLBACK_MIME.to_owned())
-}
-
-/// The name of a folder, or `name (n)` for n > 0.
-fn numbered(name: &str, n: usize) -> String {
-    if n == 0 {
-        name.to_owned()
-    } else {
-        format!("{name} ({n})")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn numbered_names_follow_the_tree_convention() {
-        assert_eq!(numbered("Photos", 0), "Photos");
-        assert_eq!(numbered("Photos", 2), "Photos (2)");
-    }
 }

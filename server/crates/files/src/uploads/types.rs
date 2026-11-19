@@ -1,6 +1,8 @@
 //! What resumable uploads store, report and return.
 
-use db::{NodeId, StoreOptions, StoreOutcome};
+use db::NodeId;
+
+use crate::{StoreOptions, StoreOutcome};
 use uuid::Uuid;
 
 /// What a resumable upload stores once complete.
