@@ -86,9 +86,6 @@ impl From<DbError> for FilesError {
             DbError::NotFound => Self::NotFound,
             DbError::Conflict => Self::Conflict,
             DbError::Invalid => Self::InvalidName,
-            DbError::Cycle => Self::Cycle,
-            DbError::LostAndFound => Self::LostAndFound,
-            DbError::Pruned => Self::ChangesPruned,
             other => Self::Db(other),
         }
     }
@@ -142,11 +139,11 @@ mod tests {
             FilesError::NotFound
         ));
         assert!(matches!(
-            FilesError::from(DbError::Pruned),
-            FilesError::ChangesPruned
+            FilesError::from(DbError::Conflict),
+            FilesError::Conflict
         ));
         assert_eq!(
-            FilesError::from(DbError::Pruned).problem_type(),
+            FilesError::ChangesPruned.problem_type(),
             ProblemType::ChangesPruned
         );
         assert_eq!(

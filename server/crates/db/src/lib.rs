@@ -30,19 +30,17 @@ mod storage;
 mod tenants;
 mod transfers;
 mod trash;
+mod tx;
 mod uploads;
 mod users;
 mod versions;
 
 pub use accounts::{Account, DeletedAccount};
-pub use changes::{ChangeBatch, NodeChange};
+pub use changes::{ChangeBatch, ChangesSince, NodeChange};
 pub use devices::{Device, NewDevice, TargetDevice};
 pub use error::DbError;
 pub use models::{FileVersion, Node, RefreshToken, User};
-pub use nodes::{
-    BlobOp, DeletedNodes, FOLDER_MIME, MoveBatch, MoveConflict, MoveOutcome, NewContent, NewNode,
-    NodeProperties, NodeUpdate, StoreOptions, StoreOutcome,
-};
+pub use nodes::{DeletedNodes, FOLDER_MIME, FileState, NewContent, NewNode, NodeProperties};
 pub use oidc::{OidcCode, OidcPending};
 pub use protocol::{NodeId, NodeKind, OnConflict, Patch, SharePermission, UserId};
 pub use search::{ContentState, RankedNode};
@@ -57,7 +55,8 @@ pub use tenants::{Tenant, TenantDomain, TenantId};
 pub use transfers::{
     ExpiredTransfer, IncomingScope, NewTransfer, SubtreeNode, Transfer, TransferItem,
 };
-pub use trash::{LOST_AND_FOUND, SpecialFolders, TrashOutcome, TrashedNode};
+pub use trash::{LOST_AND_FOUND, SpecialFolders, TrashedNode};
+pub use tx::Tx;
 pub use uploads::{NewUpload, Upload};
 
 use sqlx::{Postgres, Transaction, postgres::PgPoolOptions};

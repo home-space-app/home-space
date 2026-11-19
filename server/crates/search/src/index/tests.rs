@@ -4,8 +4,7 @@ use bytes::Bytes;
 use futures_util::stream;
 use sqlx::PgPool;
 
-use db::StoreOutcome;
-use files::{Actor, FileServices, FilesConfig};
+use files::{Actor, FileServices, FilesConfig, NodeUpdate, StoreOutcome};
 
 use super::*;
 use crate::provider::ExtractError;
@@ -41,7 +40,6 @@ struct Fixture {
     index: SearchIndex,
     _worker: Worker,
     files: FileServices,
-    db: Db,
     alice: UserId,
     bob: UserId,
     _dir: tempfile::TempDir,
@@ -68,12 +66,11 @@ async fn fixture(pool: PgPool, providers: Vec<Arc<dyn ContentProvider>>) -> Fixt
         index,
         _worker: worker,
         files: FileServices::new(
-            db.clone(),
+            db,
             store,
             FilesConfig::new(1024 * 1024),
             events::Events::none(),
         ),
-        db,
         alice,
         bob,
         _dir: dir,
@@ -157,13 +154,14 @@ async fn rename_reindexes_the_name(pool: PgPool) {
     let fx = fixture(pool, Vec::new()).await;
     let node = upload(&fx, None, "old.txt", "x").await;
     let renamed = fx
-        .db
-        .update_node(
-            fx.alice,
+        .files
+        .nodes
+        .update(
+            Actor::user(fx.alice),
             node.id,
-            db::NodeUpdate {
+            NodeUpdate {
                 name: Some("fresh.txt".to_owned()),
-                ..db::NodeUpdate::default()
+                ..NodeUpdate::default()
             },
         )
         .await

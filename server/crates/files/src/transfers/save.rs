@@ -4,12 +4,12 @@ use std::collections::HashMap;
 
 use uuid::Uuid;
 
-use db::{NodeId, NodeKind, StoreOptions, StoreOutcome, Transfer, TransferItem, UserId};
+use db::{NodeId, NodeKind, Transfer, TransferItem, UserId};
 use events::DomainEvent;
 use protocol::TransferState;
 
 use super::{SavedTransfer, TransferService, manifest::split_path, require_ready};
-use crate::{Actor, FilesError, content::new_content, emitted};
+use crate::{Actor, FilesError, StoreOptions, StoreOutcome, content::new_content, emitted, tree};
 
 impl TransferService {
     /// Moves the files of a ready transfer into the recipient's tree under `parent` (the root
@@ -44,11 +44,8 @@ impl TransferService {
             keep_both: true,
             ..StoreOptions::default()
         };
-        let stored = self
-            .content
-            .db
-            .store_file_with(owner, parent, name, content, options)
-            .await;
+        let stored =
+            tree::store_file(&self.content.db, owner, parent, name, content, options).await;
         self.content.finish_store(owner, staged, stored).await
     }
 

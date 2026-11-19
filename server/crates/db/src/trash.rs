@@ -1,13 +1,8 @@
-use std::collections::HashMap;
-
 use sqlx::{FromRow, PgConnection};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{
-    Db, DbError, DeletedNodes, MoveBatch, Node, NodeId, OnConflict, UserId,
-    nodes::{ensure_not_descendant, lock_node, move_into},
-};
+use crate::{Db, DbError, DeletedNodes, Node, NodeId, Tx, UserId};
 
 /// Name of the folder restored files land in.
 pub const LOST_AND_FOUND: &str = "Lost & Found";
@@ -38,43 +33,11 @@ pub struct TrashedNode {
     pub trashed_at: OffsetDateTime,
 }
 
-/// What moving a node to the recycle bin did.
-#[derive(Clone, Debug)]
-pub struct TrashOutcome {
-    /// The node that was deleted.
-    pub node: Node,
-    /// The files now in the bin: the node itself or every file below it.
-    pub trashed: Vec<Node>,
-}
-
 impl Db {
     /// The ids of the user's recycle bin and Lost & Found folders.
     pub async fn special_folders(&self, owner: UserId) -> Result<SpecialFolders, DbError> {
         let mut conn = self.pool().acquire().await?;
         special_folders(&mut conn, owner).await
-    }
-
-    /// Deletes a node by moving its files to the recycle bin.
-    ///
-    /// A file moves there itself. A folder's files all move there, each remembering its path,
-    /// and the folders are removed. Lost & Found, and folders containing it, cannot be deleted.
-    pub async fn trash_node(&self, owner: UserId, id: NodeId) -> Result<TrashOutcome, DbError> {
-        let mut tx = self.begin().await?;
-        let node = lock_node(&mut tx, owner, id).await?;
-        let folders = special_folders(&mut tx, owner).await?;
-        match ensure_not_descendant(&mut tx, owner, id, folders.lost_and_found_id).await {
-            Err(DbError::Cycle) => return Err(DbError::LostAndFound),
-            other => other?,
-        }
-        let trashed = bin_subtree(&mut tx, owner, id, node.parent_id, folders.trash_id).await?;
-        // The files have left the folders, so removing them takes nothing else along.
-        sqlx::query("DELETE FROM nodes WHERE id = $1 AND owner_id = $2 AND kind = 'folder'")
-            .bind(id)
-            .bind(owner)
-            .execute(&mut *tx)
-            .await?;
-        tx.commit().await?;
-        Ok(TrashOutcome { node, trashed })
     }
 
     /// Lists the files in the recycle bin, most recently deleted first.
@@ -91,79 +54,6 @@ impl Db {
         .fetch_all(self.pool())
         .await?;
         Ok(items)
-    }
-
-    /// Moves binned files to Lost & Found.
-    ///
-    /// The files land directly in Lost & Found under their own names; `on_conflict` decides
-    /// what happens to files whose name is taken there. Conflict paths are the original paths.
-    /// Ids that are not binned files are ignored, unknown ids are `NotFound`. When two
-    /// selected files share a name, the one deleted last ends up current.
-    pub async fn restore(
-        &self,
-        owner: UserId,
-        ids: &[NodeId],
-        on_conflict: OnConflict,
-    ) -> Result<MoveBatch, DbError> {
-        let mut tx = self.begin().await?;
-        let folders = special_folders(&mut tx, owner).await?;
-        let mut unique = ids.to_vec();
-        unique.sort_by_key(|id| id.0);
-        unique.dedup();
-        let raw = unique.iter().map(|id| id.0).collect::<Vec<Uuid>>();
-        let known = sqlx::query_scalar::<_, i64>(concat!(
-            "SELECT count(*) FROM nodes WHERE id = ANY($1) AND owner_id = $2 \
-             AND (trashed_at IS NOT NULL OR ",
-            visible!("nodes"),
-            ")"
-        ))
-        .bind(&raw)
-        .bind(owner)
-        .fetch_one(&mut *tx)
-        .await?;
-        if usize::try_from(known).ok() != Some(unique.len()) {
-            return Err(DbError::NotFound);
-        }
-        // Oldest first, so that the newest of several same-named files ends up current.
-        let binned = sqlx::query_as::<_, TrashedNode>(concat!(
-            "SELECT ",
-            node_columns!(),
-            ", t.original_path, n.trashed_at \
-             FROM nodes n JOIN trash_entries t ON t.node_id = n.id \
-             WHERE n.id = ANY($1) AND n.owner_id = $2 AND n.trashed_at IS NOT NULL \
-             ORDER BY n.trashed_at, t.original_path, n.id \
-             FOR UPDATE OF n"
-        ))
-        .bind(&raw)
-        .bind(owner)
-        .fetch_all(&mut *tx)
-        .await?;
-        let target = lock_node(&mut tx, owner, folders.lost_and_found_id).await?;
-        let paths = binned
-            .iter()
-            .map(|item| (item.node.id, item.original_path.clone()))
-            .collect::<HashMap<_, _>>();
-        let sources = binned.into_iter().map(|item| item.node).collect::<Vec<_>>();
-        let source_ids = sources.iter().map(|node| node.id).collect::<Vec<_>>();
-        let mut batch = move_into(&mut tx, owner, sources, Some(target), on_conflict, None).await?;
-        for conflict in &mut batch.conflicts {
-            if let Some(path) = paths.get(&conflict.source.id) {
-                conflict.path = path.clone();
-            }
-        }
-        if batch.conflicts.is_empty() || on_conflict != OnConflict::Abort {
-            let restored = source_ids
-                .iter()
-                .filter(|id| batch.skipped.iter().all(|skipped| skipped.id != **id))
-                .map(|id| id.0)
-                .collect::<Vec<Uuid>>();
-            sqlx::query("DELETE FROM trash_entries WHERE node_id = ANY($1)")
-                .bind(restored)
-                .execute(&mut *tx)
-                .await?;
-        }
-        tx.commit().await?;
-        Ok(batch)
     }
 
     /// Permanently deletes every binned file; returns the ids whose content is now unused.
@@ -186,15 +76,80 @@ impl Db {
     }
 }
 
-/// Moves the files at or below `id` to the recycle bin, remembering their paths.
-///
-/// `parent` is the current parent of `id`. Folders stay where they are; callers remove them.
-/// Returns the binned files.
-pub(crate) async fn bin_subtree(
+impl Tx {
+    /// The ids of the owner's recycle bin and Lost & Found folders.
+    pub async fn special_folders(&mut self) -> Result<SpecialFolders, DbError> {
+        special_folders(&mut self.conn, self.owner).await
+    }
+
+    /// Moves the files at or below `node` to the recycle bin `trash_id`, each remembering its
+    /// path, and removes the folders they leave. Returns the binned files.
+    pub async fn bin(&mut self, node: &Node, trash_id: NodeId) -> Result<Vec<Node>, DbError> {
+        let binned = bin_subtree(&mut self.conn, self.owner, node, trash_id).await?;
+        // The files have left the folders, so removing them takes nothing else along.
+        sqlx::query("DELETE FROM nodes WHERE id = $1 AND owner_id = $2 AND kind = 'folder'")
+            .bind(node.id)
+            .bind(self.owner)
+            .execute(&mut *self.conn)
+            .await?;
+        Ok(binned)
+    }
+
+    /// Locks the binned files among `ids`, ordered by when they were binned. Ids of live
+    /// nodes are left out; any other id is `NotFound`.
+    pub async fn lock_binned(&mut self, ids: &[NodeId]) -> Result<Vec<TrashedNode>, DbError> {
+        let mut unique = ids.iter().map(|id| id.0).collect::<Vec<Uuid>>();
+        unique.sort_unstable();
+        unique.dedup();
+        let known = sqlx::query_scalar::<_, i64>(concat!(
+            "SELECT count(*) FROM nodes WHERE id = ANY($1) AND owner_id = $2 \
+             AND (trashed_at IS NOT NULL OR ",
+            visible!("nodes"),
+            ")"
+        ))
+        .bind(&unique)
+        .bind(self.owner)
+        .fetch_one(&mut *self.conn)
+        .await?;
+        if usize::try_from(known).ok() != Some(unique.len()) {
+            return Err(DbError::NotFound);
+        }
+        let binned = sqlx::query_as::<_, TrashedNode>(concat!(
+            "SELECT ",
+            node_columns!(),
+            ", t.original_path, n.trashed_at \
+             FROM nodes n JOIN trash_entries t ON t.node_id = n.id \
+             WHERE n.id = ANY($1) AND n.owner_id = $2 AND n.trashed_at IS NOT NULL \
+             ORDER BY n.trashed_at, t.original_path, n.id \
+             FOR UPDATE OF n"
+        ))
+        .bind(&unique)
+        .bind(self.owner)
+        .fetch_all(&mut *self.conn)
+        .await?;
+        Ok(binned)
+    }
+
+    /// Forgets where the files `ids` were binned from, once they left the bin.
+    pub async fn forget_trash_entries(&mut self, ids: &[NodeId]) -> Result<(), DbError> {
+        sqlx::query(
+            "DELETE FROM trash_entries t USING nodes n \
+             WHERE t.node_id = n.id AND n.owner_id = $2 AND t.node_id = ANY($1)",
+        )
+        .bind(ids.iter().map(|id| id.0).collect::<Vec<Uuid>>())
+        .bind(self.owner)
+        .execute(&mut *self.conn)
+        .await?;
+        Ok(())
+    }
+}
+
+/// Moves the files at or below `node` to the recycle bin, remembering their paths. Folders
+/// stay where they are.
+async fn bin_subtree(
     conn: &mut PgConnection,
     owner: UserId,
-    id: NodeId,
-    parent: Option<NodeId>,
+    node: &Node,
     trash_id: NodeId,
 ) -> Result<Vec<Node>, DbError> {
     let directory = sqlx::query_scalar::<_, String>(
@@ -206,7 +161,7 @@ pub(crate) async fn bin_subtree(
              FROM nodes n JOIN chain c ON n.id = c.parent_id AND n.owner_id = $2 \
              ) SELECT name FROM chain ORDER BY depth DESC",
     )
-    .bind(parent)
+    .bind(node.parent_id)
     .bind(owner)
     .fetch_all(&mut *conn)
     .await?
@@ -231,7 +186,7 @@ pub(crate) async fn bin_subtree(
         node_columns!(),
         ""
     ))
-    .bind(id)
+    .bind(node.id)
     .bind(owner)
     .bind(directory)
     .bind(trash_id)
@@ -240,7 +195,7 @@ pub(crate) async fn bin_subtree(
     Ok(trashed)
 }
 
-pub(crate) async fn special_folders(
+async fn special_folders(
     conn: &mut PgConnection,
     owner: UserId,
 ) -> Result<SpecialFolders, DbError> {
@@ -305,6 +260,29 @@ mod tests {
         db.create_node(owner, new).await.expect("file")
     }
 
+    async fn bin(db: &Db, owner: UserId, node: &Node) {
+        let mut tx = db.transaction(owner).await.expect("tx");
+        let trash = tx.special_folders().await.expect("folders").trash_id;
+        tx.bin(node, trash).await.expect("bin");
+        tx.commit().await.expect("commit");
+    }
+
+    async fn restore(db: &Db, owner: UserId, node: &Node) {
+        let mut tx = db.transaction(owner).await.expect("tx");
+        let lost_and_found = tx
+            .special_folders()
+            .await
+            .expect("folders")
+            .lost_and_found_id;
+        let binned = tx.lock_binned(&[node.id]).await.expect("binned");
+        assert_eq!(binned.len(), 1);
+        tx.relocate(node.id, Some(lost_and_found), &node.name, true)
+            .await
+            .expect("relocate");
+        tx.forget_trash_entries(&[node.id]).await.expect("forget");
+        tx.commit().await.expect("commit");
+    }
+
     #[sqlx::test(migrations = "../../migrations")]
     async fn users_get_a_hidden_trash_folder_named_after_its_id(pool: PgPool) {
         let db = Db::from_pool(pool);
@@ -343,7 +321,7 @@ mod tests {
         let binned = file(&db, alice, None, "binned.txt").await;
         file(&db, alice, None, "live.txt").await;
         file(&db, bob, None, "bobs.txt").await;
-        db.trash_node(alice, binned.id).await.expect("trash");
+        bin(&db, alice, &binned).await;
 
         sqlx::query("DELETE FROM users WHERE id = $1")
             .bind(alice)
@@ -377,7 +355,7 @@ mod tests {
         db.upsert_name_entry(alice, node.id, "a txt")
             .await
             .expect("index");
-        db.trash_node(alice, node.id).await.expect("trash");
+        bin(&db, alice, &node).await;
         assert!(
             db.search_nodes(alice, "a:*", 10)
                 .await
@@ -401,9 +379,7 @@ mod tests {
                 .expect("s")
                 .is_empty()
         );
-        db.restore(alice, &[node.id], OnConflict::Abort)
-            .await
-            .expect("restore");
+        restore(&db, alice, &node).await;
         db.upsert_name_entry(alice, node.id, "a txt")
             .await
             .expect("index");

@@ -2,9 +2,12 @@
 
 use std::collections::HashMap;
 
-use db::{Node, NodeId, NodeKind, SharedRoot, StoreOptions, StoreOutcome, UserId};
+use db::{Node, NodeId, NodeKind, SharedRoot, UserId};
 
-use crate::{Actor, FilesError, MAX_ARCHIVE_ENTRIES, NodeService, content::new_content, emitted};
+use crate::{
+    Actor, FilesError, MAX_ARCHIVE_ENTRIES, NodeService, StoreOptions, StoreOutcome,
+    content::new_content, emitted, tree,
+};
 
 /// What saving copies of shared items made in the reader's tree.
 #[derive(Debug, Default)]
@@ -53,11 +56,15 @@ impl NodeService {
             keep_both: true,
             ..StoreOptions::default()
         };
-        let stored = self
-            .content
-            .db
-            .store_file_with(caller, parent, &node.name, content, options)
-            .await;
+        let stored = tree::store_file(
+            &self.content.db,
+            caller,
+            parent,
+            &node.name,
+            content,
+            options,
+        )
+        .await;
         self.content.finish_store(caller, staged, stored).await
     }
 

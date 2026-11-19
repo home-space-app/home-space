@@ -7,7 +7,7 @@ use axum::{
     routing::{get, post, put},
 };
 
-use db::NodeUpdate;
+use files::NodeUpdate;
 use protocol::{
     ContentQuery, CreateFolderRequest, FileVersion, ListQuery, MoveRequest, MoveResponse, Node,
     NodeId, NodeProperties, TicketRequest, UpdateRequest, UploadQuery,

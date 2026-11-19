@@ -12,6 +12,7 @@ mod services;
 mod store;
 mod transfers;
 mod trash;
+mod tree;
 mod uploads;
 mod versions;
 
@@ -24,5 +25,9 @@ pub use services::{DEFAULT_CHUNK_BYTES, FileServices, FilesConfig};
 pub use store::BlobStore;
 pub use transfers::{DEFAULT_TRANSFER_TTL, MAX_TRANSFER_ITEMS, SavedTransfer, TransferService};
 pub use trash::TrashService;
+pub use tree::{
+    BlobOp, MoveBatch, MoveConflict, MoveOutcome, NodeUpdate, StoreOptions, StoreOutcome,
+    TrashOutcome,
+};
 pub use uploads::{ChunkOutcome, UploadService, UploadStatus, UploadTarget};
 pub use versions::VersionService;

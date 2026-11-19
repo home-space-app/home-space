@@ -18,14 +18,15 @@ use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use db::{NewContent, NewUpload, NodeKind, StoreOptions, StoreOutcome, Upload, UserId};
+use db::{NewContent, NewUpload, NodeKind, Upload, UserId};
 use protocol::TransferState;
 
 use events::DomainEvent;
 
 use crate::{
-    Actor, BodyError, FilesError,
+    Actor, BodyError, FilesError, StoreOptions, StoreOutcome,
     content::{ContentStore, new_content},
+    tree,
 };
 
 mod types;
@@ -321,10 +322,7 @@ impl UploadService {
         };
         let stored = match upload.node_id {
             Some(node) => {
-                self.content
-                    .db
-                    .replace_file_content(owner, node, content(&upload.name))
-                    .await
+                tree::replace_content(&self.content.db, owner, node, content(&upload.name)).await
             }
             None => {
                 if let Some(parent) = upload.parent_id
@@ -338,16 +336,15 @@ impl UploadService {
                     version_of: upload.version_of,
                     auto_upload: upload.auto_upload,
                 };
-                self.content
-                    .db
-                    .store_file_with(
-                        owner,
-                        upload.parent_id,
-                        &upload.name,
-                        content(&upload.name),
-                        options,
-                    )
-                    .await
+                tree::store_file(
+                    &self.content.db,
+                    owner,
+                    upload.parent_id,
+                    &upload.name,
+                    content(&upload.name),
+                    options,
+                )
+                .await
             }
         };
         self.content.finish_store(owner, staged, stored).await

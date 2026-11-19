@@ -4,7 +4,7 @@
 
 use std::fmt::Write;
 
-use db::MoveBatch;
+use files::MoveBatch;
 use protocol::{
     Account, Conflict, MoveResponse, Node, PublicShare, ReceivedShare, Share, ShareRecipient,
     SharedNode, StorageUsage, TransferItem, TransferSummary, UserRef,

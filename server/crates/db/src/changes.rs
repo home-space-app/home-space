@@ -14,6 +14,15 @@ pub struct NodeChange {
     pub device_id: Option<Uuid>,
 }
 
+/// What an owner's change journal holds after a position.
+#[derive(Clone, Debug)]
+pub enum ChangesSince {
+    /// The changes made since, a page of them.
+    Kept(ChangeBatch),
+    /// Some of the changes made since were pruned from the journal.
+    Pruned,
+}
+
 /// A page of an owner's change journal.
 #[derive(Clone, Debug)]
 pub struct ChangeBatch {
@@ -31,13 +40,13 @@ impl Db {
     ///
     /// Without `since` only the cursor where the journal ends is returned, for a client that
     /// is about to read the whole tree. A `since` older than what was pruned is
-    /// [`DbError::Pruned`]: the changes in between are gone.
+    /// [`ChangesSince::Pruned`]: the changes in between are gone.
     pub async fn changes(
         &self,
         owner: UserId,
         since: Option<i64>,
         limit: i64,
-    ) -> Result<ChangeBatch, DbError> {
+    ) -> Result<ChangesSince, DbError> {
         let pruned = sqlx::query_scalar::<_, i64>(
             "SELECT through FROM node_changes_pruned WHERE owner_id = $1",
         )
@@ -52,14 +61,14 @@ impl Db {
             .bind(owner)
             .fetch_one(self.pool())
             .await?;
-            return Ok(ChangeBatch {
+            return Ok(ChangesSince::Kept(ChangeBatch {
                 changes: Vec::new(),
                 cursor: end.unwrap_or(0).max(pruned),
                 more: false,
-            });
+            }));
         };
         if since < pruned {
-            return Err(DbError::Pruned);
+            return Ok(ChangesSince::Pruned);
         }
         let mut latest = sqlx::query_as::<_, (NodeId, i64, Option<Uuid>)>(
             "SELECT node_id, seq, device_id FROM ( \
@@ -103,11 +112,11 @@ impl Db {
                 }
             })
             .collect();
-        Ok(ChangeBatch {
+        Ok(ChangesSince::Kept(ChangeBatch {
             changes,
             cursor,
             more,
-        })
+        }))
     }
 
     /// Drops the entries of each node but its latest; returns how many were dropped.
@@ -153,7 +162,7 @@ impl Db {
 mod tests {
     use sqlx::PgPool;
 
-    use crate::{NewContent, NewNode, NodeKind, NodeUpdate};
+    use crate::{NewContent, NewNode, NodeKind};
 
     use super::*;
 
@@ -177,14 +186,29 @@ mod tests {
             mime: "text/plain".to_owned(),
             modified_at: None,
         };
-        db.store_file(owner, parent, name, content)
+        let mut tx = db.transaction(owner).await.expect("tx");
+        let file = tx.insert_file(parent, name, &content).await.expect("file");
+        tx.commit().await.expect("commit");
+        file
+    }
+
+    async fn rename(db: &Db, owner: UserId, node: &Node, name: &str) {
+        let mut tx = db.transaction(owner).await.expect("tx");
+        tx.relocate(node.id, node.parent_id, name, true)
             .await
-            .expect("file")
-            .into_node()
+            .expect("rename");
+        tx.commit().await.expect("commit");
+    }
+
+    async fn read(db: &Db, owner: UserId, since: Option<i64>, limit: i64) -> ChangeBatch {
+        match db.changes(owner, since, limit).await.expect("changes") {
+            ChangesSince::Kept(batch) => batch,
+            ChangesSince::Pruned => panic!("the changes were pruned"),
+        }
     }
 
     async fn cursor(db: &Db, owner: UserId) -> i64 {
-        db.changes(owner, None, 100).await.expect("cursor").cursor
+        read(db, owner, None, 100).await.cursor
     }
 
     fn ids(batch: &ChangeBatch) -> Vec<NodeId> {
@@ -201,14 +225,8 @@ mod tests {
             .id;
         let start = cursor(&db, alice).await;
         let node = file(&db, alice, None, "a.txt").await;
-        let update = NodeUpdate {
-            name: Some("b.txt".to_owned()),
-            ..NodeUpdate::default()
-        };
-        db.update_node(alice, node.id, update)
-            .await
-            .expect("rename");
-        let batch = db.changes(alice, Some(start), 100).await.expect("changes");
+        rename(&db, alice, &node, "b.txt").await;
+        let batch = read(&db, alice, Some(start), 100).await;
         assert_eq!(ids(&batch), [node.id]);
         let current = batch.changes[0].node.as_ref().expect("live");
         assert_eq!(current.name, "b.txt");
@@ -228,8 +246,11 @@ mod tests {
         let dir = folder(&db, alice, "dir").await;
         let inner = file(&db, alice, Some(dir.id), "a.txt").await;
         let start = cursor(&db, alice).await;
-        db.trash_node(alice, dir.id).await.expect("trash");
-        let batch = db.changes(alice, Some(start), 100).await.expect("changes");
+        let mut tx = db.transaction(alice).await.expect("tx");
+        let trash = tx.special_folders().await.expect("folders").trash_id;
+        tx.bin(&dir, trash).await.expect("bin");
+        tx.commit().await.expect("commit");
+        let batch = read(&db, alice, Some(start), 100).await;
         let changed = ids(&batch);
         assert_eq!(changed.len(), 2);
         assert!(changed.contains(&dir.id) && changed.contains(&inner.id));
@@ -253,14 +274,11 @@ mod tests {
         let first = file(&db, alice, None, "1.txt").await;
         file(&db, bob, None, "bob.txt").await;
         let second = file(&db, alice, None, "2.txt").await;
-        let page = db.changes(alice, Some(start), 1).await.expect("page");
+        let page = read(&db, alice, Some(start), 1).await;
         assert_eq!((ids(&page), page.more), (vec![first.id], true));
-        let next = db.changes(alice, Some(page.cursor), 1).await.expect("next");
+        let next = read(&db, alice, Some(page.cursor), 1).await;
         assert_eq!((ids(&next), next.more), (vec![second.id], false));
-        let empty = db
-            .changes(alice, Some(next.cursor), 1)
-            .await
-            .expect("empty");
+        let empty = read(&db, alice, Some(next.cursor), 1).await;
         assert_eq!((empty.changes.len(), empty.cursor), (0, next.cursor));
     }
 
@@ -276,24 +294,18 @@ mod tests {
         let renamed = file(&db, alice, None, "a.txt").await;
         let kept = file(&db, alice, None, "b.txt").await;
         let middle = cursor(&db, alice).await;
-        let update = NodeUpdate {
-            name: Some("c.txt".to_owned()),
-            ..NodeUpdate::default()
-        };
-        db.update_node(alice, renamed.id, update)
-            .await
-            .expect("rename");
-        let before = db.changes(alice, Some(start), 100).await.expect("before");
-        let since_middle = db.changes(alice, Some(middle), 100).await.expect("middle");
+        rename(&db, alice, &renamed, "c.txt").await;
+        let before = read(&db, alice, Some(start), 100).await;
+        let since_middle = read(&db, alice, Some(middle), 100).await;
 
         let dropped = db.compact_changes().await.expect("compact");
 
         assert!(dropped > 0);
-        let after = db.changes(alice, Some(start), 100).await.expect("after");
+        let after = read(&db, alice, Some(start), 100).await;
         assert_eq!(ids(&after), ids(&before));
         assert_eq!(after.cursor, before.cursor);
         assert_eq!(
-            ids(&db.changes(alice, Some(middle), 100).await.expect("middle")),
+            ids(&read(&db, alice, Some(middle), 100).await),
             ids(&since_middle)
         );
         assert!(ids(&after).contains(&kept.id));
@@ -317,11 +329,11 @@ mod tests {
         assert!(pruned > 0);
         assert!(matches!(
             db.changes(alice, Some(start), 100).await,
-            Err(DbError::Pruned)
+            Ok(ChangesSince::Pruned)
         ));
         let end = cursor(&db, alice).await;
         assert!(end > start);
-        let batch = db.changes(alice, Some(end), 100).await.expect("from end");
+        let batch = read(&db, alice, Some(end), 100).await;
         assert!(batch.changes.is_empty());
     }
 
@@ -337,15 +349,9 @@ mod tests {
         let laptop = Uuid::now_v7();
         let first = folder(&db.on_device(Some(laptop)), alice, "a").await;
         let second = folder(&db.on_device(Some(laptop)), alice, "b").await;
-        let update = NodeUpdate {
-            name: Some("c".to_owned()),
-            parent_id: crate::Patch::Keep,
-        };
-        db.update_node(alice, second.id, update)
-            .await
-            .expect("rename");
+        rename(&db, alice, &second, "c").await;
 
-        let batch = db.changes(alice, Some(start), 100).await.expect("changes");
+        let batch = read(&db, alice, Some(start), 100).await;
 
         let devices: Vec<(NodeId, Option<Uuid>)> = batch
             .changes
