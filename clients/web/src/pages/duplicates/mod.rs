@@ -23,6 +23,31 @@ use crate::{
 use groups::GroupRows;
 use outdated::OutdatedRow;
 
+/// Which list the page shows; identical files first.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum View {
+    Copies,
+    Outdated,
+}
+
+impl View {
+    const ALL: [Self; 2] = [Self::Copies, Self::Outdated];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Copies => COPIES_TITLE,
+            Self::Outdated => OUTDATED_TITLE,
+        }
+    }
+
+    fn tab_id(self) -> &'static str {
+        match self {
+            Self::Copies => "duplicates-copies",
+            Self::Outdated => "duplicates-outdated",
+        }
+    }
+}
+
 #[component]
 pub fn DuplicatesPage(auth: Auth) -> impl IntoView {
     let report = RwSignal::new(DuplicatesReport::default());
@@ -30,6 +55,7 @@ pub fn DuplicatesPage(auth: Auth) -> impl IntoView {
     let error = RwSignal::new(None::<String>);
     let expanded = RwSignal::new(HashSet::<String>::new());
     let deleting = RwSignal::new(None::<Vec<Node>>);
+    let showing = RwSignal::new(View::Copies);
     let list = load::load(
         || async { session::client().duplicates().await },
         move |result| {
@@ -77,74 +103,108 @@ pub fn DuplicatesPage(auth: Auth) -> impl IntoView {
             </div>
             <ErrorAlert message=error />
             <div class="explorer__scroll duplicates">
-                <section class="duplicates__section" aria-labelledby="duplicates-copies">
-                    <h2 class="duplicates__title" id="duplicates-copies">{COPIES_TITLE}</h2>
-                    <Show when=move || !report.read().groups.is_empty()>
-                        <table class="node-table duplicates__table">
-                            <thead class="node-table__head">
-                                <tr>
-                                    <th class="node-table__header-cell">"Name"</th>
-                                    <th class="node-table__header-cell">"Location"</th>
-                                    <th class="node-table__header-cell node-table__header-cell--size">
-                                        "Size"
-                                    </th>
-                                    <th class="node-table__header-cell node-table__header-cell--modified">
-                                        "Modified"
-                                    </th>
-                                    <th class="node-table__header-cell node-table__cell--actions"></th>
-                                </tr>
-                            </thead>
-                            <tbody class="node-table__body">
-                                <For
-                                    each=move || report.get().groups
-                                    key=|group| {
-                                        (
-                                            group.sha256.clone(),
-                                            group
-                                                .files
-                                                .iter()
-                                                .map(|file| (file.node.id, file.location.clone()))
-                                                .collect::<Vec<_>>(),
-                                        )
-                                    }
-                                    children=move |group| {
-                                        view! { <GroupRows group expanded deleting /> }
-                                    }
-                                />
-                            </tbody>
-                        </table>
+                <div class="segmented duplicates__switch" role="tablist" aria-label="Show">
+                    {View::ALL
+                        .into_iter()
+                        .map(|choice| {
+                            let chosen = move || showing.get() == choice;
+                            let count = move || match choice {
+                                View::Copies => report.read().groups.len(),
+                                View::Outdated => report.read().outdated.len(),
+                            };
+                            view! {
+                                <button
+                                    type="button"
+                                    role="tab"
+                                    id=choice.tab_id()
+                                    aria-controls="duplicates-panel"
+                                    class="segmented__option duplicates__tab"
+                                    class:segmented__option--active=chosen
+                                    aria-selected=move || chosen().to_string()
+                                    on:click=move |_| showing.set(choice)
+                                >
+                                    {choice.label()}
+                                    <Show when=move || loaded.get()>
+                                        <span class="duplicates__count">{count}</span>
+                                    </Show>
+                                </button>
+                            }
+                        })
+                        .collect_view()}
+                </div>
+                <section
+                    class="duplicates__section"
+                    id="duplicates-panel"
+                    role="tabpanel"
+                    aria-labelledby=move || showing.get().tab_id()
+                >
+                    <Show when=move || showing.get() == View::Copies>
+                        <Show when=move || !report.read().groups.is_empty()>
+                            <table class="node-table duplicates__table">
+                                <thead class="node-table__head">
+                                    <tr>
+                                        <th class="node-table__header-cell">"Name"</th>
+                                        <th class="node-table__header-cell">"Location"</th>
+                                        <th class="node-table__header-cell node-table__header-cell--size">
+                                            "Size"
+                                        </th>
+                                        <th class="node-table__header-cell node-table__header-cell--modified">
+                                            "Modified"
+                                        </th>
+                                        <th class="node-table__header-cell node-table__cell--actions"></th>
+                                    </tr>
+                                </thead>
+                                <tbody class="node-table__body">
+                                    <For
+                                        each=move || report.get().groups
+                                        key=|group| {
+                                            (
+                                                group.sha256.clone(),
+                                                group
+                                                    .files
+                                                    .iter()
+                                                    .map(|file| (file.node.id, file.location.clone()))
+                                                    .collect::<Vec<_>>(),
+                                            )
+                                        }
+                                        children=move |group| {
+                                            view! { <GroupRows group expanded deleting /> }
+                                        }
+                                    />
+                                </tbody>
+                            </table>
+                        </Show>
+                        <Show when=no_groups>
+                            <p class="explorer__empty">{NO_COPIES}</p>
+                        </Show>
                     </Show>
-                    <Show when=no_groups>
-                        <p class="explorer__empty">{NO_COPIES}</p>
-                    </Show>
-                </section>
-                <section class="duplicates__section" aria-labelledby="duplicates-outdated">
-                    <h2 class="duplicates__title" id="duplicates-outdated">{OUTDATED_TITLE}</h2>
-                    <p class="duplicates__hint">{OUTDATED_HINT}</p>
-                    <Show when=move || !report.read().outdated.is_empty()>
-                        <table class="node-table duplicates__table">
-                            <thead class="node-table__head">
-                                <tr>
-                                    <th class="node-table__header-cell">"Name"</th>
-                                    <th class="node-table__header-cell">"Location"</th>
-                                    <th class="node-table__header-cell">"Matches"</th>
-                                    <th class="node-table__header-cell node-table__header-cell--modified">
-                                        "Modified"
-                                    </th>
-                                    <th class="node-table__header-cell node-table__cell--actions"></th>
-                                </tr>
-                            </thead>
-                            <tbody class="node-table__body">
-                                <For
-                                    each=move || report.get().outdated
-                                    key=|found| (found.file.node.id, found.source.node.id, found.version)
-                                    children=move |found| view! { <OutdatedRow found deleting /> }
-                                />
-                            </tbody>
-                        </table>
-                    </Show>
-                    <Show when=no_outdated>
-                        <p class="explorer__empty">{NO_OUTDATED}</p>
+                    <Show when=move || showing.get() == View::Outdated>
+                        <p class="duplicates__hint">{OUTDATED_HINT}</p>
+                        <Show when=move || !report.read().outdated.is_empty()>
+                            <table class="node-table duplicates__table">
+                                <thead class="node-table__head">
+                                    <tr>
+                                        <th class="node-table__header-cell">"Name"</th>
+                                        <th class="node-table__header-cell">"Location"</th>
+                                        <th class="node-table__header-cell">"Matches"</th>
+                                        <th class="node-table__header-cell node-table__header-cell--modified">
+                                            "Modified"
+                                        </th>
+                                        <th class="node-table__header-cell node-table__cell--actions"></th>
+                                    </tr>
+                                </thead>
+                                <tbody class="node-table__body">
+                                    <For
+                                        each=move || report.get().outdated
+                                        key=|found| (found.file.node.id, found.source.node.id, found.version)
+                                        children=move |found| view! { <OutdatedRow found deleting /> }
+                                    />
+                                </tbody>
+                            </table>
+                        </Show>
+                        <Show when=no_outdated>
+                            <p class="explorer__empty">{NO_OUTDATED}</p>
+                        </Show>
                     </Show>
                 </section>
             </div>

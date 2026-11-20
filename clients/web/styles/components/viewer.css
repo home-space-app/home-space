@@ -177,6 +177,8 @@
   background: var(--color-bg);
   box-shadow: var(--shadow-sm);
   overflow: auto;
+  /* The pages size themselves to the view with `cq` units (see pdf.rs). */
+  container-type: size;
 }
 
 .pdf-viewer[hidden] {
