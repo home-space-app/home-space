@@ -15,8 +15,8 @@ android {
         applicationId = "app.homespace.android"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = providers.gradleProperty("homespace.versionCode").orNull?.toInt() ?: 8
-        versionName = providers.gradleProperty("homespace.versionName").orNull ?: "0.12.1"
+        versionCode = providers.gradleProperty("homespace.versionCode").orNull?.toInt() ?: 9
+        versionName = providers.gradleProperty("homespace.versionName").orNull ?: "0.12.2"
     }
 
     buildFeatures {
