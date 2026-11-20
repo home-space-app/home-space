@@ -369,7 +369,10 @@ jobs:
             -keypass:env KEY_PASSWORD \
             -sigalg SHA256withRSA -digestalg SHA-256 \
             "$base.aab" "$KEY_ALIAS"
-          jarsigner -verify -strict "$base.aab"
+          # No -strict: upload keys are self-signed, so -strict always fails PKIX path
+          # validation (exit 4). Without it, jarsigner still exits non-zero if any
+          # entry is unsigned or its digest does not match.
+          jarsigner -verify "$base.aab"
           rm "$RUNNER_TEMP/release.jks"
           echo "APK=$base.apk" >> "$GITHUB_ENV"
           echo "AAB=$base.aab" >> "$GITHUB_ENV"
