@@ -2,7 +2,7 @@
 
 use iced::{
     Alignment, Element, Length, Padding, Rectangle,
-    widget::{Column, Row, button, center, container, row, space, text},
+    widget::{Column, Row, button, center, container, row, space, text, tooltip},
 };
 
 use super::anchor::Anchor;
@@ -52,6 +52,8 @@ const LABEL_GAP: f32 = 6.0;
 const PAGE_ACTION_GAP: f32 = 12.0;
 const BUTTON_PADDING_Y: f32 = 8.0;
 const GHOST_PADDING_X: f32 = 10.0;
+const TIP_PADDING: [f32; 2] = [4.0, 8.0];
+const TIP_SIZE: f32 = 12.0;
 const OUTLINED_PADDING_X: f32 = 16.0;
 const SMALL_PADDING: [f32; 2] = [5.0, 10.0];
 const SMALL_SIZE: f32 = 13.0;
@@ -233,6 +235,26 @@ pub(super) fn ghost<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let icon = icon.map(|icon| (icon, Tint::Text));
     sized(icon, label, theme::tool, GHOST_PADDING_X, message)
+}
+
+/// A flat button showing only `icon`, named by a tooltip below it.
+pub(super) fn ghost_icon<'a, M: Clone + 'a>(
+    icon: Icon,
+    label: &'a str,
+    message: Option<M>,
+) -> Element<'a, M> {
+    let tint = if message.is_some() { Tint::Text } else { Tint::Disabled };
+    tooltip(
+        button(icon.view(ICON_SIZE, tint))
+            .padding(BUTTON_PADDING_Y)
+            .style(theme::tool)
+            .on_press_maybe(message),
+        container(text(label).size(TIP_SIZE))
+            .padding(TIP_PADDING)
+            .style(theme::menu),
+        tooltip::Position::Bottom,
+    )
+    .into()
 }
 
 /// A page's top line: `Loading…` while it loads, then `button`.
