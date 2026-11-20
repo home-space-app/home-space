@@ -1,5 +1,6 @@
 //! A file shared with the user, open in its built-in viewer: read-only, with the other
-//! pictures of its folder a button or a key away.
+//! pictures of its folder a button or a key away. PDFs and videos open in the same viewers as
+//! the user's own files.
 
 use leptos::{ev, prelude::*, task::spawn_local};
 use leptos_router::{NavigateOptions, hooks::use_navigate};
@@ -12,18 +13,16 @@ use client_core::{
     text::TextDoc,
     viewers::{Viewer, ViewerKind},
 };
-use protocol::{NodeId, SharedNode, TicketRequest};
+use protocol::{NodeId, SharedNode};
 
 use super::{
-    NO_VIEWER, ViewerHeader, download_failed, fetch_bytes,
+    NO_VIEWER, ViewerHeader,
     image::{has_modifier, is_typing, object_url, revoke},
+    pdf::PdfViewer,
+    source::{Source, too_large},
+    video::VideoViewer,
 };
-use crate::{
-    icon::Icon,
-    route,
-    session::{self, Auth},
-    viewers::viewers,
-};
+use crate::{icon::Icon, route, session::Auth, viewers::viewers};
 
 const LOADING: &str = "Loading…";
 const KEY_SPACE: &str = " ";
@@ -63,11 +62,40 @@ pub fn SharedViewer(
             move |_| name.clone()
         }),
     };
+    let source = Source::Shared {
+        share,
+        node: item.id,
+    };
+    match viewer {
+        Some(
+            viewer @ Viewer {
+                kind: ViewerKind::Pdf,
+                ..
+            },
+        ) => {
+            return view! {
+                <PdfViewer
+                    auth
+                    source
+                    name=item.name.clone()
+                    max_bytes=viewer.max_bytes
+                    header
+                    on_download
+                />
+            }
+            .into_any();
+        }
+        Some(Viewer {
+            kind: ViewerKind::Video,
+            ..
+        }) => return view! { <VideoViewer auth source header on_download /> }.into_any(),
+        _ => {}
+    }
     let shown = RwSignal::new(None::<Shown>);
     let error = RwSignal::new(None::<String>);
 
     if let Some(viewer) = viewer {
-        load(auth, share, item.clone(), viewer, shown, error);
+        load(auth, source, item.clone(), viewer, shown, error);
     }
     on_cleanup(move || {
         if let Some(Shown::Image(url)) = shown.get_untracked() {
@@ -174,49 +202,34 @@ pub fn SharedViewer(
         {move || error.get().map(|message| view! { <p class="alert alert--error" role="alert">{message}</p> })}
         <div class="viewer__body">{content}</div>
     }
+    .into_any()
 }
 
-/// Fetches `item` through a ticket for the share and hands it to the viewer.
+/// Fetches `item` through a ticket for the share and hands it to the text or image viewer.
 fn load(
     auth: Auth,
-    share: Uuid,
+    source: Source,
     item: SharedNode,
     viewer: Viewer,
     shown: RwSignal<Option<Shown>>,
     error: RwSignal<Option<String>>,
 ) {
     spawn_local(async move {
-        let client = session::client();
-        let ticket = match client
-            .ticket(&TicketRequest::SharedFile {
-                share_id: share,
-                node_id: item.id,
-            })
+        let result = source
+            .bytes(auth)
             .await
-        {
-            Ok(ticket) => ticket,
-            Err(err) => {
-                error.set(Some(auth.fail(&err)));
-                return;
-            }
-        };
-        let url = client.received_file_url(share, item.id, &ticket.ticket);
-        let result = fetch_bytes(&url)
-            .await
-            .map_err(|err| download_failed(&err))
             .and_then(|bytes| {
                 if u64::try_from(bytes.len()).is_ok_and(|len| len <= viewer.max_bytes) {
                     Ok(bytes)
                 } else {
-                    Err(format!(
-                        "{} is too large to show here. Download it to open it.",
-                        item.name
-                    ))
+                    Err(too_large(&item.name))
                 }
             })
             .and_then(|bytes| match viewer.kind {
                 ViewerKind::Text => Ok(Shown::Text(TextDoc::decode(&bytes).text)),
                 ViewerKind::Image => object_url(&bytes, &item.mime).map(Shown::Image),
+                // Shown by their own viewers, above.
+                ViewerKind::Pdf | ViewerKind::Video => Err(NO_VIEWER.to_owned()),
             });
         match result {
             Ok(content) => {

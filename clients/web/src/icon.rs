@@ -5,6 +5,7 @@ use protocol::{Node, NodeKind};
 
 const ICON_FOLDER: &str = "folder";
 const ICON_IMAGE: &str = "image";
+const ICON_VIDEO: &str = "movie";
 const ICON_DOCUMENT: &str = "description";
 const ICON_OTHER: &str = "draft";
 
@@ -18,6 +19,7 @@ pub fn kind_icon(kind: NodeKind, mime: &str) -> &'static str {
     match client_core::icon::kind_icon(kind, mime) {
         NodeIcon::Folder => ICON_FOLDER,
         NodeIcon::Image => ICON_IMAGE,
+        NodeIcon::Video => ICON_VIDEO,
         NodeIcon::Document => ICON_DOCUMENT,
         NodeIcon::Other => ICON_OTHER,
     }

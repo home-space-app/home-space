@@ -1,4 +1,5 @@
-//! The built-in viewers of the web client: the shared ones, plus the image types browsers show.
+//! The built-in viewers of the web client: the shared ones, plus the image types browsers show
+//! and video, which the browser's own player plays.
 
 use std::sync::LazyLock;
 
@@ -13,7 +14,9 @@ const BROWSER_IMAGE_TYPES: &[&str] = &[
 ];
 
 static VIEWERS: LazyLock<Viewers> = LazyLock::new(|| {
-    Viewers::shared().with_types(ViewerKind::Image, BROWSER_IMAGE_TYPES.iter().copied())
+    Viewers::shared()
+        .with_types(ViewerKind::Image, BROWSER_IMAGE_TYPES.iter().copied())
+        .with_video()
 });
 
 /// The viewers of this client.

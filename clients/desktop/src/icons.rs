@@ -254,6 +254,8 @@ pub fn kind_icon(kind: protocol::NodeKind, mime: &str) -> Icon {
     match client_core::icon::kind_icon(kind, mime) {
         NodeIcon::Folder => Icon::Folder,
         NodeIcon::Image => Icon::Image,
+        // Video opens with the system's player; it shares the icon of other files for now.
+        NodeIcon::Video => Icon::Other,
         NodeIcon::Document => Icon::Document,
         NodeIcon::Other => Icon::Other,
     }

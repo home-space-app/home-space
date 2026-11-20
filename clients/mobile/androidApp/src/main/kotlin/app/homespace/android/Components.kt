@@ -71,6 +71,8 @@ internal fun NodeTile(icon: EntryIcon, modifier: Modifier = Modifier, size: Dp =
     val drawable = when (icon) {
         EntryIcon.FOLDER -> R.drawable.ic_folder_filled
         EntryIcon.IMAGE -> R.drawable.ic_node_image
+        // No movie icon is bundled yet; video shares the icon of other files.
+        EntryIcon.VIDEO -> R.drawable.ic_node_draft
         EntryIcon.DOCUMENT -> R.drawable.ic_node_description
         EntryIcon.OTHER -> R.drawable.ic_node_draft
     }

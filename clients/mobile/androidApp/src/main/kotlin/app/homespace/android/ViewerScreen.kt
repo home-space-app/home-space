@@ -59,6 +59,8 @@ sealed interface OpenViewer {
         fun of(entry: Entry, info: ViewerInfo): OpenViewer = when (info.kind) {
             ViewerKind.TEXT -> TextViewerState(entry, info.editable)
             ViewerKind.IMAGE -> ImageViewerState(entry)
+            ViewerKind.PDF -> PdfViewerState(entry)
+            ViewerKind.VIDEO -> VideoViewerState(entry)
         }
     }
 }
@@ -137,6 +139,8 @@ fun ViewerScreen(session: Session.SignedIn, model: SessionViewModel, viewer: Ope
     when (viewer) {
         is TextViewerState -> TextViewerScreen(session, model, viewer)
         is ImageViewerState -> ImageViewerScreen(session, model, viewer)
+        is PdfViewerState -> PdfViewerScreen(session, model, viewer)
+        is VideoViewerState -> VideoViewerScreen(session, model, viewer)
     }
 }
 

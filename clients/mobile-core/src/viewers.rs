@@ -1,5 +1,6 @@
-//! The built-in viewers of [`client_core::viewers`] for the apps, reading the content the text
-//! and image viewers show, saving text, and listing the images the image viewer steps through.
+//! The built-in viewers of [`client_core::viewers`] for the apps, reading the content the text,
+//! image and PDF viewers show, saving text, listing the images the image viewer steps through,
+//! and the URLs the video player streams from.
 
 use std::sync::{LazyLock, PoisonError, RwLock};
 
@@ -9,19 +10,24 @@ use client_core::{
     text::{LineEnding, TextDoc},
     viewers::{self, Editing, Viewers},
 };
-use protocol::Node;
+use protocol::{Node, TicketRequest};
 
 use crate::{CoreClient, CoreError, Entry, files, off_ui_thread, parse_id};
 
-/// The viewers of the app: the shared ones, plus the types the phone decodes, which the app
-/// adds with [`add_viewer_types`] when it starts.
-static VIEWERS: LazyLock<RwLock<Viewers>> = LazyLock::new(|| RwLock::new(Viewers::shared()));
+/// The viewers of the app: the shared ones and video, which the phone's player plays, plus the
+/// types the phone decodes, which the app adds with [`add_viewer_types`] when it starts.
+static VIEWERS: LazyLock<RwLock<Viewers>> =
+    LazyLock::new(|| RwLock::new(Viewers::shared().with_video()));
 
 /// Which built-in viewer shows a file; the apps have one screen for each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum ViewerKind {
     Text,
     Image,
+    /// Shown with the platform's PDF renderer.
+    Pdf,
+    /// Played with the platform's player, from [`CoreClient::stream_url`].
+    Video,
 }
 
 impl From<viewers::ViewerKind> for ViewerKind {
@@ -29,6 +35,8 @@ impl From<viewers::ViewerKind> for ViewerKind {
         match kind {
             viewers::ViewerKind::Text => Self::Text,
             viewers::ViewerKind::Image => Self::Image,
+            viewers::ViewerKind::Pdf => Self::Pdf,
+            viewers::ViewerKind::Video => Self::Video,
         }
     }
 }
@@ -38,6 +46,8 @@ impl From<ViewerKind> for viewers::ViewerKind {
         match kind {
             ViewerKind::Text => Self::Text,
             ViewerKind::Image => Self::Image,
+            ViewerKind::Pdf => Self::Pdf,
+            ViewerKind::Video => Self::Video,
         }
     }
 }
@@ -75,6 +85,15 @@ pub struct ImageFile {
     /// The file as it was when its content was read.
     pub entry: Entry,
     /// The encoded picture, as stored.
+    pub bytes: Vec<u8>,
+}
+
+/// A PDF file to show in the PDF viewer.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PdfFile {
+    /// The file as it was when its content was read.
+    pub entry: Entry,
+    /// The document, as stored.
     pub bytes: Vec<u8>,
 }
 
@@ -129,6 +148,29 @@ impl CoreClient {
             entry: Entry::from(node),
             bytes,
         })
+    }
+
+    /// The current content of PDF file `id`, read like [`CoreClient::read_text`].
+    pub async fn read_pdf(&self, id: String) -> Result<PdfFile, CoreError> {
+        let (node, bytes) = self.read_content(&id).await?;
+        Ok(PdfFile {
+            entry: Entry::from(node),
+            bytes,
+        })
+    }
+
+    /// A URL the video player can stream file `id` from, in as many range requests as it needs,
+    /// for an hour. When the player fails after that, it asks for a new URL and resumes.
+    pub async fn stream_url(&self, id: String) -> Result<String, CoreError> {
+        let id = parse_id(&id)?;
+        let client = self.inner.clone();
+        off_ui_thread(async move {
+            let ticket = client
+                .ticket(&TicketRequest::Stream { node_id: id })
+                .await?;
+            Ok(client.download_url(id, &ticket.ticket))
+        })
+        .await
     }
 
     /// The files of the folder holding file `id` that its viewer steps through, by name. Empty
@@ -275,7 +317,7 @@ fn transport(err: reqwest::Error) -> CoreError {
 
 #[cfg(test)]
 mod tests {
-    use wiremock::matchers::{body_bytes, header, method, path};
+    use wiremock::matchers::{body_bytes, body_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
@@ -321,6 +363,47 @@ mod tests {
                 editable: false
             })
         );
+    }
+
+    #[test]
+    fn pdfs_have_the_read_only_pdf_viewer() {
+        assert_eq!(
+            viewer_for("application/pdf".into(), 1),
+            Some(ViewerInfo {
+                kind: ViewerKind::Pdf,
+                editable: false
+            })
+        );
+    }
+
+    #[test]
+    fn videos_of_any_size_have_the_video_viewer() {
+        assert_eq!(
+            viewer_for("video/mp4".into(), i64::MAX).map(|info| info.kind),
+            Some(ViewerKind::Video)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stream_url_carries_a_stream_ticket() {
+        let server = MockServer::start().await;
+        let core = signed_in(&server).await;
+        Mock::given(method("POST"))
+            .and(path(protocol::paths::TICKETS))
+            .and(body_json(
+                serde_json::json!({ "scope": "stream", "node_id": FILE_ID }),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "ticket": "t1", "expires_in": 3600 })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let url = core.stream_url(FILE_ID.into()).await.expect("url");
+
+        assert_eq!(url, format!("{}{}?ticket=t1", server.uri(), content_path()));
     }
 
     #[test]

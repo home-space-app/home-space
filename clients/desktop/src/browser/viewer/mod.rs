@@ -2,6 +2,7 @@
 //! [`client_core::viewers`].
 
 pub(super) mod image;
+pub(super) mod pdf;
 pub(super) mod text;
 
 use std::{path::PathBuf, sync::Arc};
@@ -38,11 +39,14 @@ const RELOAD: &str = "Reload";
 const PREVIOUS: &str = "Previous";
 const NEXT: &str = "Next";
 const NOT_LISTED: &str = "The other images of this folder could not be listed";
+/// Video opens with the system's player, so the desktop has no video viewer.
+const NO_PLAYER: &str = "This video opens with the system's player.";
 
 #[derive(Debug, Clone)]
 pub enum Message {
     Loaded(Result<Loaded, String>),
     Text(text::Message),
+    Pdf(pdf::Message),
     Edit,
     Cancel,
     /// Drops the edits and shows the version that came from elsewhere.
@@ -94,6 +98,7 @@ enum Body {
     Failed(String),
     Text(text::State),
     Image(image::State),
+    Pdf(pdf::State),
 }
 
 pub struct State {
@@ -164,18 +169,33 @@ impl State {
         match message {
             Message::Loaded(Ok(loaded)) => {
                 self.node = loaded.node;
+                self.changed_elsewhere = false;
+                let mut task = Task::none();
                 self.body = match self.viewer.kind {
                     ViewerKind::Text => {
                         Body::Text(text::State::new(TextDoc::decode(&loaded.bytes)))
                     }
                     ViewerKind::Image => Body::Image(image::State::new(&loaded.bytes)),
+                    ViewerKind::Pdf => match pdf::State::open(&loaded.bytes) {
+                        Ok((pdf, render)) => {
+                            task = render.map(Message::Pdf);
+                            Body::Pdf(pdf)
+                        }
+                        Err(err) => Body::Failed(err),
+                    },
+                    ViewerKind::Video => Body::Failed(NO_PLAYER.to_owned()),
                 };
-                self.changed_elsewhere = false;
+                return Outcome::Task(task);
             }
             Message::Loaded(Err(err)) => self.body = Body::Failed(err),
             Message::Text(message) => {
                 if let Body::Text(text) = &mut self.body {
                     text.update(message);
+                }
+            }
+            Message::Pdf(message) => {
+                if let Body::Pdf(pdf) = &mut self.body {
+                    return Outcome::Task(pdf.update(message).map(Message::Pdf));
                 }
             }
             Message::Edit => {
@@ -272,6 +292,9 @@ impl State {
         if self.viewer.kind.navigates() {
             return self.steps();
         }
+        if let Body::Pdf(pdf) = &self.body {
+            return pdf.action().map(Message::Pdf);
+        }
         let Body::Text(text) = &self.body else {
             return row![].into();
         };
@@ -328,6 +351,7 @@ impl State {
             Body::Failed(err) => parts::alert_error(Icon::Error, err.as_str(), None),
             Body::Text(text) => text.view().map(Message::Text),
             Body::Image(image) => image.view(),
+            Body::Pdf(pdf) => pdf.view().map(Message::Pdf),
         };
         let not_utf8 = match &self.body {
             Body::Text(text) if !text.is_editable() => {

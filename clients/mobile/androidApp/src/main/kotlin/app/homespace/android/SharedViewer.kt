@@ -48,6 +48,20 @@ fun SharedViewerScreen(
 ) {
     when (viewerFor(file.mime, file.size)?.kind) {
         ViewerKind.IMAGE -> SharedImages(session, file, siblings, onBack, onSessionEnded)
+        ViewerKind.PDF -> PdfScreen(
+            key = file.shareId to file.id,
+            title = file.name,
+            onBack = onBack,
+            read = { session.client.readSharedPdf(file) },
+            onSessionEnded = onSessionEnded,
+        )
+        ViewerKind.VIDEO -> VideoScreen(
+            key = file.shareId to file.id,
+            title = file.name,
+            onBack = onBack,
+            streamUrl = { session.client.sharedStreamUrl(file) },
+            onSessionEnded = onSessionEnded,
+        )
         else -> SharedText(session, file, onBack, onSessionEnded)
     }
 }

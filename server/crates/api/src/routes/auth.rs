@@ -229,7 +229,9 @@ async fn ticket(
     ApiJson(request): ApiJson<TicketRequest>,
 ) -> Result<Json<TicketResponse>, ApiError> {
     match request {
-        TicketRequest::Download { node_id } | TicketRequest::DownloadVersion { node_id, .. } => {
+        TicketRequest::Download { node_id }
+        | TicketRequest::DownloadVersion { node_id, .. }
+        | TicketRequest::Stream { node_id } => {
             state.files.nodes.get(user.id, node_id).await?;
         }
         TicketRequest::TransferItem { transfer_id, .. }
@@ -239,7 +241,9 @@ async fn ticket(
                 return Err(ApiError::Forbidden);
             }
         }
-        TicketRequest::SharedFile { share_id, .. } | TicketRequest::SharedArchive { share_id } => {
+        TicketRequest::SharedFile { share_id, .. }
+        | TicketRequest::SharedArchive { share_id }
+        | TicketRequest::SharedStream { share_id, .. } => {
             tenant.shares.received(user.id, share_id).await?;
         }
         TicketRequest::Events => {}

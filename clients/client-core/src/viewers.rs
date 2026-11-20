@@ -14,6 +14,9 @@ const PARAMETER_SEPARATOR: char = ';';
 const MIB: u64 = 1024 * 1024;
 const TEXT_MAX_BYTES: u64 = 2 * MIB;
 const IMAGE_MAX_BYTES: u64 = 50 * MIB;
+const PDF_MAX_BYTES: u64 = 200 * MIB;
+/// Videos stream from the server instead of being fetched whole, so their size is no limit.
+const VIDEO_MAX_BYTES: u64 = u64::MAX;
 
 /// `application/*` types whose content is plain text.
 pub const TEXT_LIKE_TYPES: &[&str] = &[
@@ -53,13 +56,17 @@ pub enum ViewerKind {
     Text,
     /// A picture, shown read-only; the other pictures of its folder are a step away.
     Image,
+    /// A PDF document, its pages shown read-only.
+    Pdf,
+    /// A video, streamed from the server and played read-only.
+    Video,
 }
 
 impl ViewerKind {
     /// Whether the viewer steps to the previous and next file of the same kind in a folder.
     pub fn navigates(self) -> bool {
         match self {
-            Self::Text => false,
+            Self::Text | Self::Pdf | Self::Video => false,
             Self::Image => true,
         }
     }
@@ -95,6 +102,13 @@ struct Registration {
 }
 
 const TEXT_PATTERNS: &[&str] = &["text/*"];
+
+/// The PDF types every client renders.
+pub const PDF_TYPES: &[&str] = &["application/pdf"];
+
+/// The video types a client that plays video registers with [`Viewers::with_video`]. Whether a
+/// given codec plays is up to the platform's player, which says so when it cannot.
+pub const VIDEO_TYPES: &[&str] = &["video/*"];
 
 /// The image types every client decodes; a client adds the ones only it can show with
 /// [`Viewers::with_types`].
@@ -137,19 +151,44 @@ impl Viewers {
             },
         };
         let image = Registration {
-            patterns: IMAGE_TYPES
-                .iter()
-                .map(|pattern| Cow::Borrowed(*pattern))
-                .collect(),
+            patterns: borrowed(IMAGE_TYPES),
             viewer: Viewer {
                 kind: ViewerKind::Image,
                 editing: Editing::ReadOnly,
                 max_bytes: IMAGE_MAX_BYTES,
             },
         };
+        let pdf = Registration {
+            patterns: borrowed(PDF_TYPES),
+            viewer: Viewer {
+                kind: ViewerKind::Pdf,
+                editing: Editing::ReadOnly,
+                max_bytes: PDF_MAX_BYTES,
+            },
+        };
         Self {
-            registrations: vec![text, image],
+            registrations: vec![text, image, pdf],
         }
+    }
+
+    /// These viewers with video too. Not every client plays video itself: one that does not
+    /// leaves video to the system's player.
+    pub fn with_video(mut self) -> Self {
+        if !self
+            .registrations
+            .iter()
+            .any(|registration| registration.viewer.kind == ViewerKind::Video)
+        {
+            self.registrations.push(Registration {
+                patterns: borrowed(VIDEO_TYPES),
+                viewer: Viewer {
+                    kind: ViewerKind::Video,
+                    editing: Editing::ReadOnly,
+                    max_bytes: VIDEO_MAX_BYTES,
+                },
+            });
+        }
+        self
     }
 
     /// These viewers with `types` also shown in the viewer of `kind`, with its editing mode and
@@ -200,6 +239,13 @@ impl Viewers {
             NodeKind::File => self.viewer_for(&node.mime, node.size),
         }
     }
+}
+
+fn borrowed(patterns: &'static [&'static str]) -> Vec<Cow<'static, str>> {
+    patterns
+        .iter()
+        .map(|pattern| Cow::Borrowed(*pattern))
+        .collect()
 }
 
 fn essence(mime: &str) -> String {
@@ -341,6 +387,56 @@ mod tests {
     fn only_images_navigate() {
         assert!(ViewerKind::Image.navigates());
         assert!(!ViewerKind::Text.navigates());
+        assert!(!ViewerKind::Pdf.navigates());
+        assert!(!ViewerKind::Video.navigates());
+    }
+
+    #[test]
+    fn pdfs_use_the_read_only_pdf_viewer() {
+        let viewer = Viewers::shared().viewer_for("application/pdf", 10).unwrap();
+        assert_eq!(viewer.kind, ViewerKind::Pdf);
+        assert!(!viewer.is_editable());
+    }
+
+    #[test]
+    fn pdfs_over_the_limit_have_no_viewer() {
+        let limit = i64::try_from(PDF_MAX_BYTES).unwrap();
+        assert!(
+            Viewers::shared()
+                .viewer_for("application/pdf", limit)
+                .is_some()
+        );
+        assert!(
+            Viewers::shared()
+                .viewer_for("application/pdf", limit + 1)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn video_has_no_viewer_unless_the_client_plays_it() {
+        assert_eq!(kind("video/mp4"), None);
+        let viewers = Viewers::shared().with_video();
+        let kinds: Vec<_> = ["video/mp4", "video/webm", "Video/QuickTime"]
+            .into_iter()
+            .map(|mime| viewers.viewer_for(mime, 10).map(|viewer| viewer.kind))
+            .collect();
+        assert_eq!(kinds, [Some(ViewerKind::Video); 3]);
+    }
+
+    #[test]
+    fn videos_of_any_size_stream() {
+        let viewers = Viewers::shared().with_video();
+        assert!(viewers.viewer_for("video/mp4", i64::MAX).is_some());
+    }
+
+    #[test]
+    fn adding_video_twice_registers_it_once() {
+        let viewers = Viewers::shared().with_video().with_video();
+        assert_eq!(
+            viewers.registrations.len(),
+            Viewers::shared().registrations.len() + 1
+        );
     }
 
     #[test]

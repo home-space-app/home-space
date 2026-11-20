@@ -1,0 +1,19 @@
+[package]
+name = "pdf-core"
+description = "PDF pages for the viewers: the messages of the web client's PDF worker and, with `render`, the renderer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+hayro = { version = "0.9.0", optional = true }
+serde.workspace = true
+serde_json.workspace = true
+
+[features]
+# The renderer: hayro, which the desktop client and the web worker build in. The web client
+# itself leaves it out and only speaks the messages, so its wasm does not carry hayro.
+render = ["dep:hayro"]
+# A small PDF written by hand, for the clients' tests.
+sample = []

@@ -54,6 +54,67 @@ async fn an_interrupted_download_of_ones_own_file_resumes(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn a_stream_ticket_serves_every_range_a_player_asks_for(pool: PgPool) {
+    let app = setup(pool).await;
+    let token = app.user_token("alice").await;
+    let created = app.upload(&token, "name=clip.txt", "hello world").await;
+    let id = id_of(&created);
+    let ticket = app
+        .json(
+            Method::POST,
+            "/api/v1/tickets",
+            Some(&token),
+            json!({ "scope": "stream", "node_id": id }),
+        )
+        .await;
+    assert_eq!(ticket.json()["expires_in"], 3600);
+    let ticket = ticket.json()["ticket"].as_str().expect("ticket").to_owned();
+    let uri = format!("/api/v1/files/{id}/content?ticket={ticket}");
+
+    let mut parts = Vec::new();
+    for range in ["bytes=0-4", "bytes=6-"] {
+        let part = app
+            .send_with(
+                Method::GET,
+                &uri,
+                None,
+                Body::empty(),
+                None,
+                &[("range", range)],
+            )
+            .await;
+        assert_eq!(part.status, StatusCode::PARTIAL_CONTENT);
+        parts.push(part.body);
+    }
+
+    assert_eq!(parts, [b"hello".to_vec(), b"world".to_vec()]);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_download_ticket_serves_one_request(pool: PgPool) {
+    let app = setup(pool).await;
+    let token = app.user_token("alice").await;
+    let created = app.upload(&token, "name=hello.txt", "hello world").await;
+    let id = id_of(&created);
+    let ticket = app
+        .json(
+            Method::POST,
+            "/api/v1/tickets",
+            Some(&token),
+            json!({ "scope": "download", "node_id": id }),
+        )
+        .await;
+    let ticket = ticket.json()["ticket"].as_str().expect("ticket").to_owned();
+    let uri = format!("/api/v1/files/{id}/content?ticket={ticket}");
+
+    let first = app.send(Method::GET, &uri, None, Body::empty(), None).await;
+    let second = app.send(Method::GET, &uri, None, Body::empty(), None).await;
+
+    assert_eq!(first.status, StatusCode::OK);
+    assert_eq!(second.status, StatusCode::UNAUTHORIZED);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn declared_content_type_is_stored_as_mime(pool: PgPool) {
     let app = setup(pool).await;
     let token = app.user_token("alice").await;
