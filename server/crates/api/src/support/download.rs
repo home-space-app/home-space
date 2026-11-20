@@ -16,6 +16,8 @@ use axum::{
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 
+use protocol::encoding::percent_encode;
+
 use crate::ApiError;
 
 const FALLBACK_MIME: &str = "application/octet-stream";
@@ -106,19 +108,6 @@ fn parse_range(value: &str, size: u64) -> Option<(u64, u64)> {
         (start, end) => (start.parse().ok()?, end.parse::<u64>().ok()?.min(size - 1)),
     };
     (start <= end && start < size).then_some((start, end))
-}
-
-pub(crate) fn percent_encode(value: &str) -> String {
-    value
-        .bytes()
-        .map(|byte| {
-            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-                char::from(byte).to_string()
-            } else {
-                format!("%{byte:02X}")
-            }
-        })
-        .collect()
 }
 
 #[cfg(test)]

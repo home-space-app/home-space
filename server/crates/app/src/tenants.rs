@@ -351,10 +351,7 @@ fn domains_of(domains: &[TenantDomain], tenant: TenantId) -> Vec<String> {
 /// The public URL a tenant gets from its primary domain: https, except plain http to this
 /// machine for local development.
 fn public_url(domain: &str) -> String {
-    let host = match domain.strip_prefix('[') {
-        Some(rest) => rest.split(']').next().unwrap_or_default(),
-        None => domain.split(':').next().unwrap_or_default(),
-    };
+    let host = protocol::encoding::authority_host(domain);
     let scheme = if matches!(host, "localhost" | "127.0.0.1" | "::1") {
         "http"
     } else {

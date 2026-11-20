@@ -4,11 +4,11 @@ use leptos::{prelude::*, task::spawn_local};
 
 use client_core::{
     labels::platform,
+    shared_link::initial,
     transfers::{VISIBILITIES, visibility_hint, visibility_title},
 };
 use protocol::{Device, DeviceVisibility, SetDeviceVisibility, UserRef};
 
-use super::sidebar::initial;
 use crate::{
     components::{ErrorAlert, Menu, UserPicker},
     icon::Icon,

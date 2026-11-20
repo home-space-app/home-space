@@ -36,7 +36,7 @@ use super::{
     parts::{
         COLUMN_GAP, DATE_WIDTH, LIST_PADDING, MENU_WIDTH, ROW_SIZE, SECOND_LINE_SIZE, alert_error,
         alert_info, dialog, dialog_head, divider, empty, ghost, header_bar, muted_cell, outlined,
-        primary, small_outlined, small_outlined_icon, small_primary, title,
+        page_action, primary, small_outlined, small_outlined_icon, small_primary, title,
     },
     transfer_save,
 };
@@ -605,13 +605,10 @@ impl TransferList {
 
     /// What the page's top line offers.
     pub fn action(&self) -> Element<'_, Message> {
-        row![
-            text(if self.loading { "Loading…" } else { "" }).style(theme::muted_text),
-            ghost(Some(Icon::Refresh), "Refresh", Some(Message::Refresh))
-        ]
-        .spacing(SPACING)
-        .align_y(Alignment::Center)
-        .into()
+        page_action(
+            self.loading,
+            ghost(Some(Icon::Refresh), "Refresh", Some(Message::Refresh)),
+        )
     }
 
     /// The save dialog, while it is open.

@@ -58,6 +58,14 @@ pub fn initial(owner: &str) -> String {
         .unwrap_or_default()
 }
 
+/// The folder `id` among `items`, if it is one of them.
+pub fn child_folder(items: &[SharedNode], id: NodeId) -> Option<SharedNode> {
+    items
+        .iter()
+        .find(|item| item.id == id && item.kind == NodeKind::Folder)
+        .cloned()
+}
+
 /// Folders first, then by name, ignoring case.
 pub fn sort_shared(items: &mut [SharedNode]) {
     items.sort_by(shared_order);
@@ -194,5 +202,15 @@ mod tests {
     #[test]
     fn nothing_opened_keeps_nothing() {
         assert_eq!(kept_depth(&[], &ids(&[1])), 0);
+    }
+
+    #[test]
+    fn a_child_folder_is_found_by_id_and_files_are_not() {
+        let mut file = folder(2);
+        file.kind = NodeKind::File;
+        let items = [folder(1), file];
+        assert_eq!(child_folder(&items, folder(1).id), Some(folder(1)));
+        assert_eq!(child_folder(&items, folder(2).id), None);
+        assert_eq!(child_folder(&items, folder(3).id), None);
     }
 }

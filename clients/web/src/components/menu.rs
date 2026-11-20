@@ -18,7 +18,8 @@ const MENU_GAP: f64 = 4.0;
 #[derive(Clone, Copy)]
 struct MenuPanel(NodeRef<Div>);
 
-fn close(panel: NodeRef<Div>) {
+/// Hides the popover `panel`, if it is mounted.
+pub fn close_popover(panel: NodeRef<Div>) {
     if let Some(element) = panel.get_untracked() {
         let element: &HtmlElement = &element;
         let _ = element.hide_popover();
@@ -183,7 +184,7 @@ pub fn MenuItem(
             class:menu__item--danger=danger
             role="menuitem"
             on:click=move |_| {
-                close(panel);
+                close_popover(panel);
                 on_select.run(());
             }
         >
@@ -203,7 +204,7 @@ pub fn MenuLink(href: String, children: Children) -> impl IntoView {
             exact=true
             attr:class="menu__item"
             attr:role="menuitem"
-            on:click=move |_| close(panel)
+            on:click=move |_| close_popover(panel)
         >
             {children()}
         </leptos_router::components::A>

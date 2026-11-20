@@ -11,7 +11,7 @@ use axum::http::{
     HeaderMap, HeaderValue,
     header::{COOKIE, HOST, ORIGIN},
 };
-use protocol::paths;
+use protocol::{encoding::authority_host, paths};
 use time::Duration;
 
 use crate::{ApiError, TenantContext};
@@ -107,10 +107,7 @@ fn is_own_origin(origin: &str, headers: &HeaderMap, public_url: Option<&str>) ->
 
 /// Whether `authority` (a host with an optional port) names this machine.
 fn is_loopback(authority: &str) -> bool {
-    let host = match authority.strip_prefix('[') {
-        Some(bracketed) => bracketed.split(']').next().unwrap_or_default(),
-        None => authority.split(':').next().unwrap_or_default(),
-    };
+    let host = authority_host(authority);
     host.eq_ignore_ascii_case(LOCALHOST)
         || host
             .parse::<IpAddr>()

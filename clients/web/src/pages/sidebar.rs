@@ -6,11 +6,13 @@ use web_sys::HtmlElement;
 
 use client_core::{
     received::SHARED_WITH_ME,
+    shared_link::initial,
     storage::{fraction, usage_summary},
 };
 use protocol::{Event, Me, Storage};
 
 use crate::{
+    components::close_popover,
     events,
     icon::Icon,
     incoming::Incoming,
@@ -24,14 +26,6 @@ const POPOVER_AUTO: &str = "auto";
 const MENU_GAP: f64 = 6.0;
 const HOME_PATH: &str = "/";
 const FOLDER_PREFIX: &str = "/folder/";
-
-/// The first letter of `name`, for the round avatar.
-pub fn initial(name: &str) -> String {
-    name.chars()
-        .next()
-        .map(|letter| letter.to_uppercase().collect())
-        .unwrap_or_default()
-}
 
 /// How the user signs in and their role, e.g. `Local account · administrator`.
 pub fn account_kind(me: &Me) -> String {
@@ -266,13 +260,6 @@ fn StorageCard(storage: Storage) -> impl IntoView {
     }
 }
 
-fn close(panel: NodeRef<Div>) {
-    if let Some(element) = panel.get_untracked() {
-        let element: &HtmlElement = &element;
-        let _ = element.hide_popover();
-    }
-}
-
 #[component]
 fn AccountMenu(auth: Auth) -> impl IntoView {
     let panel = NodeRef::<Div>::new();
@@ -344,12 +331,12 @@ fn AccountMenu(auth: Auth) -> impl IntoView {
                 <span class="account-menu__kind">{move || user().map(|me| account_kind(&me))}</span>
             </div>
             <hr class="menu__divider" />
-            <A href=route::SETTINGS_PATH attr:class="menu__item" attr:role="menuitem" on:click=move |_| close(panel)>
+            <A href=route::SETTINGS_PATH attr:class="menu__item" attr:role="menuitem" on:click=move |_| close_popover(panel)>
                 <Icon name="settings" />
                 "Settings"
             </A>
             <Show when=is_admin>
-                <A href=route::ADMIN_PATH attr:class="menu__item" attr:role="menuitem" on:click=move |_| close(panel)>
+                <A href=route::ADMIN_PATH attr:class="menu__item" attr:role="menuitem" on:click=move |_| close_popover(panel)>
                     <Icon name="admin_panel_settings" />
                     "Administration"
                 </A>
@@ -359,7 +346,7 @@ fn AccountMenu(auth: Auth) -> impl IntoView {
                 class="menu__item menu__item--danger"
                 role="menuitem"
                 on:click=move |_| {
-                    close(panel);
+                    close_popover(panel);
                     auth.logout();
                 }
             >
@@ -392,13 +379,6 @@ mod tests {
         assert_eq!(badge_text(3), "3");
         assert_eq!(badge_text(99), "99");
         assert_eq!(badge_text(100), "99+");
-    }
-
-    #[test]
-    fn avatar_shows_the_capital_first_letter() {
-        assert_eq!(initial("sam"), "S");
-        assert_eq!(initial("élise"), "É");
-        assert_eq!(initial(""), "");
     }
 
     #[test]

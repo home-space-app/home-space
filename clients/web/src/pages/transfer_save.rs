@@ -6,7 +6,7 @@ use web_sys::KeyboardEvent;
 
 use api_client::ApiError;
 use client_core::{
-    labels::{HOME, files},
+    labels::{HOME, files, folder_path},
     listing::{Sort, sort_nodes},
     transfers::transfer_size,
 };
@@ -24,14 +24,7 @@ const KEY_ESCAPE: &str = "Escape";
 
 /// `Documents / Receipts`, or `Home` at the top.
 fn location(path: &[Node]) -> String {
-    if path.is_empty() {
-        HOME.to_owned()
-    } else {
-        path.iter()
-            .map(|folder| folder.name.as_str())
-            .collect::<Vec<_>>()
-            .join(" / ")
-    }
+    folder_path(path.iter().map(|folder| folder.name.as_str()))
 }
 
 /// What the save dialog puts into the picked folder.

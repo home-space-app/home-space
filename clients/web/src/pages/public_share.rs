@@ -11,8 +11,8 @@ use client_core::{
     format::human_size,
     shared_link::{
         DOWNLOAD, DOWNLOAD_ALL, EMPTY_FOLDER, LINK_GONE, LINK_GONE_NOTE, OPEN, PASSWORD,
-        PASSWORD_PROTECTED, SHARED_WITH_YOU, WRONG_PASSWORD, expires_on, initial, kept_depth,
-        password_prompt, shared_by, shared_summary, sort_shared,
+        PASSWORD_PROTECTED, SHARED_WITH_YOU, WRONG_PASSWORD, child_folder, expires_on, initial,
+        kept_depth, password_prompt, shared_by, shared_summary, sort_shared,
     },
 };
 use protocol::{ErrorCode, NodeId, NodeKind, PublicShare, SharedNode};
@@ -187,13 +187,7 @@ pub fn PublicSharePage() -> impl IntoView {
     let params = use_params_map();
     let query = use_query_map();
     let token = Memo::new(move |_| params.read().get(TOKEN_PARAM).unwrap_or_default());
-    let path = Memo::new(move |_| {
-        query
-            .read()
-            .get(route::SHARE_PATH_PARAM)
-            .map(|path| route::parse_share_path(&path))
-            .unwrap_or_default()
-    });
+    let path = Memo::new(move |_| route::share_trail(&query.read()));
     let visit = Visit::new(token, path);
     Effect::new(move |_| {
         token.track();
@@ -592,11 +586,7 @@ async fn open_path(
         }
     };
     for id in path {
-        let Some(folder) = items
-            .iter()
-            .find(|item| item.id == *id && item.kind == NodeKind::Folder)
-            .cloned()
-        else {
+        let Some(folder) = child_folder(&items, *id) else {
             break;
         };
         items = api.shared_folder(token, folder.id, access).await?;

@@ -5,6 +5,7 @@ mod auth;
 mod capabilities;
 mod change;
 mod device;
+pub mod encoding;
 mod error;
 mod event;
 mod health;

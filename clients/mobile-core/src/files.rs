@@ -13,6 +13,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
 
 use crate::autoupload::AutoUploadListener;
+use crate::cancel::{next_chunk, not_cancelled};
 use crate::offline::Offline;
 use crate::{CoreClient, CoreError, Entry, off_ui_thread, parse_id};
 
@@ -160,11 +161,7 @@ impl Active {
     }
 
     fn check(&self) -> Result<(), CoreError> {
-        if *self.cancelled.borrow() {
-            Err(CoreError::Cancelled)
-        } else {
-            Ok(())
-        }
+        not_cancelled(&self.cancelled)
     }
 }
 
@@ -344,15 +341,7 @@ async fn stream(
     let mut done: i64 = 0;
     let mut reported: Option<Instant> = None;
     loop {
-        let chunk = tokio::select! {
-            biased;
-            _ = cancelled.wait_for(|cancelled| *cancelled) => return Err(CoreError::Cancelled),
-            chunk = response.chunk() => chunk,
-        };
-        let Some(chunk) = chunk.map_err(|err| CoreError::Unreachable {
-            detail: crate::last_cause(&err.to_string()).to_owned(),
-        })?
-        else {
+        let Some(chunk) = next_chunk(&mut response, &mut cancelled).await? else {
             break;
         };
         hasher.update(&chunk);

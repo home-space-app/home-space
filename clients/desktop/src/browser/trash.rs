@@ -16,7 +16,7 @@ use super::{
     parts::{
         CHECK_LIST_PADDING_WIDE, COLUMN_GAP, DATE_WIDTH, ROW_HEIGHT, ROW_SIZE, SECOND_LINE_SIZE,
         SIZE_WIDTH, alert_error, alert_info, divider, empty, ghost_danger, header_bar, list_box,
-        muted_cell, small_outlined, small_primary, title,
+        muted_cell, page_action, small_outlined, small_primary, title,
     },
     selection::{Coverage, Selection},
 };
@@ -201,17 +201,14 @@ impl State {
 
     /// What the page's top line offers.
     pub fn action(&self) -> Element<'_, Message> {
-        row![
-            text(if self.loading { "Loading…" } else { "" }).style(theme::muted_text),
+        page_action(
+            self.loading,
             ghost_danger(
                 Icon::EmptyBin,
                 "Empty recycle bin",
                 (!self.items.is_empty()).then_some(Message::Empty),
-            )
-        ]
-        .spacing(SPACING)
-        .align_y(Alignment::Center)
-        .into()
+            ),
+        )
     }
 
     pub fn view(&self) -> Element<'_, Message> {

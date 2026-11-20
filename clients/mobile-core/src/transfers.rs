@@ -20,6 +20,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
 use uuid::Uuid;
 
+use crate::cancel::{next_chunk, not_cancelled};
 use crate::files::{DownloadListener, storage};
 use crate::{CoreClient, CoreError, Entry, EntryKind, off_ui_thread, parse_id};
 
@@ -195,11 +196,7 @@ impl Active {
     }
 
     fn check(&self) -> Result<(), CoreError> {
-        if *self.cancelled.borrow() {
-            Err(CoreError::Cancelled)
-        } else {
-            Ok(())
-        }
+        not_cancelled(&self.cancelled)
     }
 }
 
@@ -674,15 +671,7 @@ async fn fetch(
         let mut out = fs::File::create(&path).await.map_err(storage)?;
         let mut hasher = Sha256::new();
         loop {
-            let chunk = tokio::select! {
-                biased;
-                _ = cancelled.wait_for(|cancelled| *cancelled) => return Err(CoreError::Cancelled),
-                chunk = response.chunk() => chunk,
-            };
-            let Some(chunk) = chunk.map_err(|err| CoreError::Unreachable {
-                detail: crate::last_cause(&err.to_string()).to_owned(),
-            })?
-            else {
+            let Some(chunk) = next_chunk(&mut response, &mut cancelled).await? else {
                 break;
             };
             hasher.update(&chunk);

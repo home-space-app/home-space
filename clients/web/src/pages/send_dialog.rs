@@ -11,12 +11,10 @@ use client_core::{
     labels::files,
     send::{
         LocalEntry, device_status, first_choice, free_name, items_summary, manifest, names_line,
-        pickable, recipient_name, send_note, send_title, upload_note,
+        node_items, pickable, recipient_name, send_note, send_title, upload_note,
     },
 };
-use protocol::{
-    CreateTransfer, NewTransferItem, Node, NodeKind, TargetDevice, TransferTarget, UserId,
-};
+use protocol::{CreateTransfer, Node, NodeKind, TargetDevice, TransferTarget, UserId};
 
 use crate::{
     components::ErrorAlert,
@@ -64,20 +62,6 @@ fn nodes_subtitle(nodes: &[Node]) -> String {
 
 fn names(nodes: &[Node]) -> Vec<String> {
     nodes.iter().map(|node| node.name.clone()).collect()
-}
-
-fn node_items(nodes: &[Node]) -> Vec<NewTransferItem> {
-    nodes
-        .iter()
-        .map(|node| NewTransferItem {
-            path: node.name.clone(),
-            kind: node.kind,
-            size: u64::try_from(node.size).unwrap_or_default(),
-            node_id: Some(node.id),
-            mime: None,
-            modified_at: None,
-        })
-        .collect()
 }
 
 /// The entries of everything picked, for the transfer's manifest.

@@ -27,10 +27,7 @@ mod trash;
 mod viewer;
 mod visibility;
 
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use iced::{
     Size, Subscription, Task, event,
@@ -47,6 +44,7 @@ use client_core::{
     gallery::Gallery,
     labels::HOME,
     listing::{Sort, SortKey},
+    send::files_to_upload,
     viewers,
 };
 use protocol::{Me, Node, NodeId, NodeKind, paths};
@@ -65,7 +63,7 @@ use self::{
 };
 use crate::{
     events, sync,
-    transfers::{self, Batch, Direction, DownloadFile, SendFile, Transfers, UploadPlan},
+    transfers::{self, Batch, Direction, DownloadFile, Transfers, UploadPlan},
     viewers::viewers,
 };
 
@@ -1056,16 +1054,10 @@ impl State {
                 label,
             } => {
                 self.send = None;
-                let mut by_path: HashMap<String, SendFile> = files
-                    .into_iter()
-                    .map(|file| (file.path.clone(), file))
-                    .collect();
-                let uploads: Vec<_> = created
-                    .items
-                    .iter()
-                    .filter(|item| item.upload_needed)
-                    .filter_map(|item| Some((item.id, by_path.remove(&item.path)?)))
-                    .collect();
+                let uploads = files_to_upload(
+                    &created,
+                    files.into_iter().map(|file| (file.path.clone(), file)),
+                );
                 let upload = if uploads.is_empty() {
                     self.transfers.note_sent(label);
                     Task::none()

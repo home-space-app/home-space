@@ -3,7 +3,7 @@
 
 use api_client::{ApiError, Client};
 use client_core::{
-    labels::{HOME, files},
+    labels::{HOME, files, folder_path},
     listing::{Sort, sort_nodes},
     received::save_copy_title,
     shared_link::shared_by,
@@ -432,14 +432,7 @@ fn note(hint: &str) -> Element<'_, Message> {
 
 /// `Documents / Receipts`, or `Home` at the top.
 fn location(path: &[&Node]) -> String {
-    if path.is_empty() {
-        HOME.to_owned()
-    } else {
-        path.iter()
-            .map(|folder| folder.name.as_str())
-            .collect::<Vec<_>>()
-            .join(" / ")
-    }
+    folder_path(path.iter().map(|folder| folder.name.as_str()))
 }
 
 #[cfg(test)]
