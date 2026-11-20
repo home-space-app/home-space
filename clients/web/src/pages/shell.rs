@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 use leptos_router::components::{Outlet, Redirect};
 
-use super::sidebar::Sidebar;
+use super::{sidebar::Sidebar, viewer::FileViewer};
 use crate::session::Auth;
 
 #[component]
@@ -17,6 +17,7 @@ pub fn Shell(auth: Auth) -> impl IntoView {
                     <Outlet />
                 </div>
             </div>
+            <FileViewer auth />
         </Show>
     }
 }

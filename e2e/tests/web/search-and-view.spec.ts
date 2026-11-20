@@ -19,6 +19,10 @@ test('search finds a file in a subfolder and opens it', async ({ page, users, ap
   const viewer = new ViewerPage(page);
   await viewer.expectFor('quarterly-report.txt');
   await expect(viewer.text).toContainText('Revenue went up.');
+
+  await viewer.dismiss();
+  await expect(page).toHaveURL(/\/search\?q=quarterly$/);
+  await expect(results.row('quarterly-report.txt')).toBeVisible();
 });
 
 test('a search with no match says so', async ({ page, users, api }) => {
@@ -40,7 +44,7 @@ test('a text file opens in the viewer', async ({ page, users, api }) => {
   const viewer = await files.openFile('report.txt');
 
   await expect(viewer.text).toContainText('Revenue went up.');
-  await viewer.back();
+  await viewer.close();
   await expect(files.row('report.txt')).toBeVisible();
 });
 

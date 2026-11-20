@@ -4,7 +4,10 @@ use leptos_router::{components::A, hooks::use_query_map};
 use client_core::{format::human_size, labels::location_label, search::destination};
 use protocol::{NodeKind, SearchHit};
 
-use super::search_box::SearchBox;
+use super::{
+    search_box::SearchBox,
+    viewer::{ViewLink, use_view_link},
+};
 use crate::{
     components::ErrorAlert,
     icon::{Icon, node_icon},
@@ -26,9 +29,9 @@ enum Status {
 }
 
 /// Where a hit leads: a file with a built-in viewer opens in it, anything else in its folder.
-fn target(hit: &SearchHit) -> String {
+fn target(hit: &SearchHit, link: ViewLink) -> String {
     if viewers().viewer_for_node(&hit.node).is_some() {
-        route::file_view(hit.node.id)
+        link.href(hit.node.id)
     } else {
         destination(hit).map_or_else(|| HOME_PATH.to_owned(), route::folder)
     }
@@ -137,7 +140,7 @@ pub fn SearchPage(auth: Auth) -> impl IntoView {
 
 #[component]
 fn HitRow(hit: SearchHit) -> impl IntoView {
-    let href = target(&hit);
+    let href = target(&hit, use_view_link());
     let icon = node_icon(&hit.node);
     let is_folder = hit.node.kind == NodeKind::Folder;
     let size = if is_folder {

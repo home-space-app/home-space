@@ -32,7 +32,7 @@ test('identical files are grouped and all copies but one can be binned', async (
   await expect(trash.row('old notes.txt')).toBeVisible();
 });
 
-test('a copy opens in the viewer and its location opens the folder', async ({ page, users, api }) => {
+test('a copy opens in the viewer, which closes back to the duplicates, and its location opens the folder', async ({ page, users, api }) => {
   const alice = await users.create('alice');
   const session = await api.as(alice);
   const photos = await session.createFolder('Photos');
@@ -44,10 +44,12 @@ test('a copy opens in the viewer and its location opens the folder', async ({ pa
   await duplicates.expand('a.txt');
 
   await duplicates.copy('Home / Photos').getByRole('link', { name: 'b.txt' }).click();
-  await new ViewerPage(page).expectFor('b.txt');
+  const viewer = new ViewerPage(page);
+  await viewer.expectFor('b.txt');
 
-  await duplicates.goto();
-  await duplicates.expand('a.txt');
+  await viewer.close();
+  await expect(page).toHaveURL(/\/settings\/duplicates$/);
+  await expect(duplicates.copies).toHaveCount(2);
   await duplicates.copy('Home / Photos').getByRole('link', { name: 'Home / Photos' }).click();
   await expect(page).toHaveURL(/\/folder\//);
   await expect(page.getByRole('link', { name: 'b.txt' })).toBeVisible();
