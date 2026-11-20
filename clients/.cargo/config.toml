@@ -1,0 +1,4 @@
+# WebAssembly SIMD, which every current browser runs: the PDF worker's renderer (vello_cpu,
+# through fearless_simd) only takes its vector paths on wasm when it is enabled at build time.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]

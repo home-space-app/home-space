@@ -29,3 +29,39 @@ inherits = "release"
 opt-level = "s"
 lto = "fat"
 codegen-units = 1
+
+# The PDF renderer is optimized in dev builds too: unoptimized, a page takes seconds to render,
+# in the web client's worker even more so. Only hayro and the crates it renders with.
+[profile.dev.package]
+ab_glyph_rasterizer.opt-level = 3
+brotli-decompressor.opt-level = 3
+color.opt-level = 3
+euclid.opt-level = 3
+fdeflate.opt-level = 3
+fearless_simd.opt-level = 3
+flate2.opt-level = 3
+font-types.opt-level = 3
+hayro.opt-level = 3
+hayro-ccitt.opt-level = 3
+hayro-cmap.opt-level = 3
+hayro-font.opt-level = 3
+hayro-interpret.opt-level = 3
+hayro-jbig2.opt-level = 3
+hayro-jpeg2000.opt-level = 3
+hayro-postscript.opt-level = 3
+hayro-syntax.opt-level = 3
+kurbo.opt-level = 3
+miniz_oxide.opt-level = 3
+moxcms.opt-level = 3
+peniko.opt-level = 3
+pic-scale.opt-level = 3
+png.opt-level = 3
+pxfm.opt-level = 3
+read-fonts.opt-level = 3
+simd-adler32.opt-level = 3
+skrifa.opt-level = 3
+vello_common.opt-level = 3
+vello_cpu.opt-level = 3
+zlib-rs.opt-level = 3
+zune-core.opt-level = 3
+zune-jpeg.opt-level = 3
