@@ -8,15 +8,16 @@
 #   compile Rust takes hours) and is pushed by digest; server-manifest then tags the multi-arch list.
 # - desktop: macOS .dmg (Apple Silicon), Windows .zip (x86_64), Linux .tar.gz, .deb, .rpm and
 #   .flatpak (x86_64)
-# - android: .apk
+# - android: .apk (to install directly) and .aab (to upload to Google Play)
 #
 # All packages are attached to the GitHub release for the tag. An existing release (made in the
 # UI) keeps its title and notes, and the server image line is appended to them; otherwise the
 # release is created with generated notes. A tag with a suffix (v0.2.0-rc.1)
 # makes a pre-release and does not move the image's `latest` tag.
 #
-# The APK is signed only when these repository secrets are set; otherwise the release gets an
-# unsigned APK, which Android refuses to install:
+# The APK and AAB are signed only when these repository secrets are set; otherwise the release
+# gets unsigned ones, which Android refuses to install and Google Play refuses to accept. For Play,
+# this key is the upload key (Play App Signing re-signs the app with its own key):
 #   ANDROID_KEYSTORE_BASE64   the keystore (.jks), base64-encoded: base64 -w0 release.jks
 #   ANDROID_KEYSTORE_PASSWORD
 #   ANDROID_KEY_ALIAS
@@ -324,15 +325,15 @@ jobs:
         with:
           tool: cargo-ndk
       - uses: gradle/actions/setup-gradle@v6
-      - name: Build the APK
+      - name: Build the APK and AAB
         working-directory: clients/mobile
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
         run: |
           # versionCode comes from build.gradle.kts, where scripts/release.sh bumps it.
-          ./gradlew :androidApp:assembleRelease \
+          ./gradlew :androidApp:assembleRelease :androidApp:bundleRelease \
             -Phomespace.versionName=${{ needs.version.outputs.version }}
-      - name: Sign the APK
+      - name: Sign the APK and AAB
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -340,11 +341,14 @@ jobs:
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           unsigned=clients/mobile/androidApp/build/outputs/apk/release/androidApp-release-unsigned.apk
+          bundle=clients/mobile/androidApp/build/outputs/bundle/release/androidApp-release.aab
           base="HomeSpace-${{ needs.version.outputs.version }}-android"
           if [ -z "$KEYSTORE_BASE64" ]; then
-            echo "::warning::ANDROID_KEYSTORE_BASE64 is not set, so the APK is unsigned and cannot be installed."
+            echo "::warning::ANDROID_KEYSTORE_BASE64 is not set, so the APK and AAB are unsigned and cannot be installed or uploaded to Google Play."
             cp "$unsigned" "$base-unsigned.apk"
+            cp "$bundle" "$base-unsigned.aab"
             echo "APK=$base-unsigned.apk" >> "$GITHUB_ENV"
+            echo "AAB=$base-unsigned.aab" >> "$GITHUB_ENV"
             exit 0
           fi
           tools="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
@@ -357,12 +361,24 @@ jobs:
             --key-pass env:KEY_PASSWORD \
             --out "$base.apk" "$RUNNER_TEMP/aligned.apk"
           "$tools/apksigner" verify "$base.apk"
+          # apksigner does not handle app bundles; Play expects them jar-signed with the upload key.
+          cp "$bundle" "$base.aab"
+          jarsigner \
+            -keystore "$RUNNER_TEMP/release.jks" \
+            -storepass:env KEYSTORE_PASSWORD \
+            -keypass:env KEY_PASSWORD \
+            -sigalg SHA256withRSA -digestalg SHA-256 \
+            "$base.aab" "$KEY_ALIAS"
+          jarsigner -verify -strict "$base.aab"
           rm "$RUNNER_TEMP/release.jks"
           echo "APK=$base.apk" >> "$GITHUB_ENV"
+          echo "AAB=$base.aab" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v7
         with:
           name: android
-          path: ${{ env.APK }}
+          path: |
+            ${{ env.APK }}
+            ${{ env.AAB }}
           if-no-files-found: error
 
   release:
