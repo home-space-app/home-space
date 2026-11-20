@@ -190,14 +190,14 @@ fn logo<'a>(compact: bool) -> Element<'a, Message> {
 }
 
 /// A place: its icon and label, with the count of what `failed` there when anything did.
-fn place<'a>(
+fn place(
     icon: Icon,
-    label: &'a str,
+    label: &str,
     active: bool,
     failed: usize,
     compact: bool,
     message: Message,
-) -> Element<'a, Message> {
+) -> Element<'_, Message> {
     let tint = match (active, failed) {
         (true, _) => Tint::Accent,
         // With no room for the count, the icon tells that something failed.

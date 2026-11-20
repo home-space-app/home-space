@@ -285,11 +285,11 @@ fn node_row(
 
 /// The icon and name of a folder as a link into it, only as wide as they are so that the rest of
 /// the row still selects. The icon is left out when there is no room for it.
-fn folder_link<'a>(
-    node: &'a Node,
+fn folder_link(
+    node: &Node,
     icon: Option<(Icon, Tint, Option<Badge>)>,
     second_line: Option<String>,
-) -> Element<'a, Message> {
+) -> Element<'_, Message> {
     let id = node.id;
     let name = node.name.as_str();
     responsive(move |bounds| {
@@ -390,7 +390,7 @@ fn name_cell(name: &str, second: Option<String>) -> Element<'_, Message> {
 }
 
 /// `icon` with the sync `badge` hanging over its lower right corner.
-fn badged<'a>(icon: Element<'a, Message>, badge: Option<Badge>) -> Element<'a, Message> {
+fn badged(icon: Element<'_, Message>, badge: Option<Badge>) -> Element<'_, Message> {
     let width = ICON_CELL + BADGE_RIGHT;
     let height = ICON_CELL + BADGE_BOTTOM;
     let mut layers = vec![

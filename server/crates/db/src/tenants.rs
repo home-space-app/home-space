@@ -81,7 +81,7 @@ impl Db {
 
 /// Adds a tenant for tests that need a second one.
 #[cfg(test)]
-pub(crate) async fn add_test_tenant(db: &crate::Db) -> TenantId {
+pub(crate) async fn add_test_tenant(db: &Db) -> TenantId {
     sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Other') RETURNING id")
         .fetch_one(db.pool())
         .await

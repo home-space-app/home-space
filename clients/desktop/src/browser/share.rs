@@ -372,7 +372,7 @@ impl ShareDialog {
         Outcome::Task(task)
     }
 
-    pub fn view<'a>(&'a self, client: &Client) -> Element<'a, Message> {
+    pub fn view(&self, client: &Client) -> Element<'_, Message> {
         if self.confirm_stop {
             return self.confirm_view();
         }
@@ -730,7 +730,7 @@ fn offset_label(offset: UtcOffset) -> String {
     }
 }
 
-fn chip<'a>(label: &'a str, chosen: bool, message: Message) -> Element<'a, Message> {
+fn chip(label: &str, chosen: bool, message: Message) -> Element<'_, Message> {
     let check = chosen.then(|| Icon::Check.view(CHIP_CHECK, Tint::Accent));
     button(
         row![]

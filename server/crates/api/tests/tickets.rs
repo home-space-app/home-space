@@ -66,9 +66,7 @@ async fn events_ticket_opens_one_websocket_only(pool: PgPool) {
     let app = setup(pool).await;
     let alice = app.user_token("alice").await;
     let ticket = ticket(&app, &alice, json!({ "scope": "events" })).await;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     tokio::spawn(axum::serve(listener, app.router.clone()).into_future());
     let url = format!("ws://{addr}/api/v1/ws?ticket={ticket}");

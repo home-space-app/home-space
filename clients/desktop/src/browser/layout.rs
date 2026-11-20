@@ -506,7 +506,7 @@ fn menu_layers(panel: Element<'_, Message>, placement: Placement) -> [Element<'_
     ]
 }
 
-fn modal<'a>(content: Element<'a, Message>, on_dismiss: Message) -> Element<'a, Message> {
+fn modal(content: Element<'_, Message>, on_dismiss: Message) -> Element<'_, Message> {
     opaque(mouse_area(center(opaque(content)).style(theme::backdrop)).on_press(on_dismiss))
 }
 

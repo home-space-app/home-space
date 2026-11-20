@@ -264,7 +264,7 @@ mod tests {
     async fn a_marked_user_is_deleted_only_once_due(pool: PgPool) {
         let db = Db::from_pool(pool.clone());
         let user = db
-            .create_user(crate::TenantId::DEFAULT, "doomed", "hash")
+            .create_user(TenantId::DEFAULT, "doomed", "hash")
             .await
             .expect("user");
         let later = OffsetDateTime::now_utc() + Duration::minutes(10);
@@ -313,7 +313,7 @@ mod tests {
     async fn a_disabled_user_or_one_marked_for_deletion_gets_no_new_uploads(pool: PgPool) {
         let db = Db::from_pool(pool);
         let user = db
-            .create_user(crate::TenantId::DEFAULT, "doomed", "hash")
+            .create_user(TenantId::DEFAULT, "doomed", "hash")
             .await
             .expect("user");
         let later = OffsetDateTime::now_utc() + Duration::minutes(10);
@@ -350,7 +350,7 @@ mod tests {
     async fn disabling_keeps_the_first_time_and_enabling_clears_it(pool: PgPool) {
         let db = Db::from_pool(pool);
         let user = db
-            .create_user(crate::TenantId::DEFAULT, "guest", "hash")
+            .create_user(TenantId::DEFAULT, "guest", "hash")
             .await
             .expect("user");
         db.set_disabled(user.id, true).await.expect("disable");

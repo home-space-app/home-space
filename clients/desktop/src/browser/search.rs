@@ -240,7 +240,7 @@ fn hit_row<'a>(index: usize, hit: &'a SearchHit, query: &str) -> Element<'a, Bro
 
 /// `name` on one line with the part matching `query` in bold, cut short when it does not fit.
 /// Three texts in a row, as rich text keeps a span's weight up to the end of the word.
-fn highlighted<'a>(name: &'a str, query: String) -> Element<'a, BrowserMessage> {
+fn highlighted(name: &str, query: String) -> Element<'_, BrowserMessage> {
     responsive(move |bounds| {
         let shown = fit(name, ROW_SIZE, bounds.width);
         let part = |part: &str, font| {

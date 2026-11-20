@@ -161,7 +161,7 @@ async fn share_url_points_at_the_web_page_of_the_link() {
 #[tokio::test]
 async fn create_share_sends_who_it_is_for() {
     let server = MockServer::start().await;
-    let dana = UserId(uuid::Uuid::from_u128(7));
+    let dana = UserId(Uuid::from_u128(7));
     Mock::given(method("POST"))
         .and(path(paths::SHARES))
         .and(body_json(

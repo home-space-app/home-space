@@ -7,7 +7,7 @@ use crate::{NewNode, SharedAccess};
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789a";
 
 async fn user(db: &Db, name: &str) -> UserId {
-    db.create_user(crate::TenantId::DEFAULT, name, "hash")
+    db.create_user(TenantId::DEFAULT, name, "hash")
         .await
         .expect("user")
         .id

@@ -128,9 +128,9 @@ impl From<uniffi::UnexpectedUniFFICallbackError> for CoreError {
     }
 }
 
-impl From<api_client::ApiError> for CoreError {
-    fn from(err: api_client::ApiError) -> Self {
-        if err == api_client::ApiError::Unauthorized {
+impl From<ApiError> for CoreError {
+    fn from(err: ApiError) -> Self {
+        if err == ApiError::Unauthorized {
             Self::Unauthorized
         } else if err.is_unreachable() {
             Self::Unreachable {
@@ -226,7 +226,7 @@ pub struct Entry {
     /// The copy of the current content on this phone, for files that have one.
     pub local_path: Option<String>,
     /// How its copy here stands; `None` when it isn't kept on this phone.
-    pub offline_state: Option<offline::OfflineState>,
+    pub offline_state: Option<OfflineState>,
     /// Kept for its own sake, rather than for being in a folder that is, so its copy can be removed.
     pub offline_kept: bool,
     /// Empty for folders, otherwise e.g. `1.5 MB`.
@@ -880,7 +880,7 @@ mod tests {
 
     async fn mount_me(server: &MockServer) {
         Mock::given(method("GET"))
-            .and(path(protocol::paths::ME))
+            .and(path(paths::ME))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "id": "00000000-0000-0000-0000-000000000001",
                 "username": "me",
@@ -894,7 +894,7 @@ mod tests {
     async fn providers_reports_both_modes() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path(protocol::paths::PROVIDERS))
+            .and(path(paths::PROVIDERS))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "password": false, "oidc": {"name": "Keycloak"},
             })))
@@ -915,7 +915,7 @@ mod tests {
     async fn a_refused_password_is_invalid_credentials() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path(protocol::paths::LOGIN))
+            .and(path(paths::LOGIN))
             .respond_with(unauthorized())
             .mount(&server)
             .await;
@@ -930,7 +930,7 @@ mod tests {
     async fn login_names_the_device_and_reports_the_token_then_logout_clears_it() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path(protocol::paths::LOGIN))
+            .and(path(paths::LOGIN))
             .and(body_partial_json(serde_json::json!({
                 "device": {"id": DEVICE_ID, "name": "Pixel"},
             })))
@@ -938,7 +938,7 @@ mod tests {
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path(protocol::paths::LOGOUT))
+            .and(path(paths::LOGOUT))
             .respond_with(ResponseTemplate::new(204))
             .mount(&server)
             .await;
@@ -968,7 +968,7 @@ mod tests {
     async fn requests_do_not_run_on_the_callers_thread() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path(protocol::paths::LOGIN))
+            .and(path(paths::LOGIN))
             .respond_with(tokens("first"))
             .mount(&server)
             .await;
@@ -1000,7 +1000,7 @@ mod tests {
     async fn restore_reports_the_rotated_token() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path(protocol::paths::REFRESH))
+            .and(path(paths::REFRESH))
             .and(body_partial_json(
                 serde_json::json!({"refresh_token": "saved"}),
             ))
@@ -1019,7 +1019,7 @@ mod tests {
     async fn restoring_an_ended_session_is_unauthorized() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path(protocol::paths::REFRESH))
+            .and(path(paths::REFRESH))
             .respond_with(unauthorized())
             .mount(&server)
             .await;
@@ -1052,9 +1052,9 @@ mod tests {
         assert_ne!(first.verifier, second.verifier);
 
         let url = url::Url::parse(&first.url).unwrap();
-        assert_eq!(url.path(), protocol::paths::OIDC_START);
+        assert_eq!(url.path(), paths::OIDC_START);
         let query: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
-        assert_eq!(query["redirect_uri"], protocol::paths::MOBILE_OIDC_REDIRECT);
+        assert_eq!(query["redirect_uri"], paths::MOBILE_OIDC_REDIRECT);
         assert_eq!(
             query["code_challenge"],
             Pkce::from_verifier(first.verifier).challenge()
@@ -1065,7 +1065,7 @@ mod tests {
     async fn finish_sso_exchanges_the_code_with_the_verifier() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path(protocol::paths::OIDC_EXCHANGE))
+            .and(path(paths::OIDC_EXCHANGE))
             .and(body_partial_json(serde_json::json!({
                 "code": "login code",
                 "code_verifier": "the-verifier",
@@ -1092,7 +1092,7 @@ mod tests {
     async fn a_refused_login_code_is_expired() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path(protocol::paths::OIDC_EXCHANGE))
+            .and(path(paths::OIDC_EXCHANGE))
             .respond_with(unauthorized())
             .mount(&server)
             .await;
@@ -1196,7 +1196,7 @@ mod tests {
     async fn health_reports_ok() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path(protocol::paths::HEALTH))
+            .and(path(paths::HEALTH))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({"status": "ok"})),
             )
@@ -1211,7 +1211,7 @@ mod tests {
     async fn list_sorts_folders_first_and_labels_sizes() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path(protocol::paths::NODES))
+            .and(path(paths::NODES))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
                 node("b.txt", "file", 1536),
                 node("Photos", "folder", 0),
@@ -1221,14 +1221,14 @@ mod tests {
             .await;
 
         Mock::given(method("POST"))
-            .and(path(protocol::paths::LOGIN))
+            .and(path(paths::LOGIN))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "access_token": "access", "refresh_token": "refresh", "expires_in": 900,
             })))
             .mount(&server)
             .await;
         Mock::given(method("GET"))
-            .and(path(protocol::paths::ME))
+            .and(path(paths::ME))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "id": "00000000-0000-0000-0000-000000000001",
                 "username": "me",
@@ -1256,13 +1256,13 @@ mod tests {
         const LOST_AND_FOUND: &str = "00000000-0000-0000-0000-000000000002";
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path(protocol::paths::LOGIN))
+            .and(path(paths::LOGIN))
             .respond_with(tokens("refresh"))
             .mount(&server)
             .await;
         mount_me(&server).await;
         Mock::given(method("GET"))
-            .and(path(protocol::paths::NODES))
+            .and(path(paths::NODES))
             .and(query_param("parent_id", LOST_AND_FOUND))
             .respond_with(ResponseTemplate::new(200).set_body_json(contents))
             .mount(&server)
@@ -1270,7 +1270,7 @@ mod tests {
         let mut found = node("Lost & Found", "folder", 0);
         found["id"] = LOST_AND_FOUND.into();
         Mock::given(method("GET"))
-            .and(path(protocol::paths::NODES))
+            .and(path(paths::NODES))
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_json(serde_json::json!([found, node("Photos", "folder", 0)])),
@@ -1328,11 +1328,11 @@ mod tests {
     }
 
     fn file_route() -> String {
-        protocol::paths::node(FILE_ID.parse().unwrap())
+        paths::node(FILE_ID.parse().unwrap())
     }
 
     fn content_route() -> String {
-        protocol::paths::file_content(FILE_ID.parse().unwrap())
+        paths::file_content(FILE_ID.parse().unwrap())
     }
 
     async fn mount_file(server: &MockServer, json: serde_json::Value) {
@@ -1355,7 +1355,7 @@ mod tests {
 
     async fn mount_login(server: &MockServer) {
         Mock::given(method("POST"))
-            .and(path(protocol::paths::LOGIN))
+            .and(path(paths::LOGIN))
             .respond_with(tokens("first"))
             .mount(server)
             .await;
@@ -1395,11 +1395,11 @@ mod tests {
         client: &CoreClient,
         server: &MockServer,
         json: serde_json::Value,
-    ) -> (Option<String>, Option<offline::OfflineState>) {
+    ) -> (Option<String>, Option<OfflineState>) {
         let folder = "00000000-0000-0000-0000-0000000000d1";
         server.reset().await;
         Mock::given(method("GET"))
-            .and(path(protocol::paths::NODES))
+            .and(path(paths::NODES))
             .and(query_param("parent_id", folder))
             .respond_with(listed(json))
             .mount(server)
@@ -1445,7 +1445,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (path_of, state_of) = (Some(opened), Some(offline::OfflineState::Synced));
+        let (path_of, state_of) = (Some(opened), Some(OfflineState::Synced));
         assert_eq!(
             listed_state(&client, &server, same).await,
             (path_of.clone(), state_of)
@@ -1454,7 +1454,7 @@ mod tests {
         let replaced = file_json("a.txt", OTHER_SHA);
         assert_eq!(
             listed_state(&client, &server, replaced).await,
-            (path_of, Some(offline::OfflineState::Updating))
+            (path_of, Some(OfflineState::Updating))
         );
     }
 
@@ -1628,7 +1628,7 @@ mod tests {
 
         server.reset().await;
         Mock::given(method("POST"))
-            .and(path(protocol::paths::LOGOUT))
+            .and(path(paths::LOGOUT))
             .respond_with(ResponseTemplate::new(500))
             .mount(&server)
             .await;
@@ -1685,7 +1685,7 @@ mod tests {
         let mut target = node("Photos", "folder", 0);
         target["id"] = "00000000-0000-0000-0000-0000000000d1".into();
         Mock::given(method("POST"))
-            .and(path(protocol::paths::NODES_MOVE))
+            .and(path(paths::NODES_MOVE))
             .and(body_partial_json(
                 serde_json::json!({"on_conflict": "abort"}),
             ))
@@ -1787,7 +1787,7 @@ mod tests {
         let server = MockServer::start().await;
         let client = signed_in(&server).await;
         Mock::given(method("GET"))
-            .and(path(protocol::paths::SEARCH))
+            .and(path(paths::SEARCH))
             .and(query_param("q", "hol"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
                 { "node": node("beach.jpg", "file", 3), "location": ["Photos", "2026"] },
@@ -1812,7 +1812,7 @@ mod tests {
     async fn devices_keep_the_servers_order_and_say_which_is_this_one() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path(protocol::paths::DEVICES))
+            .and(path(paths::DEVICES))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
                 {
                     "id": "00000000-0000-0000-0000-00000000000a",
@@ -1861,7 +1861,7 @@ mod tests {
         let server = MockServer::start().await;
         let client = signed_in(&server).await;
         Mock::given(method("POST"))
-            .and(path(protocol::paths::FOLDERS))
+            .and(path(paths::FOLDERS))
             .and(body_partial_json(serde_json::json!({
                 "name": "New", "parent_id": FILE_ID,
             })))

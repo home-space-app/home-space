@@ -74,7 +74,7 @@ pub fn shared_folder(token: &str, trail: &[NodeId]) -> String {
 pub const SHARED_VIEW_PARAM: &str = "view";
 
 /// The page of share `share` made for the user, opened at the folder reached through `trail`.
-pub fn received_folder(share: uuid::Uuid, trail: &[NodeId]) -> String {
+pub fn received_folder(share: Uuid, trail: &[NodeId]) -> String {
     let page = format!("{SHARED_PATH}/{share}");
     if trail.is_empty() {
         page
@@ -84,7 +84,7 @@ pub fn received_folder(share: uuid::Uuid, trail: &[NodeId]) -> String {
 }
 
 /// File `file` of share `share`, in the folder reached through `trail`, open in its viewer.
-pub fn received_file(share: uuid::Uuid, trail: &[NodeId], file: NodeId) -> String {
+pub fn received_file(share: Uuid, trail: &[NodeId], file: NodeId) -> String {
     let view = format!("{SHARED_VIEW_PARAM}={}", short_id(file));
     if trail.is_empty() {
         format!("{SHARED_PATH}/{share}?{view}")

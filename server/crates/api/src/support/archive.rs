@@ -103,7 +103,7 @@ fn write_archive(out: impl Write, entries: &[ArchiveEntry]) -> zip::result::ZipR
 }
 
 /// The name of a share's zip: its only top-level entry, or who shared it.
-pub(crate) fn archive_name(owner_name: &str, entries: &[files::ArchiveEntry]) -> String {
+pub(crate) fn archive_name(owner_name: &str, entries: &[ArchiveEntry]) -> String {
     let mut top = entries.iter().filter(|entry| !entry.path.contains('/'));
     match (top.next(), top.next()) {
         (Some(only), None) => only.path.clone(),

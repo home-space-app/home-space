@@ -338,7 +338,7 @@ mod tests {
             .expect("count");
         assert_eq!(left, 0);
         assert!(
-            db.live_session(crate::TenantId::DEFAULT, files, UserId::from(user))
+            db.live_session(TenantId::DEFAULT, files, UserId::from(user))
                 .await
                 .expect("live")
                 .is_none()
