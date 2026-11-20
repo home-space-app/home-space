@@ -1,7 +1,8 @@
 //! The PDF viewer: the pages one under another, zoomable, rendered with hayro.
 //!
 //! A page is rendered off the UI thread when it scrolls near the view, at the current zoom, and
-//! dropped again when it is far away, so a long document does not hold every page's pixels.
+//! kept while it is within [`KEPT`] pages of that, so scrolling back shows it at once; farther
+//! away it is dropped, so a long document does not hold every page's pixels.
 //! At most [`RENDERERS`] pages render at once; a page that left the view, or was asked for at
 //! an older zoom, is skipped before it starts rather than rendered and thrown away.
 
@@ -14,7 +15,7 @@ use std::{
 use iced::{
     Alignment, Color, Element, Length, Task,
     widget::{
-        Space, column, container, image, row,
+        Space, column, container, image, responsive, row,
         scrollable::{self, Scrollbar, Viewport},
         text,
     },
@@ -23,7 +24,7 @@ use iced::{
 use pdf_core::{Document, PageSize, Rendered};
 use tokio::sync::Semaphore;
 
-use crate::{browser::parts, theme};
+use crate::{browser::parts, icons::Icon, theme};
 
 /// Logical pixels per PDF point at 100%: a point is 1/72 inch, a logical pixel 1/96.
 const PIXELS_PER_POINT: f32 = 96.0 / 72.0;
@@ -35,6 +36,8 @@ const PAGE_GAP: f32 = 16.0;
 const PADDING: f32 = 16.0;
 /// How many pages beyond the view are rendered ahead, and kept, on each side.
 const AHEAD: usize = 2;
+/// How many pages beyond those rendered ahead keep their pixels, on each side.
+const KEPT: usize = 6;
 /// How many pages render at once.
 const RENDERERS: usize = 2;
 /// The view's height until the first scroll reports it.
@@ -184,7 +187,8 @@ impl State {
     /// Renders the pages near the view that are not shown at this zoom, and drops the others.
     fn render_near_view(&mut self) -> Task<Message> {
         let near = self.near_view();
-        self.rendered.retain(|page, _| near.contains(page));
+        let kept = near.start.saturating_sub(KEPT)..near.end.saturating_add(KEPT);
+        self.rendered.retain(|page, _| kept.contains(page));
         let zoom = self.zoom;
         if let Ok(mut wanted) = self.wanted.lock() {
             *wanted = Wanted {
@@ -241,8 +245,8 @@ impl State {
         row![
             text(format!("{} / {}", self.current_page(), self.sizes.len()))
                 .style(theme::muted_text),
-            parts::ghost(
-                None,
+            parts::ghost_icon(
+                Icon::ZoomOut,
                 ZOOM_OUT,
                 (level > ZOOMS[0]).then_some(Message::ZoomOut),
             ),
@@ -251,8 +255,8 @@ impl State {
                 format!("{:.0}%", level * 100.0),
                 (level != DEFAULT_ZOOM).then_some(Message::ActualSize),
             ),
-            parts::ghost(
-                None,
+            parts::ghost_icon(
+                Icon::ZoomIn,
                 ZOOM_IN,
                 (level < ZOOMS[ZOOMS.len() - 1]).then_some(Message::ZoomIn),
             ),
@@ -263,6 +267,19 @@ impl State {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
+        let error = self
+            .error
+            .as_deref()
+            .map(|err| parts::alert_error(Icon::Error, err, None));
+        column![]
+            .push(error)
+            .push(responsive(move |size| self.pages(size.width)))
+            .spacing(super::SPACING)
+            .into()
+    }
+
+    /// The pages in a view `width` wide, centred in it, or scrolling sideways when wider.
+    fn pages(&self, width: f32) -> Element<'_, Message> {
         let pages = self.sizes.iter().enumerate().map(|(index, size)| {
             let (width, height) = self.shown_size(*size);
             let page: Element<'_, Message> = match self.rendered.get(&index) {
@@ -279,28 +296,26 @@ impl State {
                 .style(|_| container::Style::default().background(Color::WHITE))
                 .into()
         });
+        // Content scrolling sideways is as wide as it asks, so `Fill` would not centre it.
+        let widest = self
+            .sizes
+            .iter()
+            .map(|size| self.shown_size(*size).0)
+            .fold(0.0, f32::max)
+            + 2.0 * PADDING;
         let pages = column(pages)
             .spacing(PAGE_GAP)
             .padding(PADDING)
             .align_x(Alignment::Center)
-            .width(Length::Fill);
-        let error = self
-            .error
-            .as_deref()
-            .map(|err| parts::alert_error(crate::icons::Icon::Error, err, None));
-        column![]
-            .push(error)
-            .push(
-                scrollable::Scrollable::new(pages)
-                    .direction(scrollable::Direction::Both {
-                        vertical: Scrollbar::default(),
-                        horizontal: Scrollbar::default(),
-                    })
-                    .on_scroll(Message::Scrolled)
-                    .width(Length::Fill)
-                    .height(Length::Fill),
-            )
-            .spacing(super::SPACING)
+            .width(Length::Fixed(width.max(widest)));
+        scrollable::Scrollable::new(pages)
+            .direction(scrollable::Direction::Both {
+                vertical: Scrollbar::default(),
+                horizontal: Scrollbar::default(),
+            })
+            .on_scroll(Message::Scrolled)
+            .width(Length::Fill)
+            .height(Length::Fill)
             .into()
     }
 }

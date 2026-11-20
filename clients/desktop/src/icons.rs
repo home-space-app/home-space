@@ -117,6 +117,8 @@ pub enum Icon {
     Copy,
     /// A date.
     Event,
+    ZoomIn,
+    ZoomOut,
 }
 
 /// How an icon is tinted.
@@ -204,6 +206,8 @@ impl Icon {
             Self::PersonRemove => include_bytes!("../assets/icons/person_remove.svg"),
             Self::Copy => include_bytes!("../assets/icons/content_copy.svg"),
             Self::Event => include_bytes!("../assets/icons/event.svg"),
+            Self::ZoomIn => include_bytes!("../assets/icons/zoom_in.svg"),
+            Self::ZoomOut => include_bytes!("../assets/icons/zoom_out.svg"),
         }
     }
 
