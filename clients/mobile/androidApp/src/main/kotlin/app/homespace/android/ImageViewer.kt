@@ -3,7 +3,15 @@ package app.homespace.android
 import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
 import android.os.Build
+import androidx.compose.animation.core.animate
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -26,6 +35,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.lerp
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.util.lerp
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.ImageBitmap
@@ -54,6 +71,8 @@ import uniffi.homespace_core.addViewerTypes
 
 private const val NOT_DECODED = "This image cannot be shown on this phone."
 private val PAGE_PADDING = 16.dp
+private const val MAX_ZOOM = 5f
+private const val DOUBLE_TAP_ZOOM = 2.5f
 
 /**
  * Tells the Rust viewer registry which image types this phone decodes beyond the ones every
@@ -184,21 +203,94 @@ internal fun ImagePage(key: Any, name: String, load: suspend () -> ByteArray, on
             Picture.Failed(e.fileMessage())
         }
     }
-    Box(Modifier.fillMaxSize().padding(PAGE_PADDING), Alignment.Center) {
+    Box(Modifier.fillMaxSize().clipToBounds().padding(PAGE_PADDING), Alignment.Center) {
         when (val shown = picture) {
             Picture.Loading -> CircularProgressIndicator()
-            is Picture.Shown -> Image(
-                bitmap = shown.bitmap,
-                contentDescription = name,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxSize(),
-            )
+            is Picture.Shown -> ZoomableImage(shown.bitmap, name)
             is Picture.Failed -> Text(
                 shown.message,
                 textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
+    }
+}
+
+/**
+ * A picture fitted to the page, with pinch zoom and double-tap zoom, as in Photos. While it is
+ * not zoomed, one-finger swipes go to the pager. While zoomed, they pan the picture, and once
+ * the picture's edge is reached they go to the pager again, so the next picture is one swipe away.
+ */
+@Composable
+private fun ZoomableImage(bitmap: ImageBitmap, name: String) {
+    var scale by remember(bitmap) { mutableFloatStateOf(1f) }
+    var offset by remember(bitmap) { mutableStateOf(Offset.Zero) }
+    val scope = rememberCoroutineScope()
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val box = Size(constraints.maxWidth.toFloat(), constraints.maxHeight.toFloat())
+        val aspect = bitmap.width.toFloat() / bitmap.height.coerceAtLeast(1)
+        val fittedWidth = minOf(box.width, box.height * aspect)
+        val fitted = Size(fittedWidth, fittedWidth / aspect)
+
+        // Keeps the picture covering the page where it is larger than it, centred where it is not.
+        fun clamp(value: Offset, zoom: Float): Offset {
+            val maxX = ((fitted.width * zoom - box.width) / 2).coerceAtLeast(0f)
+            val maxY = ((fitted.height * zoom - box.height) / 2).coerceAtLeast(0f)
+            return Offset(value.x.coerceIn(-maxX, maxX), value.y.coerceIn(-maxY, maxY))
+        }
+
+        // The offset that keeps the point under `focus` (from the centre) still while zooming.
+        fun zoomed(focus: Offset, from: Float, to: Float, start: Offset): Offset =
+            clamp(focus - (focus - start) * (to / from), to)
+
+        val center = Offset(box.width / 2, box.height / 2)
+        Image(
+            bitmap = bitmap,
+            contentDescription = name,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(bitmap) {
+                    detectTapGestures(onDoubleTap = { tap ->
+                        val fromScale = scale
+                        val fromOffset = offset
+                        val toScale = if (scale > 1f) 1f else DOUBLE_TAP_ZOOM
+                        val toOffset = if (toScale == 1f) Offset.Zero
+                        else zoomed(tap - center, 1f, toScale, Offset.Zero)
+                        scope.launch {
+                            animate(0f, 1f) { progress, _ ->
+                                scale = lerp(fromScale, toScale, progress)
+                                offset = lerp(fromOffset, toOffset, progress)
+                            }
+                        }
+                    })
+                }
+                .pointerInput(bitmap) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
+                        do {
+                            val event = awaitPointerEvent()
+                            val fingers = event.changes.count { it.pressed }
+                            if (fingers < 2 && scale <= 1f) continue
+                            val zoom = (scale * event.calculateZoom()).coerceIn(1f, MAX_ZOOM)
+                            val focus = event.calculateCentroid(useCurrent = true) - center
+                            val wanted = focus - (focus - offset) * (zoom / scale) + event.calculatePan()
+                            val next = clamp(wanted, zoom)
+                            // A one-finger swipe past the edge is left to the pager.
+                            val atEdge = fingers < 2 && next == offset && wanted != offset
+                            scale = zoom
+                            offset = next
+                            if (!atEdge) event.changes.forEach { if (it.positionChanged()) it.consume() }
+                        } while (event.changes.any { it.pressed })
+                    }
+                }
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                    translationX = offset.x
+                    translationY = offset.y
+                },
+        )
     }
 }
 
