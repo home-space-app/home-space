@@ -60,6 +60,19 @@ jobs:
               "clients/desktop/packaging/flatpak/$APP_ID.metainfo.xml"
           fi
           echo "BUNDLE=HomeSpace-$version-linux-x86_64.flatpak" >> "$GITHUB_ENV"
+      # The image ships the SDK preinstalled in a read-only image layer. When Flathub has a
+      # newer SDK commit than the image, flatpak-builder updates it, and ostree's directory
+      # renames across overlayfs layers fail with "Invalid cross-device link" (EXDEV), which
+      # then segfaults xvfb-run. Copying the installation into the container's writable layer
+      # makes those renames stay on one filesystem.
+      - name: Move preinstalled runtimes to the writable layer
+        run: |
+          for dir in /var/lib/flatpak "$HOME/.local/share/flatpak"; do
+            [ -d "$dir" ] || continue
+            cp -a "$dir" "$dir.rw"
+            rm -rf "$dir"
+            mv "$dir.rw" "$dir"
+          done
       - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
           manifest-path: clients/desktop/packaging/flatpak/${{ env.APP_ID }}.yml
