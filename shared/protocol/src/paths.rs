@@ -28,6 +28,8 @@ pub const FILES: &str = "/api/v1/files";
 pub const TRASH: &str = "/api/v1/trash";
 pub const TRASH_RESTORE: &str = "/api/v1/trash/restore";
 pub const SEARCH: &str = "/api/v1/search";
+/// Live files sharing their content with other files.
+pub const DUPLICATES: &str = "/api/v1/duplicates";
 pub const CHANGES: &str = "/api/v1/changes";
 pub const TICKETS: &str = "/api/v1/tickets";
 pub const WS: &str = "/api/v1/ws";

@@ -33,6 +33,8 @@ pub const SETTINGS_PATH: &str = "/settings";
 pub const DEVICES_PATH: &str = "/settings/devices";
 /// The settings tab listing the user's share links.
 pub const SHARES_PATH: &str = "/settings/shares";
+/// The settings tab listing files that share their content.
+pub const DUPLICATES_PATH: &str = "/settings/duplicates";
 
 /// What other users shared with the user.
 pub const SHARED_PATH: &str = "/shared";

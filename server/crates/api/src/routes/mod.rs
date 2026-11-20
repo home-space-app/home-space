@@ -3,6 +3,7 @@ mod auth;
 mod capabilities;
 mod changes;
 mod devices;
+mod duplicates;
 mod nodes;
 mod search;
 mod shared;
@@ -27,6 +28,7 @@ pub fn routes() -> Router<AppState> {
         .merge(capabilities::routes())
         .merge(changes::routes())
         .merge(devices::routes())
+        .merge(duplicates::routes())
         .merge(nodes::routes())
         .merge(trash::routes())
         .merge(transfers::routes())

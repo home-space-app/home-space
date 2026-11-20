@@ -5,6 +5,7 @@ mod auth;
 mod capabilities;
 mod change;
 mod device;
+mod duplicates;
 pub mod encoding;
 mod error;
 mod event;
@@ -38,6 +39,7 @@ pub use device::{
     PLATFORM_MACOS, PLATFORM_WEB, PLATFORM_WINDOWS, RenameDevice, SetDeviceVisibility,
     TargetDevice, TransferTarget, UserRef,
 };
+pub use duplicates::{DuplicateFile, DuplicateGroup, DuplicatesReport, OutdatedMatch};
 pub use error::ErrorCode;
 pub use event::{ClientMessage, Event};
 pub use health::Health;

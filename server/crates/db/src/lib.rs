@@ -17,6 +17,7 @@ macro_rules! visible {
 mod accounts;
 mod changes;
 mod devices;
+mod duplicates;
 mod error;
 mod login_attempts;
 mod models;
@@ -38,6 +39,7 @@ mod versions;
 pub use accounts::{Account, DeletedAccount};
 pub use changes::{ChangeBatch, ChangesSince, NodeChange};
 pub use devices::{Device, NewDevice, TargetDevice};
+pub use duplicates::OutdatedRow;
 pub use error::DbError;
 pub use models::{FileVersion, Node, RefreshToken, User};
 pub use nodes::{DeletedNodes, FOLDER_MIME, FileState, NewContent, NewNode, NodeProperties};
