@@ -33,6 +33,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import uniffi.homespace_core.CoreClient
 import uniffi.homespace_core.CoreException
@@ -41,6 +42,8 @@ import uniffi.homespace_core.Entry
 private const val CANNOT_PLAY = "This phone can't play this video. Download it to open it in another app."
 /** A failure this soon after a URL starts is the file, not an expired stream ticket. */
 private const val RETRY_AFTER_MS = 60_000L
+/** How often the playback position is saved while the video plays. */
+private const val SAVE_POSITION_EVERY_MS = 1_000L
 
 /** The video viewer of one of the user's own files; the screen gets the stream URL. */
 class VideoViewerState(override val entry: Entry) : OpenViewer {
@@ -74,8 +77,11 @@ internal fun VideoScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    // Where playback was, kept across rotation.
+    // Where playback was and whether it was playing, kept across rotation. They are saved as
+    // playback goes, not when the screen goes away: the activity saves its state before the
+    // composition is disposed, so a value written in onDispose would be lost.
     var position by rememberSaveable(key) { mutableLongStateOf(0L) }
+    var playing by rememberSaveable(key) { mutableStateOf(true) }
     var error by remember(key) { mutableStateOf<String?>(null) }
     var started by remember(key) { mutableStateOf(false) }
     val player = remember(key) { ExoPlayer.Builder(context).build() }
@@ -86,7 +92,7 @@ internal fun VideoScreen(
                 val url = streamUrl()
                 player.setMediaItem(MediaItem.fromUri(url), resumeAt)
                 player.prepare()
-                player.play()
+                player.playWhenReady = playing
                 started = true
             } catch (_: CoreException.Unauthorized) {
                 onSessionEnded()
@@ -99,6 +105,21 @@ internal fun VideoScreen(
     DisposableEffect(player) {
         var lastStart = SystemClock.elapsedRealtime()
         val listener = object : Player.Listener {
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int,
+            ) {
+                if (started) position = newPosition.positionMs
+            }
+
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                if (started) {
+                    playing = playWhenReady
+                    position = player.currentPosition
+                }
+            }
+
             override fun onPlayerError(failure: PlaybackException) {
                 val now = SystemClock.elapsedRealtime()
                 if (now - lastStart < RETRY_AFTER_MS) {
@@ -111,12 +132,17 @@ internal fun VideoScreen(
         }
         player.addListener(listener)
         onDispose {
-            position = player.currentPosition
             player.removeListener(listener)
             player.release()
         }
     }
     LaunchedEffect(player) { play(position) }
+    LaunchedEffect(player) {
+        while (true) {
+            delay(SAVE_POSITION_EVERY_MS)
+            if (started && player.isPlaying) position = player.currentPosition
+        }
+    }
 
     SubPageScaffold(title = title, onBack = onBack) { padding ->
         Box(Modifier.padding(padding).fillMaxSize().background(Color.Black)) {

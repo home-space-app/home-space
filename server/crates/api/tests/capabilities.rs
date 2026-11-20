@@ -21,6 +21,7 @@ async fn capabilities_report_the_upload_chunk_size(pool: PgPool) {
 
     assert_eq!(response.status, StatusCode::OK);
     assert_eq!(response.json()["upload_chunk_bytes"], UPLOAD_CHUNK);
+    assert_eq!(response.json()["stream_tickets"], true);
 }
 
 #[sqlx::test(migrations = "../../migrations")]

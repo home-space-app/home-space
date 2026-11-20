@@ -4,6 +4,8 @@ use protocol::ErrorCode;
 const NETWORK_CODE: &str = "network";
 /// Code of a body that could not be read, for [`ApiError::code`].
 const DECODE_CODE: &str = "decode";
+/// Code of a feature the server is too old for, for [`ApiError::code`].
+const UNSUPPORTED_CODE: &str = "unsupported";
 /// What a failed browser request says: the browser hides why, and its error only carries a
 /// stack trace.
 #[cfg(target_arch = "wasm32")]
@@ -23,6 +25,9 @@ pub enum ApiError {
     Transport(String),
     #[error("unexpected response: {0}")]
     Decode(String),
+    /// The server is older than the feature asked for; the message says what to do.
+    #[error("{0}")]
+    Unsupported(&'static str),
 }
 
 impl ApiError {
@@ -34,7 +39,7 @@ impl ApiError {
             Self::Transport(_) | Self::Decode(_) => true,
             Self::Api { code, .. } => matches!(code, ErrorCode::Conflict | ErrorCode::Internal),
             Self::Status { status, .. } => *status >= 500 || matches!(status, 408 | 429),
-            Self::Unauthorized => false,
+            Self::Unauthorized | Self::Unsupported(_) => false,
         }
     }
 
@@ -44,7 +49,7 @@ impl ApiError {
         match self {
             Self::Transport(_) => true,
             Self::Status { status, .. } => is_gateway_status(*status),
-            Self::Unauthorized | Self::Api { .. } | Self::Decode(_) => false,
+            Self::Unauthorized | Self::Api { .. } | Self::Decode(_) | Self::Unsupported(_) => false,
         }
     }
 
@@ -56,6 +61,7 @@ impl ApiError {
             Self::Status { status, .. } => status.to_string(),
             Self::Transport(_) => NETWORK_CODE.to_owned(),
             Self::Decode(_) => DECODE_CODE.to_owned(),
+            Self::Unsupported(_) => UNSUPPORTED_CODE.to_owned(),
         }
     }
 }

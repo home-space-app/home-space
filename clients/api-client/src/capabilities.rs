@@ -1,6 +1,6 @@
 //! What the server supports (`/capabilities`), read once a session starts.
 
-use protocol::{Capabilities, Me, paths};
+use protocol::{Capabilities, ErrorCode, Me, TicketRequest, TicketResponse, paths};
 
 use crate::{ApiError, Client};
 
@@ -8,6 +8,10 @@ use crate::{ApiError, Client};
 /// below nginx's default body limit of 1 MiB, so uploads still get through a proxy nobody
 /// configured for them.
 pub const FALLBACK_UPLOAD_CHUNK_BYTES: u64 = 512 * 1024;
+
+/// What a video player says on a server from before stream tickets.
+pub const STREAMING_NEEDS_UPDATE: &str = "Playing videos needs a newer version of the server. \
+    Ask its administrator to update it, or download the video to watch it.";
 
 impl Client {
     /// Reads what the server supports.
@@ -26,6 +30,27 @@ impl Client {
                 capabilities.upload_chunk_bytes
             })
             .max(1)
+    }
+
+    /// A stream ticket for `request` (`TicketRequest::Stream` or `SharedStream`). A server
+    /// from before stream tickets fails it with [`ApiError::Unsupported`]: known from its
+    /// capabilities when they were read, or else from it refusing the request it cannot parse.
+    pub async fn stream_ticket(&self, request: &TicketRequest) -> Result<TicketResponse, ApiError> {
+        if self
+            .capabilities()
+            .is_some_and(|capabilities| !capabilities.stream_tickets)
+        {
+            return Err(ApiError::Unsupported(STREAMING_NEEDS_UPDATE));
+        }
+        match self.ticket(request).await {
+            Err(ApiError::Api {
+                code: ErrorCode::BadRequest,
+                ..
+            }) if self.capabilities().is_none() => {
+                Err(ApiError::Unsupported(STREAMING_NEEDS_UPDATE))
+            }
+            result => result,
+        }
     }
 
     /// Finishes a sign-in: reads the server's capabilities, then returns the user. A server
@@ -95,6 +120,90 @@ mod tests {
         client.login("alice", "pw").await.expect("login");
 
         assert_eq!(client.upload_chunk_bytes(), FALLBACK_UPLOAD_CHUNK_BYTES);
+    }
+
+    fn stream_request() -> TicketRequest {
+        TicketRequest::Stream {
+            node_id: protocol::NodeId(uuid::Uuid::nil()),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_old_servers_capabilities_say_it_cannot_stream() {
+        let server = server_signing_in().await;
+        Mock::given(method("GET"))
+            .and(path(paths::CAPABILITIES))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "upload_chunk_bytes": 4096 })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(paths::TICKETS))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ticket": "t", "expires_in": 30
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let client = Client::new(server.uri());
+        client.login("alice", "pw").await.expect("login");
+
+        assert_eq!(
+            client.stream_ticket(&stream_request()).await,
+            Err(ApiError::Unsupported(STREAMING_NEEDS_UPDATE))
+        );
+    }
+
+    #[tokio::test]
+    async fn an_old_server_refusing_a_stream_ticket_needs_an_update() {
+        // Signed in without reading capabilities, as a restored session may be.
+        let server = server_signing_in().await;
+        Mock::given(method("POST"))
+            .and(path(paths::TICKETS))
+            .respond_with(ResponseTemplate::new(422).set_body_json(json!({
+                "type": "about:blank",
+                "title": "Bad request",
+                "status": 422,
+                "code": "bad_request",
+                "detail": "unknown variant `stream`"
+            })))
+            .mount(&server)
+            .await;
+        let client = Client::new(server.uri());
+        client.login("alice", "pw").await.expect("login");
+
+        assert_eq!(
+            client.stream_ticket(&stream_request()).await,
+            Err(ApiError::Unsupported(STREAMING_NEEDS_UPDATE))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_server_gives_a_stream_ticket() {
+        let server = server_signing_in().await;
+        Mock::given(method("GET"))
+            .and(path(paths::CAPABILITIES))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "upload_chunk_bytes": 4096, "stream_tickets": true
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(paths::TICKETS))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ticket": "t", "expires_in": 3600
+            })))
+            .mount(&server)
+            .await;
+        let client = Client::new(server.uri());
+        client.login("alice", "pw").await.expect("login");
+
+        let ticket = client
+            .stream_ticket(&stream_request())
+            .await
+            .expect("ticket");
+        assert_eq!(ticket.ticket, "t");
     }
 
     #[test]
