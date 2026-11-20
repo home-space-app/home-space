@@ -39,4 +39,4 @@ pub use shell::Shell;
 pub use transfer_save::{SaveDialog, SaveSource, SaveTransferDialog};
 pub use transfers::{TransferList, TransfersPage};
 pub use trash::TrashPage;
-pub use viewer::ViewerPage;
+pub use viewer::LegacyViewer;

@@ -15,6 +15,7 @@ use crate::{
     components::{RowCheckbox, SelectAll, select_on_click},
     icon::{Icon, node_icon},
     locale::short_date,
+    pages::viewer::use_view_link,
     route,
     viewers::viewers,
 };
@@ -222,7 +223,7 @@ fn NodeRow(node: Node, actions: TableActions) -> impl IntoView {
     let href = if is_folder {
         route::folder(node.id)
     } else {
-        route::file_view(node.id)
+        use_view_link().href(node.id)
     };
     let node_id = node.id;
     let editing = Memo::new(move |_| {

@@ -9,9 +9,9 @@ use crate::{
     incoming::{self, IncomingToast},
     leave_guard,
     pages::{
-        AdminPage, AdminTab, Browser, DevicesPage, DuplicatesPage, Login, OidcCallback,
-        PublicSharePage, SearchPage, SettingsPage, SharedWithMePage, SharesPage, Shell,
-        TransferList, TransfersPage, TrashPage, ViewerPage,
+        AdminPage, AdminTab, Browser, DevicesPage, DuplicatesPage, LegacyViewer, Login,
+        OidcCallback, PublicSharePage, SearchPage, SettingsPage, SharedWithMePage, SharesPage,
+        Shell, TransferList, TransfersPage, TrashPage,
     },
     session::Auth,
     uploads::{Sending, UploadItem, UploadPanel},
@@ -49,10 +49,8 @@ pub fn App() -> impl IntoView {
                     <ParentRoute path=path!("") view=move || view! { <Shell auth /> }>
                         <Route path=path!("/") view=move || view! { <Browser auth /> } />
                         <Route path=path!("/folder/:id") view=move || view! { <Browser auth /> } />
-                        <Route
-                            path=path!("/files/:id/view")
-                            view=move || view! { <ViewerPage auth /> }
-                        />
+                        // Where the viewer used to be; it now opens over any page.
+                        <Route path=path!("/files/:id/view") view=LegacyViewer />
                         <Route path=path!("/search") view=move || view! { <SearchPage auth /> } />
                         <Route path=path!("/trash") view=move || view! { <TrashPage auth /> } />
                         <Route

@@ -12,6 +12,7 @@ use protocol::{DuplicateFile, Node};
 use crate::{
     components::MenuLink,
     icon::{Icon, node_icon},
+    pages::viewer::use_view_link,
     route,
     viewers::viewers,
 };
@@ -24,12 +25,12 @@ pub fn folder_href(node: &Node) -> String {
         .map_or_else(|| HOME_PATH.to_owned(), route::folder)
 }
 
-/// The built-in viewer of `node`, if one shows it.
+/// `node` open in the built-in viewer over this page, if a viewer shows it.
 pub fn view_href(node: &Node) -> Option<String> {
     viewers()
         .viewer_for_node(node)
         .is_some()
-        .then(|| route::file_view(node.id))
+        .then(|| use_view_link().href(node.id))
 }
 
 /// A file's icon and name, opening its viewer when there is one.

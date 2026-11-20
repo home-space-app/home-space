@@ -1,4 +1,4 @@
-//! A file shared with the user, open in its built-in viewer: read-only, with the other
+//! A file shared with the user, open in its built-in viewer over its folder: read-only, with the other
 //! pictures of its folder a button or a key away. PDFs and videos open in the same viewers as
 //! the user's own files.
 
@@ -46,17 +46,14 @@ pub fn SharedViewer(
     /// What that folder holds, the file among it.
     listing: Vec<SharedNode>,
     item: SharedNode,
+    /// Where closing the viewer goes.
+    close: Memo<String>,
     on_download: Callback<()>,
 ) -> impl IntoView {
     let viewer = shared_viewer(viewers(), &item);
     let gallery = SharedGallery::new(viewers(), &listing, &item);
-    let back_path = if trail.is_empty() {
-        route::SHARED_PATH.to_owned()
-    } else {
-        route::received_folder(share, &trail)
-    };
     let header = ViewerHeader {
-        back: Memo::new(move |_| back_path.clone()),
+        close,
         name: Memo::new({
             let name = item.name.clone();
             move |_| name.clone()

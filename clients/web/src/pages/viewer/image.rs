@@ -9,11 +9,10 @@ use web_sys::{Blob, BlobPropertyBag, HtmlElement, KeyboardEvent, Url};
 use client_core::{gallery::Gallery, listing::Sort, viewers::Viewer};
 use protocol::{Event, Node, NodeId};
 
-use super::{ViewerHeader, fetch_content};
+use super::{ViewerHeader, fetch_content, use_view_link};
 use crate::{
     events,
     icon::Icon,
-    route,
     session::{self, Auth},
     viewers::viewers,
 };
@@ -140,6 +139,7 @@ pub fn ImageViewer(
     });
 
     let navigate = use_navigate();
+    let link = use_view_link();
     let step = Callback::new(move |step: Step| {
         let target = gallery.with_untracked(|gallery| {
             gallery.as_ref().and_then(|gallery| match step {
@@ -149,7 +149,7 @@ pub fn ImageViewer(
         });
         if let Some(id) = target {
             navigate(
-                &route::file_view(id),
+                &link.href(id),
                 NavigateOptions {
                     replace: true,
                     ..NavigateOptions::default()

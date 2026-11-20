@@ -1,6 +1,41 @@
+/* The viewer opens in a popup over the page it was opened from, which darkens behind it. */
+.viewer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  padding: var(--space-5);
+  background: var(--color-backdrop);
+  backdrop-filter: blur(2px);
+  animation: modal-fade var(--transition);
+}
+
+.viewer-overlay__panel {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: var(--space-4) var(--space-5) var(--space-5);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg);
+  box-shadow: var(--shadow-lg);
+  animation: modal-rise 180ms ease;
+}
+
+.viewer-overlay__panel:focus {
+  outline: none;
+}
+
+/* The page under the popup stays put. */
+.viewer-open,
+.viewer-open body {
+  overflow: hidden;
+}
+
 .viewer {
   display: flex;
   flex-direction: column;
+  gap: var(--space-4);
 }
 
 .viewer__header {
@@ -10,6 +45,14 @@
 .viewer__title {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The buttons keep their room next to the name, also on a phone. */
+.viewer__header .explorer__toolbar {
+  flex: none;
 }
 
 .viewer__body {
@@ -68,8 +111,22 @@
     flex-wrap: wrap;
   }
 
-  .viewer__body {
-    min-height: 60vh;
+  .viewer-overlay {
+    padding: 0;
+  }
+
+  .viewer-overlay__panel {
+    padding: max(var(--space-3), var(--safe-top)) max(var(--gutter), var(--safe-right))
+      calc(var(--gutter) + var(--safe-bottom)) max(var(--gutter), var(--safe-left));
+    border: 0;
+    border-radius: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .viewer-overlay,
+  .viewer-overlay__panel {
+    animation: none;
   }
 }
 

@@ -20,9 +20,33 @@ pub fn is_folder_path(path: &str) -> bool {
     path == HOME_PATH || path.starts_with(FOLDER_PREFIX)
 }
 
-/// The built-in viewer of file `id`.
-pub fn file_view(id: NodeId) -> String {
-    format!("/files/{}/view", short_id(id))
+/// The query parameter naming the user's file open in the viewer, over whatever page is open.
+pub const FILE_PARAM: &str = "file";
+
+/// The page at `path` with query `search`, with file `id` open in the viewer over it, or with
+/// the viewer closed.
+pub fn with_viewer(path: &str, search: &str, id: Option<NodeId>) -> String {
+    with_param(path, search, FILE_PARAM, id.map(short_id).as_deref())
+}
+
+/// The page at `path` with query `search`, parameter `key` set to `value`, or dropped.
+///
+/// `value` goes in as it is: callers pass ids, which need no escaping.
+pub fn with_param(path: &str, search: &str, key: &str, value: Option<&str>) -> String {
+    let mut pairs: Vec<String> = search
+        .trim_start_matches('?')
+        .split('&')
+        .filter(|pair| !pair.is_empty() && pair.split('=').next() != Some(key))
+        .map(str::to_owned)
+        .collect();
+    if let Some(value) = value {
+        pairs.push(format!("{key}={value}"));
+    }
+    if pairs.is_empty() {
+        path.to_owned()
+    } else {
+        format!("{path}?{}", pairs.join("&"))
+    }
 }
 
 pub const TRASH_PATH: &str = "/trash";
@@ -145,19 +169,34 @@ mod tests {
     }
 
     #[test]
-    fn file_view_path_uses_the_short_form() {
-        let path = file_view(id());
-        let short = path
-            .strip_prefix("/files/")
-            .and_then(|rest| rest.strip_suffix("/view"));
+    fn the_viewer_opens_over_the_page_in_the_short_form() {
+        let url = with_viewer("/settings/duplicates", "", Some(id()));
+        let short = url.strip_prefix("/settings/duplicates?file=");
         assert_eq!(short.and_then(parse_id), Some(id()));
+    }
+
+    #[test]
+    fn the_viewer_keeps_the_rest_of_the_query() {
+        let other = NodeId::from(Uuid::from_u128(7));
+        let open = format!("q=a%20b&file={}", short_id(other));
+        assert_eq!(
+            with_viewer("/search", &open, Some(id())),
+            format!("/search?q=a%20b&file={}", short_id(id()))
+        );
+        assert_eq!(with_viewer("/search", &open, None), "/search?q=a%20b");
+    }
+
+    #[test]
+    fn closing_the_viewer_drops_the_query_it_had() {
+        let open = format!("?file={}", short_id(id()));
+        assert_eq!(with_viewer("/", &open, None), "/");
     }
 
     #[test]
     fn only_home_and_folders_are_folder_paths() {
         assert!(is_folder_path("/"));
         assert!(is_folder_path(&folder(id())));
-        assert!(!is_folder_path(&file_view(id())));
+        assert!(!is_folder_path(SEARCH_PATH));
     }
 
     #[test]

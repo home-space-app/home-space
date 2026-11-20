@@ -1,5 +1,5 @@
 //! "Shared with me", `/shared`: what other users shared with the user, read-only. Folders
-//! open at `/shared/<share>?path=…` and files in their viewer with `&view=…`; files and
+//! open at `/shared/<share>?path=…` and files in their viewer, over the folder, with `&view=…`; files and
 //! folders download, or are saved as copies into the user's own files.
 
 use leptos::{prelude::*, task::spawn_local};
@@ -21,7 +21,10 @@ use client_core::{
 };
 use protocol::{NodeId, NodeKind, ReceivedShare, SharedNode, TicketRequest};
 
-use super::{SaveDialog, SaveSource, viewer::SharedViewer};
+use super::{
+    SaveDialog, SaveSource,
+    viewer::{SharedViewer, ViewerOverlay},
+};
 use crate::{
     components::{ErrorAlert, Menu, MenuItem},
     icon::{Icon, kind_icon},
@@ -114,7 +117,9 @@ pub fn SharedWithMePage(auth: Auth) -> impl IntoView {
             .get(route::SHARED_VIEW_PARAM)
             .and_then(|id| route::parse_id(&id))
     });
-    let viewing = Memo::new(move |_| share_id.read().is_some() && view.read().is_some());
+    // A file from the top of a share opens over the list of everything shared.
+    let over_top = Memo::new(move |_| view.read().is_some() && path.read().is_empty());
+    let listed = Memo::new(move |_| !over_top.get());
     let shares = RwSignal::new(Vec::<ReceivedShare>::new());
     let loaded = RwSignal::new(false);
     let page = Shared {
@@ -143,10 +148,16 @@ pub fn SharedWithMePage(auth: Auth) -> impl IntoView {
     let saved = Callback::new(move |_: bool| page.saving.set(None));
 
     view! {
-        <main class="explorer" class:viewer=move || viewing.get()>
+        <main class="explorer">
             {move || match (share_id.get(), share.get()) {
                 (None, _) => view! { <TopLevel page shares loaded /> }.into_any(),
-                (Some(_), Some(share)) => view! { <Folder page share path view /> }.into_any(),
+                (Some(_), Some(share)) => view! {
+                    <Show when=move || over_top.get()>
+                        <TopLevel page shares loaded />
+                    </Show>
+                    <Folder page share path view listed />
+                }
+                .into_any(),
                 (Some(_), None) => {
                     view! {
                         <div class="explorer__header">
@@ -280,6 +291,9 @@ fn Folder(
     share: ReceivedShare,
     path: Memo<Vec<NodeId>>,
     view: Memo<Option<NodeId>>,
+    /// Whether the folder's listing shows under the viewer; the list of everything shared
+    /// shows there instead while a file from the top of the share is open.
+    listed: Memo<bool>,
 ) -> impl IntoView {
     let share_id = share.id;
     let top = share.items.clone();
@@ -324,9 +338,17 @@ fn Folder(
         })
     });
 
-    move || match (view.get(), opened_file.get()) {
-        (None, _) => view! { <FolderListing page share_id trail items loaded /> }.into_any(),
-        (Some(_), Some(item)) => {
+    // Files at the top of a share were opened from the list of everything shared, and go
+    // back to it.
+    let close = Memo::new(move |_| {
+        if path.read().is_empty() {
+            route::SHARED_PATH.to_owned()
+        } else {
+            route::received_folder(share_id, &path.read())
+        }
+    });
+    let opened = move || match opened_file.get() {
+        Some(item) => {
             let download = {
                 let item = item.clone();
                 Callback::new(move |()| page.download(share_id, item.clone()))
@@ -338,21 +360,28 @@ fn Folder(
                     trail=trail_ids.get_untracked()
                     listing=items.get_untracked()
                     item
+                    close
                     on_download=download
                 />
             }
             .into_any()
         }
-        (Some(_), None) => view! {
-            <div class="explorer__header">
-                {move || view! { <Crumbs share=Some(share_id) trail=trail.get() /> }}
-            </div>
+        None => view! {
             <ErrorAlert message=page.error />
             <p class="explorer__empty">
                 {move || if loaded.get() { FILE_GONE } else { LOADING }}
             </p>
         }
         .into_any(),
+    };
+
+    view! {
+        <Show when=move || listed.get()>
+            <FolderListing page share_id trail items loaded />
+        </Show>
+        <Show when=move || view.read().is_some()>
+            <ViewerOverlay close>{opened}</ViewerOverlay>
+        </Show>
     }
 }
 
