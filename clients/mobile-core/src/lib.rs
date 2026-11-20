@@ -41,7 +41,7 @@ pub use files::DownloadListener;
 pub use offline::{OfflineProblem, OfflineState, OfflineStatus};
 pub use shares::{ShareExpiry, ShareForm, ShareFormState, ShareSaved};
 pub use transfers::{SendFile, SendTarget, TransferLists, TransferRow, TransferStatus};
-pub use viewers::{Gallery, ImageFile, TextFile, TextFormat, ViewerInfo, ViewerKind};
+pub use viewers::{Gallery, ImageFile, PdfFile, TextFile, TextFormat, ViewerInfo, ViewerKind};
 
 uniffi::setup_scaffolding!();
 
@@ -205,6 +205,7 @@ pub enum EntryKind {
 pub enum EntryIcon {
     Folder,
     Image,
+    Video,
     Document,
     Other,
 }
@@ -250,6 +251,7 @@ impl From<protocol::Node> for Entry {
         let entry_icon = match icon::node_icon(&node) {
             icon::NodeIcon::Folder => EntryIcon::Folder,
             icon::NodeIcon::Image => EntryIcon::Image,
+            icon::NodeIcon::Video => EntryIcon::Video,
             icon::NodeIcon::Document => EntryIcon::Document,
             icon::NodeIcon::Other => EntryIcon::Other,
         };

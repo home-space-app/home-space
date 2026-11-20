@@ -24,15 +24,21 @@ struct EntryIconView: View {
         switch icon {
         case .folder: "node-folder"
         case .image: "node-image"
+        case .video: "node-image"
         case .document: "node-description"
         case .other: "node-draft"
         }
     }
 
+    /// Video uses the system's film symbol; the others are the web client's Material icons.
+    private var iconImage: Image {
+        icon == .video ? Image(systemName: "film") : Image(decorative: asset)
+    }
+
     var body: some View {
         // The box and badge sizes are the desktop client's.
         ZStack(alignment: .leading) {
-            Image(decorative: asset)
+            iconImage
                 .renderingMode(.template)
                 .resizable()
                 .frame(width: 20, height: 20)

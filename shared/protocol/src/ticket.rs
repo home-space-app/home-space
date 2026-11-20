@@ -34,6 +34,16 @@ pub enum TicketRequest {
     SharedArchive {
         share_id: Uuid,
     },
+    /// A file played as it downloads, such as a video: the ticket opens the file's download URL
+    /// for every range request the player makes until it expires, not just once.
+    Stream {
+        node_id: NodeId,
+    },
+    /// A file reached through a share made for the user, played as it downloads.
+    SharedStream {
+        share_id: Uuid,
+        node_id: NodeId,
+    },
 }
 
 /// A short-lived ticket passed in the query string where headers are unavailable.
@@ -66,6 +76,30 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<TicketRequest>(&json).expect("back"),
             download
+        );
+    }
+
+    #[test]
+    fn stream_tickets_round_trip() {
+        let requests = [
+            TicketRequest::Stream {
+                node_id: NodeId(Uuid::nil()),
+            },
+            TicketRequest::SharedStream {
+                share_id: Uuid::nil(),
+                node_id: NodeId(Uuid::nil()),
+            },
+        ];
+        for request in requests {
+            let json = serde_json::to_string(&request).expect("json");
+            assert_eq!(
+                serde_json::from_str::<TicketRequest>(&json).expect("back"),
+                request
+            );
+        }
+        assert_eq!(
+            serde_json::to_string(&requests[0]).expect("json"),
+            format!(r#"{{"scope":"stream","node_id":"{}"}}"#, Uuid::nil())
         );
     }
 }

@@ -34,7 +34,7 @@ use super::{
     },
     transfer_list::{display_download, downloads_folder, free_path, io_error},
     transfer_save::{self, SaveSource, TransferSave},
-    viewer::{image, text as text_viewer},
+    viewer::{image, pdf, text as text_viewer},
 };
 use crate::{
     ellipsis::ellipsized,
@@ -63,6 +63,7 @@ const MAX_DOWNLOAD_ENTRIES: usize = 10_000;
 const LOADING: &str = "Loading…";
 const PREVIOUS: &str = "Previous";
 const NEXT: &str = "Next";
+const NO_VIEWER: &str = "This file cannot be shown here. Download it to open it.";
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -85,6 +86,7 @@ pub enum Message {
     /// The content of the file being viewed, for the load that asked.
     Viewed(u64, Result<Vec<u8>, String>),
     ViewText(text_viewer::Message),
+    ViewPdf(pdf::Message),
     Previous,
     Next,
     CloseView,
@@ -105,6 +107,7 @@ enum ViewBody {
     Failed(String),
     Text(text_viewer::State),
     Image(image::State),
+    Pdf(pdf::State),
 }
 
 /// A share opened at one of its folders.
@@ -377,6 +380,7 @@ impl State {
                 self.view_file(client, share, item)
             }
             Message::Viewed(load, result) if load == self.views => {
+                let mut task = Task::none();
                 if let Some(viewing) = &mut self.viewing {
                     viewing.body = match result {
                         Ok(bytes) => match viewing.viewer.kind {
@@ -384,11 +388,21 @@ impl State {
                                 ViewBody::Text(text_viewer::State::new(TextDoc::decode(&bytes)))
                             }
                             ViewerKind::Image => ViewBody::Image(image::State::new(&bytes)),
+                            ViewerKind::Pdf => match pdf::State::open(&bytes) {
+                                Ok((pdf, render)) => {
+                                    task = render.map(Message::ViewPdf);
+                                    ViewBody::Pdf(pdf)
+                                }
+                                Err(err) => ViewBody::Failed(err),
+                            },
+                            // The desktop registers no video viewer: video opens with the
+                            // system's player.
+                            ViewerKind::Video => ViewBody::Failed(NO_VIEWER.to_owned()),
                         },
                         Err(err) => ViewBody::Failed(err),
                     };
                 }
-                Task::none()
+                task
             }
             Message::Viewed(..) => Task::none(),
             Message::ViewText(message) => {
@@ -398,6 +412,16 @@ impl State {
                 }) = &mut self.viewing
                 {
                     text.update(message);
+                }
+                Task::none()
+            }
+            Message::ViewPdf(message) => {
+                if let Some(Viewing {
+                    body: ViewBody::Pdf(pdf),
+                    ..
+                }) = &mut self.viewing
+                {
+                    return pdf.update(message).map(Message::ViewPdf);
                 }
                 Task::none()
             }
@@ -511,6 +535,9 @@ fn viewer_actions(viewing: &Viewing, downloading: bool) -> Element<'_, Message> 
     if downloading {
         line = line.push(text("Downloading…").style(theme::muted_text));
     }
+    if let ViewBody::Pdf(pdf) = &viewing.body {
+        line = line.push(pdf.action().map(Message::ViewPdf));
+    }
     if let Some(gallery) = &viewing.gallery
         && let Some((index, total)) = gallery.position().filter(|(_, total)| *total > 1)
     {
@@ -541,6 +568,7 @@ fn viewer_body(viewing: &Viewing) -> Element<'_, Message> {
         ViewBody::Failed(err) => alert_error(Icon::Error, err.as_str(), None),
         ViewBody::Text(text) => text.view().map(Message::ViewText),
         ViewBody::Image(image) => image.view(),
+        ViewBody::Pdf(pdf) => pdf.view().map(Message::ViewPdf),
     }
 }
 

@@ -36,6 +36,10 @@ struct ViewerScreen: View {
             TextViewer(model: model, client: client, source: viewer.source, info: viewer.info)
         case .image:
             ImageViewer(model: model, client: client, source: viewer.source)
+        case .pdf:
+            PdfViewer(model: model, client: client, source: viewer.source)
+        case .video:
+            VideoViewer(model: model, client: client, source: viewer.source)
         }
     }
 }
@@ -313,7 +317,7 @@ private struct ImagePageView: View {
                 image = await Task.detached { downsample(data, maxPixels: side) }.value
                 if image == nil {
                     error = "This picture can't be decoded on this iPhone."
-                } else if let url = try? keep(data) {
+                } else if let url = try? keepForSharing(data, name: page.name, fallback: page.id) {
                     onShareable(url)
                 }
             } catch CoreError.Unauthorized {
@@ -322,17 +326,6 @@ private struct ImagePageView: View {
                 self.error = fileMessage(for: error)
             }
         }
-    }
-
-    /// A copy of the picture for the share sheet, which needs a file to offer Save to Files.
-    private func keep(_ data: Data) throws -> URL {
-        let folder = FileManager.default.temporaryDirectory
-            .appendingPathComponent("viewer", isDirectory: true)
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let url = folder.appendingPathComponent(safeFileName(page.name, fallback: page.id))
-        try data.write(to: url)
-        return url
     }
 }
 

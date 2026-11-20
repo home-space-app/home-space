@@ -4,6 +4,7 @@ use crate::viewers::TEXT_LIKE_TYPES;
 
 const IMAGE_PREFIX: &str = "image/";
 const TEXT_PREFIX: &str = "text/";
+const VIDEO_PREFIX: &str = "video/";
 const DOCUMENT_TYPES: &[&str] = &[
     "application/pdf",
     "application/rtf",
@@ -17,6 +18,7 @@ const DOCUMENT_TYPES: &[&str] = &[
 pub enum NodeIcon {
     Folder,
     Image,
+    Video,
     Document,
     Other,
 }
@@ -31,6 +33,7 @@ pub fn kind_icon(kind: NodeKind, mime: &str) -> NodeIcon {
     match (kind, mime) {
         (NodeKind::Folder, _) => NodeIcon::Folder,
         (_, mime) if mime.starts_with(IMAGE_PREFIX) => NodeIcon::Image,
+        (_, mime) if mime.starts_with(VIDEO_PREFIX) => NodeIcon::Video,
         (_, mime)
             if mime.starts_with(TEXT_PREFIX)
                 || DOCUMENT_TYPES.contains(&mime)
@@ -86,6 +89,14 @@ mod tests {
             .map(|mime| node_icon(&node(NodeKind::File, Some(mime))))
             .collect();
         assert_eq!(icons, [NodeIcon::Document, NodeIcon::Document]);
+    }
+
+    #[test]
+    fn videos_use_the_video_icon() {
+        assert_eq!(
+            node_icon(&node(NodeKind::File, Some("video/mp4"))),
+            NodeIcon::Video
+        );
     }
 
     #[test]

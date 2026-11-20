@@ -17,7 +17,7 @@ use client_core::{
     shared_link::sort_shared,
     text::TextDoc,
 };
-use protocol::{NodeKind, SharedNode};
+use protocol::{NodeKind, SharedNode, TicketRequest};
 
 use crate::{
     CoreClient, CoreError, EntryIcon, EntryKind, files::DownloadListener, files::storage,
@@ -57,6 +57,7 @@ fn entry(
     let icon = match icon::kind_icon(node.kind, &node.mime) {
         icon::NodeIcon::Folder => EntryIcon::Folder,
         icon::NodeIcon::Image => EntryIcon::Image,
+        icon::NodeIcon::Video => EntryIcon::Video,
         icon::NodeIcon::Document => EntryIcon::Document,
         icon::NodeIcon::Other => EntryIcon::Other,
     };
@@ -152,6 +153,27 @@ impl CoreClient {
     /// The encoded picture of shared `file`, for the image viewer.
     pub async fn read_shared_image(&self, file: SharedEntry) -> Result<Vec<u8>, CoreError> {
         self.read_shared(file).await
+    }
+
+    /// The document of shared `file`, for the PDF viewer.
+    pub async fn read_shared_pdf(&self, file: SharedEntry) -> Result<Vec<u8>, CoreError> {
+        self.read_shared(file).await
+    }
+
+    /// A URL the video player can stream shared `file` from, like [`CoreClient::stream_url`].
+    pub async fn shared_stream_url(&self, file: SharedEntry) -> Result<String, CoreError> {
+        let share = share_id(&file.share_id)?;
+        let id = parse_id(&file.id)?;
+        let inner = self.inner.clone();
+        off_ui_thread(async move {
+            let request = TicketRequest::SharedStream {
+                share_id: share,
+                node_id: id,
+            };
+            let ticket = inner.ticket(&request).await?;
+            Ok(inner.received_file_url(share, id, &ticket.ticket))
+        })
+        .await
     }
 
     /// Downloads a shared file to `dest_path`, which ends up complete or not at all.

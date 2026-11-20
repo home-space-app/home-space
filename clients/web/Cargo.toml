@@ -15,6 +15,7 @@ gloo-timers = { version = "0.4.0", features = ["futures"] }
 js-sys = "0.3.107"
 leptos = { version = "0.8.23", features = ["csr"] }
 leptos_router = "0.8.17"
+pdf-core.workspace = true
 protocol.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -29,6 +30,7 @@ version = "0.3.107"
 features = [
     "Blob",
     "BlobPropertyBag",
+    "CanvasRenderingContext2d",
     "Clipboard",
     "CloseEvent",
     "Crypto",
@@ -39,6 +41,8 @@ features = [
     "Document",
     "DomRect",
     "DragEvent",
+    "Element",
+    "ErrorEvent",
     "File",
     "FileList",
     "FilePropertyBag",
@@ -46,11 +50,20 @@ features = [
     "FileSystemDirectoryReader",
     "FileSystemEntry",
     "FileSystemFileEntry",
+    "HtmlCanvasElement",
     "HtmlElement",
     "HtmlInputElement",
+    "HtmlMediaElement",
+    "HtmlVideoElement",
+    "ImageData",
+    "IntersectionObserver",
+    "IntersectionObserverEntry",
+    "IntersectionObserverInit",
     "Location",
+    "MediaError",
     "MessageEvent",
     "Navigator",
+    "NodeList",
     "ProgressEvent",
     "ReadableStream",
     "ReadableStreamDefaultReader",
@@ -61,6 +74,7 @@ features = [
     "VisibilityState",
     "WebSocket",
     "Window",
+    "Worker",
     "XmlHttpRequest",
     "XmlHttpRequestUpload",
 ]

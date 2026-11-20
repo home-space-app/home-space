@@ -2,8 +2,11 @@
 //! [`client_core::viewers`]. Each [`ViewerKind`] has its own component here.
 
 mod image;
+mod pdf;
 mod shared;
+mod source;
 mod text;
+mod video;
 
 use leptos::prelude::*;
 use leptos_router::{components::A, hooks::use_params_map};
@@ -15,7 +18,9 @@ use client_core::viewers::ViewerKind;
 use protocol::{Event, Node, NodeId, TicketRequest};
 
 pub use self::shared::SharedViewer;
-use self::{image::ImageViewer, text::TextViewer};
+use self::{
+    image::ImageViewer, pdf::PdfViewer, source::Source, text::TextViewer, video::VideoViewer,
+};
 use crate::{
     components::ErrorAlert,
     events,
@@ -88,6 +93,12 @@ pub fn ViewerPage(auth: Auth) -> impl IntoView {
             .unwrap_or_default()
     });
 
+    let version = Memo::new(move |_| {
+        node.read()
+            .as_ref()
+            .map(|node| (node.id, node.sha256.clone()))
+    });
+
     let header = ViewerHeader { back, name };
     let body = move || {
         if deleted.get() {
@@ -101,6 +112,28 @@ pub fn ViewerPage(auth: Auth) -> impl IntoView {
             (Some(viewer), _) => match viewer.kind {
                 ViewerKind::Text => view! { <TextViewer auth node viewer header /> }.into_any(),
                 ViewerKind::Image => view! { <ImageViewer auth node viewer header /> }.into_any(),
+                ViewerKind::Pdf | ViewerKind::Video => {
+                    // Opened again for each version of the file.
+                    (move || {
+                        version.get().map(|(id, _)| {
+                            let source = Source::Own(id);
+                            match viewer.kind {
+                                ViewerKind::Pdf => view! {
+                                    <PdfViewer
+                                        auth
+                                        source
+                                        name=name.get_untracked()
+                                        max_bytes=viewer.max_bytes
+                                        header
+                                    />
+                                }
+                                .into_any(),
+                                _ => view! { <VideoViewer auth source header /> }.into_any(),
+                            }
+                        })
+                    })
+                    .into_any()
+                }
             },
             (None, true) => view! {
                 {header.view(None)}

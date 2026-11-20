@@ -10,6 +10,8 @@
     <link data-trunk rel="copy-file" href="assets/material-symbols-outlined.woff2" />
     <link data-trunk rel="scss" href="styles/main.scss" />
     <link data-trunk rel="rust" href="Cargo.toml" />
+    <!-- The PDF renderer, built on its own: the browser fetches it only when a PDF is opened. -->
+    <link data-trunk rel="rust" href="../pdf-worker/Cargo.toml" data-type="worker" data-bin="pdf-worker" data-loader-shim />
   </head>
   <body></body>
 </html>

@@ -620,6 +620,150 @@ async fn a_ticket_refused_for_its_scope_is_not_used_up(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn a_stream_ticket_opens_its_file_until_it_expires(pool: PgPool) {
+    let auth = service(pool);
+    auth.create_user("alice", "password-1").await.expect("user");
+    let pair = auth
+        .login("alice", "password-1", None)
+        .await
+        .expect("login");
+    let grant = grant_of(&auth, &pair).await;
+    let node_id = NodeId::new();
+    let issued = auth
+        .issue_ticket(
+            grant.user_id,
+            grant.session_id,
+            &TicketRequest::Stream { node_id },
+        )
+        .expect("ticket");
+    assert_eq!(issued.expires_in, 3600);
+    let download = TicketRequest::Download { node_id };
+
+    for _ in 0..3 {
+        assert!(auth.verify_ticket(&issued.ticket, &download).await.is_ok());
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_stream_ticket_opens_nothing_else(pool: PgPool) {
+    let auth = service(pool);
+    auth.create_user("alice", "password-1").await.expect("user");
+    let pair = auth
+        .login("alice", "password-1", None)
+        .await
+        .expect("login");
+    let grant = grant_of(&auth, &pair).await;
+    let node_id = NodeId::new();
+    let ticket = auth
+        .issue_ticket(
+            grant.user_id,
+            grant.session_id,
+            &TicketRequest::Stream { node_id },
+        )
+        .expect("ticket")
+        .ticket;
+    let others = [
+        TicketRequest::Download {
+            node_id: NodeId::new(),
+        },
+        TicketRequest::DownloadVersion {
+            node_id,
+            version: 1,
+        },
+        TicketRequest::SharedFile {
+            share_id: Uuid::now_v7(),
+            node_id,
+        },
+        TicketRequest::Events,
+    ];
+    for other in others {
+        assert!(
+            auth.verify_ticket(&ticket, &other).await.is_err(),
+            "{other:?}"
+        );
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_shared_stream_ticket_opens_its_shared_file(pool: PgPool) {
+    let auth = service(pool);
+    auth.create_user("alice", "password-1").await.expect("user");
+    let pair = auth
+        .login("alice", "password-1", None)
+        .await
+        .expect("login");
+    let grant = grant_of(&auth, &pair).await;
+    let (share_id, node_id) = (Uuid::now_v7(), NodeId::new());
+    let ticket = auth
+        .issue_ticket(
+            grant.user_id,
+            grant.session_id,
+            &TicketRequest::SharedStream { share_id, node_id },
+        )
+        .expect("ticket")
+        .ticket;
+    let file = TicketRequest::SharedFile { share_id, node_id };
+
+    assert!(auth.verify_ticket(&ticket, &file).await.is_ok());
+    assert!(auth.verify_ticket(&ticket, &file).await.is_ok());
+    let elsewhere = TicketRequest::SharedFile {
+        share_id: Uuid::now_v7(),
+        node_id,
+    };
+    assert!(auth.verify_ticket(&ticket, &elsewhere).await.is_err());
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_stream_ticket_ends_with_its_session(pool: PgPool) {
+    let auth = service(pool);
+    auth.create_user("alice", "password-1").await.expect("user");
+    let pair = auth
+        .login("alice", "password-1", None)
+        .await
+        .expect("login");
+    let grant = grant_of(&auth, &pair).await;
+    let node_id = NodeId::new();
+    let ticket = auth
+        .issue_ticket(
+            grant.user_id,
+            grant.session_id,
+            &TicketRequest::Stream { node_id },
+        )
+        .expect("ticket")
+        .ticket;
+    let download = TicketRequest::Download { node_id };
+    assert!(auth.verify_ticket(&ticket, &download).await.is_ok());
+
+    auth.logout(&pair.refresh_token).await.expect("logout");
+
+    assert!(auth.verify_ticket(&ticket, &download).await.is_err());
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_download_ticket_still_works_once(pool: PgPool) {
+    let auth = service(pool);
+    auth.create_user("alice", "password-1").await.expect("user");
+    let pair = auth
+        .login("alice", "password-1", None)
+        .await
+        .expect("login");
+    let grant = grant_of(&auth, &pair).await;
+    let download = TicketRequest::Download {
+        node_id: NodeId::new(),
+    };
+    let ticket = auth
+        .issue_ticket(grant.user_id, grant.session_id, &download)
+        .expect("ticket");
+    assert_eq!(ticket.expires_in, 30);
+
+    assert!(auth.verify_ticket(&ticket.ticket, &download).await.is_ok());
+    assert!(matches!(
+        auth.verify_ticket(&ticket.ticket, &download).await,
+        Err(AuthError::InvalidCredentials)
+    ));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn used_tickets_are_forgotten_once_they_expire(pool: PgPool) {
     let auth = service(pool);
     let now = OffsetDateTime::now_utc().unix_timestamp();
