@@ -8,8 +8,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.12.1"
-    CURRENT_PROJECT_VERSION: "7"
+    MARKETING_VERSION: "0.12.2"
+    CURRENT_PROJECT_VERSION: "8"
 aggregateTargets:
   # Builds clients/mobile-core (the Rust client) into an xcframework and generates its Swift
   # bindings.
