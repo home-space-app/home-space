@@ -38,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.geometry.lerp
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -272,8 +273,12 @@ private fun ZoomableImage(bitmap: ImageBitmap, name: String) {
                             val event = awaitPointerEvent()
                             val fingers = event.changes.count { it.pressed }
                             if (fingers < 2 && scale <= 1f) continue
+                            // No finger that was down is still down (the last one lifted): the
+                            // centroid is unspecified (NaN), which would push the picture away.
+                            val centroid = event.calculateCentroid(useCurrent = true)
+                            if (!centroid.isSpecified) continue
                             val zoom = (scale * event.calculateZoom()).coerceIn(1f, MAX_ZOOM)
-                            val focus = event.calculateCentroid(useCurrent = true) - center
+                            val focus = centroid - center
                             val wanted = focus - (focus - offset) * (zoom / scale) + event.calculatePan()
                             val next = clamp(wanted, zoom)
                             // A one-finger swipe past the edge is left to the pager.

@@ -4,10 +4,18 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
+import androidx.compose.animation.core.AnimationState
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateDecay
+import androidx.compose.animation.rememberSplineBasedDecay
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.rememberTransformableState
-import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -28,12 +36,20 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerId
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
@@ -41,8 +57,12 @@ import androidx.compose.ui.unit.dp
 import java.io.File
 import java.io.IOException
 import java.util.UUID
+import kotlin.math.roundToInt
+import kotlin.math.sqrt
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -53,6 +73,9 @@ import uniffi.homespace_core.Entry
 private const val NOT_A_PDF = "This PDF can't be opened on this phone."
 private const val PROTECTED = "This PDF is protected with a password. Download it to open it."
 private const val MAX_ZOOM = 4f
+private const val DOUBLE_TAP_ZOOM = 2.5f
+/** The most pixels a page is rendered with, to bound the memory a zoomed page takes. */
+private const val MAX_PAGE_PIXELS = 8_000_000f
 private val PAGE_GAP = 8.dp
 
 /** The PDF viewer of one of the user's own files; the screen reads the document. */
@@ -127,28 +150,122 @@ internal fun PdfScreen(
 @Composable
 private fun Pages(document: PdfPages) {
     var zoom by remember { mutableFloatStateOf(1f) }
+    // The zoom the pages are rendered for: it follows [zoom] once the fingers lift, so a pinch
+    // scales the pages already rendered instead of rendering them on every frame.
+    var renderZoom by remember { mutableFloatStateOf(1f) }
+    // How far the zoomed pages are scrolled sideways, in pixels.
+    var across by remember { mutableFloatStateOf(0f) }
     val list = rememberLazyListState()
-    // Pinch zooms; dragging with one finger stays the list's scrolling.
-    val zooming = rememberTransformableState { change, _, _ ->
-        zoom = (zoom * change).coerceIn(1f, MAX_ZOOM)
-    }
     val current by remember { derivedStateOf { list.firstVisibleItemIndex + 1 } }
-    Box(
+    val scope = rememberCoroutineScope()
+    val decay = rememberSplineBasedDecay<Float>()
+    // The fling or double-tap zoom under way; a new touch stops it.
+    var motion by remember { mutableStateOf<Job?>(null) }
+    BoxWithConstraints(
         Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surfaceContainer)
-            .transformable(zooming, canPan = { false }),
+            .clipToBounds()
+            .background(MaterialTheme.colorScheme.surfaceContainer),
     ) {
-        LazyColumn(
-            state = list,
-            contentPadding = PaddingValues(PAGE_GAP),
-            verticalArrangement = Arrangement.spacedBy(PAGE_GAP),
-            modifier = Modifier.fillMaxSize().graphicsLayer {
-                scaleX = zoom
-                scaleY = zoom
-            },
+        val viewport = constraints.maxWidth.toFloat()
+        val gap = with(LocalDensity.current) { PAGE_GAP.toPx() }
+        fun clampAcross(value: Float, zoom: Float) =
+            value.coerceIn(0f, (viewport * zoom - viewport).coerceAtLeast(0f))
+
+        // Zooms to [next] keeping the point under [focus] still, then pans by [pan]. [anchor] is
+        // the list position being followed (from the top of an item); the list's own state lags a
+        // frame behind, so a gesture follows its own. Returns the new anchor.
+        fun zoomTo(next: Float, focus: Offset, pan: Offset, anchor: Pair<Int, Float>?): Pair<Int, Float> {
+            val ratio = next / zoom
+            across = clampAcross((across + focus.x) * ratio - focus.x - pan.x, next)
+            val (index, offset) = anchor
+                ?: (list.firstVisibleItemIndex to list.firstVisibleItemScrollOffset.toFloat())
+            val moved = (offset + focus.y) * ratio - focus.y - pan.y
+            list.requestScrollToItem(index, moved.roundToInt())
+            zoom = next
+            return index to moved
+        }
+
+        Box(
+            Modifier
+                .fillMaxSize()
+                // Double tap zooms in about the tap, or back out to the page width.
+                .pointerInput(viewport) {
+                    detectTapGestures(onDoubleTap = { tap ->
+                        val target = if (zoom > 1f) 1f else DOUBLE_TAP_ZOOM
+                        motion?.cancel()
+                        motion = scope.launch {
+                            var anchor: Pair<Int, Float>? = null
+                            animate(zoom, target) { value, _ -> anchor = zoomTo(value, tap, Offset.Zero, anchor) }
+                            renderZoom = zoom
+                        }
+                    })
+                }
+                // Two fingers zoom about their centre and pan; the list doesn't see them. One
+                // finger pans sideways here, flinging on release, and scrolls the list up and down
+                // as usual.
+                .pointerInput(viewport) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        motion?.cancel()
+                        var anchor: Pair<Int, Float>? = null
+                        val tracker = VelocityTracker()
+                        var tracked: PointerId? = null
+                        var panning = false
+                        do {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val centroid = event.calculateCentroid(useCurrent = true)
+                            if (!centroid.isSpecified) continue
+                            val pan = event.calculatePan()
+                            val pressed = event.changes.filter { it.pressed }
+                            panning = pressed.size < 2
+                            if (panning) {
+                                anchor = null
+                                across = clampAcross(across - pan.x, zoom)
+                                pressed.firstOrNull()?.let { finger ->
+                                    if (finger.id != tracked) {
+                                        tracker.resetTracking()
+                                        tracked = finger.id
+                                    }
+                                    tracker.addPosition(finger.uptimeMillis, finger.position)
+                                }
+                                continue
+                            }
+                            tracked = null
+                            val next = (zoom * event.calculateZoom()).coerceIn(1f, MAX_ZOOM)
+                            anchor = zoomTo(next, centroid, pan, anchor)
+                            event.changes.forEach { it.consume() }
+                        } while (event.changes.any { it.pressed })
+                        renderZoom = zoom
+                        if (panning && tracked != null && zoom > 1f) {
+                            val velocity = -tracker.calculateVelocity().x
+                            motion = scope.launch {
+                                AnimationState(across, velocity).animateDecay(decay) {
+                                    across = clampAcross(value, zoom)
+                                    if (across != value) cancelAnimation()
+                                }
+                            }
+                        }
+                    }
+                }
+                // The pages are laid out [zoom] times as wide as the screen, shifted by [across].
+                .layout { measurable, constraints ->
+                    val width = (constraints.maxWidth * zoom).roundToInt()
+                    val placeable = measurable.measure(constraints.copy(minWidth = width, maxWidth = width))
+                    layout(constraints.maxWidth, constraints.maxHeight) {
+                        placeable.place(-clampAcross(across, zoom).roundToInt(), 0)
+                    }
+                },
         ) {
-            items(document.sizes.size) { index -> Page(document, index) }
+            val renderWidth = ((viewport - 2 * gap) * renderZoom).roundToInt()
+            LazyColumn(
+                state = list,
+                contentPadding = PaddingValues(PAGE_GAP),
+                verticalArrangement = Arrangement.spacedBy(PAGE_GAP),
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                items(document.sizes.size) { index -> Page(document, index, renderWidth) }
+            }
         }
         Text(
             "$current / ${document.sizes.size}",
@@ -162,19 +279,23 @@ private fun Pages(document: PdfPages) {
     }
 }
 
-/** One page, rendered at the width it is shown when it comes into the list. */
+/**
+ * One page, fitted to the width, rendered [renderWidth] pixels wide (at most [MAX_PAGE_PIXELS]
+ * in all) when it comes into the list; the page shown is kept while a sharper one renders.
+ */
 @Composable
-private fun Page(document: PdfPages, index: Int) {
+private fun Page(document: PdfPages, index: Int, renderWidth: Int) {
     val (width, height) = document.sizes[index]
-    BoxWithConstraints(
+    val aspect = width.toFloat() / height.coerceAtLeast(1)
+    val pixels = minOf(renderWidth, sqrt(MAX_PAGE_PIXELS * aspect).toInt())
+    Box(
         Modifier
             .fillMaxWidth()
-            .aspectRatio(width.toFloat() / height.coerceAtLeast(1))
+            .aspectRatio(aspect)
             .background(androidx.compose.ui.graphics.Color.White),
     ) {
-        val pixels = with(LocalDensity.current) { maxWidth.roundToPx() }
         val bitmap by produceState<Bitmap?>(null, document, index, pixels) {
-            value = document.render(index, pixels)
+            document.render(index, pixels)?.let { value = it }
         }
         bitmap?.let {
             Image(
