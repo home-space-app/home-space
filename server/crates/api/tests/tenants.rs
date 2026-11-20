@@ -260,7 +260,7 @@ async fn a_device_shown_to_everyone_is_hidden_from_other_tenants(pool: PgPool) {
             json!({ "visibility": "everyone" }),
         )
         .await;
-    assert_eq!(shown.status, StatusCode::OK);
+    assert_eq!(shown.status, StatusCode::NO_CONTENT);
 
     let targets = b.get("/api/v1/devices/targets", &mallory).await.json();
     assert!(

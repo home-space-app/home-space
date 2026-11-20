@@ -7,10 +7,10 @@ release, which drops the old `error`/`message` members once clients have the fir
 Scope is `server/crates/*` and the error types in `shared/protocol`. The server is ~30.6k lines of
 Rust, about half of it tests.
 
-Two tests already failed on `main` before this work started. Both come from the tenant changes and
-are not part of this backlog: `api/tests/tenants.rs` `a_device_shown_to_everyone_is_hidden_from_other_tenants`
-(204 instead of 200), and `db` `sessions::tests::upgrade_keeps_live_logins_and_drops_dead_ones` (its
-fixture inserts into `users` without `tenant_id`).
+Two tests that already failed on `main`, from the tenant changes, are fixed; both were wrong, not
+the code. `a_device_shown_to_everyone_is_hidden_from_other_tenants` expected 200 from the visibility
+route, which answers 204 as `transfers.rs` expects. `upgrade_keeps_live_logins_and_drops_dead_ones`
+runs only migrations 0001–0006 but set `users.tenant_id`, which 0024 adds.
 
 Each finding has an ID so a PR can say which ones it closes ("closes S3, L1"). Size is the usual S/M/L.
 Line counts are production lines (everything before `#[cfg(test)]`) / whole file.

@@ -262,7 +262,7 @@ mod tests {
                 .expect("migrate");
         }
         let user = Uuid::now_v7();
-        sqlx::query("INSERT INTO users (id, tenant_id, username, password_hash) VALUES ($1, 1, 'alice', 'x')")
+        sqlx::query("INSERT INTO users (id, username, password_hash) VALUES ($1, 'alice', 'x')")
             .bind(user)
             .execute(&pool)
             .await
