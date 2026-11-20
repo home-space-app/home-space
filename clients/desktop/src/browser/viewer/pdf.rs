@@ -2,8 +2,14 @@
 //!
 //! A page is rendered off the UI thread when it scrolls near the view, at the current zoom, and
 //! dropped again when it is far away, so a long document does not hold every page's pixels.
+//! At most [`RENDERERS`] pages render at once; a page that left the view, or was asked for at
+//! an older zoom, is skipped before it starts rather than rendered and thrown away.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    ops::Range,
+    sync::{Arc, Mutex},
+};
 
 use iced::{
     Alignment, Color, Element, Length, Task,
@@ -15,6 +21,7 @@ use iced::{
 };
 
 use pdf_core::{Document, PageSize, Rendered};
+use tokio::sync::Semaphore;
 
 use crate::{browser::parts, theme};
 
@@ -28,6 +35,8 @@ const PAGE_GAP: f32 = 16.0;
 const PADDING: f32 = 16.0;
 /// How many pages beyond the view are rendered ahead, and kept, on each side.
 const AHEAD: usize = 2;
+/// How many pages render at once.
+const RENDERERS: usize = 2;
 /// The view's height until the first scroll reports it.
 const FIRST_VIEW_HEIGHT: f32 = 1200.0;
 const ZOOM_OUT: &str = "Zoom out";
@@ -39,7 +48,8 @@ pub enum Message {
     Rendered {
         page: usize,
         zoom: Zoom,
-        result: Result<Arc<Rendered>, String>,
+        /// `None` when the page was no longer wanted by the time its turn came.
+        result: Result<Option<Arc<Rendered>>, String>,
     },
     ZoomOut,
     ZoomIn,
@@ -60,7 +70,23 @@ pub struct State {
     asked: HashMap<usize, Zoom>,
     /// The top of the view and its height, in logical pixels.
     view: (f32, f32),
+    /// What is wanted now, which a render waiting for its turn checks before it starts.
+    wanted: Arc<Mutex<Wanted>>,
+    renderers: Arc<Semaphore>,
     error: Option<String>,
+}
+
+/// The zoom and the pages near the view, as of the latest scroll or zoom.
+#[derive(Debug, Clone)]
+struct Wanted {
+    zoom: Zoom,
+    pages: Range<usize>,
+}
+
+impl Wanted {
+    fn wants(&self, page: usize, zoom: Zoom) -> bool {
+        self.zoom == zoom && self.pages.contains(&page)
+    }
 }
 
 impl State {
@@ -74,6 +100,11 @@ impl State {
             rendered: HashMap::new(),
             asked: HashMap::new(),
             view: (0.0, FIRST_VIEW_HEIGHT),
+            wanted: Arc::new(Mutex::new(Wanted {
+                zoom: Zoom(DEFAULT_ZOOM),
+                pages: 0..0,
+            })),
+            renderers: Arc::new(Semaphore::new(RENDERERS)),
             error: None,
         };
         let task = state.render_near_view();
@@ -91,18 +122,22 @@ impl State {
                     self.asked.remove(&page);
                 }
                 match result {
-                    Ok(rendered) if zoom == self.zoom && self.near_view().contains(&page) => {
+                    Ok(Some(rendered)) if zoom == self.zoom && self.near_view().contains(&page) => {
+                        // The message holds the only reference, so the pixels move, not copy.
+                        let rendered = Arc::try_unwrap(rendered)
+                            .unwrap_or_else(|shared| Rendered::clone(&shared));
                         let handle = image::Handle::from_rgba(
                             rendered.width,
                             rendered.height,
-                            rendered.rgba.clone(),
+                            rendered.rgba,
                         );
                         self.rendered.insert(page, (zoom, handle));
                     }
                     Ok(_) => {}
                     Err(err) => self.error = Some(err),
                 }
-                Task::none()
+                // A page skipped while the view moved may be wanted again by now.
+                self.render_near_view()
             }
             Message::ZoomOut => self.zoom_by(-1),
             Message::ZoomIn => self.zoom_by(1),
@@ -151,6 +186,12 @@ impl State {
         let near = self.near_view();
         self.rendered.retain(|page, _| near.contains(page));
         let zoom = self.zoom;
+        if let Ok(mut wanted) = self.wanted.lock() {
+            *wanted = Wanted {
+                zoom,
+                pages: near.clone(),
+            };
+        }
         let scale = zoom.0 * PIXELS_PER_POINT * RENDER_DENSITY;
         let wanted: Vec<_> = near
             .filter(|page| {
@@ -160,9 +201,18 @@ impl State {
             .collect();
         Task::batch(wanted.into_iter().map(|page| {
             self.asked.insert(page, zoom);
-            let document = Arc::clone(&self.document);
-            Task::perform(render(document, page, scale), move |result| {
-                Message::Rendered { page, zoom, result }
+            let job = Job {
+                document: Arc::clone(&self.document),
+                wanted: Arc::clone(&self.wanted),
+                renderers: Arc::clone(&self.renderers),
+                page,
+                zoom,
+                scale,
+            };
+            Task::perform(job.run(), move |result| Message::Rendered {
+                page,
+                zoom,
+                result,
             })
         }))
     }
@@ -255,12 +305,37 @@ impl State {
     }
 }
 
-async fn render(document: Arc<Document>, page: usize, scale: f32) -> Result<Arc<Rendered>, String> {
-    tokio::task::spawn_blocking(move || document.render(page, scale))
-        .await
-        .map_err(|err| format!("the page could not be rendered: {err}"))?
-        .map(Arc::new)
-        .ok_or_else(|| "the PDF has no such page".to_owned())
+/// One page to render, once a renderer is free and if it is still wanted then.
+struct Job {
+    document: Arc<Document>,
+    wanted: Arc<Mutex<Wanted>>,
+    renderers: Arc<Semaphore>,
+    page: usize,
+    zoom: Zoom,
+    scale: f32,
+}
+
+impl Job {
+    async fn run(self) -> Result<Option<Arc<Rendered>>, String> {
+        let _turn = self
+            .renderers
+            .acquire_owned()
+            .await
+            .map_err(|err| format!("the page could not be rendered: {err}"))?;
+        let wanted = self
+            .wanted
+            .lock()
+            .map_or(true, |wanted| wanted.wants(self.page, self.zoom));
+        if !wanted {
+            return Ok(None);
+        }
+        let (document, page, scale) = (self.document, self.page, self.scale);
+        tokio::task::spawn_blocking(move || document.render(page, scale))
+            .await
+            .map_err(|err| format!("the page could not be rendered: {err}"))?
+            .map(|rendered| Some(Arc::new(rendered)))
+            .ok_or_else(|| "the PDF has no such page".to_owned())
+    }
 }
 
 #[cfg(test)]
@@ -306,9 +381,46 @@ mod tests {
         let _ = state.update(Message::Rendered {
             page: 0,
             zoom: Zoom(1.0),
-            result: Ok(Arc::new(page)),
+            result: Ok(Some(Arc::new(page))),
         });
         assert!(state.rendered.is_empty());
+    }
+
+    #[test]
+    fn a_render_for_the_current_zoom_is_shown() {
+        let mut state = sample();
+        let page = Rendered {
+            width: 1,
+            height: 1,
+            rgba: vec![255; 4],
+        };
+        let _ = state.update(Message::Rendered {
+            page: 0,
+            zoom: Zoom(1.0),
+            result: Ok(Some(Arc::new(page))),
+        });
+        assert!(state.rendered.contains_key(&0));
+    }
+
+    #[test]
+    fn a_page_is_unwanted_after_the_zoom_changes() {
+        let mut state = sample();
+        assert!(state.wanted.lock().expect("lock").wants(0, Zoom(1.0)));
+        let _ = state.update(Message::ZoomIn);
+        let wanted = state.wanted.lock().expect("lock").clone();
+        assert!(!wanted.wants(0, Zoom(1.0)));
+        assert!(wanted.wants(0, Zoom(1.25)));
+    }
+
+    #[test]
+    fn a_skipped_page_is_asked_for_again() {
+        let mut state = sample();
+        let _ = state.update(Message::Rendered {
+            page: 0,
+            zoom: Zoom(1.0),
+            result: Ok(None),
+        });
+        assert_eq!(state.asked.get(&0), Some(&Zoom(1.0)));
     }
 
     #[test]

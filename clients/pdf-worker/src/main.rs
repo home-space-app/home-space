@@ -3,9 +3,14 @@
 //! viewer starts the worker, so the client does not carry the renderer.
 //!
 //! It speaks [`pdf_core::messages`]: it says [`Response::Ready`] once it listens, then answers
-//! each request in turn.
+//! each request in turn. Renders wait in a queue and run one per task, so the messages that
+//! arrive meanwhile are read first: a newer render of a page replaces the waiting one, and a
+//! page that left the view is cancelled, instead of rendering pages nobody will see.
 
-use std::cell::RefCell;
+use std::{
+    cell::{Cell, RefCell},
+    collections::BTreeMap,
+};
 
 use js_sys::{Array, ArrayBuffer, Uint8Array};
 use pdf_core::{
@@ -18,8 +23,19 @@ use web_sys::{DedicatedWorkerGlobalScope, MessageEvent};
 const NO_DOCUMENT: &str = "No PDF is open.";
 const NO_PAGE: &str = "The PDF has no such page.";
 
+/// A render waiting for its turn.
+#[derive(Clone, Copy)]
+struct Job {
+    request_id: u32,
+    scale: f32,
+}
+
 thread_local! {
     static DOCUMENT: RefCell<Option<Document>> = const { RefCell::new(None) };
+    /// The render waiting for each page.
+    static QUEUE: RefCell<BTreeMap<u32, Job>> = const { RefCell::new(BTreeMap::new()) };
+    /// Whether the next turn is already scheduled.
+    static SCHEDULED: Cell<bool> = const { Cell::new(false) };
 }
 
 fn main() {
@@ -49,6 +65,7 @@ fn handle(scope: &DedicatedWorkerGlobalScope, event: &MessageEvent) {
                 .dyn_into::<ArrayBuffer>()
                 .map(|buffer| Uint8Array::new(&buffer).to_vec())
                 .unwrap_or_default();
+            QUEUE.with_borrow_mut(BTreeMap::clear);
             let response = match Document::open(bytes) {
                 Ok(document) => {
                     let pages = document.page_sizes();
@@ -64,35 +81,81 @@ fn handle(scope: &DedicatedWorkerGlobalScope, event: &MessageEvent) {
             page,
             scale,
         }) => {
-            let rendered = DOCUMENT.with_borrow(|open| match open {
-                None => Err(NO_DOCUMENT.to_owned()),
-                Some(document) => usize::try_from(page)
-                    .ok()
-                    .and_then(|index| document.render(index, scale))
-                    .ok_or_else(|| NO_PAGE.to_owned()),
-            });
-            match rendered {
-                Ok(rendered) => {
-                    let buffer = Uint8Array::from(rendered.rgba.as_slice()).buffer();
-                    let response = Response::Rendered {
-                        request_id,
-                        page,
-                        width: rendered.width,
-                        height: rendered.height,
-                    };
-                    post(scope, &response, Some(buffer));
-                }
-                Err(message) => post(
-                    scope,
-                    &Response::RenderFailed {
-                        request_id,
-                        message,
-                    },
-                    None,
-                ),
-            }
+            QUEUE.with_borrow_mut(|queue| queue.insert(page, Job { request_id, scale }));
+            schedule(scope);
+        }
+        Ok(Request::Cancel { page }) => {
+            QUEUE.with_borrow_mut(|queue| queue.remove(&page));
         }
         Err(message) => post(scope, &Response::Failed { message }, None),
+    }
+}
+
+/// Runs the next render in a task of its own, after the messages already waiting.
+fn schedule(scope: &DedicatedWorkerGlobalScope) {
+    if SCHEDULED.replace(true) {
+        return;
+    }
+    let turn = Closure::once_into_js({
+        let scope = scope.clone();
+        move || {
+            SCHEDULED.set(false);
+            render_next(&scope);
+        }
+    });
+    if scope
+        .set_timeout_with_callback_and_timeout_and_arguments_0(turn.unchecked_ref(), 0)
+        .is_err()
+    {
+        // Without timers, render now rather than never.
+        SCHEDULED.set(false);
+        render_next(scope);
+    }
+}
+
+/// Renders the job asked for first, then schedules the rest.
+fn render_next(scope: &DedicatedWorkerGlobalScope) {
+    let next = QUEUE.with_borrow_mut(|queue| {
+        let page = queue
+            .iter()
+            .min_by_key(|(_, job)| job.request_id)
+            .map(|(page, _)| *page)?;
+        queue.remove(&page).map(|job| (page, job))
+    });
+    let Some((page, Job { request_id, scale })) = next else {
+        return;
+    };
+    let rendered = DOCUMENT.with_borrow(|open| match open {
+        None => Err(NO_DOCUMENT.to_owned()),
+        Some(document) => usize::try_from(page)
+            .ok()
+            .and_then(|index| document.render(index, scale))
+            .ok_or_else(|| NO_PAGE.to_owned()),
+    });
+    match rendered {
+        Ok(rendered) => {
+            // The one copy, out of the worker's memory; the buffer is then transferred.
+            let buffer = Uint8Array::from(rendered.rgba.as_slice()).buffer();
+            let response = Response::Rendered {
+                request_id,
+                page,
+                width: rendered.width,
+                height: rendered.height,
+            };
+            drop(rendered);
+            post(scope, &response, Some(buffer));
+        }
+        Err(message) => post(
+            scope,
+            &Response::RenderFailed {
+                request_id,
+                message,
+            },
+            None,
+        ),
+    }
+    if QUEUE.with_borrow(|queue| !queue.is_empty()) {
+        schedule(scope);
     }
 }
 

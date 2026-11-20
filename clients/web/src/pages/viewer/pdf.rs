@@ -11,9 +11,9 @@ use std::{
     rc::Rc,
 };
 
-use js_sys::{Array, ArrayBuffer, Uint8Array};
+use js_sys::{Array, ArrayBuffer, Uint8Array, Uint8ClampedArray};
 use leptos::{html, prelude::*, task::spawn_local};
-use wasm_bindgen::{Clamped, JsCast, JsValue, prelude::Closure};
+use wasm_bindgen::{JsCast, JsValue, prelude::Closure};
 use web_sys::{
     CanvasRenderingContext2d, Element, HtmlCanvasElement, ImageData, IntersectionObserver,
     IntersectionObserverEntry, IntersectionObserverInit, MessageEvent, Worker,
@@ -201,6 +201,12 @@ pub fn PdfViewer(
                     canvas.set_width(0);
                     canvas.set_height(0);
                 }
+                // Nor is it rendered if it is still waiting in the worker.
+                session.with_value(|session| {
+                    if let Some(session) = session {
+                        let _ = post(&session.worker, &Request::Cancel { page }, None);
+                    }
+                });
                 return;
             }
             pages.update_value(|pages| {
@@ -471,7 +477,8 @@ fn page_canvas(container: &Element, page: u32) -> Option<HtmlCanvasElement> {
         .and_then(|canvas| canvas.dyn_into().ok())
 }
 
-/// Paints the RGBA pixels in `buffer` onto the canvas of `page`.
+/// Paints the RGBA pixels in `buffer` onto the canvas of `page`. The pixels stay in `buffer`,
+/// outside this client's memory, which never shrinks once grown.
 fn draw(
     container: &Element,
     page: u32,
@@ -482,8 +489,11 @@ fn draw(
     let Some(canvas) = page_canvas(container, page) else {
         return Ok(());
     };
-    let pixels = Uint8Array::new(buffer).to_vec();
-    let image = ImageData::new_with_u8_clamped_array_and_sh(Clamped(&pixels), width, height)?;
+    let image = ImageData::new_with_js_u8_clamped_array_and_sh(
+        &Uint8ClampedArray::new(buffer),
+        width,
+        height,
+    )?;
     canvas.set_width(width);
     canvas.set_height(height);
     let context: CanvasRenderingContext2d = canvas

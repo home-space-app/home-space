@@ -14,12 +14,16 @@ use crate::PageSize;
 pub enum Request {
     /// Opens the PDF in the buffer, in place of any document open before.
     Open,
-    /// Renders `page` (from 0) of the open document at `scale` pixels per point.
+    /// Renders `page` (from 0) of the open document at `scale` pixels per point, in place of a
+    /// render of that page still waiting for its turn.
     Render {
         request_id: u32,
         page: u32,
         scale: f32,
     },
+    /// Drops the render of `page` that is still waiting for its turn, if any: the page has left
+    /// the view.
+    Cancel { page: u32 },
 }
 
 /// What the worker answers.
@@ -75,6 +79,8 @@ mod tests {
             scale: 1.5,
         };
         assert_eq!(Request::from_json(&render.to_json()), Ok(render));
+        let cancel = Request::Cancel { page: 2 };
+        assert_eq!(Request::from_json(&cancel.to_json()), Ok(cancel));
     }
 
     #[test]

@@ -5,7 +5,7 @@ use hayro::{
     hayro_interpret::InterpreterSettings,
     hayro_syntax::{LoadPdfError, Pdf},
     render,
-    vello_cpu::color::palette::css::WHITE,
+    vello_cpu::{color::palette::css::WHITE, peniko::ImageAlphaType},
 };
 
 use crate::PageSize;
@@ -68,7 +68,7 @@ impl Document {
     }
 
     /// Page `index` (from 0) at `scale` pixels per point, on white; `None` past the last page.
-    /// The scale is lowered to keep the page within [`crate::MAX_SIDE_PIXELS`].
+    /// The scale is lowered to keep the page within the limits of [`PageSize::clamp_scale`].
     pub fn render(&self, index: usize, scale: f32) -> Option<Rendered> {
         let page = self.pdf.pages().get(index)?;
         let (width, height) = page.render_dimensions();
@@ -90,8 +90,9 @@ impl Document {
         Some(Rendered {
             width: u32::from(pixmap.width()),
             height: u32::from(pixmap.height()),
-            // The page is painted on opaque white, so premultiplied and straight alpha agree.
-            rgba: pixmap.data_as_u8_slice().to_vec(),
+            // The page is painted on opaque white, so premultiplied and straight alpha agree,
+            // and the pixmap's buffer is handed over as it is, without a copy.
+            rgba: pixmap.take_rgba8(ImageAlphaType::AlphaPremultiplied),
         })
     }
 }

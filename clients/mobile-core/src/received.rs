@@ -170,7 +170,7 @@ impl CoreClient {
                 share_id: share,
                 node_id: id,
             };
-            let ticket = inner.ticket(&request).await?;
+            let ticket = inner.stream_ticket(&request).await?;
             Ok(inner.received_file_url(share, id, &ticket.ticket))
         })
         .await

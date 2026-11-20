@@ -166,7 +166,7 @@ impl CoreClient {
         let client = self.inner.clone();
         off_ui_thread(async move {
             let ticket = client
-                .ticket(&TicketRequest::Stream { node_id: id })
+                .stream_ticket(&TicketRequest::Stream { node_id: id })
                 .await?;
             Ok(client.download_url(id, &ticket.ticket))
         })

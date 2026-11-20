@@ -42,10 +42,13 @@ impl Source {
 
     async fn url(self, auth: Auth, request: &TicketRequest) -> Result<String, String> {
         let client = session::client();
-        let ticket = client
-            .ticket(request)
-            .await
-            .map_err(|err| auth.fail(&err))?;
+        let ticket = match request {
+            TicketRequest::Stream { .. } | TicketRequest::SharedStream { .. } => {
+                client.stream_ticket(request).await
+            }
+            _ => client.ticket(request).await,
+        }
+        .map_err(|err| auth.fail(&err))?;
         Ok(match self {
             Self::Own(node) => client.download_url(node, &ticket.ticket),
             Self::Shared { share, node } => client.received_file_url(share, node, &ticket.ticket),
