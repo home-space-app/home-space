@@ -140,7 +140,7 @@ async fn owner_receives_node_created_and_others_do_not(pool: PgPool) {
     let Message::Text(text) = message else {
         panic!("expected text message, got {message:?}");
     };
-    let event: serde_json::Value = serde_json::from_str(text.as_str()).expect("json");
+    let event: Value = serde_json::from_str(text.as_str()).expect("json");
     assert_eq!(event["type"], "node_created");
     assert_eq!(event["node"]["name"], "a.txt");
     assert!(

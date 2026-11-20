@@ -1188,7 +1188,7 @@ mod tests {
 
     fn file_node() -> Node {
         Node {
-            id: NodeId(uuid::Uuid::from_u128(1)),
+            id: NodeId(Uuid::from_u128(1)),
             parent_id: None,
             kind: NodeKind::File,
             name: "a.txt".to_owned(),

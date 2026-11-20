@@ -483,7 +483,7 @@ impl Engine {
     }
 
     fn set_gate(&mut self, gate: Gate) {
-        self.progress = Arc::new(queue::Transfers::new(gate.clone()));
+        self.progress = Arc::new(Transfers::new(gate.clone()));
         self.gate = gate;
     }
 
@@ -806,7 +806,7 @@ impl Engine {
     async fn scan(
         &mut self,
         layout: &Layout,
-        bases: &[model::Base],
+        bases: &[Base],
         commands: &mut mpsc::UnboundedReceiver<Command>,
     ) -> Option<Scan> {
         let roots = layout.roots.clone();
@@ -1306,7 +1306,7 @@ mod tests {
         let path = dir.join("photo.jpg");
         std::fs::write(&path, "photo").expect("file");
         let meta = std::fs::metadata(&path).expect("meta");
-        let sha256 = hash_file(&path, &std::sync::atomic::AtomicBool::new(false)).expect("hash");
+        let sha256 = hash_file(&path, &AtomicBool::new(false)).expect("hash");
         let id = "0193a4a0-0000-7000-8000-0000000000aa";
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))

@@ -195,7 +195,7 @@ async fn build(
         files,
         hub,
         search,
-        info: std::sync::Arc::new(api::ServerInfo {
+        info: Arc::new(api::ServerInfo {
             version: "0.0.0-test".to_owned(),
             started_at: time::OffsetDateTime::now_utc(),
             config: protocol::ServerConfig {

@@ -372,7 +372,7 @@ fn text_width(label: &str) -> f32 {
 }
 
 /// A keyboard shortcut drawn as a key.
-pub(super) fn kbd<'a>(label: &'a str) -> Element<'a, Message> {
+pub(super) fn kbd(label: &str) -> Element<'_, Message> {
     container(text(label).size(KBD_SIZE).font(theme::SEMIBOLD))
         .padding(KBD_PADDING)
         .style(theme::kbd)

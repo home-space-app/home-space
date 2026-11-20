@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn text_files_have_an_empty_gallery() {
-        let listing = [protocol::Node {
+        let listing = [Node {
             mime: "text/plain".to_owned(),
             ..serde_json::from_value(node("a.txt", "file", 1)).unwrap()
         }];

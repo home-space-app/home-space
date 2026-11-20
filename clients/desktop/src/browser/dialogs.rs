@@ -712,7 +712,7 @@ fn crumb_text(label: &str) -> Element<'_, Message> {
     text(label).size(META_SIZE).style(theme::muted_text).into()
 }
 
-fn picker_note<'a>(note: &'a str) -> Element<'a, Message> {
+fn picker_note(note: &str) -> Element<'_, Message> {
     container(text(note).style(theme::muted_text))
         .padding(PICKER_NOTE_PADDING)
         .into()

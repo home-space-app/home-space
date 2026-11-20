@@ -204,7 +204,7 @@ impl Placement {
 }
 
 /// `menu` placed by `placement`. It is moved once laid out, as only then is its size known.
-pub fn place<'a>(menu: Element<'a, Message>, placement: Placement) -> Element<'a, Message> {
+pub fn place(menu: Element<'_, Message>, placement: Placement) -> Element<'_, Message> {
     pin(float(menu).translate(move |bounds, viewport| {
         let at = position(placement, viewport.size(), bounds.size());
         Vector::new(at.x - bounds.x, at.y - bounds.y)

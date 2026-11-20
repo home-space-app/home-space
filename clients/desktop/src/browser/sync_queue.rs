@@ -292,7 +292,7 @@ fn state_label(item: &Item) -> String {
         Operation::Download => "Downloading",
         _ => "Syncing",
     };
-    match (item.done.saturating_mul(100)).checked_div(item.size) {
+    match item.done.saturating_mul(100).checked_div(item.size) {
         Some(percent) => format!("{doing} · {percent}%"),
         None => doing.to_owned(),
     }

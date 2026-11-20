@@ -198,6 +198,28 @@ impl ChangeFeed {
 const OLD: Duration = Duration::from_secs(60);
 
 impl LocalSources for Sources {
+    fn list(&self, _: SourceKind, _: String) -> Result<Vec<LocalItem>, CoreError> {
+        self.listings.fetch_add(1, Ordering::SeqCst);
+        if let Some(on_list) = self.on_list.lock().unwrap().take() {
+            on_list();
+        }
+        if let Some(detail) = self.list_error.lock().unwrap().clone() {
+            return Err(CoreError::Failed {
+                code: "permission".to_owned(),
+                detail,
+            });
+        }
+        let mut items: Vec<LocalItem> = self
+            .files
+            .lock()
+            .unwrap()
+            .values()
+            .map(|(item, _)| item.clone())
+            .collect();
+        items.sort_by(|a, b| a.key.cmp(&b.key));
+        Ok(items)
+    }
+
     fn change_token(&self, _: SourceKind, _: String) -> Result<Option<String>, CoreError> {
         let reports = self.changes.lock().unwrap();
         Ok(reports.enabled.then(|| reports.generation.to_string()))
@@ -226,28 +248,6 @@ impl LocalSources for Sources {
             items,
             token: reports.generation.to_string(),
         }))
-    }
-
-    fn list(&self, _: SourceKind, _: String) -> Result<Vec<LocalItem>, CoreError> {
-        self.listings.fetch_add(1, Ordering::SeqCst);
-        if let Some(on_list) = self.on_list.lock().unwrap().take() {
-            on_list();
-        }
-        if let Some(detail) = self.list_error.lock().unwrap().clone() {
-            return Err(CoreError::Failed {
-                code: "permission".to_owned(),
-                detail,
-            });
-        }
-        let mut items: Vec<LocalItem> = self
-            .files
-            .lock()
-            .unwrap()
-            .values()
-            .map(|(item, _)| item.clone())
-            .collect();
-        items.sort_by(|a, b| a.key.cmp(&b.key));
-        Ok(items)
     }
 
     fn stat(&self, _: SourceKind, _: String, key: String) -> Result<Option<LocalItem>, CoreError> {
@@ -510,7 +510,7 @@ async fn subfolders_are_made_once_below_the_target() {
     assert_eq!(made.len(), 2, "{made:?}");
     assert_eq!(made[0], (Some(TARGET.to_owned()), "2026".to_owned()));
     assert_eq!(made[1].1, "05");
-    assert!(w.uploads()[0].body["parent_id"] != TARGET);
+    assert_ne!(w.uploads()[0].body["parent_id"], TARGET);
 }
 
 #[tokio::test]
@@ -596,10 +596,7 @@ fn records_from_before_the_id_was_kept_stay_and_have_no_id() {
         )
         .unwrap();
 
-    let records = super::store::Store::open(&path)
-        .unwrap()
-        .records("s")
-        .unwrap();
+    let records = Store::open(&path).unwrap().records("s").unwrap();
 
     assert_eq!(records["a"].remote_name.as_deref(), Some("a.jpg"));
     assert_eq!(records["a"].remote_node, None);

@@ -105,7 +105,7 @@ fn the_sidebar_counts_what_failed_to_sync() {
 
     let mut status = sync::Status::default();
     status.problems.push((
-        std::path::PathBuf::from("/tmp/broken.txt"),
+        PathBuf::from("/tmp/broken.txt"),
         sync::Fault::now("502", "Bad gateway"),
     ));
     let _ = state.update(Message::Sync(syncing::Message::Engine(
@@ -146,11 +146,11 @@ fn the_chip_says_where_the_folder_syncs() {
     let mut state = state_with_listing();
     assert!(simulator(state.view()).find("Syncs to /sync").is_err());
 
-    let status = crate::sync::Status {
+    let status = sync::Status {
         locations: std::collections::HashMap::from([(None, PathBuf::from("/sync"))]),
-        ..crate::sync::Status::default()
+        ..sync::Status::default()
     };
-    let update = crate::sync::Update::Status(std::sync::Arc::new(status));
+    let update = sync::Update::Status(std::sync::Arc::new(status));
     let _ = state.update(Message::Sync(syncing::Message::Engine(update)));
 
     assert!(simulator(state.view()).find("Syncs to /sync").is_ok());
@@ -794,7 +794,7 @@ fn an_entry_of_a_context_menu_moved_into_place_can_be_clicked() {
     let laid_out = entry.visible_bounds().expect("the entry is visible");
 
     ui.point_at(laid_out.center() + MENU_AT);
-    let _ = ui.simulate(iced_test::simulator::click());
+    let _ = ui.simulate(simulator::click());
 
     assert!(
         ui.into_messages()
@@ -1041,16 +1041,16 @@ fn restore_clashes_open_the_conflicts_dialog() {
     assert!(state.dialog.is_some());
 }
 
-fn with_queue(state: &mut State, queue: Vec<crate::sync::Item>) {
-    let status = crate::sync::Status {
+fn with_queue(state: &mut State, queue: Vec<sync::Item>) {
+    let status = sync::Status {
         queue,
-        ..crate::sync::Status::default()
+        ..sync::Status::default()
     };
-    let update = crate::sync::Update::Status(std::sync::Arc::new(status));
+    let update = sync::Update::Status(std::sync::Arc::new(status));
     let _ = state.update(Message::Sync(syncing::Message::Engine(update)));
 }
 
-fn waiting_upload(name: &str) -> crate::sync::Item {
+fn waiting_upload(name: &str) -> sync::Item {
     use crate::sync::{Item, ItemState, Operation};
     Item::test(
         PathBuf::from("/sync").join(name),
@@ -1136,7 +1136,7 @@ fn a_waiting_file_is_not_listed_twice_once_the_server_lists_it() {
 #[test]
 fn an_edited_file_stays_a_normal_row() {
     let mut state = state_with_listing();
-    let edited = crate::sync::Item {
+    let edited = sync::Item {
         node: Some(id(FILE_ID)),
         ..waiting_upload(FILE_NAME)
     };
@@ -1152,7 +1152,7 @@ fn an_edited_file_stays_a_normal_row() {
 #[test]
 fn a_waiting_file_in_another_folder_is_not_listed_here() {
     let mut state = state_with_listing();
-    let elsewhere = crate::sync::Item {
+    let elsewhere = sync::Item {
         parent: Some(Some(id(FOLDER_ID))),
         ..waiting_upload("new.txt")
     };
@@ -1163,11 +1163,11 @@ fn a_waiting_file_in_another_folder_is_not_listed_here() {
 }
 
 fn with_synced_file(state: &mut State, raw: u128, path: PathBuf) {
-    let status = crate::sync::Status {
+    let status = sync::Status {
         files: std::collections::HashMap::from([(id(raw), path)]),
-        ..crate::sync::Status::default()
+        ..sync::Status::default()
     };
-    let update = crate::sync::Update::Status(std::sync::Arc::new(status));
+    let update = sync::Update::Status(std::sync::Arc::new(status));
     let _ = state.update(Message::Sync(syncing::Message::Engine(update)));
 }
 
@@ -1234,7 +1234,7 @@ fn the_context_menu_of_a_file_offers_open() {
     let mut state = state_with_listing();
     let _ = state.update(Message::ContextMenu(
         id(FILE_ID),
-        context_menu::Placement::cursor(Point::ORIGIN),
+        Placement::cursor(Point::ORIGIN),
     ));
     let mut ui = simulator(state.view());
 
@@ -1420,7 +1420,7 @@ fn the_context_menu_of_a_text_file_offers_the_system_app() {
     let mut state = state_with_text_file();
     let _ = state.update(Message::ContextMenu(
         id(OTHER_FILE_ID),
-        context_menu::Placement::cursor(Point::ORIGIN),
+        Placement::cursor(Point::ORIGIN),
     ));
     let mut ui = simulator(state.view());
 
@@ -1439,7 +1439,7 @@ fn the_context_menu_of_a_file_without_a_viewer_leaves_out_the_system_app() {
     let mut state = state_with_listing();
     let _ = state.update(Message::ContextMenu(
         id(FILE_ID),
-        context_menu::Placement::cursor(Point::ORIGIN),
+        Placement::cursor(Point::ORIGIN),
     ));
 
     assert!(
@@ -1570,7 +1570,7 @@ fn the_share_picker_follows_its_field_when_the_dialog_grows() {
     let _ = state.update(Message::Share(share::Message::Toggle(dana)));
     let messages: Vec<_> = {
         let mut ui = simulator(state.view());
-        ui.simulate([iced::Event::Window(iced::window::Event::RedrawRequested(
+        ui.simulate([iced::Event::Window(window::Event::RedrawRequested(
             std::time::Instant::now(),
         ))]);
         ui.into_messages().collect()

@@ -513,7 +513,7 @@ mod tests {
             public_url: None,
             bind: "0.0.0.0:8080".to_owned(),
             published_port: None,
-            storage: protocol::StorageBackend::Local,
+            storage: StorageBackend::Local,
         }
     }
 

@@ -846,7 +846,7 @@ fn transfer_icon(transfer: &TransferSummary) -> (Icon, Tint) {
     (icon, Tint::Text)
 }
 
-fn section<'a>(label: &'a str) -> Element<'a, Message> {
+fn section(label: &str) -> Element<'_, Message> {
     text(label).font(theme::SEMIBOLD).into()
 }
 
@@ -905,7 +905,7 @@ fn name_cell<'a>(
 }
 
 /// The state in a pill, with `note` next to it.
-fn state_cell<'a>(label: &'a str, tone: Tone, note: Option<String>) -> Element<'a, Message> {
+fn state_cell(label: &str, tone: Tone, note: Option<String>) -> Element<'_, Message> {
     let pill = container(text(label).size(PILL_SIZE).font(theme::SEMIBOLD))
         .padding(PILL_PADDING)
         .center_y(PILL_HEIGHT)

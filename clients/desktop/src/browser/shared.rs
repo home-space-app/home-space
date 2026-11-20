@@ -667,11 +667,11 @@ fn folder_row<'a>(share: Uuid, item: SharedNode) -> Element<'a, Message> {
 }
 
 /// A row; a folder's opens it, and a file's opens its viewer when it has one.
-fn item_button<'a>(
-    cells: iced::widget::Row<'a, Message>,
+fn item_button(
+    cells: iced::widget::Row<'_, Message>,
     share: Uuid,
     item: SharedNode,
-) -> Element<'a, Message> {
+) -> Element<'_, Message> {
     let press = match item.kind {
         NodeKind::Folder => Some(Message::Open(share, item)),
         NodeKind::File => shared_viewer(viewers(), &item).map(|_| Message::View(share, item)),
@@ -720,7 +720,7 @@ fn actions<'a>(share: Uuid, item: &SharedNode) -> Element<'a, Message> {
     .into()
 }
 
-fn action<'a>(icon: Icon, label: &'a str, message: Message) -> Element<'a, Message> {
+fn action(icon: Icon, label: &str, message: Message) -> Element<'_, Message> {
     tooltip(
         button(icon.view(ICON_SIZE, Tint::Muted))
             .padding(4)

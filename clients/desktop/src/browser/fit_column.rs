@@ -30,14 +30,6 @@ impl<Message> Widget<Message, Theme, Renderer> for FitColumn<'_, Message> {
         Size::new(Length::Shrink, Length::Shrink)
     }
 
-    fn children(&self) -> Vec<Tree> {
-        self.children.iter().map(Tree::new).collect()
-    }
-
-    fn diff(&self, tree: &mut Tree) {
-        tree.diff_children(&self.children);
-    }
-
     fn layout(
         &mut self,
         tree: &mut Tree,
@@ -78,6 +70,35 @@ impl<Message> Widget<Message, Theme, Renderer> for FitColumn<'_, Message> {
             limits.resolve(width, height, Size::new(width, height)),
             nodes,
         )
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: Cursor,
+        viewport: &Rectangle,
+    ) {
+        self.children
+            .iter()
+            .zip(&tree.children)
+            .zip(layout.children())
+            .for_each(|((child, tree), layout)| {
+                child
+                    .as_widget()
+                    .draw(tree, renderer, theme, style, layout, cursor, viewport);
+            });
+    }
+
+    fn children(&self) -> Vec<Tree> {
+        self.children.iter().map(Tree::new).collect()
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        tree.diff_children(&self.children);
     }
 
     fn operate(
@@ -142,27 +163,6 @@ impl<Message> Widget<Message, Theme, Renderer> for FitColumn<'_, Message> {
             })
             .max()
             .unwrap_or_default()
-    }
-
-    fn draw(
-        &self,
-        tree: &Tree,
-        renderer: &mut Renderer,
-        theme: &Theme,
-        style: &renderer::Style,
-        layout: Layout<'_>,
-        cursor: Cursor,
-        viewport: &Rectangle,
-    ) {
-        self.children
-            .iter()
-            .zip(&tree.children)
-            .zip(layout.children())
-            .for_each(|((child, tree), layout)| {
-                child
-                    .as_widget()
-                    .draw(tree, renderer, theme, style, layout, cursor, viewport);
-            });
     }
 
     fn overlay<'b>(
