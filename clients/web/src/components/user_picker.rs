@@ -3,7 +3,7 @@
 
 use leptos::prelude::*;
 
-use client_core::shared_link::initial;
+use client_core::{people::matching, shared_link::initial};
 use protocol::{UserId, UserRef};
 
 use crate::icon::Icon;
@@ -11,15 +11,6 @@ use crate::icon::Icon;
 const SEARCH_PEOPLE: &str = "Search people";
 const NOBODY_MATCHES: &str = "Nobody else matches.";
 const SERVER_ONLY: &str = "Only accounts on this server are listed.";
-
-/// The users whose name contains `query`, ignoring case.
-fn matching<'a>(users: &'a [UserRef], query: &str) -> Vec<&'a UserRef> {
-    let query = query.trim().to_lowercase();
-    users
-        .iter()
-        .filter(|user| query.is_empty() || user.username.to_lowercase().contains(&query))
-        .collect()
-}
 
 /// Lists `users` with the `picked` ones checked; `toggle` runs for the one clicked. Meant to
 /// sit in a [`Menu`](super::Menu).

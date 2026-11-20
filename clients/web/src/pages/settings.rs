@@ -5,18 +5,12 @@ use leptos::{ev::SubmitEvent, prelude::*, task::spawn_local};
 use leptos_router::components::A;
 
 use api_client::ApiError;
-use client_core::{
-    share::SHARES_TAB,
-    storage::{bytes, fraction},
-};
+use client_core::{share::SHARES_TAB, shared_link::initial, storage::bytes};
 use protocol::{Event, Storage};
 
-use super::{
-    shell::{Tab, Tabs},
-    sidebar::initial,
-};
+use super::shell::{Tab, Tabs};
 use crate::{
-    components::ErrorAlert,
+    components::{ErrorAlert, StorageBar},
     events,
     icon::Icon,
     load, route,
@@ -261,33 +255,7 @@ fn StorageBreakdown(storage: Storage) -> impl IntoView {
     ];
     view! {
         <p class="card__subtitle">{summary}</p>
-        <div class="segments" aria-hidden="true">
-            {parts
-                .iter()
-                .map(|(_, size, class)| {
-                    view! {
-                        <span
-                            class=format!("segment {class}")
-                            style=format!("width: {:.2}%", fraction(*size, total) * 100.0)
-                        ></span>
-                    }
-                })
-                .collect_view()}
-        </div>
-        <ul class="legend legend--rows">
-            {parts
-                .iter()
-                .map(|(label, size, class)| {
-                    view! {
-                        <li class="legend__item">
-                            <span class=format!("legend__dot {class}")></span>
-                            <span class="legend__label">{*label}</span>
-                            <span class="legend__value">{bytes(*size)}</span>
-                        </li>
-                    }
-                })
-                .collect_view()}
-        </ul>
+        <StorageBar parts=parts.to_vec() total=total rows=true />
         <A href=route::TRASH_PATH attr:class="button button--ghost card__action">
             <Icon name="delete" />
             "Open recycle bin"

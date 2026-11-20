@@ -2,12 +2,10 @@
 //! docs/todo/server-refactoring.md). Numbers the database keeps signed are clamped here, and
 //! nowhere else.
 
-use std::fmt::Write;
-
 use files::MoveBatch;
 use protocol::{
     Account, Conflict, MoveResponse, Node, PublicShare, ReceivedShare, Share, ShareRecipient,
-    SharedNode, StorageUsage, TransferItem, TransferSummary, UserRef,
+    SharedNode, StorageUsage, TransferItem, TransferSummary, UserRef, encoding::to_hex,
 };
 use shares::{LinkView, ReceivedDetails, ShareDetails};
 
@@ -86,15 +84,6 @@ pub(crate) fn transfer_item(item: db::TransferItem) -> TransferItem {
         mime: item.mime,
         modified_at: item.modified_at,
     }
-}
-
-fn to_hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .fold(String::with_capacity(bytes.len() * 2), |mut hex, byte| {
-            let _ = write!(hex, "{byte:02x}");
-            hex
-        })
 }
 
 pub(crate) fn account(found: db::Account) -> Account {

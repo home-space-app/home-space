@@ -6,7 +6,7 @@ use iced::{
     widget::{button, column, container, row, scrollable, space, text, text_input},
 };
 
-use client_core::shared_link::initial;
+use client_core::{people::matching, shared_link::initial};
 use protocol::{UserId, UserRef};
 
 use super::parts::{self, SECOND_LINE_SIZE, divider};
@@ -114,41 +114,4 @@ fn checkbox<'a, M: 'a>(checked: bool) -> Element<'a, M> {
         .center(CHECKBOX)
         .style(theme::checkbox(checked))
         .into()
-}
-
-/// The users whose name contains `query`, ignoring case.
-fn matching<'a>(users: &'a [UserRef], query: &str) -> Vec<&'a UserRef> {
-    let query = query.trim().to_lowercase();
-    users
-        .iter()
-        .filter(|user| query.is_empty() || user.username.to_lowercase().contains(&query))
-        .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use uuid::Uuid;
-
-    use super::*;
-
-    fn user(raw: u128, name: &str) -> UserRef {
-        UserRef {
-            id: UserId(Uuid::from_u128(raw)),
-            username: name.to_owned(),
-        }
-    }
-
-    #[test]
-    fn the_picker_filters_by_name_ignoring_case() {
-        let users = [user(1, "dana"), user(2, "Alex"), user(3, "maria")];
-        let names = |query| {
-            matching(&users, query)
-                .into_iter()
-                .map(|user| user.username.as_str())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(names(""), ["dana", "Alex", "maria"]);
-        assert_eq!(names(" AL "), ["Alex"]);
-        assert!(names("zed").is_empty());
-    }
 }

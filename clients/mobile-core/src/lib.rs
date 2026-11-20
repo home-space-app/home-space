@@ -11,12 +11,16 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::SystemTime;
 
 use api_client::{ApiError, Pkce, VERIFIER_BYTES};
-use client_core::{format, icon, labels, listing};
+use client_core::{
+    format, icon, labels, listing,
+    sso::{SsoReply, sso_reply},
+};
 use protocol::{DeviceInfo, NodeId, NodeKind, OnConflict, paths};
 
 #[cfg(target_os = "android")]
 mod android;
 mod autoupload;
+mod cancel;
 mod events;
 mod files;
 mod offline;
@@ -747,21 +751,14 @@ fn device_info(device: DeviceIdentity) -> Result<DeviceInfo, CoreError> {
 /// The login code in the URL the browser came back to, or why there is none.
 fn login_code(callback_url: &str) -> Result<String, CoreError> {
     let mut url = url::Url::parse(callback_url).map_err(|_| CoreError::SsoFailed)?;
-    let (mut code, mut error) = (None, None);
-    for (key, value) in url.query_pairs() {
-        match key.as_ref() {
-            "code" => code = Some(value.into_owned()),
-            "error" => error = Some(value.into_owned()),
-            _ => {}
-        }
-    }
+    let reply = sso_reply(&url);
     url.set_query(None);
     if url.as_str() != paths::MOBILE_OIDC_REDIRECT {
         return Err(CoreError::SsoFailed);
     }
-    match (code, error) {
-        (Some(code), _) if !code.is_empty() => Ok(code),
-        (_, Some(error)) if error == "access_denied" => Err(CoreError::SsoDenied),
+    match reply {
+        Some(SsoReply::Code(code)) => Ok(code),
+        Some(SsoReply::Error(error)) if error == "access_denied" => Err(CoreError::SsoDenied),
         _ => Err(CoreError::SsoFailed),
     }
 }

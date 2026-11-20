@@ -83,6 +83,19 @@ pub fn location_label(location: &[String]) -> String {
         .join(LOCATION_SEPARATOR)
 }
 
+/// A folder by the names on the way to it, e.g. `Documents / Receipts`, or `Home` at the top.
+pub fn folder_path<'a>(names: impl IntoIterator<Item = &'a str>) -> String {
+    let path = names
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join(LOCATION_SEPARATOR);
+    if path.is_empty() {
+        HOME.to_owned()
+    } else {
+        path
+    }
+}
+
 /// `1 file`, `2 files`.
 pub fn files(count: usize) -> String {
     match count {
@@ -111,6 +124,15 @@ mod tests {
         assert_eq!(
             location_label(&["a".to_owned(), "b".to_owned()]),
             "Home / a / b"
+        );
+    }
+
+    #[test]
+    fn folder_paths_read_from_the_top() {
+        assert_eq!(folder_path([]), "Home");
+        assert_eq!(
+            folder_path(["Documents", "Receipts"]),
+            "Documents / Receipts"
         );
     }
 

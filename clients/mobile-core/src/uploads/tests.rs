@@ -471,7 +471,13 @@ async fn an_original_that_cant_be_read_can_be_tried_again() {
         .await;
     let queue = setup.open();
     let key = queue
-        .add(None, "Home".into(), "a.txt".into(), Some("picked".into()), None)
+        .add(
+            None,
+            "Home".into(),
+            "a.txt".into(),
+            Some("picked".into()),
+            None,
+        )
         .unwrap();
 
     assert_eq!(queue.run().await.unwrap().failed, 1);
@@ -652,7 +658,13 @@ async fn adding_during_a_run_is_picked_up_by_that_run() {
     let adding = queue.clone();
     *setup.changes.0.lock().unwrap() = Some(Box::new(move || {
         adding
-            .add(None, "Home".into(), "b.txt".into(), Some("two".into()), None)
+            .add(
+                None,
+                "Home".into(),
+                "b.txt".into(),
+                Some("two".into()),
+                None,
+            )
             .unwrap();
         true
     }));
@@ -677,7 +689,13 @@ async fn wiping_ends_uploads_on_the_server_and_deletes_the_queue() {
     setup.original("other", b"x");
     queue.run().await.unwrap();
     let waiting = queue
-        .add(None, "Home".into(), "b.txt".into(), Some("other".into()), None)
+        .add(
+            None,
+            "Home".into(),
+            "b.txt".into(),
+            Some("other".into()),
+            None,
+        )
         .unwrap();
     queue.stop();
 

@@ -13,12 +13,11 @@ use client_core::{
     labels::files,
     send::{
         LocalEntry, device_status, first_choice, free_name, items_summary, manifest, names_line,
-        pickable, recipient_name, send_note, send_title, top_name, with_top,
+        node_items, pickable, recipient_name, send_note, send_title, top_name, with_top,
     },
 };
 use protocol::{
-    CreateTransfer, CreatedTransfer, NewTransferItem, Node, NodeKind, TargetDevice, TransferTarget,
-    UserId,
+    CreateTransfer, CreatedTransfer, Node, NodeKind, TargetDevice, TransferTarget, UserId,
 };
 use uuid::Uuid;
 
@@ -528,21 +527,6 @@ impl SendDialog {
         .on_press(Message::Choose(choice))
         .into()
     }
-}
-
-/// The items of a send of server files and folders, each taken by its id.
-fn node_items(nodes: &[Node]) -> Vec<NewTransferItem> {
-    nodes
-        .iter()
-        .map(|node| NewTransferItem {
-            path: node.name.clone(),
-            kind: node.kind,
-            size: u64::try_from(node.size).unwrap_or_default(),
-            node_id: Some(node.id),
-            mime: None,
-            modified_at: None,
-        })
-        .collect()
 }
 
 /// The subtitle of a send of server items: their size, and their names when there are several.

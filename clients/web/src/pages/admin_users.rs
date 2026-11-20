@@ -13,11 +13,11 @@ use client_core::{
         parse_quota, password_problem, quota_input, sign_in_method, storage_fill, storage_label,
     },
     labels::platform,
+    shared_link::initial,
     storage::{bytes, usage_breakdown},
 };
 use protocol::{Account, AccountDevice, CreateAccount, Patch, ServerStatus, UpdateAccount, UserId};
 
-use super::sidebar::initial;
 use crate::{
     components::{ErrorAlert, Menu, MenuItem},
     icon::{Icon, platform_icon},

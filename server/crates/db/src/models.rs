@@ -1,5 +1,4 @@
-use std::fmt::Write;
-
+use protocol::encoding::to_hex;
 use sqlx::FromRow;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -109,15 +108,6 @@ impl From<Node> for protocol::Node {
             edited_on: node.edited_on,
         }
     }
-}
-
-fn to_hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .fold(String::with_capacity(bytes.len() * 2), |mut hex, byte| {
-            let _ = write!(hex, "{byte:02x}");
-            hex
-        })
 }
 
 #[cfg(test)]

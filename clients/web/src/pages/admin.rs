@@ -4,6 +4,7 @@ use leptos::prelude::*;
 use time::{Duration, OffsetDateTime};
 
 use api_client::ApiError;
+use client_core::shared_link::initial;
 use client_core::storage::{
     UserColumn, UserSort, bytes, disk_breakdown, duration, fraction, uptime, usage_breakdown,
     users_total,
@@ -13,10 +14,9 @@ use protocol::{ErrorCode, ServerConfig, ServerStatus, StorageBackend, UserStorag
 use super::{
     admin_users::UsersTab,
     shell::{Tab, Tabs},
-    sidebar::initial,
 };
 use crate::{
-    components::ErrorAlert,
+    components::{ErrorAlert, StorageBar},
     icon::Icon,
     load, route,
     session::{self, Auth},
@@ -304,33 +304,7 @@ fn DiskCard(status: ServerStatus) -> impl IntoView {
                     bytes(split.total),
                 )}
             </p>
-            <div class="segments segments--large" aria-hidden="true">
-                {parts
-                    .iter()
-                    .map(|(_, size, class)| {
-                        view! {
-                            <span
-                                class=format!("segment {class}")
-                                style=format!("width: {:.2}%", fraction(*size, split.total) * 100.0)
-                            ></span>
-                        }
-                    })
-                    .collect_view()}
-            </div>
-            <ul class="legend">
-                {parts
-                    .iter()
-                    .map(|(label, size, class)| {
-                        view! {
-                            <li class="legend__item">
-                                <span class=format!("legend__dot {class}")></span>
-                                <span class="legend__label">{*label}</span>
-                                <span class="legend__value">{bytes(*size)}</span>
-                            </li>
-                        }
-                    })
-                    .collect_view()}
-            </ul>
+            <StorageBar parts=parts.to_vec() total=split.total large=true />
             <p class="card__note">{format!("Home Space data: {}", usage_breakdown(usage))}</p>
         </section>
     }

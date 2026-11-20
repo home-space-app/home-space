@@ -2,7 +2,8 @@
 //! of hyphenated hex; the API still uses the hex form.
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use protocol::NodeId;
+use leptos_router::params::ParamsMap;
+use protocol::{NodeId, encoding::percent_encode};
 use uuid::Uuid;
 
 pub use protocol::paths::short_id;
@@ -51,16 +52,7 @@ pub const SEARCH_PARAM: &str = "q";
 
 /// The search page for `query`, with the query percent-encoded.
 pub fn search(query: &str) -> String {
-    let encoded = query
-        .bytes()
-        .map(|byte| {
-            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-                char::from(byte).to_string()
-            } else {
-                format!("%{byte:02X}")
-            }
-        })
-        .collect::<String>();
+    let encoded = percent_encode(query);
     format!("{SEARCH_PATH}?{SEARCH_PARAM}={encoded}")
 }
 
@@ -107,6 +99,14 @@ fn share_path(trail: &[NodeId]) -> String {
         .map(|id| short_id(*id))
         .collect::<Vec<_>>()
         .join(&SHARE_PATH_SEPARATOR.to_string())
+}
+
+/// The folders a share page's query names, opened one inside the other.
+pub fn share_trail(query: &ParamsMap) -> Vec<NodeId> {
+    query
+        .get(SHARE_PATH_PARAM)
+        .map(|path| parse_share_path(&path))
+        .unwrap_or_default()
 }
 
 /// The folders named by a share link page's path, up to the first that is not an id.

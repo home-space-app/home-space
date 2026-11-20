@@ -17,7 +17,7 @@ use client_core::{
         SHARED_WITH_ME, SharedItem, VIEW_ONLY, find_share, save_copy_title, shared_items,
         shared_viewer,
     },
-    shared_link::{DOWNLOAD, EMPTY_FOLDER, initial, shared_by, sort_shared},
+    shared_link::{DOWNLOAD, EMPTY_FOLDER, child_folder, initial, shared_by, sort_shared},
 };
 use protocol::{NodeId, NodeKind, ReceivedShare, SharedNode, TicketRequest};
 
@@ -107,13 +107,7 @@ pub fn SharedWithMePage(auth: Auth) -> impl IntoView {
             .get(SHARE_PARAM)
             .and_then(|id| id.parse::<Uuid>().ok())
     });
-    let path = Memo::new(move |_| {
-        query
-            .read()
-            .get(route::SHARE_PATH_PARAM)
-            .map(|path| route::parse_share_path(&path))
-            .unwrap_or_default()
-    });
+    let path = Memo::new(move |_| route::share_trail(&query.read()));
     let view = Memo::new(move |_| {
         query
             .read()
@@ -572,11 +566,7 @@ async fn open_path(
     let mut trail = Vec::new();
     let mut items = top;
     for id in path {
-        let Some(folder) = items
-            .iter()
-            .find(|item| item.id == *id && item.kind == NodeKind::Folder)
-            .cloned()
-        else {
+        let Some(folder) = child_folder(&items, *id) else {
             break;
         };
         items = client.shared_children(share, folder.id).await?;

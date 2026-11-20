@@ -4,6 +4,7 @@ use leptos::{prelude::*, task::spawn_local};
 use uuid::Uuid;
 use web_sys::File;
 
+use client_core::send::files_to_upload;
 use protocol::{CreatedTransfer, NodeId};
 
 use crate::{
@@ -107,13 +108,7 @@ pub fn start_send(
 ) {
     let id = upload::next_id();
     let transfer = created.id;
-    let mut by_path: HashMap<String, File> = files.into_iter().collect();
-    let work: Vec<(Uuid, File)> = created
-        .items
-        .iter()
-        .filter(|item| item.upload_needed)
-        .filter_map(|item| Some((item.id, by_path.remove(&item.path)?)))
-        .collect();
+    let work: Vec<(Uuid, File)> = files_to_upload(&created, files);
     let total = work
         .iter()
         .map(|(_, file)| file.size())

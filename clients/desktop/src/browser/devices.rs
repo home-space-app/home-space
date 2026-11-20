@@ -19,7 +19,7 @@ use super::{
     context_menu::Placement,
     parts::{
         COLUMN_GAP, DATE_WIDTH, LIST_PADDING, MENU_WIDTH, ROW_SIZE, SECOND_LINE_SIZE, alert_error,
-        divider, empty, ghost, header_bar, list_box, menu_button, muted_cell, title,
+        divider, empty, ghost, header_bar, list_box, menu_button, muted_cell, page_action, title,
     },
     visibility::{self, visibility_icon},
 };
@@ -270,13 +270,10 @@ impl State {
 
     /// What the page's top line offers.
     pub fn action(&self) -> Element<'_, Message> {
-        row![
-            text(if self.loading { "Loading…" } else { "" }).style(theme::muted_text),
-            ghost(Some(Icon::Refresh), "Refresh", Some(Message::Refresh))
-        ]
-        .spacing(SPACING)
-        .align_y(Alignment::Center)
-        .into()
+        page_action(
+            self.loading,
+            ghost(Some(Icon::Refresh), "Refresh", Some(Message::Refresh)),
+        )
     }
 
     pub fn view(&self) -> Element<'_, Message> {

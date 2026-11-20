@@ -10,6 +10,7 @@ use tokio::{
 };
 
 use api_client::{Client, Pkce, VERIFIER_BYTES};
+use client_core::sso::{SsoReply, sso_reply};
 use protocol::Me;
 
 use crate::session;
@@ -134,19 +135,10 @@ fn parse_request_line(line: &str) -> Option<Callback> {
     if url.path() != CALLBACK_PATH {
         return None;
     }
-    let (mut code, mut error) = (None, None);
-    for (key, value) in url.query_pairs() {
-        match key.as_ref() {
-            "code" => code = Some(value.into_owned()),
-            "error" => error = Some(value.into_owned()),
-            _ => {}
-        }
-    }
-    match (code, error) {
-        (Some(code), _) if !code.is_empty() => Some(Callback::Code(code)),
-        (_, Some(error)) => Some(Callback::Error(error)),
-        _ => None,
-    }
+    Some(match sso_reply(&url)? {
+        SsoReply::Code(code) => Callback::Code(code),
+        SsoReply::Error(error) => Callback::Error(error),
+    })
 }
 
 #[cfg(test)]

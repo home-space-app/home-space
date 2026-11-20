@@ -49,6 +49,7 @@ pub(super) const HEADER_SIZE: f32 = 12.0;
 pub(super) const DIVIDER: f32 = 1.0;
 const BOX_PADDING: f32 = 1.0;
 const LABEL_GAP: f32 = 6.0;
+const PAGE_ACTION_GAP: f32 = 12.0;
 const BUTTON_PADDING_Y: f32 = 8.0;
 const GHOST_PADDING_X: f32 = 10.0;
 const OUTLINED_PADDING_X: f32 = 16.0;
@@ -232,6 +233,17 @@ pub(super) fn ghost<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let icon = icon.map(|icon| (icon, Tint::Text));
     sized(icon, label, theme::tool, GHOST_PADDING_X, message)
+}
+
+/// A page's top line: `Loading…` while it loads, then `button`.
+pub(super) fn page_action<'a, M: 'a>(loading: bool, button: Element<'a, M>) -> Element<'a, M> {
+    row![
+        text(if loading { "Loading…" } else { "" }).style(theme::muted_text),
+        button
+    ]
+    .spacing(PAGE_ACTION_GAP)
+    .align_y(Alignment::Center)
+    .into()
 }
 
 /// A flat button for something destructive.

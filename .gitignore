@@ -36,3 +36,4 @@ node_modules/
 clients/desktop/packaging/flatpak/cargo-sources.json
 .flatpak-builder/
 clients/mobile/androidApp/release/
+analysis/

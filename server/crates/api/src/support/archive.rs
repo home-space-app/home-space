@@ -18,9 +18,7 @@ use tokio::sync::mpsc;
 use zip::{CompressionMethod, DateTime, ZipWriter, write::SimpleFileOptions};
 
 use files::ArchiveEntry;
-use protocol::NodeKind;
-
-use super::download::percent_encode;
+use protocol::{NodeKind, encoding::percent_encode};
 
 /// Names the zip of a share with several items, before the owner's name.
 const SHARED_BY: &str = "Shared by";

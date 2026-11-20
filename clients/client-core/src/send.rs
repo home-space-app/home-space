@@ -1,8 +1,9 @@
 //! Building a transfer from local files, and the words of the send dialogs.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
-use protocol::{NewTransferItem, NodeKind, TargetDevice, TransferTarget};
+use protocol::{CreatedTransfer, NewTransferItem, Node, NodeKind, TargetDevice, TransferTarget};
+use uuid::Uuid;
 
 use crate::{
     format::human_size,
@@ -84,6 +85,36 @@ pub fn manifest(entries: &[LocalEntry]) -> Vec<NewTransferItem> {
     let mut items: Vec<_> = folder_items.chain(file_items).collect();
     items.sort_by(|a, b| a.path.cmp(&b.path));
     items
+}
+
+/// The items of a send of server files and folders, each taken by its id.
+pub fn node_items(nodes: &[Node]) -> Vec<NewTransferItem> {
+    nodes
+        .iter()
+        .map(|node| NewTransferItem {
+            path: node.name.clone(),
+            kind: node.kind,
+            size: u64::try_from(node.size).unwrap_or_default(),
+            node_id: Some(node.id),
+            mime: None,
+            modified_at: None,
+        })
+        .collect()
+}
+
+/// The local files of a created transfer that the server still needs, each with the id of its
+/// item; `files` are keyed by their path in the transfer.
+pub fn files_to_upload<F>(
+    created: &CreatedTransfer,
+    files: impl IntoIterator<Item = (String, F)>,
+) -> Vec<(Uuid, F)> {
+    let mut by_path: HashMap<String, F> = files.into_iter().collect();
+    created
+        .items
+        .iter()
+        .filter(|item| item.upload_needed)
+        .filter_map(|item| Some((item.id, by_path.remove(&item.path)?)))
+        .collect()
 }
 
 /// What is being sent, counted: `1 folder and 2 files · 121.3 MB`.
