@@ -13,6 +13,7 @@ export { TransfersPage } from './pages/transfers-page.ts';
 export { DevicesPage } from './pages/devices-page.ts';
 export { AdminUsersPage } from './pages/admin-users-page.ts';
 export { SettingsPage } from './pages/settings-page.ts';
+export { DuplicatesPage } from './pages/duplicates-page.ts';
 export { SearchPage } from './pages/search-page.ts';
 export { ViewerPage } from './pages/viewer-page.ts';
 export { PublicSharePage } from './pages/public-share-page.ts';

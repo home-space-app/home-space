@@ -6,8 +6,8 @@ use db::{Db, UserId};
 use events::Events;
 
 use crate::{
-    BlobStore, FilesError, NodeService, TransferService, TrashService, UploadService,
-    VersionService, content::ContentStore,
+    BlobStore, DuplicateService, FilesError, NodeService, TransferService, TrashService,
+    UploadService, VersionService, content::ContentStore,
 };
 
 /// Default size of one chunk of a resumable upload, well under the 100 MB request limit of
@@ -47,6 +47,7 @@ pub struct FileServices {
     pub trash: TrashService,
     pub uploads: UploadService,
     pub transfers: TransferService,
+    pub duplicates: DuplicateService,
     content: ContentStore,
 }
 
@@ -65,6 +66,7 @@ impl FileServices {
                 config.max_transfer_bytes,
             ),
             uploads,
+            duplicates: DuplicateService::new(content.clone()),
             content,
         }
     }

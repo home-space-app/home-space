@@ -5,7 +5,9 @@ use leptos::{ev::SubmitEvent, prelude::*, task::spawn_local};
 use leptos_router::components::A;
 
 use api_client::ApiError;
-use client_core::{share::SHARES_TAB, shared_link::initial, storage::bytes};
+use client_core::{
+    duplicates::DUPLICATES_TAB, share::SHARES_TAB, shared_link::initial, storage::bytes,
+};
 use protocol::{Event, Storage};
 
 use super::shell::{Tab, Tabs};
@@ -28,6 +30,7 @@ pub fn SettingsHeader() -> impl IntoView {
             <Tab href=route::SETTINGS_PATH icon="person" label="Account" />
             <Tab href=route::DEVICES_PATH icon="devices" label="Devices" />
             <Tab href=route::SHARES_PATH icon="link" label=SHARES_TAB />
+            <Tab href=route::DUPLICATES_PATH icon="content_copy" label=DUPLICATES_TAB />
         </Tabs>
     }
 }

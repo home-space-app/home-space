@@ -4,6 +4,7 @@ mod accounts;
 mod capabilities;
 mod client;
 mod devices;
+mod duplicates;
 mod error;
 mod password;
 mod pkce;

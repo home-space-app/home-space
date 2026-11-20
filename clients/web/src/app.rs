@@ -9,9 +9,9 @@ use crate::{
     incoming::{self, IncomingToast},
     leave_guard,
     pages::{
-        AdminPage, AdminTab, Browser, DevicesPage, Login, OidcCallback, PublicSharePage,
-        SearchPage, SettingsPage, SharedWithMePage, SharesPage, Shell, TransferList, TransfersPage,
-        TrashPage, ViewerPage,
+        AdminPage, AdminTab, Browser, DevicesPage, DuplicatesPage, Login, OidcCallback,
+        PublicSharePage, SearchPage, SettingsPage, SharedWithMePage, SharesPage, Shell,
+        TransferList, TransfersPage, TrashPage, ViewerPage,
     },
     session::Auth,
     uploads::{Sending, UploadItem, UploadPanel},
@@ -74,6 +74,10 @@ pub fn App() -> impl IntoView {
                         <Route
                             path=path!("/settings/shares")
                             view=move || view! { <SharesPage auth /> }
+                        />
+                        <Route
+                            path=path!("/settings/duplicates")
+                            view=move || view! { <DuplicatesPage auth /> }
                         />
                         // Where the devices page used to be.
                         <Route
