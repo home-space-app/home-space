@@ -109,6 +109,7 @@ pub fn SharedViewer(
                     &route::received_file(share, &trail, target.id),
                     NavigateOptions {
                         replace: true,
+                        scroll: false,
                         ..NavigateOptions::default()
                     },
                 );

@@ -152,6 +152,7 @@ pub fn ImageViewer(
                 &link.href(id),
                 NavigateOptions {
                     replace: true,
+                    scroll: false,
                     ..NavigateOptions::default()
                 },
             );
