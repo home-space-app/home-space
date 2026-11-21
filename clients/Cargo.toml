@@ -3,7 +3,7 @@ resolver = "3"
 members = ["api-client", "client-core", "desktop", "mobile-core", "pdf-core", "pdf-worker", "sync-core", "web"]
 
 [workspace.package]
-version = "0.12.2"
+version = "0.12.3"
 edition = "2024"
 license = "MIT"
 publish = false
