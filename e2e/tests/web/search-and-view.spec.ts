@@ -60,3 +60,33 @@ test('an image opens in the viewer', async ({ page, users, api }) => {
   // Loaded and decoded, not a broken image.
   await expect.poll(() => image.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(4);
 });
+
+test('on a phone, the list stays scrolled where it was under the viewer', async ({
+  page,
+  users,
+  api,
+}) => {
+  await page.setViewportSize({ width: 390, height: 664 });
+  const alice = await users.create('alice');
+  const session = await api.as(alice);
+  for (let i = 0; i < 40; i++) {
+    const name = `note-${String(i).padStart(2, '0')}.txt`;
+    await session.uploadContent(name, Buffer.from(`Note ${i}`));
+  }
+  const files = await new LoginPage(page).signInAndWait(alice);
+  // On a phone the page itself scrolls, not the table.
+  const last = files.row('note-39.txt');
+  await last.scrollIntoViewIfNeeded();
+  const scrolled = await page.evaluate(() => window.scrollY);
+  expect(scrolled).toBeGreaterThan(0);
+
+  const viewer = await files.openFile('note-39.txt');
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(scrolled);
+  await viewer.close();
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(scrolled);
+
+  await files.openFile('note-39.txt');
+  await viewer.dismiss();
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(scrolled);
+  await expect(last).toBeInViewport();
+});

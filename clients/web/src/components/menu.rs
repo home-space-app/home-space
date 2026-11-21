@@ -196,12 +196,19 @@ pub fn MenuItem(
 
 /// A menu entry that navigates; closes the menu on click.
 #[component]
-pub fn MenuLink(href: String, children: Children) -> impl IntoView {
+pub fn MenuLink(
+    href: String,
+    /// Whether the page scrolls to the top once the link is followed.
+    #[prop(default = true)]
+    scroll: bool,
+    children: Children,
+) -> impl IntoView {
     let panel = expect_context::<MenuPanel>().0;
     view! {
         <leptos_router::components::A
             href=href
             exact=true
+            scroll=scroll
             attr:class="menu__item"
             attr:role="menuitem"
             on:click=move |_| close_popover(panel)

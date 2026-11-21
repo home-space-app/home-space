@@ -126,7 +126,7 @@ pub fn ViewerOverlay(close: Memo<String>, children: Children) -> impl IntoView {
         event.prevent_default();
         // Unsaved edits hold the popup open while the viewer asks about them.
         if guard.allows(&path) {
-            navigate(&path, NavigateOptions::default());
+            navigate(&path, keep_scroll());
         }
     });
     on_cleanup(move || keys.remove());
@@ -151,6 +151,15 @@ pub fn ViewerOverlay(close: Memo<String>, children: Children) -> impl IntoView {
                 {children()}
             </div>
         </div>
+    }
+}
+
+/// Navigation between the popup and the page under it: the page stays scrolled where the user
+/// left it, rather than jumping back to the top.
+pub(super) fn keep_scroll() -> NavigateOptions {
+    NavigateOptions {
+        scroll: false,
+        ..NavigateOptions::default()
     }
 }
 
@@ -301,6 +310,7 @@ impl ViewerHeader {
                     {actions}
                     <A
                         href=move || close.get()
+                        scroll=false
                         attr:class="button button--ghost"
                         attr:aria-label=CLOSE
                         attr:title="Close (Esc)"

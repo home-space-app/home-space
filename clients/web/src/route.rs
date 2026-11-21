@@ -29,6 +29,12 @@ pub fn with_viewer(path: &str, search: &str, id: Option<NodeId>) -> String {
     with_param(path, search, FILE_PARAM, id.map(short_id).as_deref())
 }
 
+/// Whether `href` leads to the page at `path`, whatever its query: following it only opens or
+/// closes the viewer over the page, say.
+pub fn is_on_page(href: &str, path: &str) -> bool {
+    href.split(['?', '#']).next() == Some(path)
+}
+
 /// The page at `path` with query `search`, parameter `key` set to `value`, or dropped.
 ///
 /// `value` goes in as it is: callers pass ids, which need no escaping.
@@ -190,6 +196,15 @@ mod tests {
     fn closing_the_viewer_drops_the_query_it_had() {
         let open = format!("?file={}", short_id(id()));
         assert_eq!(with_viewer("/", &open, None), "/");
+    }
+
+    #[test]
+    fn opening_or_closing_the_viewer_stays_on_the_page() {
+        let open = with_viewer("/search", "q=a", Some(id()));
+        assert!(is_on_page(&open, "/search"));
+        assert!(is_on_page("/search", "/search"));
+        assert!(!is_on_page(&folder(id()), "/"));
+        assert!(!is_on_page("/searching?q=a", "/search"));
     }
 
     #[test]

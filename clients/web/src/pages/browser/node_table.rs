@@ -283,7 +283,11 @@ fn NodeRow(node: Node, actions: TableActions) -> impl IntoView {
                 } else if is_folder || viewable {
                     let (href, name, meta) = (href.clone(), name.clone(), meta.clone());
                     view! {
-                        <A href=href attr:class="node-table__name node-table__name--link">
+                        <A
+                            href=href
+                            scroll=is_folder
+                            attr:class="node-table__name node-table__name--link"
+                        >
                             <Icon name=icon />
                             <span class="node-table__text">
                                 {name}

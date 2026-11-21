@@ -1,13 +1,16 @@
 //! The text viewer: read-only until Edit, then a plain editor with Cancel and Save.
 
 use leptos::{prelude::*, task::spawn_local};
-use leptos_router::{NavigateOptions, hooks::use_navigate};
+use leptos_router::{
+    NavigateOptions,
+    hooks::{use_location, use_navigate},
+};
 
 use client_core::{text::TextDoc, viewers::Viewer};
 use protocol::Node;
 
 use super::{ViewerHeader, fetch_content};
-use crate::{icon::Icon, leave_guard, session::Auth, upload};
+use crate::{icon::Icon, leave_guard, route, session::Auth, upload};
 
 const LOADING: &str = "Loading…";
 const NOT_UTF8: &str = "This file is not UTF-8 text, so it can only be viewed.";
@@ -40,6 +43,7 @@ pub fn TextViewer(
 
     let guard = leave_guard::use_leave_guard();
     let navigate = use_navigate();
+    let pathname = use_location().pathname;
     Effect::new(move |_| {
         let unsaved = mode.get() == Mode::Edit
             && doc
@@ -52,7 +56,13 @@ pub fn TextViewer(
     let discard = Callback::new(move |()| {
         if let Some(path) = guard.take() {
             mode.set(Mode::Read);
-            navigate(&path, NavigateOptions::default());
+            // Closing the popup leaves the page under it where it was; another page starts at
+            // its top.
+            let options = NavigateOptions {
+                scroll: !pathname.with_untracked(|current| route::is_on_page(&path, current)),
+                ..NavigateOptions::default()
+            };
+            navigate(&path, options);
         }
     });
     let file_name = move || {

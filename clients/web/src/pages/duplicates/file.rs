@@ -46,7 +46,9 @@ pub fn FileName(node: Node, #[prop(optional, into)] meta: Option<String>) -> imp
     };
     match view_href(&node) {
         Some(href) => view! {
-            <A href=href attr:class="node-table__name node-table__name--link">{text}</A>
+            <A href=href scroll=false attr:class="node-table__name node-table__name--link">
+                {text}
+            </A>
         }
         .into_any(),
         None => view! { <span class="node-table__name">{text}</span> }.into_any(),
@@ -71,7 +73,7 @@ pub fn OpenLinks(node: Node) -> impl IntoView {
         {view_href(&node)
             .map(|href| {
                 view! {
-                    <MenuLink href>
+                    <MenuLink href scroll=false>
                         <Icon name="visibility" />
                         {OPEN}
                     </MenuLink>

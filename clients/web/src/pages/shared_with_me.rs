@@ -501,6 +501,7 @@ fn ItemName(
         NodeKind::File if shared_viewer(viewers(), &item).is_some() => view! {
             <A
                 href=route::received_file(share, &trail, item.id)
+                scroll=false
                 attr:class="node-table__name node-table__name--link"
             >
                 {label}

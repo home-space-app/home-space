@@ -26,7 +26,10 @@ pub fn OutdatedRow(found: OutdatedMatch, deleting: RwSignal<Option<Vec<Node>>>) 
     let modified = short_date(node.updated_at);
     let matches = version_of(version, &source.node);
     let meta = format!("{} \u{b7} {matches}", location_label(&file.location));
-    let source_href = view_href(&source.node).unwrap_or_else(|| folder_href(&source.node));
+    let source_view = view_href(&source.node);
+    // The viewer opens over this page, which stays where it is under it.
+    let source_scroll = source_view.is_none();
+    let source_href = source_view.unwrap_or_else(|| folder_href(&source.node));
     let source_where = location_label(&source.location);
     let open_source = StoredValue::new(format!("Open {}", source.node.name));
     let delete = {
@@ -43,7 +46,7 @@ pub fn OutdatedRow(found: OutdatedMatch, deleting: RwSignal<Option<Vec<Node>>>) 
                 <FileLocation file />
             </td>
             <td class="node-table__cell node-table__cell--meta">
-                <A href=source_href.clone() attr:class="duplicates__location">
+                <A href=source_href.clone() scroll=source_scroll attr:class="duplicates__location">
                     {matches}
                 </A>
                 <span class="duplicates__summary">{source_where}</span>
@@ -53,7 +56,7 @@ pub fn OutdatedRow(found: OutdatedMatch, deleting: RwSignal<Option<Vec<Node>>>) 
                 <span class="node-table__actions">
                     <Menu id=format!("outdated-menu-{id}-{}", source.node.id) label="File actions">
                         <OpenLinks node=node.clone() />
-                        <MenuLink href=source_href.clone()>
+                        <MenuLink href=source_href.clone() scroll=source_scroll>
                             <Icon name="difference" />
                             {open_source.get_value()}
                         </MenuLink>

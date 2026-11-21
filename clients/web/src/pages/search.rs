@@ -141,6 +141,8 @@ pub fn SearchPage(auth: Auth) -> impl IntoView {
 #[component]
 fn HitRow(hit: SearchHit) -> impl IntoView {
     let href = target(&hit, use_view_link());
+    // A file opening in the viewer keeps the results where they are under it.
+    let scroll = viewers().viewer_for_node(&hit.node).is_none();
     let icon = node_icon(&hit.node);
     let is_folder = hit.node.kind == NodeKind::Folder;
     let size = if is_folder {
@@ -160,7 +162,7 @@ fn HitRow(hit: SearchHit) -> impl IntoView {
     view! {
         <tr class="node-table__row">
             <td class="node-table__cell">
-                <A href=href attr:class="node-table__name node-table__name--link">
+                <A href=href scroll attr:class="node-table__name node-table__name--link">
                     <Icon name=icon />
                     <span class="node-table__text">
                         {name}
