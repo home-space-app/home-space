@@ -371,7 +371,7 @@ private fun DetailRow(icon: Int, label: String, value: String) {
 }
 
 @Composable
-private fun NameDialog(
+internal fun NameDialog(
     title: String,
     confirm: String,
     initial: String,

@@ -147,6 +147,11 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
     var devicesKey by mutableIntStateOf(0)
         private set
 
+    /** Reloads the user's devices after one was changed here, ahead of the server's event. */
+    fun reloadDevices() {
+        devicesKey++
+    }
+
     /** The recycle bin is reloaded whenever this changes. */
     var trashKey by mutableIntStateOf(0)
         private set

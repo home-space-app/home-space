@@ -21,6 +21,7 @@ use protocol::{DeviceInfo, NodeId, NodeKind, OnConflict, paths};
 mod android;
 mod autoupload;
 mod cancel;
+mod devices;
 mod events;
 mod files;
 mod offline;
@@ -36,6 +37,7 @@ pub use autoupload::{
     AutoUpload, AutoUploadListener, LocalItem, LocalSources, PassSummary, SourceKind, SyncSettings,
     UploadSource,
 };
+pub use devices::{AudienceChoice, DeviceAudience, OtherUser, UserDevice};
 pub use events::{EventStream, EventsListener, LiveEvent};
 pub use files::DownloadListener;
 pub use offline::{OfflineProblem, OfflineState, OfflineStatus};
@@ -66,7 +68,7 @@ async fn off_ui_thread<T: Send + 'static>(work: impl Future<Output = T> + Send +
 }
 
 /// The server's limit on a device name.
-const MAX_DEVICE_NAME_CHARS: usize = 100;
+pub(crate) const MAX_DEVICE_NAME_CHARS: usize = 100;
 #[cfg(target_os = "ios")]
 const PLATFORM: &str = protocol::PLATFORM_IOS;
 #[cfg(not(target_os = "ios"))]
@@ -291,22 +293,6 @@ pub struct EntryDetails {
     pub device_label: Option<String>,
     /// The device that auto-uploaded the file, if one did.
     pub source_device: Option<String>,
-}
-
-/// A device of the signed-in user.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
-pub struct UserDevice {
-    pub id: String,
-    pub name: String,
-    /// One of `protocol`'s `PLATFORM_*` values, or another short name.
-    pub platform: String,
-    /// When the server last heard from it.
-    pub last_seen_at: SystemTime,
-    pub signed_in: bool,
-    /// Whether it is connected to the server right now.
-    pub online: bool,
-    /// Whether this is the device that asked.
-    pub current: bool,
 }
 
 /// What to do about files that already exist where others are moved to.
@@ -545,24 +531,6 @@ impl CoreClient {
         let inner = self.inner.clone();
         let node = off_ui_thread(async move { inner.create_folder(parent, &name).await }).await?;
         Ok(node.into())
-    }
-
-    /// The user's devices, the most recently seen first.
-    pub async fn devices(&self) -> Result<Vec<UserDevice>, CoreError> {
-        let inner = self.inner.clone();
-        let devices = off_ui_thread(async move { inner.devices().await }).await?;
-        Ok(devices
-            .into_iter()
-            .map(|device| UserDevice {
-                id: device.id.to_string(),
-                name: device.name,
-                platform: device.platform,
-                last_seen_at: device.last_seen_at.into(),
-                signed_in: device.signed_in,
-                online: device.online,
-                current: device.current,
-            })
-            .collect())
     }
 
     /// The fields of the details panel. The device is left out if the device list won't load.

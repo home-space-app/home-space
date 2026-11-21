@@ -3,6 +3,7 @@ package app.homespace.android
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -18,6 +19,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -39,6 +42,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
@@ -62,6 +66,7 @@ private const val PLATFORM_WEB = "web"
 
 private val PROFILE_AVATAR_SIZE = 72.dp
 private val BUTTON_HEIGHT = 48.dp
+private val AUDIENCE_ICON_SIZE = 16.dp
 
 /** The top-level destinations, in the navigation bar. */
 private enum class Tab(val title: String, val icon: Int, val selectedIcon: Int) {
@@ -228,6 +233,13 @@ private fun ProfileScreen(session: Session.SignedIn, model: SessionViewModel, on
             emptyList()
         }
     }
+    var renaming by remember { mutableStateOf<UserDevice?>(null) }
+    var choosing by remember { mutableStateOf<UserDevice?>(null) }
+    val changed = {
+        renaming = null
+        choosing = null
+        model.reloadDevices()
+    }
     SubPageScaffold(title = "Profile", onBack = onBack) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
             LazyColumn(modifier = Modifier.weight(1f)) {
@@ -235,7 +247,9 @@ private fun ProfileScreen(session: Session.SignedIn, model: SessionViewModel, on
                 item { HorizontalDivider() }
                 if (devices?.isNotEmpty() == true) {
                     item { SectionHeader("Devices") }
-                    items(devices.orEmpty(), key = { it.id }) { device -> DeviceRow(device) }
+                    items(devices.orEmpty(), key = { it.id }) { device ->
+                        DeviceRow(device, onRename = { renaming = device }, onChooseVisibility = { choosing = device })
+                    }
                 }
             }
             OutlinedButton(
@@ -252,6 +266,24 @@ private fun ProfileScreen(session: Session.SignedIn, model: SessionViewModel, on
                 Text("Sign out")
             }
         }
+    }
+    renaming?.let { device ->
+        RenameDeviceDialog(
+            client = session.client,
+            device = device,
+            onDismiss = { renaming = null },
+            onDone = changed,
+            onSessionEnded = model::onSessionEnded,
+        )
+    }
+    choosing?.let { device ->
+        DeviceVisibilityDialog(
+            client = session.client,
+            device = device,
+            onDismiss = { choosing = null },
+            onDone = changed,
+            onSessionEnded = model::onSessionEnded,
+        )
     }
 }
 
@@ -291,7 +323,7 @@ private fun ProfileHeader(session: Session.SignedIn) {
 }
 
 @Composable
-private fun DeviceRow(device: UserDevice) {
+private fun DeviceRow(device: UserDevice, onRename: () -> Unit, onChooseVisibility: () -> Unit) {
     val platform = platformLabel(device.platform)
     val status = when {
         device.current -> "This phone · $platform"
@@ -303,14 +335,61 @@ private fun DeviceRow(device: UserDevice) {
         leadingContent = { LeadingIcon(platformIcon(device.platform)) },
         headlineContent = { Text(device.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         supportingContent = {
-            Text(status, style = MaterialTheme.typography.bodyMedium.tabular(), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Column {
+                Text(status, style = MaterialTheme.typography.bodyMedium.tabular(), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        painterResource(audienceIcon(device.audience)),
+                        contentDescription = "Visible to",
+                        modifier = Modifier.size(AUDIENCE_ICON_SIZE),
+                    )
+                    Text(
+                        device.audienceLabel,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
         },
-        trailingContent = if (device.current) {
-            { StatusChip("Current", ChipTone.NEUTRAL) }
-        } else {
-            null
+        trailingContent = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (device.current) StatusChip("Current", ChipTone.NEUTRAL)
+                DeviceMenu(device.name, onRename, onChooseVisibility)
+            }
         },
     )
+}
+
+@Composable
+private fun DeviceMenu(name: String, onRename: () -> Unit, onChooseVisibility: () -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { open = true }) {
+            Icon(painterResource(R.drawable.ic_more_vert), contentDescription = "Actions for $name")
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = { Text("Rename") },
+                leadingIcon = { Icon(painterResource(R.drawable.ic_edit), contentDescription = null) },
+                onClick = {
+                    open = false
+                    onRename()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text("Visibility…") },
+                leadingIcon = { Icon(painterResource(R.drawable.ic_visibility), contentDescription = null) },
+                onClick = {
+                    open = false
+                    onChooseVisibility()
+                },
+            )
+        }
+    }
 }
 
 private fun platformLabel(platform: String): String = when (platform) {
