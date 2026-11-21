@@ -3,7 +3,9 @@ use uuid::Uuid;
 use web_sys::KeyboardEvent;
 
 use client_core::{
-    labels::{THIS_DEVICE, device_state, platform, sign_out_question},
+    labels::{
+        REMOVE_DEVICE_HINT, THIS_DEVICE, device_state, platform, remove_question, sign_out_question,
+    },
     transfers::visible_to,
 };
 use protocol::{Device, DeviceVisibility, Event};
@@ -21,6 +23,38 @@ use crate::{
 const KEY_ENTER: &str = "Enter";
 const KEY_ESCAPE: &str = "Escape";
 const SIGN_OUT: &str = "Sign out";
+const REMOVE: &str = "Remove";
+const SIGN_OUT_HINT: &str = "It has to sign in again to sync.";
+
+/// What the user asked to do to a device, waiting for them to confirm it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ending {
+    SignOut,
+    Remove,
+}
+
+impl Ending {
+    fn question(self, device: &Device) -> String {
+        match self {
+            Self::SignOut => sign_out_question(device),
+            Self::Remove => remove_question(device),
+        }
+    }
+
+    fn hint(self) -> &'static str {
+        match self {
+            Self::SignOut => SIGN_OUT_HINT,
+            Self::Remove => REMOVE_DEVICE_HINT,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::SignOut => SIGN_OUT,
+            Self::Remove => REMOVE,
+        }
+    }
+}
 
 /// A device being renamed and the name typed so far.
 #[derive(Clone, PartialEq, Eq)]
@@ -34,7 +68,7 @@ pub fn DevicesPage(auth: Auth) -> impl IntoView {
     let devices = RwSignal::new(Vec::<Device>::new());
     let error = RwSignal::new(None::<String>);
     let renaming = RwSignal::new(None::<Renaming>);
-    let signing_out = RwSignal::new(None::<Device>);
+    let ending = RwSignal::new(None::<(Device, Ending)>);
     let choosing = RwSignal::new(None::<Device>);
 
     let list = load::load(
@@ -71,13 +105,18 @@ pub fn DevicesPage(auth: Auth) -> impl IntoView {
         });
     });
     let cancel = Callback::new(move |()| renaming.set(None));
-    let confirm_sign_out = move |_| {
-        let Some(device) = signing_out.get_untracked() else {
+    let confirm_ending = move |_| {
+        let Some((device, action)) = ending.get_untracked() else {
             return;
         };
-        signing_out.set(None);
+        ending.set(None);
         spawn_local(async move {
-            if let Err(err) = session::client().sign_out_device(device.id).await {
+            let client = session::client();
+            let result = match action {
+                Ending::SignOut => client.sign_out_device(device.id).await,
+                Ending::Remove => client.remove_device(device.id).await,
+            };
+            if let Err(err) = result {
                 error.set(Some(auth.fail(&err)));
             }
             list.refetch();
@@ -130,7 +169,7 @@ pub fn DevicesPage(auth: Auth) -> impl IntoView {
                             }
                             children=move |device| {
                                 view! {
-                                    <DeviceRow device renaming signing_out choosing save cancel />
+                                    <DeviceRow device renaming ending choosing save cancel />
                                 }
                             }
                         />
@@ -147,11 +186,11 @@ pub fn DevicesPage(auth: Auth) -> impl IntoView {
                 .map(|device| view! { <VisibilityDialog device auth on_close=close_visibility /> })
         }}
         {move || {
-            signing_out
+            ending
                 .get()
-                .map(|device| {
+                .map(|(device, action)| {
                     view! {
-                        <div class="modal" on:click=move |_| signing_out.set(None)>
+                        <div class="modal" on:click=move |_| ending.set(None)>
                             <div
                                 class="modal__panel"
                                 role="alertdialog"
@@ -159,20 +198,18 @@ pub fn DevicesPage(auth: Auth) -> impl IntoView {
                                 on:click=|event| event.stop_propagation()
                             >
                                 <header class="modal__header">
-                                    <h2 class="modal__title">{sign_out_question(&device)}</h2>
-                                    <p class="modal__subtitle">
-                                        "It has to sign in again to sync."
-                                    </p>
+                                    <h2 class="modal__title">{action.question(&device)}</h2>
+                                    <p class="modal__subtitle">{action.hint()}</p>
                                 </header>
                                 <div class="modal__actions">
-                                    <button class="button" on:click=move |_| signing_out.set(None)>
+                                    <button class="button" on:click=move |_| ending.set(None)>
                                         "Cancel"
                                     </button>
                                     <button
                                         class="button button--danger"
-                                        on:click=confirm_sign_out
+                                        on:click=confirm_ending
                                     >
-                                        {SIGN_OUT}
+                                        {action.label()}
                                     </button>
                                 </div>
                             </div>
@@ -187,7 +224,7 @@ pub fn DevicesPage(auth: Auth) -> impl IntoView {
 fn DeviceRow(
     device: Device,
     renaming: RwSignal<Option<Renaming>>,
-    signing_out: RwSignal<Option<Device>>,
+    ending: RwSignal<Option<(Device, Ending)>>,
     choosing: RwSignal<Option<Device>>,
     save: Callback<()>,
     cancel: Callback<()>,
@@ -224,20 +261,24 @@ fn DeviceRow(
     let start_rename = {
         let name = device.name.clone();
         Callback::new(move |()| {
-            signing_out.set(None);
+            ending.set(None);
             renaming.set(Some(Renaming {
                 id,
                 name: name.clone(),
             }));
         })
     };
-    let ask_sign_out = {
+    let ask = |action: Ending| {
         let device = device.clone();
         Callback::new(move |()| {
             renaming.set(None);
-            signing_out.set(Some(device.clone()));
+            ending.set(Some((device.clone(), action)));
         })
     };
+    let ask_sign_out = ask(Ending::SignOut);
+    let ask_remove = ask(Ending::Remove);
+    // The current device leaves with the account menu instead.
+    let can_remove = !device.current;
     let choose_visibility = {
         let device = device.clone();
         Callback::new(move |()| {
@@ -336,6 +377,17 @@ fn DeviceRow(
                                                 label=SIGN_OUT
                                                 danger=true
                                                 on_select=ask_sign_out
+                                            />
+                                        }
+                                    })}
+                                {can_remove
+                                    .then(|| {
+                                        view! {
+                                            <MenuItem
+                                                icon="delete"
+                                                label=REMOVE
+                                                danger=true
+                                                on_select=ask_remove
                                             />
                                         }
                                     })}

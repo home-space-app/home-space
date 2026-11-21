@@ -353,7 +353,7 @@ async fn signing_out_a_device_closes_its_socket(pool: PgPool) {
     let response = app
         .send(
             Method::DELETE,
-            &format!("{DEVICES}/{laptop_device}"),
+            &format!("{DEVICES}/{laptop_device}/sessions"),
             Some(&phone),
             axum::body::Body::empty(),
             None,

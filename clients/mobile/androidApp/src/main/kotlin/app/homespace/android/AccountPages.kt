@@ -235,9 +235,11 @@ private fun ProfileScreen(session: Session.SignedIn, model: SessionViewModel, on
     }
     var renaming by remember { mutableStateOf<UserDevice?>(null) }
     var choosing by remember { mutableStateOf<UserDevice?>(null) }
+    var ending by remember { mutableStateOf<Pair<UserDevice, DeviceEnding>?>(null) }
     val changed = {
         renaming = null
         choosing = null
+        ending = null
         model.reloadDevices()
     }
     SubPageScaffold(title = "Profile", onBack = onBack) { padding ->
@@ -248,7 +250,12 @@ private fun ProfileScreen(session: Session.SignedIn, model: SessionViewModel, on
                 if (devices?.isNotEmpty() == true) {
                     item { SectionHeader("Devices") }
                     items(devices.orEmpty(), key = { it.id }) { device ->
-                        DeviceRow(device, onRename = { renaming = device }, onChooseVisibility = { choosing = device })
+                        DeviceRow(
+                            device,
+                            onRename = { renaming = device },
+                            onChooseVisibility = { choosing = device },
+                            onEnd = { ending = device to it },
+                        )
                     }
                 }
             }
@@ -281,6 +288,16 @@ private fun ProfileScreen(session: Session.SignedIn, model: SessionViewModel, on
             client = session.client,
             device = device,
             onDismiss = { choosing = null },
+            onDone = changed,
+            onSessionEnded = model::onSessionEnded,
+        )
+    }
+    ending?.let { (device, action) ->
+        EndDeviceDialog(
+            client = session.client,
+            device = device,
+            ending = action,
+            onDismiss = { ending = null },
             onDone = changed,
             onSessionEnded = model::onSessionEnded,
         )
@@ -323,7 +340,12 @@ private fun ProfileHeader(session: Session.SignedIn) {
 }
 
 @Composable
-private fun DeviceRow(device: UserDevice, onRename: () -> Unit, onChooseVisibility: () -> Unit) {
+private fun DeviceRow(
+    device: UserDevice,
+    onRename: () -> Unit,
+    onChooseVisibility: () -> Unit,
+    onEnd: (DeviceEnding) -> Unit,
+) {
     val platform = platformLabel(device.platform)
     val status = when {
         device.current -> "This phone · $platform"
@@ -358,18 +380,28 @@ private fun DeviceRow(device: UserDevice, onRename: () -> Unit, onChooseVisibili
         trailingContent = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (device.current) StatusChip("Current", ChipTone.NEUTRAL)
-                DeviceMenu(device.name, onRename, onChooseVisibility)
+                DeviceMenu(device, onRename, onChooseVisibility, onEnd)
             }
         },
     )
 }
 
 @Composable
-private fun DeviceMenu(name: String, onRename: () -> Unit, onChooseVisibility: () -> Unit) {
+private fun DeviceMenu(
+    device: UserDevice,
+    onRename: () -> Unit,
+    onChooseVisibility: () -> Unit,
+    onEnd: (DeviceEnding) -> Unit,
+) {
     var open by remember { mutableStateOf(false) }
+    // This phone signs out with the button below the list, and is not removed from here.
+    val endings = buildList {
+        if (device.canSignOut) add(DeviceEnding.SIGN_OUT)
+        if (!device.current) add(DeviceEnding.REMOVE)
+    }
     Box {
         IconButton(onClick = { open = true }) {
-            Icon(painterResource(R.drawable.ic_more_vert), contentDescription = "Actions for $name")
+            Icon(painterResource(R.drawable.ic_more_vert), contentDescription = "Actions for ${device.name}")
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             DropdownMenuItem(
@@ -388,8 +420,24 @@ private fun DeviceMenu(name: String, onRename: () -> Unit, onChooseVisibility: (
                     onChooseVisibility()
                 },
             )
+            if (endings.isNotEmpty()) HorizontalDivider()
+            endings.forEach { ending ->
+                DropdownMenuItem(
+                    text = { Text(ending.label) },
+                    leadingIcon = { Icon(painterResource(ending.icon()), contentDescription = null) },
+                    onClick = {
+                        open = false
+                        onEnd(ending)
+                    },
+                )
+            }
         }
     }
+}
+
+private fun DeviceEnding.icon(): Int = when (this) {
+    DeviceEnding.SIGN_OUT -> R.drawable.ic_logout
+    DeviceEnding.REMOVE -> R.drawable.ic_delete
 }
 
 private fun platformLabel(platform: String): String = when (platform) {

@@ -7,7 +7,9 @@ use uuid::Uuid;
 
 use api_client::{ApiError, Client};
 use client_core::{
-    labels::{THIS_DEVICE, device_state, platform, sign_out_question},
+    labels::{
+        REMOVE_DEVICE_HINT, THIS_DEVICE, device_state, platform, remove_question, sign_out_question,
+    },
     transfers::visible_to,
 };
 use protocol::{
@@ -46,6 +48,16 @@ const PILL_GAP: f32 = 6.0;
 const STATE_SEPARATOR: &str = " · ";
 const NAME_INPUT: &str = "device-name";
 const SIGN_OUT: &str = "Sign out";
+const REMOVE: &str = "Remove";
+const QUESTION_GAP: f32 = 2.0;
+
+/// What the user asked to do to a device, waiting for them to confirm it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ending {
+    SignOut,
+    /// Signs it out and takes it off the list.
+    Remove,
+}
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -58,14 +70,14 @@ pub enum Message {
     NameChanged(String),
     Save,
     Renamed(Result<(), ApiError>),
-    /// Asks before signing a device out.
-    SignOut(Uuid),
-    ConfirmSignOut,
-    SignedOut(Result<(), ApiError>),
+    /// Asks before signing a device out or removing it.
+    End(Uuid, Ending),
+    ConfirmEnd,
+    Ended(Result<(), ApiError>),
     /// Asks who can see a device.
     ChooseVisibility(Uuid),
     Visibility(visibility::Message),
-    /// Leaves the rename, the sign-out question or the visibility dialog.
+    /// Leaves the rename, the sign-out or removal question or the visibility dialog.
     Cancel,
 }
 
@@ -84,15 +96,15 @@ struct Renaming {
     saving: bool,
 }
 
-/// The user's devices, with renaming and signing out.
+/// The user's devices, with renaming, signing out and removing.
 #[derive(Default)]
 pub struct State {
     devices: Vec<Device>,
     loading: bool,
     error: Option<String>,
     renaming: Option<Renaming>,
-    /// The device waiting for the user to confirm its sign-out.
-    confirming: Option<Uuid>,
+    /// The device waiting for the user to confirm its sign-out or removal.
+    confirming: Option<(Uuid, Ending)>,
     /// The dialog choosing who can see a device.
     choosing: Option<visibility::State>,
 }
@@ -173,22 +185,27 @@ impl State {
                 self.renaming = None;
                 self.done(client, result)
             }
-            Message::SignOut(id) => {
+            Message::End(id, ending) => {
                 self.renaming = None;
-                self.confirming = Some(id);
+                self.confirming = Some((id, ending));
                 Task::none()
             }
-            Message::ConfirmSignOut => {
-                let Some(id) = self.confirming.take() else {
+            Message::ConfirmEnd => {
+                let Some((id, ending)) = self.confirming.take() else {
                     return Task::none();
                 };
                 let client = client.clone();
                 Task::perform(
-                    async move { client.sign_out_device(id).await },
-                    Message::SignedOut,
+                    async move {
+                        match ending {
+                            Ending::SignOut => client.sign_out_device(id).await,
+                            Ending::Remove => client.remove_device(id).await,
+                        }
+                    },
+                    Message::Ended,
                 )
             }
-            Message::SignedOut(result) => self.done(client, result),
+            Message::Ended(result) => self.done(client, result),
             Message::ChooseVisibility(id) => {
                 let Some(device) = self.device(id).cloned() else {
                     return Task::none();
@@ -268,6 +285,11 @@ impl State {
             .is_some_and(|device| !device.current && (device.signed_in || device.uploads > 0))
     }
 
+    /// Whether `id` can be removed from here; the current device leaves with the account menu.
+    pub fn can_remove(&self, id: Uuid) -> bool {
+        self.device(id).is_some_and(|device| !device.current)
+    }
+
     /// What the page's top line offers.
     pub fn action(&self) -> Element<'_, Message> {
         page_action(
@@ -302,7 +324,7 @@ impl State {
     fn device_row<'a>(&'a self, device: &'a Device) -> Element<'a, Message> {
         let cells = match (&self.renaming, self.confirming) {
             (Some(renaming), _) if renaming.id == device.id => rename_cells(renaming),
-            (_, Some(id)) if id == device.id => confirm_cells(device),
+            (_, Some((id, ending))) if id == device.id => confirm_cells(device, ending),
             _ => device_cells(device),
         };
         container(cells.spacing(COLUMN_GAP).align_y(Alignment::Center))
@@ -437,16 +459,32 @@ fn rename_cells(renaming: &Renaming) -> iced::widget::Row<'_, Message> {
     ]
 }
 
-fn confirm_cells(device: &Device) -> iced::widget::Row<'_, Message> {
+fn confirm_cells(device: &Device, ending: Ending) -> iced::widget::Row<'_, Message> {
+    let (icon, question, action) = match ending {
+        Ending::SignOut => (
+            Icon::SignOut,
+            column![text(sign_out_question(device))],
+            SIGN_OUT,
+        ),
+        Ending::Remove => (
+            Icon::Delete,
+            column![
+                text(remove_question(device)),
+                container(text(REMOVE_DEVICE_HINT).size(SECOND_LINE_SIZE)).style(theme::muted),
+            ]
+            .spacing(QUESTION_GAP),
+            REMOVE,
+        ),
+    };
     row![
-        Icon::SignOut.view(ICON_SIZE, Tint::Danger),
-        text(sign_out_question(device)).width(Length::Fill),
+        icon.view(ICON_SIZE, Tint::Danger),
+        question.width(Length::Fill),
         button(text("Cancel"))
             .style(theme::secondary)
             .on_press(Message::Cancel),
-        button(text(SIGN_OUT))
+        button(text(action))
             .style(theme::danger)
-            .on_press(Message::ConfirmSignOut),
+            .on_press(Message::ConfirmEnd),
     ]
 }
 
@@ -514,6 +552,35 @@ mod tests {
     }
 
     #[test]
+    fn only_other_devices_can_be_removed() {
+        let state = loaded();
+
+        assert!(!state.can_remove(Uuid::from_u128(LAPTOP)));
+        assert!(state.can_remove(Uuid::from_u128(BROWSER)));
+    }
+
+    #[test]
+    fn removing_asks_first_and_sends_the_removal() {
+        let mut state = loaded();
+        let _ = state.update(
+            &client(),
+            Message::End(Uuid::from_u128(BROWSER), Ending::Remove),
+        );
+        {
+            let mut ui = simulator(state.view());
+            assert!(
+                ui.find("Remove “Firefox” and cancel its 2 unfinished uploads?")
+                    .is_ok()
+            );
+        }
+
+        let task = state.update(&client(), Message::ConfirmEnd);
+
+        assert!(task.units() > 0);
+        assert!(!state.is_asking());
+    }
+
+    #[test]
     fn a_signed_out_device_with_nothing_left_has_nothing_to_end() {
         let state = State {
             devices: vec![Device {
@@ -538,7 +605,10 @@ mod tests {
     fn signing_out_asks_first_and_names_what_it_cancels() {
         let mut state = loaded();
 
-        let _ = state.update(&client(), Message::SignOut(Uuid::from_u128(BROWSER)));
+        let _ = state.update(
+            &client(),
+            Message::End(Uuid::from_u128(BROWSER), Ending::SignOut),
+        );
         let mut ui = simulator(state.view());
 
         assert!(
@@ -550,9 +620,12 @@ mod tests {
     #[test]
     fn confirming_sends_the_sign_out_and_closes_the_question() {
         let mut state = loaded();
-        let _ = state.update(&client(), Message::SignOut(Uuid::from_u128(BROWSER)));
+        let _ = state.update(
+            &client(),
+            Message::End(Uuid::from_u128(BROWSER), Ending::SignOut),
+        );
 
-        let task = state.update(&client(), Message::ConfirmSignOut);
+        let task = state.update(&client(), Message::ConfirmEnd);
 
         assert!(task.units() > 0);
         assert!(!state.is_asking());
@@ -601,7 +674,7 @@ mod tests {
     fn a_failed_sign_out_is_shown() {
         let mut state = loaded();
 
-        let _ = state.update(&client(), Message::SignedOut(Err(ApiError::Unauthorized)));
+        let _ = state.update(&client(), Message::Ended(Err(ApiError::Unauthorized)));
 
         assert!(state.error.is_some());
     }

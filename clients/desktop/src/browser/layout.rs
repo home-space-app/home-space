@@ -356,11 +356,14 @@ impl State {
             ),
             Menu::Account(placement) => (placement, context_menu::account()),
             Menu::Device(id, placement) => {
-                let can_sign_out = match &self.page {
-                    Page::Devices(devices) => devices.can_sign_out(id),
-                    _ => false,
+                let (can_sign_out, can_remove) = match &self.page {
+                    Page::Devices(devices) => (devices.can_sign_out(id), devices.can_remove(id)),
+                    _ => (false, false),
                 };
-                (placement, context_menu::device(id, can_sign_out))
+                (
+                    placement,
+                    context_menu::device(id, can_sign_out, can_remove),
+                )
             }
             // Shown over its dialog by the caller.
             Menu::Users(placement) | Menu::SharePeople(placement) => (placement, space().into()),

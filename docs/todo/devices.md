@@ -37,8 +37,9 @@ Steps 1 and 2 below (migration `0010_devices.sql`):
   - `GET /devices` lists the user's devices with `signed_in`, `current` and their number of
     unfinished `uploads`.
   - `PATCH /devices/{id}` renames one.
-  - `DELETE /devices/{id}` ends its sessions and cancels its unfinished uploads. The row stays, so
-    the device is still named in history.
+  - `DELETE /devices/{id}/sessions` ends its sessions and cancels its unfinished uploads. The row
+    stays, so the device is still named in history.
+  - `DELETE /devices/{id}` does the same, declines the files waiting for it and deletes the row.
   - `GET /uploads?this_device=true` lists the uploads of the calling device, to clean up after
     its local database is lost.
 - **Signing out.** Signing out on the device itself (`/auth/logout`) does not cancel its

@@ -428,3 +428,70 @@ async fn devices_are_seen_and_shown_only_within_their_tenant(pool: sqlx::PgPool)
     ));
     assert!(db.device_viewers(alice).await.expect("viewers").is_empty());
 }
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn removing_a_device_forgets_it_and_its_sessions(pool: sqlx::PgPool) {
+    let db = Db::from_pool(pool);
+    let alice = db
+        .create_user(crate::TenantId::DEFAULT, "alice", "x")
+        .await
+        .expect("alice")
+        .id;
+    let bob = db
+        .create_user(crate::TenantId::DEFAULT, "bob", "x")
+        .await
+        .expect("bob")
+        .id;
+    let (laptop, phone) = (Uuid::now_v7(), Uuid::now_v7());
+    db.register_device(alice, device(laptop))
+        .await
+        .expect("laptop");
+    db.register_device(alice, device(phone))
+        .await
+        .expect("phone");
+    db.set_device_visibility(alice, laptop, DeviceVisibility::Users, &[bob])
+        .await
+        .expect("visible to bob");
+    let on_laptop = session(&db, alice, Some(laptop)).await;
+
+    let affected = db.remove_device(alice, laptop).await.expect("remove");
+
+    assert_eq!(affected, vec![bob]);
+    let devices = db.devices(alice).await.expect("devices");
+    assert_eq!(
+        devices.iter().map(|device| device.id).collect::<Vec<_>>(),
+        vec![phone]
+    );
+    assert_eq!(
+        db.live_session(crate::TenantId::DEFAULT, on_laptop, alice)
+            .await
+            .expect("session"),
+        None
+    );
+    assert!(db.device_viewers(alice).await.expect("viewers").is_empty());
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn only_the_owner_can_remove_a_device(pool: sqlx::PgPool) {
+    let db = Db::from_pool(pool);
+    let alice = db
+        .create_user(crate::TenantId::DEFAULT, "alice", "x")
+        .await
+        .expect("alice")
+        .id;
+    let bob = db
+        .create_user(crate::TenantId::DEFAULT, "bob", "x")
+        .await
+        .expect("bob")
+        .id;
+    let id = Uuid::now_v7();
+    db.register_device(alice, device(id))
+        .await
+        .expect("register");
+
+    assert!(matches!(
+        db.remove_device(bob, id).await,
+        Err(DbError::NotFound)
+    ));
+    assert_eq!(db.devices(alice).await.expect("devices").len(), 1);
+}

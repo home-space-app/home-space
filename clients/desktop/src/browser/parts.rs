@@ -243,7 +243,11 @@ pub(super) fn ghost_icon<'a, M: Clone + 'a>(
     label: &'a str,
     message: Option<M>,
 ) -> Element<'a, M> {
-    let tint = if message.is_some() { Tint::Text } else { Tint::Disabled };
+    let tint = if message.is_some() {
+        Tint::Text
+    } else {
+        Tint::Disabled
+    };
     tooltip(
         button(icon.view(ICON_SIZE, tint))
             .padding(BUTTON_PADDING_Y)

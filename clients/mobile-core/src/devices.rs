@@ -1,8 +1,12 @@
-//! The devices of the signed-in user: renaming them and choosing who can see them.
+//! The devices of the signed-in user: renaming them, choosing who can see them, signing them
+//! out and removing them.
 
 use std::time::SystemTime;
 
-use client_core::transfers::{VISIBILITIES, visibility_hint, visibility_title, visible_to};
+use client_core::{
+    labels::{REMOVE_DEVICE_HINT, remove_question, sign_out_question},
+    transfers::{VISIBILITIES, visibility_hint, visibility_title, visible_to},
+};
 use protocol::{Device, DeviceVisibility, SetDeviceVisibility, UserId, UserRef};
 use uuid::Uuid;
 
@@ -92,11 +96,21 @@ pub struct UserDevice {
     pub visible_to: Vec<OtherUser>,
     /// `Only you`, `Hidden`, `Everyone` or the names of the users.
     pub audience_label: String,
+    /// Whether it can be signed out from the list: not the current device, which signs out
+    /// with the account, and not one that is signed out with nothing left unfinished.
+    pub can_sign_out: bool,
+    /// Asked before signing it out, saying what that cancels.
+    pub sign_out_question: String,
+    /// Asked before removing it, saying what that cancels; see [`remove_device_hint`].
+    pub remove_question: String,
 }
 
 impl From<Device> for UserDevice {
     fn from(device: Device) -> Self {
         let audience_label = visible_to(&device);
+        let can_sign_out = !device.current && (device.signed_in || device.uploads > 0);
+        let sign_out_question = sign_out_question(&device);
+        let remove_question = remove_question(&device);
         Self {
             id: device.id.to_string(),
             name: device.name,
@@ -108,6 +122,9 @@ impl From<Device> for UserDevice {
             audience: device.visibility.into(),
             visible_to: device.visible_to.into_iter().map(OtherUser::from).collect(),
             audience_label,
+            can_sign_out,
+            sign_out_question,
+            remove_question,
         }
     }
 }
@@ -123,6 +140,12 @@ pub fn audience_choices() -> Vec<AudienceChoice> {
             hint: visibility_hint(visibility).to_owned(),
         })
         .collect()
+}
+
+/// What removing a device does, under its `remove_question`.
+#[uniffi::export]
+pub fn remove_device_hint() -> String {
+    REMOVE_DEVICE_HINT.to_owned()
 }
 
 #[uniffi::export]
@@ -163,6 +186,24 @@ impl CoreClient {
         let request = visibility_request(audience, &user_ids)?;
         let inner = self.inner.clone();
         off_ui_thread(async move { inner.set_device_visibility(id, &request).await }).await?;
+        Ok(())
+    }
+
+    /// Signs one of the user's devices out: ends its sessions and cancels its unfinished
+    /// uploads. It stays on the list, signed out.
+    pub async fn sign_out_device(&self, id: String) -> Result<(), CoreError> {
+        let id = device_id(&id)?;
+        let inner = self.inner.clone();
+        off_ui_thread(async move { inner.sign_out_device(id).await }).await?;
+        Ok(())
+    }
+
+    /// Signs one of the user's devices out and takes it off the list; the files sent to it are
+    /// declined. It comes back if it signs in again.
+    pub async fn remove_device(&self, id: String) -> Result<(), CoreError> {
+        let id = device_id(&id)?;
+        let inner = self.inner.clone();
+        off_ui_thread(async move { inner.remove_device(id).await }).await?;
         Ok(())
     }
 }
@@ -281,6 +322,34 @@ mod tests {
             .unwrap();
     }
 
+    #[tokio::test]
+    async fn removing_a_device_asks_the_server_to_forget_it() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path(paths::device(device_id())))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = signed_in(&server).await;
+
+        client.remove_device(DEVICE.into()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn signing_a_device_out_keeps_it_on_the_server() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path(paths::device_sessions(device_id())))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = signed_in(&server).await;
+
+        client.sign_out_device(DEVICE.into()).await.unwrap();
+    }
+
     #[test]
     fn the_users_picked_count_only_when_visible_to_users() {
         let request = visibility_request(DeviceAudience::Everyone, &[USER.into()]).unwrap();
@@ -326,5 +395,7 @@ mod tests {
         assert_eq!(device.audience, DeviceAudience::Users);
         assert_eq!(device.audience_label, "sam");
         assert_eq!(device.visible_to[0].username, "sam");
+        assert!(device.can_sign_out);
+        assert_eq!(device.remove_question, "Remove “Laptop”?");
     }
 }

@@ -82,12 +82,18 @@ pub fn admin_user_deletion(id: crate::UserId) -> String {
     format!("{ADMIN_USERS}/{id}/deletion")
 }
 
+/// `DELETE` signs the device out and forgets it.
 pub fn device(id: uuid::Uuid) -> String {
     format!("{DEVICES}/{id}")
 }
 
 pub fn device_visibility(id: uuid::Uuid) -> String {
     format!("{DEVICES}/{id}/visibility")
+}
+
+/// `DELETE` signs the device out and keeps it listed.
+pub fn device_sessions(id: uuid::Uuid) -> String {
+    format!("{DEVICES}/{id}/sessions")
 }
 
 pub fn transfer(id: uuid::Uuid) -> String {
