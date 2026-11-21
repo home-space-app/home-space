@@ -283,6 +283,44 @@ impl Db {
         tx.commit().await?;
         Ok(())
     }
+
+    /// Forgets a device of `user` now: its sessions, who could see it and the transfers sent
+    /// to it go with it. It comes back if it signs in again.
+    /// Returns the other users who could see it, so their lists of targets can be refreshed.
+    pub async fn remove_device(&self, user: UserId, id: Uuid) -> Result<Vec<UserId>, DbError> {
+        let mut tx = self.pool().begin().await?;
+        let visibility = sqlx::query_scalar::<_, DeviceVisibility>(
+            "SELECT visibility FROM devices WHERE user_id = $1 AND id = $2 FOR UPDATE",
+        )
+        .bind(user)
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let affected = if visibility == DeviceVisibility::Everyone {
+            sqlx::query_scalar::<_, UserId>(
+                "SELECT u.id FROM users u JOIN users o ON o.tenant_id = u.tenant_id \
+                 WHERE o.id = $1 AND u.id <> $1",
+            )
+            .bind(user)
+            .fetch_all(&mut *tx)
+            .await?
+        } else {
+            sqlx::query_scalar::<_, UserId>(
+                "SELECT viewer_id FROM device_viewers WHERE owner_id = $1 AND device_id = $2",
+            )
+            .bind(user)
+            .bind(id)
+            .fetch_all(&mut *tx)
+            .await?
+        };
+        sqlx::query("DELETE FROM devices WHERE user_id = $1 AND id = $2")
+            .bind(user)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(affected)
+    }
 }
 
 #[cfg(test)]

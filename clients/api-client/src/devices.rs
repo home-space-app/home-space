@@ -30,6 +30,15 @@ impl Client {
     /// Signs a device out: ends its sessions and cancels its unfinished uploads.
     pub async fn sign_out_device(&self, id: Uuid) -> Result<(), ApiError> {
         let response = self
+            .send(|| self.http().delete(self.url(&paths::device_sessions(id))))
+            .await?;
+        expect_success(response).await
+    }
+
+    /// Removes a device: signs it out as [`Client::sign_out_device`] does, declines the files
+    /// sent to it and takes it off the list. It comes back if it signs in again.
+    pub async fn remove_device(&self, id: Uuid) -> Result<(), ApiError> {
+        let response = self
             .send(|| self.http().delete(self.url(&paths::device(id))))
             .await?;
         expect_success(response).await

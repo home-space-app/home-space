@@ -109,10 +109,12 @@ pub fn account<'a>() -> Element<'a, Message> {
     )])
 }
 
-/// The menu of a device: renaming it and signing it out, which `can_sign_out` allows.
-pub fn device<'a>(id: Uuid, can_sign_out: bool) -> Element<'a, Message> {
+/// The menu of a device: renaming it, signing it out, which `can_sign_out` allows, and
+/// removing it, which `can_remove` allows.
+pub fn device<'a>(id: Uuid, can_sign_out: bool, can_remove: bool) -> Element<'a, Message> {
     let rename = Message::Devices(devices::Message::Rename(id));
-    let sign_out = Message::Devices(devices::Message::SignOut(id));
+    let sign_out = Message::Devices(devices::Message::End(id, devices::Ending::SignOut));
+    let remove = Message::Devices(devices::Message::End(id, devices::Ending::Remove));
     let visibility = Message::Devices(devices::Message::ChooseVisibility(id));
     panel([
         menu_row(
@@ -143,6 +145,18 @@ pub fn device<'a>(id: Uuid, can_sign_out: bool) -> Element<'a, Message> {
             "",
             theme::danger_tool,
             can_sign_out.then_some(sign_out),
+        ),
+        menu_row(
+            Icon::Delete,
+            if can_remove {
+                Tint::Danger
+            } else {
+                Tint::Disabled
+            },
+            "Remove",
+            "",
+            theme::danger_tool,
+            can_remove.then_some(remove),
         ),
     ])
 }

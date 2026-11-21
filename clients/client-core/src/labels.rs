@@ -75,6 +75,20 @@ pub fn sign_out_question(device: &Device) -> String {
     }
 }
 
+/// The question asked before removing `device`, saying what it cancels.
+pub fn remove_question(device: &Device) -> String {
+    let name = device.name.as_str();
+    match device.uploads {
+        0 => format!("Remove “{name}”?"),
+        1 => format!("Remove “{name}” and cancel its unfinished upload?"),
+        count => format!("Remove “{name}” and cancel its {count} unfinished uploads?"),
+    }
+}
+
+/// What removing a device does, under [`remove_question`].
+pub const REMOVE_DEVICE_HINT: &str = "It is signed out and taken off your devices, and files \
+     waiting for it are declined. It comes back if you sign in on it again.";
+
 /// Where a search hit lives, e.g. `Home / Photos / 2026`.
 pub fn location_label(location: &[String]) -> String {
     std::iter::once(HOME)
@@ -208,6 +222,15 @@ mod tests {
         assert_eq!(
             sign_out_question(&device(true, 2)),
             "Sign out “Laptop” and cancel its 2 unfinished uploads?"
+        );
+    }
+
+    #[test]
+    fn removing_says_what_it_cancels() {
+        assert_eq!(remove_question(&device(true, 0)), "Remove “Laptop”?");
+        assert_eq!(
+            remove_question(&device(false, 1)),
+            "Remove “Laptop” and cancel its unfinished upload?"
         );
     }
 

@@ -11,6 +11,7 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
@@ -36,11 +37,21 @@ import uniffi.homespace_core.DeviceAudience
 import uniffi.homespace_core.OtherUser
 import uniffi.homespace_core.UserDevice
 import uniffi.homespace_core.audienceChoices
+import uniffi.homespace_core.removeDeviceHint
 
 private const val VISIBILITY_NOTE =
     "New devices start visible only to you. Your other devices keep their own setting."
 private const val NO_OTHER_USERS = "There are no other users on this server."
 private const val LOADING_USERS = "Loading users…"
+private const val SIGN_OUT_HINT = "It has to sign in again to sync."
+
+/** What the user asked to do to one of their devices, waiting for them to confirm it. */
+internal enum class DeviceEnding(val label: String) {
+    SIGN_OUT("Sign out"),
+
+    /** Signs it out and takes it off the list. */
+    REMOVE("Remove"),
+}
 
 internal fun audienceIcon(audience: DeviceAudience): Int = when (audience) {
     DeviceAudience.HIDDEN -> R.drawable.ic_visibility_off
@@ -207,5 +218,63 @@ private fun Hint(text: String) {
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(vertical = 8.dp),
+    )
+}
+
+/** Asks before signing a device out or removing it, then does it. */
+@Composable
+internal fun EndDeviceDialog(
+    client: CoreClient,
+    device: UserDevice,
+    ending: DeviceEnding,
+    onDismiss: () -> Unit,
+    onDone: () -> Unit,
+    onSessionEnded: () -> Unit,
+) {
+    var working by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val (question, hint) = when (ending) {
+        DeviceEnding.SIGN_OUT -> device.signOutQuestion to SIGN_OUT_HINT
+        DeviceEnding.REMOVE -> device.removeQuestion to remember { removeDeviceHint() }
+    }
+    val confirm = {
+        working = true
+        error = null
+        scope.launch {
+            try {
+                when (ending) {
+                    DeviceEnding.SIGN_OUT -> client.signOutDevice(device.id)
+                    DeviceEnding.REMOVE -> client.removeDevice(device.id)
+                }
+                onDone()
+            } catch (_: CoreException.Unauthorized) {
+                onSessionEnded()
+            } catch (e: CoreException) {
+                error = e.fileMessage()
+                working = false
+            }
+        }
+        Unit
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(question) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(hint)
+                error?.let {
+                    Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = confirm,
+                enabled = !working,
+                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+            ) { Text(if (working) WORKING else ending.label) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }

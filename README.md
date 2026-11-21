@@ -182,7 +182,8 @@ one.
 | GET / HEAD / DELETE | `/uploads/{id}` | current offset (also in `Upload-Offset`) / cancel |
 | GET | `/uploads?this_device=` | unfinished uploads `{id, parent_id?, node_id?, name, size, device_id?, transfer_item_id?, updated_at}`, or only the calling device's |
 | GET | `/devices` | the user's devices: `{id, name, platform, created_at, last_seen_at, signed_in, current, uploads, visibility, visible_to?}` |
-| PATCH / DELETE | `/devices/{id}` | rename `{name}` / sign out: end its sessions and cancel its unfinished uploads (it stays listed) |
+| PATCH / DELETE | `/devices/{id}` | rename `{name}` / remove: sign it out, decline the files waiting for it and take it off the list (it comes back if it signs in again) |
+| DELETE | `/devices/{id}/sessions` | sign out: end its sessions and cancel its unfinished uploads (it stays listed) |
 | PUT | `/devices/{id}/visibility` | `{visibility, users?}`: who can send files to the device: `owner` (default), `hidden`, `everyone` or `users` (the owner plus `users`) |
 | GET | `/devices/targets` | the devices the caller can send to, grouped by user, own first: `[{user: {id, username}, own, devices: [{id, name, platform, signed_in, online, current}]}]` |
 | GET | `/users` | the other users `[{id, username}]`, for choosing who sees a device |

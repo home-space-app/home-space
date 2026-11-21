@@ -1,5 +1,5 @@
 //! Clients name the device they sign in from; the user sees their devices and can sign one
-//! out, which also cancels the uploads it left unfinished.
+//! out, which also cancels the uploads it left unfinished, or remove it from the list.
 
 mod common;
 
@@ -72,7 +72,7 @@ async fn signing_out_a_device_ends_its_sessions_and_cancels_its_uploads(pool: Pg
             .any(|device| device["id"] == json!(laptop) && device["uploads"] == 1)
     );
 
-    let status = delete(&app, &format!("{DEVICES}/{laptop}"), &on_phone).await;
+    let status = delete(&app, &format!("{DEVICES}/{laptop}/sessions"), &on_phone).await;
 
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert_eq!(
@@ -90,6 +90,48 @@ async fn signing_out_a_device_ends_its_sessions_and_cancels_its_uploads(pool: Pg
         .find(|device| device["id"] == json!(laptop))
         .expect("laptop stays listed");
     assert_eq!(laptop_row["signed_in"], false);
+}
+
+async fn remove(app: &TestApp, id: Uuid, token: &str) -> StatusCode {
+    delete(app, &format!("{DEVICES}/{id}"), token).await
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn removing_a_device_signs_it_out_and_takes_it_off_the_list(pool: PgPool) {
+    let app = setup(pool).await;
+    let (laptop, phone) = (Uuid::now_v7(), Uuid::now_v7());
+    let on_laptop = app.sign_in_from("alice", laptop, "Laptop").await;
+    let on_phone = app.sign_in_from("alice", phone, "Phone").await;
+    let upload = start_upload(&app, &on_laptop).await;
+
+    let status = remove(&app, laptop, &on_phone).await;
+
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        app.get("/api/v1/me", &on_laptop).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let status = app
+        .get(&format!("/api/v1/uploads/{upload}"), &on_phone)
+        .await
+        .status;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let listed = devices(&app, &on_phone).await;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["id"], json!(phone));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn another_users_device_cannot_be_removed(pool: PgPool) {
+    let app = setup(pool).await;
+    let laptop = Uuid::now_v7();
+    let on_laptop = app.sign_in_from("alice", laptop, "Laptop").await;
+    let bob = app.sign_in_from("bob", Uuid::now_v7(), "Bob's").await;
+
+    let status = remove(&app, laptop, &bob).await;
+
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(devices(&app, &on_laptop).await.len(), 1);
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -118,7 +160,7 @@ async fn another_users_device_is_not_found(pool: PgPool) {
     app.sign_in_from("alice", laptop, "Laptop").await;
     let bob = app.sign_in_from("bob", Uuid::now_v7(), "Bob's").await;
 
-    let status = delete(&app, &format!("{DEVICES}/{laptop}"), &bob).await;
+    let status = delete(&app, &format!("{DEVICES}/{laptop}/sessions"), &bob).await;
 
     assert_eq!(status, StatusCode::NOT_FOUND);
 }

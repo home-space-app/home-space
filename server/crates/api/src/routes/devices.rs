@@ -2,12 +2,15 @@
 
 use axum::{
     Json, Router,
+    extract::State,
     http::StatusCode,
-    routing::{get, patch, put},
+    routing::{delete, get, patch, put},
 };
 use uuid::Uuid;
 
-use protocol::{Device, RenameDevice, SetDeviceVisibility, TransferTarget};
+use db::IncomingScope;
+use files::FilesError;
+use protocol::{Device, RenameDevice, SetDeviceVisibility, TransferState, TransferTarget};
 
 use crate::extract::{ApiJson, ApiPath};
 use crate::{
@@ -19,7 +22,8 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/devices", get(list))
         .route("/devices/targets", get(targets))
-        .route("/devices/{id}", patch(rename).delete(sign_out))
+        .route("/devices/{id}", patch(rename).delete(remove))
+        .route("/devices/{id}/sessions", delete(sign_out))
         .route("/devices/{id}/visibility", put(set_visibility))
 }
 
@@ -61,5 +65,29 @@ async fn sign_out(
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     tenant.devices.sign_out(user.id, id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Signs the device out and forgets it at once. The transfers waiting for it are declined
+/// first, so their senders hear of it.
+async fn remove(
+    State(state): State<AppState>,
+    tenant: Tenant,
+    user: AuthUser,
+    ApiPath(id): ApiPath<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let transfers = &state.files.transfers;
+    for transfer in transfers
+        .incoming_transfers(user.id, IncomingScope::ToDevice(id))
+        .await?
+        .into_iter()
+        .filter(|transfer| transfer.state == TransferState::Ready)
+    {
+        match transfers.decline_transfer(user.id, transfer.id).await {
+            Ok(_) | Err(FilesError::Gone) => {}
+            Err(err) => return Err(err.into()),
+        }
+    }
+    tenant.devices.remove(user.id, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

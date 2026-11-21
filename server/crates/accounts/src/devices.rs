@@ -152,6 +152,20 @@ impl DeviceService {
         Ok(())
     }
 
+    /// Signs the device out and forgets it at once, telling everyone who could see it. The
+    /// transfers sent to it are deleted with it; it comes back if it signs in again.
+    pub async fn remove(&self, user: UserId, id: Uuid) -> Result<(), AccountError> {
+        let affected = self.db.remove_device(user, id).await?;
+        self.auth.sessions_ended(user);
+        self.uploads.cancel_device_uploads(user, id).await?;
+        let events = std::iter::once(user)
+            .chain(affected)
+            .map(|user| DomainEvent::DevicesChanged { user })
+            .collect();
+        self.events.publish(events).await;
+        Ok(())
+    }
+
     /// Records that `device` was just seen. A failure is logged: it only shows a slightly
     /// older last-seen time.
     pub async fn seen(&self, user: UserId, device: Uuid) {
