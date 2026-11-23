@@ -18,8 +18,8 @@ export interface TestServer {
 }
 
 /**
- * Creates a database on the run's Postgres, bootstraps an administrator with the CLI and
- * starts `homespace serve` on a free port, serving the web build. `stop` kills it and drops
+ * Creates a database on the run's Postgres, starts `homespace` on a free port, serving the web
+ * build, and bootstraps an administrator with `homespace-ctl`. `stop` kills it and drops
  * everything it made.
  */
 export async function startServer(workerIndex: number): Promise<TestServer & { stop(): Promise<void> }> {
@@ -54,21 +54,24 @@ export async function startServer(workerIndex: number): Promise<TestServer & { s
   // the working directory), so the server runs from the storage directory instead.
   const cwd = storage;
 
-  const add = spawnSync(
-    paths.serverBinary,
-    ['user', 'add', ADMIN.username, '--admin', '--password-stdin'],
-    { env, cwd, input: `${ADMIN.password}\n`, encoding: 'utf8' },
-  );
-  if (add.status !== 0) {
-    throw new Error(`creating the administrator failed:\n${add.stdout}\n${add.stderr}`);
-  }
-
+  // The server applies the migrations when it starts, so the administrator is added after.
   const log = createWriteStream(logPath);
-  const child = spawn(paths.serverBinary, ['serve'], { env, cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(paths.serverBinary, [], { env, cwd, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout!.pipe(log);
   child.stderr!.pipe(log);
   const url = `http://127.0.0.1:${port}`;
   await waitForHealth(url, child, logPath);
+
+  const add = spawnSync(
+    paths.ctlBinary,
+    ['user', 'add', ADMIN.username, '--admin', '--password-stdin'],
+    { env, cwd, input: `${ADMIN.password}\n`, encoding: 'utf8' },
+  );
+  if (add.status !== 0) {
+    await kill(child);
+    log.end();
+    throw new Error(`creating the administrator failed:\n${add.stdout}\n${add.stderr}`);
+  }
   console.log(`[e2e] worker ${workerIndex}: server on ${url}, database ${database}, log ${logPath}`);
 
   return {

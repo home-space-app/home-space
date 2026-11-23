@@ -45,7 +45,7 @@ jobs:
           tool: trunk
       - name: Build the server
         working-directory: server
-        run: cargo build -p app
+        run: cargo build -p app -p ctl
       - name: Build the web client
         working-directory: clients/web
         run: trunk build
@@ -107,7 +107,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
       - name: Build the server
         working-directory: server
-        run: cargo build -p app
+        run: cargo build -p app -p ctl
       - name: Build the web client
         working-directory: clients/web
         run: trunk build

@@ -329,7 +329,7 @@ homespace tenant domain remove <id> <domain>       # refuses the primary
 homespace tenant disable|enable <id>
 homespace tenant delete <id> [--now]               # marks users and tenant for deletion
 
-homespace user add|list|admin|passwd ... [--tenant <id|domain>]
+homespace-ctl user add|list|admin|passwd ... [--tenant <id|domain>]
 ```
 
 `--tenant` defaults to 1 while tenant 1 is the only tenant, and is required once there are two,
@@ -453,7 +453,7 @@ Phase 1, each a reviewable PR:
    flow changes, `is_own_origin` per tenant.
 4. **Cross-user queries.** The table above, with the two-tenant tests.
 5. **Administration and CLI.** Tenant-scoped `/admin`, `homespace tenant ...`, `--tenant` on
-   `homespace user`.
+   `homespace-ctl user`.
 6. **Storage roots** for new tenants, tenant deletion through the user-deletion job.
 7. **Docs.** `docs/multi-tenancy.md` for operators: DNS, proxy `Host`, variables per tenant, IdP
    callback per tenant, restarting after changes.

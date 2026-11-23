@@ -8,7 +8,7 @@ use time::Duration;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use db::{Db, DbError, TenantId, User, UserId};
+use db::{Db, TenantId, User, UserId};
 use protocol::{
     DeviceInfo, OidcProvider, Providers, TicketRequest, TicketResponse, TokenPair,
     rules::MAX_USERNAME_LEN,
@@ -17,6 +17,7 @@ use protocol::{
 use crate::{
     AuthError, Claims, OidcService, SharePasswords,
     hasher::PasswordHasher,
+    offline,
     oidc_login::OidcLogin,
     password::MAX_PASSWORD_LEN,
     sessions::Sessions,
@@ -156,17 +157,9 @@ impl AuthService {
 
     /// Creates a user after validating username and password.
     pub async fn create_user(&self, username: &str, password: &str) -> Result<User, AuthError> {
-        if let Some(problem) = protocol::rules::username_problem(username) {
-            return Err(AuthError::InvalidInput(problem));
-        }
+        offline::check_username(username)?;
         let hashed = self.hasher.hash_new(password).await?;
-        self.db
-            .create_user(self.tenant, username, &hashed)
-            .await
-            .map_err(|err| match err {
-                DbError::Conflict => AuthError::UsernameTaken,
-                other => other.into(),
-            })
+        offline::insert_user(&self.db, self.tenant, username, &hashed).await
     }
 
     /// Changes a user's password and revokes their sessions.

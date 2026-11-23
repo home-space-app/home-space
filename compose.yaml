@@ -1,5 +1,6 @@
 # Start the app:   HOMESPACE_JWT_SECRET=$(openssl rand -base64 48) podman compose up --build
-# Add a user:      podman compose run --rm app user add <name>
+# Add a user:      DATABASE_URL=postgres://homespace:homespace@127.0.0.1:5433/homespace \
+#                    homespace-ctl user add <name>   (from the release, or cargo run -p ctl --)
 # Run all tests:   podman compose run --rm test
 # Try single sign-on with a local Keycloak: podman compose --profile oidc up -d keycloak
 #                  (see "Single sign-on" in the README)

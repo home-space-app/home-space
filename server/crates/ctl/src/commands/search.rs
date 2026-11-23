@@ -1,4 +1,6 @@
-//! `homespace search`: maintaining the search index.
+//! `homespace-ctl search`: maintaining the search index.
+
+use std::path::Path;
 
 use anyhow::{Context, Result};
 
@@ -6,17 +8,17 @@ use db::Db;
 use files::BlobStore;
 use search::SearchIndex;
 
-use crate::{cli::SearchCommand, config::Config};
+use crate::cli::SearchCommand;
 
-pub async fn run(command: SearchCommand, db: Db, config: &Config) -> Result<()> {
+pub async fn run(command: SearchCommand, db: Db) -> Result<()> {
     match command {
-        SearchCommand::Reindex { all } => reindex(db, config, all).await,
+        SearchCommand::Reindex { all, storage_root } => reindex(db, &storage_root, all).await,
     }
 }
 
 /// Indexes what is missing or outdated; with `all`, drops the index and indexes everything.
-async fn reindex(db: Db, config: &Config, all: bool) -> Result<()> {
-    let store = BlobStore::open(&config.storage_root)
+async fn reindex(db: Db, storage_root: &Path, all: bool) -> Result<()> {
+    let store = BlobStore::open(storage_root)
         .await
         .context("opening storage root")?;
     let (search, worker) = SearchIndex::start(db, store, Vec::new());

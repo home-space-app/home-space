@@ -150,7 +150,6 @@ dependencies = [
  "files",
  "notifications",
  "protocol",
- "rpassword",
  "search",
  "time",
  "tokio",
@@ -607,6 +606,22 @@ checksum = "3633a51a39c69ebbaa4feaa694bd83d241e4093901c84a0963b19d9bb3f0cf8f"
 dependencies = [
  "crypto-bigint",
  "rand_core 0.10.1",
+]
+
+[[package]]
+name = "ctl"
+version = "0.12.3"
+dependencies = [
+ "anyhow",
+ "auth",
+ "clap",
+ "db",
+ "dotenvy",
+ "files",
+ "rpassword",
+ "search",
+ "tokio",
+ "tracing-subscriber",
 ]
 
 [[package]]

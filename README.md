@@ -23,19 +23,20 @@ Pages:
 
 Rust workspace in `server/`: `db` (sqlx/Postgres), `auth` (argon2 + JWT access/refresh tokens, optional OpenID Connect sign-in),
 `files` (blobs on disk + ownership-scoped tree), `search` (full-text index), `notifications`
-(per-user websocket events), `api` (axum REST + `/ws`), `app` (the `homespace` binary).
+(per-user websocket events), `api` (axum REST + `/ws`), `app` (the `homespace` server binary),
+`ctl` (`homespace-ctl`, the administration commands).
 
 ```sh
 cd server
 cp .env.example .env            # set HOMESPACE_JWT_SECRET: openssl rand -base64 48
 ./scripts/db.sh up              # Postgres in podman (down | destroy | psql | logs)
-cargo run -p app -- user add me --admin # prompts for a password (8-1024 characters); there is no public signup
-cargo run -p app -- serve       # http://127.0.0.1:8080/api/v1
+cargo run -p app                # http://127.0.0.1:8080/api/v1; migrates the database on start
+cargo run -p ctl -- user add me --admin # in another terminal; prompts for a password (8-1024 characters); there is no public signup
 ```
 
 Administrators get the Administration page in the web client (server status, disk and storage
 per user, and a Users tab to add, edit, disable and delete accounts), but no access to other
-users' files. Grant or revoke the role with `user admin <username> [--revoke]`; `user list` marks
+users' files. Grant or revoke the role with `homespace-ctl user admin <username> [--revoke]`; `user list` marks
 administrators, disabled users and users marked for deletion.
 
 | Variable | Default | |
@@ -54,7 +55,7 @@ Tests need the database running and `DATABASE_URL` set (`.env` is picked up):
 Names are indexed in Postgres (`search_entries`: a weighted `tsvector` with a GIN index) when a
 node is created or renamed; deleting a node removes its entry. Files in the recycle bin are not
 indexed (nor is the bin itself) and are indexed again when restored. On startup the server indexes
-anything missing, and `cargo run -p app -- search reindex [--all]` does the same on demand
+anything missing, and `cargo run -p ctl -- search reindex [--all]` does the same on demand
 (`--all` drops the index first).
 
 File content is indexed through `ContentProvider`s (`server/crates/search/src/provider.rs`). None
@@ -255,7 +256,7 @@ cd clients/web && trunk serve
 
 # production: one origin serves both
 cd clients/web && trunk build --release
-cd ../../server && HOMESPACE_WEB_ROOT=../clients/web/dist cargo run -p app -- serve
+cd ../../server && HOMESPACE_WEB_ROOT=../clients/web/dist cargo run -p app
 ```
 
 The desktop client (`clients/desktop`, iced) runs with `cargo run -p desktop`. It keeps the
@@ -339,7 +340,7 @@ podman-compose --profile oidc up -d keycloak     # http://127.0.0.1:8180, admin 
 cd server && HOMESPACE_PUBLIC_URL=http://127.0.0.1:8080 \
   HOMESPACE_OIDC_ISSUER=http://127.0.0.1:8180/realms/homespace \
   HOMESPACE_OIDC_CLIENT_ID=homespace HOMESPACE_OIDC_CLIENT_SECRET=homespace-dev-secret \
-  HOMESPACE_OIDC_NAME=Keycloak HOMESPACE_OIDC_REQUIRED_GROUP=family cargo run -p app -- serve
+  HOMESPACE_OIDC_NAME=Keycloak HOMESPACE_OIDC_REQUIRED_GROUP=family cargo run -p app
 ```
 
 The realm (`docs/keycloak/homespace-realm.json`) allows the redirect URIs of the server on 8080 and
@@ -354,10 +355,15 @@ can run the whole test suite. Works with `podman compose` / `podman-compose`.
 ```sh
 export HOMESPACE_JWT_SECRET=$(head -c 32 /dev/urandom | base64)   # 32+ characters
 podman-compose up -d --build                  # http://127.0.0.1:8080
-podman-compose run --rm app user add me      # prompts for a password (add -it if needed)
+export DATABASE_URL=postgres://homespace:homespace@127.0.0.1:5433/homespace
+homespace-ctl user add me                    # prompts for a password
 podman-compose --profile test run --rm test   # server + client tests against the compose Postgres
 podman-compose down                           # add -v to also delete the database and files
 ```
+
+`homespace-ctl` is not in the server image: download it from the GitHub release (Linux x86_64,
+Windows x86_64, macOS Apple Silicon) or run `cargo run -p ctl --` from `server/`. It talks to the
+database directly, through the Postgres port compose publishes on `127.0.0.1`.
 
 The server does not start with a signing secret that is shorter than 32 characters, still a
 placeholder (`change-me...`) or made of only a few different characters.
@@ -400,7 +406,8 @@ EOF
 chmod 600 .env
 
 docker compose -f compose.yaml -f compose.prod.yaml up -d --build
-docker compose -f compose.yaml -f compose.prod.yaml run --rm app user add me
+DATABASE_URL="postgres://homespace:$(sed -n 's/^HOMESPACE_DB_PASSWORD=//p' .env)@127.0.0.1:5433/homespace" \
+  homespace-ctl user add me
 ```
 
 The directories must exist and be owned by that user before the first start (mode `700` keeps

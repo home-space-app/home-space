@@ -1,0 +1,25 @@
+[package]
+name = "ctl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "homespace-ctl"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+auth.workspace = true
+clap.workspace = true
+db.workspace = true
+dotenvy.workspace = true
+files.workspace = true
+rpassword.workspace = true
+search.workspace = true
+tokio.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
