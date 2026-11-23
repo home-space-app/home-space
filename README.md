@@ -31,7 +31,7 @@ cd server
 cp .env.example .env            # set HOMESPACE_JWT_SECRET: openssl rand -base64 48
 ./scripts/db.sh up              # Postgres in podman (down | destroy | psql | logs)
 cargo run -p app                # http://127.0.0.1:8080/api/v1; migrates the database on start
-cargo run -p ctl -- user add me --admin # in another terminal; prompts for a password (8-1024 characters); there is no public signup
+cargo run -p ctl -- --env-file .env user add me --admin # in another terminal; prompts for a password (8-1024 characters); there is no public signup
 ```
 
 Administrators get the Administration page in the web client (server status, disk and storage
@@ -56,7 +56,7 @@ Tests need the database running and `DATABASE_URL` set (`.env` is picked up):
 Names are indexed in Postgres (`search_entries`: a weighted `tsvector` with a GIN index) when a
 node is created or renamed; deleting a node removes its entry. Files in the recycle bin are not
 indexed (nor is the bin itself) and are indexed again when restored. On startup the server indexes
-anything missing, and `cargo run -p ctl -- search reindex [--all]` does the same on demand
+anything missing, and `cargo run -p ctl -- --env-file .env search reindex [--all]` does the same on demand
 (`--all` drops the index first).
 
 File content is indexed through `ContentProvider`s (`server/crates/search/src/provider.rs`). None
@@ -364,8 +364,9 @@ podman-compose down                           # add -v to also delete the databa
 
 Download `homespace-ctl` from the GitHub release (Linux x86_64, Windows x86_64, macOS Apple Silicon)
 or run `cargo run -p ctl --` from `server/`. With `DATABASE_URL` set it talks to the database
-directly, here through the Postgres port compose publishes on `127.0.0.1`. The server image also
-contains it (`compose exec app homespace-ctl ...`).
+directly, here through the Postgres port compose publishes on `127.0.0.1`. It reads no `.env` from
+the current directory; `--env-file <path>` names one to read. The server image also contains it
+(`compose exec app homespace-ctl ...`).
 
 The server does not start with a signing secret that is shorter than 32 characters, still a
 placeholder (`change-me...`) or made of only a few different characters.
@@ -403,16 +404,21 @@ It asks for the container engine (when both are installed), the directory for `c
 default a new `homespace` system user. Then come the database user, the database password and the
 JWT secret (generated unless you give your own), whether a reverse proxy sits in front (for nginx it
 writes an example site to `nginx/<server name>.conf`, which you then install yourself), the public
-URL, and passwords or single sign-on. The server is published on a free port on `127.0.0.1`, or on
+URL, and passwords or single sign-on. The installation directory and the data directories must
+not exist yet: the installer creates them and never takes over a directory that is there already. The server is published on a free port on `127.0.0.1`, or on
 all interfaces when no proxy is used and the public URL is not local. The database is reachable
-only inside the compose network. Steps that need root, such as creating the user and directories
-and writing `/etc/homespace/ctl.toml`, go through `sudo`. With rootless Podman the containers run
+only inside the compose network. The server image is the release of the same version as
+`homespace-ctl` (`homespaceapp/home-space:<version>`). With host directories, the host's
+`/etc/passwd` is mounted read-only into the Postgres container so it accepts the service user's
+uid, which lets it see the host's user names. Steps that need root, such as creating the user and
+directories, go through `sudo`. With rootless Podman the containers run
 as you (`userns_mode: keep-id`); run the installer with `sudo` to use a dedicated user.
 
 Afterwards `homespace-ctl user ...` and `homespace-ctl search ...` without a `DATABASE_URL` run
 inside the app container (`<engine> compose exec app homespace-ctl ...`), which has the database
-and the files at hand. `/etc/homespace/ctl.toml` (or the file `HOMESPACE_CTL_CONFIG` names) records
-where the installation is. The compose project is named `homespace`; `install` refuses when a
+and the files at hand. `~/.config/home-space/installation.toml` of the user who installed it (or
+the file `HOMESPACE_CTL_CONFIG` names) records where the installation is, so run them as that
+user. The compose project is named `homespace`; `install` refuses when a
 project of that name exists already from another directory (set `HOMESPACE_COMPOSE_PROJECT` to
 install a second one). Change settings in `.env`, then run `docker compose up -d` (or
 `podman compose up -d`) in the installation directory.

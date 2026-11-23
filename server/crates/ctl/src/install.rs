@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 
 use crate::{
     cli::InstallArgs,
-    installation::{self, Engine, Installation},
+    installation::{self, Installation},
 };
 use plan::{InstallPlan, Owner, Proxy, SecretStore, ServiceUser, Storage};
 
@@ -24,6 +24,8 @@ const ENV_FILE: &str = ".env";
 const NGINX_DIR: &str = "nginx";
 
 pub fn run(args: &InstallArgs) -> Result<()> {
+    let record = installation::config_path()?;
+    refuse_second_record(&record)?;
     let runtimes = runtime::detect();
     let plan = wizard::ask(&runtimes)?;
     if !wizard::confirm_plan(&plan)? {
@@ -33,27 +35,47 @@ pub fn run(args: &InstallArgs) -> Result<()> {
     let installation = Installation {
         dir: plan.dir.clone(),
         engine: plan.runtime.engine,
-        // Rootful Podman set up by root keeps needing root; Docker users are in its group.
-        sudo: plan.runtime.engine == Engine::Podman && system::is_root(),
     };
+    let owner = service_owner(&plan, args.dry_run)?;
     if args.dry_run {
-        return show(&plan, &installation);
+        return show(&plan, owner.as_ref(), &installation, &record);
     }
-    let owner = service_owner(&plan)?;
-    write_files(&plan, owner.as_ref(), &installation)?;
+    write_files(&plan, owner.as_ref(), &installation, &record)?;
     start(&installation)?;
     admin::offer(&installation, &plan.auth)?;
     finish(&plan);
     Ok(())
 }
 
-/// Who the containers run as with host directories, creating that user when asked to.
-fn service_owner(plan: &InstallPlan) -> Result<Option<Owner>> {
+/// Installing again over a recorded installation would lose track of it.
+fn refuse_second_record(record: &Path) -> Result<()> {
+    if let Some(existing) = Installation::load(record)? {
+        anyhow::bail!(
+            "{} records an installation in {} already; remove that file once the installation \
+             is gone, or set HOMESPACE_CTL_CONFIG to record a second one elsewhere",
+            record.display(),
+            existing.dir.display()
+        );
+    }
+    Ok(())
+}
+
+/// Who the containers run as with host directories, creating that user when asked to. A dry
+/// run creates nobody and gives a user to be created placeholder ids.
+fn service_owner(plan: &InstallPlan, dry_run: bool) -> Result<Option<Owner>> {
     let Storage::HostDirs { user, .. } = &plan.storage else {
         return Ok(None);
     };
     Ok(Some(match user {
         ServiceUser::Existing(owner) => owner.clone(),
+        ServiceUser::Create { name } if dry_run => {
+            println!("Would create the system user {name}; its ids below are placeholders.");
+            Owner {
+                name: name.clone(),
+                uid: 0,
+                gid: 0,
+            }
+        }
         ServiceUser::Create { name } => {
             println!("• Creating the system user {name}");
             system::create_system_user(name)?
@@ -65,14 +87,15 @@ fn write_files(
     plan: &InstallPlan,
     owner: Option<&Owner>,
     installation: &Installation,
+    record: &Path,
 ) -> Result<()> {
     let me = system::current_user()?;
     println!("• Creating {}", plan.dir.display());
-    system::make_dir(&plan.dir, &me, 0o750)?;
+    system::create_dir(&plan.dir, &me, 0o750)?;
     if let (Storage::HostDirs { db, files, .. }, Some(owner)) = (&plan.storage, owner) {
         for dir in [db, files] {
-            println!("• Preparing {} for {}", dir.display(), owner.name);
-            system::make_dir(dir, owner, 0o700)?;
+            println!("• Creating {} for {}", dir.display(), owner.name);
+            system::create_dir(dir, owner, 0o700)?;
         }
     }
     println!("• Writing {COMPOSE_FILE} and {ENV_FILE}");
@@ -82,22 +105,27 @@ fn write_files(
     if plan.secrets == SecretStore::Files {
         let dir = plan.dir.join(render::SECRETS_DIR);
         println!("• Writing the secrets to {}", dir.display());
-        system::make_dir(&dir, &me, 0o700)?;
+        system::create_dir(&dir, &me, 0o700)?;
+        // The files are readable by any container user (0444); only this directory keeps
+        // everyone else on the host out, so it is checked before anything goes in.
+        system::ensure_private_dir(&dir, &me)?;
         for (name, value) in render::secrets(plan) {
-            // Readable by any container user; the directory keeps everyone else out.
             system::write_own_file(&dir.join(name.file_name()), value, 0o444)?;
         }
     }
     if let Proxy::Nginx { server_name } = &plan.proxy {
         let dir = plan.dir.join(NGINX_DIR);
-        system::make_dir(&dir, &me, 0o755)?;
+        system::create_dir(&dir, &me, 0o755)?;
         let path = nginx_path(&plan.dir, server_name);
         println!("• Writing the nginx example {}", path.display());
         system::write_own_file(&path, &render::nginx(server_name, plan.port), 0o644)?;
     }
-    let record = installation::config_path();
     println!("• Recording the installation in {}", record.display());
-    system::write_file_anywhere(&record, &installation.to_toml()?, 0o644)
+    if let Some(parent) = record.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    system::write_own_file(record, &installation.to_toml()?, 0o600)
 }
 
 fn nginx_path(dir: &Path, server_name: &str) -> std::path::PathBuf {
@@ -140,21 +168,12 @@ fn finish(plan: &InstallPlan) {
 }
 
 /// `--dry-run`: shows what would be written and run.
-fn show(plan: &InstallPlan, installation: &Installation) -> Result<()> {
-    let owner = match &plan.storage {
-        Storage::HostDirs { user, .. } => Some(match user {
-            ServiceUser::Existing(owner) => owner.clone(),
-            ServiceUser::Create { name } => {
-                println!("Would create the system user {name}; its ids below are placeholders.");
-                Owner {
-                    name: name.clone(),
-                    uid: 0,
-                    gid: 0,
-                }
-            }
-        }),
-        Storage::Volumes => None,
-    };
+fn show(
+    plan: &InstallPlan,
+    owner: Option<&Owner>,
+    installation: &Installation,
+    record: &Path,
+) -> Result<()> {
     println!(
         "\n--- {}/{COMPOSE_FILE}\n{}",
         plan.dir.display(),
@@ -163,7 +182,7 @@ fn show(plan: &InstallPlan, installation: &Installation) -> Result<()> {
     println!(
         "--- {}/{ENV_FILE} (secrets masked)\n{}",
         plan.dir.display(),
-        render::env_file(&render::env_vars(plan, owner.as_ref()), true)
+        render::env_file(&render::env_vars(plan, owner), true)
     );
     if plan.secrets == SecretStore::Files {
         for (name, _) in render::secrets(plan) {
@@ -182,11 +201,7 @@ fn show(plan: &InstallPlan, installation: &Installation) -> Result<()> {
             render::nginx(server_name, plan.port)
         );
     }
-    println!(
-        "--- {}\n{}",
-        installation::config_path().display(),
-        installation.to_toml()?
-    );
+    println!("--- {}\n{}", record.display(), installation.to_toml()?);
     println!(
         "Would run `{} compose up -d` in {}. Nothing was changed.",
         plan.runtime.engine.program(),

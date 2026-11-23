@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use inquire::{Confirm, Password, PasswordDisplayMode, Text};
+use inquire::{Confirm, Password, PasswordDisplayMode, Text, validator::Validation};
 
 use super::plan::Auth;
 use crate::installation::Installation;
@@ -17,14 +17,6 @@ use crate::installation::Installation;
 const READY_TIMEOUT: Duration = Duration::from_secs(120);
 const READY_POLL: Duration = Duration::from_secs(2);
 const ATTEMPTS: usize = 3;
-
-/// Whether the app container can run `homespace-ctl` against a migrated database.
-enum Readiness {
-    Ready,
-    /// The image has no `homespace-ctl` (images before it was added).
-    NoCtl,
-    TimedOut(String),
-}
 
 /// Offers to create the first administrator, or says how to make one with single sign-on.
 pub fn offer(installation: &Installation, auth: &Auth) -> Result<()> {
@@ -44,28 +36,23 @@ pub fn offer(installation: &Installation, auth: &Auth) -> Result<()> {
         return Ok(());
     }
     println!("Waiting for the server to start...");
-    match wait_until_ready(installation)? {
-        Readiness::Ready => {}
-        Readiness::NoCtl => {
-            println!(
-                "This server image has no homespace-ctl yet. Create the administrator with a \
-                 homespace-ctl that reaches the database, or after upgrading the image with:\n  \
-                 homespace-ctl user add --admin <username>"
-            );
-            return Ok(());
-        }
-        Readiness::TimedOut(error) => {
-            println!(
-                "The server did not get ready in time ({error}). Check `compose logs app` in {}, \
-                 then run: homespace-ctl user add --admin <username>",
-                installation.dir.display()
-            );
-            return Ok(());
-        }
+    if let Err(error) = wait_until_ready(installation)? {
+        println!(
+            "The server did not get ready in time ({error}). Check `compose logs app` in {}, \
+             then run: homespace-ctl user add --admin <username>",
+            installation.dir.display()
+        );
+        return Ok(());
     }
     for _ in 0..ATTEMPTS {
         let username = Text::new("Administrator username:")
             .with_default("admin")
+            .with_validator(|name: &str| {
+                Ok(match protocol::rules::username_problem(name.trim()) {
+                    None => Validation::Valid,
+                    Some(problem) => Validation::Invalid(problem.into()),
+                })
+            })
             .prompt()
             .context("reading the username")?;
         let password = Password::new("Password:")
@@ -82,7 +69,9 @@ pub fn offer(installation: &Installation, auth: &Auth) -> Result<()> {
     Ok(())
 }
 
-fn wait_until_ready(installation: &Installation) -> Result<Readiness> {
+/// Waits until `homespace-ctl user list` works inside the app container, so the database is
+/// migrated; `Err` holds the last error when it never does in time.
+fn wait_until_ready(installation: &Installation) -> Result<Result<(), String>> {
     let deadline = Instant::now() + READY_TIMEOUT;
     loop {
         let out = installation
@@ -91,22 +80,13 @@ fn wait_until_ready(installation: &Installation) -> Result<Readiness> {
             .output()
             .context("running compose exec")?;
         if out.status.success() {
-            return Ok(Readiness::Ready);
-        }
-        let error = stderr(&out);
-        if error.contains("homespace-ctl") && is_missing_executable(&error) {
-            return Ok(Readiness::NoCtl);
+            return Ok(Ok(()));
         }
         if Instant::now() >= deadline {
-            return Ok(Readiness::TimedOut(error));
+            return Ok(Err(stderr(&out)));
         }
         thread::sleep(READY_POLL);
     }
-}
-
-fn is_missing_executable(error: &str) -> bool {
-    let error = error.to_ascii_lowercase();
-    error.contains("executable file not found") || error.contains("no such file or directory")
 }
 
 /// Creates the administrator; `Some(error)` when the server refused (say a weak password).
@@ -117,7 +97,7 @@ fn add_admin(
 ) -> Result<Option<String>> {
     let mut child = installation
         .exec_ctl(
-            ["user", "add", "--admin", "--password-stdin", username],
+            ["user", "add", "--admin", "--password-stdin", "--", username],
             false,
         )
         .stdin(Stdio::piped())

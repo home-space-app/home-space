@@ -162,5 +162,8 @@ pub mod defaults {
     pub const ACCESS_TTL_SECS: u64 = 900;
     pub const REFRESH_TTL_SECS: u64 = 2_592_000;
     pub const DB_IMAGE: &str = "docker.io/library/postgres:18";
-    pub const APP_IMAGE: &str = "docker.io/homespaceapp/home-space:latest";
+    pub const APP_IMAGE: &str = concat!(
+        "docker.io/homespaceapp/home-space:",
+        env!("CARGO_PKG_VERSION")
+    );
 }

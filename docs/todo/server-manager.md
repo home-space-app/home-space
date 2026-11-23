@@ -10,15 +10,18 @@ server and creates the first administrator.
 differ from what it does were superseded by these:
 - `homespace-ctl` is in the server image again, and Postgres is never published on the host.
   Without `DATABASE_URL`, the host `homespace-ctl` runs `user`/`search` (and later `tenant`)
-  as `<engine> compose exec app homespace-ctl ...`, found through `/etc/homespace/ctl.toml`
-  (or `HOMESPACE_CTL_CONFIG`). This settles open question 11 and reverses D1's "not in the image".
+  as `<engine> compose exec app homespace-ctl ...`, found through
+  `~/.config/home-space/installation.toml` of the installing user (or `HOMESPACE_CTL_CONFIG`). This settles open question 11 and reverses D1's "not in the image".
   With `DATABASE_URL` set it still works directly, as before.
 - Database password: `HOMESPACE_DB_PASSWORD[_FILE]`, which the server and `homespace-ctl` apply
   to a password-less `DATABASE_URL` (open question 3). `HOMESPACE_OIDC_CLIENT_SECRET_FILE` exists.
 - The install directory defaults to `/opt/homespace`. With host directories a dedicated system
   user (`homespace`, created through `sudo`) owns the data and runs the containers (`user:`),
   except under rootless Podman, where the invoking user does (`userns_mode: keep-id`).
-- The image is `homespaceapp/home-space:latest` for now; pinning a version comes with `update` (D7).
+- The image is pinned to the version of the `homespace-ctl` that installs it (they are released
+  together); moving to another version comes with `update` (D7).
+- `install` only creates directories (the installation and the data directories must not exist),
+  and `homespace-ctl` reads no `.env` from the current directory unless `--env-file` names one.
 - With nginx as the proxy, `install` writes an example site rendered from `docs/nginx` into
   `<dir>/nginx/` and leaves installing it to the user (open question 9).
 

@@ -159,21 +159,26 @@ fn ask_runtime(runtimes: &[Runtime]) -> Result<Runtime> {
 }
 
 fn ask_dir() -> Result<PathBuf> {
-    let dir = text(
-        "Where should compose.yaml go?",
-        defaults::DIR,
-        |dir: &str| {
-            let path = Path::new(dir.trim());
-            if !path.is_absolute() {
-                return valid_if(false, "an absolute path");
-            }
-            valid_if(
-                !path.join("compose.yaml").exists(),
-                "there is a compose.yaml there already: remove it or pick another directory",
-            )
-        },
-    )?;
-    Ok(PathBuf::from(dir))
+    ask_new_dir("Where should compose.yaml go?", defaults::DIR, None)
+}
+
+/// A directory that does not exist yet (and is not `other`): the installer creates it and
+/// never takes over one that is there already.
+fn ask_new_dir(message: &str, default: &str, other: Option<PathBuf>) -> Result<PathBuf> {
+    text(message, default, move |dir: &str| {
+        let path = Path::new(dir.trim());
+        if !path.is_absolute() {
+            return valid_if(false, "an absolute path");
+        }
+        if other.as_deref() == Some(path) {
+            return valid_if(false, "a different directory");
+        }
+        valid_if(
+            std::fs::symlink_metadata(path).is_err(),
+            "exists already: the installer only creates new directories",
+        )
+    })
+    .map(PathBuf::from)
 }
 
 fn ask_storage(runtime: Runtime) -> Result<Storage> {
@@ -194,23 +199,10 @@ fn ask_storage(runtime: Runtime) -> Result<Storage> {
     if !host_dirs {
         return Ok(Storage::Volumes);
     }
-    let db = ask_data_dir("Database directory:", defaults::DB_DIR)?;
-    if system::has_entries(&db) {
-        println!(
-            "{} is not empty: Postgres keeps the user and password it was created with there.",
-            db.display()
-        );
-    }
-    let files = ask_data_dir("Files directory:", defaults::FILES_DIR)?;
+    let db = ask_new_dir("Database directory:", defaults::DB_DIR, None)?;
+    let files = ask_new_dir("Files directory:", defaults::FILES_DIR, Some(db.clone()))?;
     let user = ask_service_user(runtime)?;
     Ok(Storage::HostDirs { db, files, user })
-}
-
-fn ask_data_dir(message: &str, default: &str) -> Result<PathBuf> {
-    text(message, default, |dir: &str| {
-        valid_if(Path::new(dir.trim()).is_absolute(), "an absolute path")
-    })
-    .map(PathBuf::from)
 }
 
 fn ask_service_user(runtime: Runtime) -> Result<ServiceUser> {
@@ -441,22 +433,26 @@ pub fn confirm_plan(plan: &InstallPlan) -> Result<bool> {
     confirm("Install Home Space with these settings?", true)
 }
 
-fn is_db_identifier(name: &str) -> bool {
+/// At most `max_len` lowercase letters, digits, `_` and the `extra` characters, starting with a
+/// letter or `_` (so never with `-`).
+fn is_plain_name(name: &str, max_len: usize, extra: &[char]) -> bool {
     let mut chars = name.chars();
-    name.len() <= 63
+    name.len() <= max_len
         && chars
             .next()
             .is_some_and(|first| first.is_ascii_lowercase() || first == '_')
-        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        && chars
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || extra.contains(&c))
 }
 
+/// A Postgres role name that needs no quoting.
+fn is_db_identifier(name: &str) -> bool {
+    is_plain_name(name, 63, &[])
+}
+
+/// A portable Linux user name.
 fn is_user_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    name.len() <= 32
-        && chars
-            .next()
-            .is_some_and(|first| first.is_ascii_lowercase() || first == '_')
-        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+    is_plain_name(name, 32, &['-'])
 }
 
 fn is_host_name(name: &str) -> bool {
@@ -488,6 +484,7 @@ mod tests {
         assert!(!is_db_identifier("2hs"));
         assert!(is_user_name("home-space"));
         assert!(!is_user_name("home space"));
+        assert!(!is_user_name("-home"));
         assert!(is_host_name("files.example.com"));
         assert!(!is_host_name("files..example.com"));
         assert!(!is_host_name("https://files.example.com"));

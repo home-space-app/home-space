@@ -1,5 +1,6 @@
 mod cli;
 mod commands;
+#[cfg(target_os = "linux")]
 mod install;
 mod installation;
 mod tenant;
@@ -19,7 +20,11 @@ const DEFAULT_LOG_FILTER: &str = "warn";
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _ = dotenvy::dotenv();
+    let mut cli = Cli::parse();
+    if let Some(path) = &cli.env_file {
+        dotenvy::from_path(path).with_context(|| format!("reading {}", path.display()))?;
+        cli = Cli::parse();
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| DEFAULT_LOG_FILTER.into()),
@@ -31,21 +36,35 @@ async fn main() -> Result<()> {
         db_password,
         db_password_file,
         command,
-    } = Cli::parse();
+        env_file,
+    } = cli;
     let database = Database {
+        env_file,
         url: database_url,
         password: db_password,
         password_file: db_password_file,
     };
     match command {
-        Command::Install(args) => install::run(&args),
+        Command::Install(args) => run_install(&args),
         Command::User(command) => commands::run_user(command, &database.connect().await?).await,
         Command::Search(command) => commands::run_search(command, database.connect().await?).await,
     }
 }
 
+#[cfg(target_os = "linux")]
+fn run_install(args: &cli::InstallArgs) -> Result<()> {
+    install::run(args)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn run_install(_: &cli::InstallArgs) -> Result<()> {
+    anyhow::bail!("`homespace-ctl install` sets up a server on Linux only")
+}
+
 /// Where the database commands work: the database given, or the installation on this machine.
 struct Database {
+    /// The `--env-file` read, if any.
+    env_file: Option<PathBuf>,
     url: Option<String>,
     password: Option<String>,
     password_file: Option<PathBuf>,
@@ -56,6 +75,9 @@ impl Database {
     /// app container instead, and this process exits with its status.
     async fn connect(self) -> Result<Db> {
         let Some(url) = self.url.filter(|url| !url.is_empty()) else {
+            if let Some(path) = self.env_file {
+                anyhow::bail!("{} sets no DATABASE_URL", path.display());
+            }
             return forward_to_installation();
         };
         let password = auth::secrets::value_or_file(
@@ -74,11 +96,12 @@ impl Database {
 /// this machine, which reaches the database and the files, and exits with its status. It
 /// returns only an error.
 fn forward_to_installation<T>() -> Result<T> {
-    let path = installation::config_path();
+    let path = installation::config_path()?;
     let installation = Installation::load(&path)?.with_context(|| {
         format!(
-            "DATABASE_URL is not set (or pass --database-url), and there is no installation \
-             from `homespace-ctl install` here ({} is missing)",
+            "DATABASE_URL is not set (or pass --database-url or --env-file), and this user has \
+             no installation from `homespace-ctl install` ({} is missing; run as the user who \
+             installed the server)",
             path.display()
         )
     })?;

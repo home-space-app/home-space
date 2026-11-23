@@ -11,8 +11,9 @@ use std::{
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-const DEFAULT_CONFIG: &str = "/etc/homespace/ctl.toml";
 const CONFIG_VAR: &str = "HOMESPACE_CTL_CONFIG";
+const CONFIG_DIR: &str = "home-space";
+const CONFIG_FILE: &str = "installation.toml";
 const APP_SERVICE: &str = "app";
 const CTL_IN_IMAGE: &str = "homespace-ctl";
 
@@ -36,11 +37,22 @@ impl Engine {
 pub struct Installation {
     pub dir: PathBuf,
     pub engine: Engine,
-    pub sudo: bool,
 }
 
-pub fn config_path() -> PathBuf {
-    std::env::var_os(CONFIG_VAR).map_or_else(|| PathBuf::from(DEFAULT_CONFIG), PathBuf::from)
+/// Where the installation is recorded: `HOMESPACE_CTL_CONFIG`, or
+/// `$XDG_CONFIG_HOME/home-space/installation.toml` (`~/.config/...`) of the user who installed
+/// it, who is also the one running its compose project.
+pub fn config_path() -> Result<PathBuf> {
+    let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+    if let Some(path) = set(CONFIG_VAR) {
+        return Ok(PathBuf::from(path));
+    }
+    let config = set("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .or_else(|| set("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .with_context(|| format!("neither HOME nor {CONFIG_VAR} is set"))?;
+    Ok(config.join(CONFIG_DIR).join(CONFIG_FILE))
 }
 
 impl Installation {
@@ -62,19 +74,14 @@ impl Installation {
         ))
     }
 
-    /// `[sudo] <engine> compose <args>`, run in the installation's directory.
+    /// `<engine> compose <args>`, run in the installation's directory, so compose reads the
+    /// `.env` there.
     pub fn compose<I, S>(&self, args: I) -> Command
     where
         I: IntoIterator<Item = S>,
         S: Into<OsString>,
     {
-        let mut command = if self.sudo && !crate::install::system::is_root() {
-            let mut command = Command::new("sudo");
-            command.arg(self.engine.program());
-            command
-        } else {
-            Command::new(self.engine.program())
-        };
+        let mut command = Command::new(self.engine.program());
         command
             .arg("compose")
             .args(args.into_iter().map(Into::into))
@@ -120,7 +127,6 @@ mod tests {
         let installation = Installation {
             dir: PathBuf::from("/opt/homespace"),
             engine: Engine::Podman,
-            sudo: true,
         };
         let text = installation.to_toml().expect("toml");
         assert!(text.contains("engine = \"podman\""), "{text}");
@@ -133,7 +139,6 @@ mod tests {
         let installation = Installation {
             dir: PathBuf::from("/opt/homespace"),
             engine: Engine::Docker,
-            sudo: false,
         };
         let command = installation.exec_ctl(["user", "list"], false);
         let args: Vec<_> = command.get_args().collect();
