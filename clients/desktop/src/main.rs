@@ -5,6 +5,7 @@ mod browser;
 mod device;
 mod ellipsis;
 mod events;
+mod executor;
 mod icons;
 mod locale;
 mod login;
@@ -27,6 +28,9 @@ const APP_ICON: &[u8] = include_bytes!("../packaging/home-space.png");
 #[cfg(target_os = "macos")]
 const APP_ICNS: &[u8] = include_bytes!("../packaging/home-space.icns");
 
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() -> iced::Result {
     locale::init_local_offset();
     #[cfg(target_os = "macos")]
@@ -34,6 +38,7 @@ fn main() -> iced::Result {
     let app_id = std::env::var(FLATPAK_ID_VAR).unwrap_or_else(|_| APP_ID.to_owned());
     iced::application(app::App::new, app::App::update, app::App::view)
         .title(APP_TITLE)
+        .executor::<executor::Executor>()
         .subscription(app::App::subscription)
         .theme(app::App::theme)
         .settings(iced::Settings {
