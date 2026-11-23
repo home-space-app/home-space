@@ -46,6 +46,7 @@ administrators, disabled users and users marked for deletion.
 | `HOMESPACE_STORAGE` | `local` | Where file content is kept. Only `local` exists today; object storage is planned ([docs/todo/object-storage.md](docs/todo/object-storage.md)). |
 | `HOMESPACE_STORAGE_ROOT` | `./data` | Directory for the local backend (`/data` in the container). |
 | `HOMESPACE_PORT` | unset | Host port the container is published on. Compose maps it to the container's 8080; the server only shows it on the Administration page. |
+| `HOMESPACE_DB_PASSWORD`, `HOMESPACE_DB_PASSWORD_FILE` | unset | Password of the database user, used instead of one in `DATABASE_URL` (so the URL can stay free of secrets and the password needs no URL encoding). The `_FILE` form reads it from a file, such as a Docker/Podman secret. `homespace-ctl` reads them too. |
 
 Tests need the database running and `DATABASE_URL` set (`.env` is picked up):
 `cargo test --workspace`.
@@ -306,7 +307,7 @@ tokens, so the rest of the API works as before. Setting `HOMESPACE_OIDC_ISSUER` 
 |---|---|
 | `HOMESPACE_PUBLIC_URL` | Address users reach the server at, e.g. `https://files.example.com`. Required. (Without single sign-on it is optional, and names the origin the web client is served from when a proxy does not pass `Host` on.) |
 | `HOMESPACE_OIDC_ISSUER` | Issuer URL of the provider. Required. |
-| `HOMESPACE_OIDC_CLIENT_ID`, `HOMESPACE_OIDC_CLIENT_SECRET` | The client registered at the provider. |
+| `HOMESPACE_OIDC_CLIENT_ID`, `HOMESPACE_OIDC_CLIENT_SECRET` | The client registered at the provider. The secret can also come from a file named by `HOMESPACE_OIDC_CLIENT_SECRET_FILE`. |
 | `HOMESPACE_OIDC_NAME` | Label on the sign-in button (default `Single sign-on`). |
 | `HOMESPACE_OIDC_REQUIRED_GROUP` | Only members of this group may sign in. Optional. |
 | `HOMESPACE_OIDC_GROUPS_CLAIM` | ID token claim listing the groups (default `groups`). |
@@ -361,9 +362,10 @@ podman-compose --profile test run --rm test   # server + client tests against th
 podman-compose down                           # add -v to also delete the database and files
 ```
 
-`homespace-ctl` is not in the server image: download it from the GitHub release (Linux x86_64,
-Windows x86_64, macOS Apple Silicon) or run `cargo run -p ctl --` from `server/`. It talks to the
-database directly, through the Postgres port compose publishes on `127.0.0.1`.
+Download `homespace-ctl` from the GitHub release (Linux x86_64, Windows x86_64, macOS Apple Silicon)
+or run `cargo run -p ctl --` from `server/`. With `DATABASE_URL` set it talks to the database
+directly, here through the Postgres port compose publishes on `127.0.0.1`. The server image also
+contains it (`compose exec app homespace-ctl ...`).
 
 The server does not start with a signing secret that is shorter than 32 characters, still a
 placeholder (`change-me...`) or made of only a few different characters.
@@ -385,7 +387,37 @@ what ties them together). So the signing secret alone cannot forge access:
 a token it signs for a session that does not exist is rejected, and logging out takes effect at
 once rather than when the access token expires.
 
-### Running on a server
+### Installing on a server
+
+On a Linux server with Docker or Podman (with compose), `homespace-ctl install` sets everything up.
+It asks a few questions, writes one `compose.yaml` with its `.env`, starts the server and offers to
+create the first administrator:
+
+```sh
+homespace-ctl install             # add --dry-run to see the files without changing anything
+```
+
+It asks for the container engine (when both are installed), the directory for `compose.yaml`
+(default `/opt/homespace`), and whether secrets go into `.env` or into secret files under
+`secrets/`. Storage can be container volumes, or host directories owned by a dedicated user, by
+default a new `homespace` system user. Then come the database user, the database password and the
+JWT secret (generated unless you give your own), whether a reverse proxy sits in front (for nginx it
+writes an example site to `nginx/<server name>.conf`, which you then install yourself), the public
+URL, and passwords or single sign-on. The server is published on a free port on `127.0.0.1`, or on
+all interfaces when no proxy is used and the public URL is not local. The database is reachable
+only inside the compose network. Steps that need root, such as creating the user and directories
+and writing `/etc/homespace/ctl.toml`, go through `sudo`. With rootless Podman the containers run
+as you (`userns_mode: keep-id`); run the installer with `sudo` to use a dedicated user.
+
+Afterwards `homespace-ctl user ...` and `homespace-ctl search ...` without a `DATABASE_URL` run
+inside the app container (`<engine> compose exec app homespace-ctl ...`), which has the database
+and the files at hand. `/etc/homespace/ctl.toml` (or the file `HOMESPACE_CTL_CONFIG` names) records
+where the installation is. The compose project is named `homespace`; `install` refuses when a
+project of that name exists already from another directory (set `HOMESPACE_COMPOSE_PROJECT` to
+install a second one). Change settings in `.env`, then run `docker compose up -d` (or
+`podman compose up -d`) in the installation directory.
+
+### Running on a server by hand
 
 `compose.prod.yaml` keeps the database and the blobs in directories you choose and runs both
 containers as one host user, so only that user (and root) can read them:

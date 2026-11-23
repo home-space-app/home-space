@@ -61,7 +61,10 @@ pub use trash::{LOST_AND_FOUND, SpecialFolders, TrashedNode};
 pub use tx::Tx;
 pub use uploads::{NewUpload, Upload};
 
-use sqlx::{Postgres, Transaction, postgres::PgPoolOptions};
+use sqlx::{
+    Postgres, Transaction,
+    postgres::{PgConnectOptions, PgPoolOptions},
+};
 use uuid::Uuid;
 
 const MAX_CONNECTIONS: u32 = 10;
@@ -82,6 +85,24 @@ impl Db {
         let pool = PgPoolOptions::new()
             .max_connections(MAX_CONNECTIONS)
             .connect(database_url)
+            .await?;
+        Ok(Self { pool, device: None })
+    }
+
+    /// Connects to Postgres at `database_url`, signing in with `password` instead of the one in
+    /// the URL when it is given, so that the password can be kept out of the URL (in a secret
+    /// file, say) and needs no percent-encoding.
+    pub async fn connect_with_password(
+        database_url: &str,
+        password: Option<&str>,
+    ) -> Result<Self, DbError> {
+        let Some(password) = password else {
+            return Self::connect(database_url).await;
+        };
+        let options: PgConnectOptions = database_url.parse()?;
+        let pool = PgPoolOptions::new()
+            .max_connections(MAX_CONNECTIONS)
+            .connect_with(options.password(password))
             .await?;
         Ok(Self { pool, device: None })
     }

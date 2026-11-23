@@ -4,7 +4,12 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-use super::checks::{check_secret, is_https_or_loopback, non_empty};
+use auth::{
+    is_https_or_loopback,
+    secrets::{check_secret, value_or_file},
+};
+
+use super::checks::non_empty;
 
 /// The settings that may differ per tenant, as given and not yet checked. Tenant 1 has the
 /// server's unsuffixed settings; tenant *n* has the same names with `_n` appended.
@@ -19,6 +24,7 @@ pub struct TenantSettings {
     pub oidc_issuer: Option<String>,
     pub oidc_client_id: Option<String>,
     pub oidc_client_secret: Option<String>,
+    pub oidc_client_secret_file: Option<PathBuf>,
     pub oidc_scopes: String,
     pub oidc_required_group: Option<String>,
     pub oidc_groups_claim: String,
@@ -79,10 +85,16 @@ impl TenantSettings {
             is_https_or_loopback(public_url),
             "{public_url_var} must use https"
         );
+        let client_secret = value_or_file(
+            &self.var("HOMESPACE_OIDC_CLIENT_SECRET"),
+            self.oidc_client_secret.as_deref(),
+            &self.file_var("HOMESPACE_OIDC_CLIENT_SECRET"),
+            self.oidc_client_secret_file.as_deref(),
+        )?;
         Ok(Some(auth::OidcConfig {
             issuer: issuer.to_owned(),
             client_id: client_id.to_owned(),
-            client_secret: non_empty(&self.oidc_client_secret).map(str::to_owned),
+            client_secret,
             scopes: self
                 .oidc_scopes
                 .split_whitespace()
@@ -97,23 +109,19 @@ impl TenantSettings {
 
     /// The current signing secret followed by the previous one, if any.
     pub fn jwt_secrets(&self) -> Result<(Vec<u8>, Vec<Vec<u8>>)> {
-        let current = match (&self.jwt_secret, &self.jwt_secret_file) {
-            (Some(_), Some(_)) => anyhow::bail!(
-                "set only one of {} and {}",
-                self.var("HOMESPACE_JWT_SECRET"),
-                self.file_var("HOMESPACE_JWT_SECRET")
-            ),
-            (Some(secret), None) => secret.clone(),
-            (None, Some(path)) => std::fs::read_to_string(path)
-                .with_context(|| format!("reading {}", path.display()))?
-                .trim_end_matches(['\r', '\n'])
-                .to_owned(),
-            (None, None) => anyhow::bail!(
+        let current = value_or_file(
+            &self.var("HOMESPACE_JWT_SECRET"),
+            self.jwt_secret.as_deref(),
+            &self.file_var("HOMESPACE_JWT_SECRET"),
+            self.jwt_secret_file.as_deref(),
+        )?
+        .with_context(|| {
+            format!(
                 "{} or {} must be set",
                 self.var("HOMESPACE_JWT_SECRET"),
                 self.file_var("HOMESPACE_JWT_SECRET")
-            ),
-        };
+            )
+        })?;
         let name = if self.suffix.is_empty() {
             "the JWT secret".to_owned()
         } else {
@@ -132,5 +140,44 @@ impl TenantSettings {
             None => Vec::new(),
         };
         Ok((current.into_bytes(), previous))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use super::*;
+
+    fn oidc_settings() -> TenantSettings {
+        TenantSettings {
+            public_url: Some("https://files.example.com".to_owned()),
+            oidc_issuer: Some("https://idp.example.com".to_owned()),
+            oidc_client_id: Some("homespace".to_owned()),
+            ..TenantSettings::default()
+        }
+    }
+
+    #[test]
+    fn the_oidc_client_secret_can_come_from_a_file() {
+        let mut file = tempfile::NamedTempFile::new().expect("temp file");
+        writeln!(file, "from-file").expect("write");
+        let settings = TenantSettings {
+            oidc_client_secret_file: Some(file.path().to_owned()),
+            ..oidc_settings()
+        };
+        let oidc = settings.oidc().expect("valid").expect("configured");
+        assert_eq!(oidc.client_secret.as_deref(), Some("from-file"));
+    }
+
+    #[test]
+    fn the_oidc_client_secret_and_its_file_are_not_both_accepted() {
+        let settings = TenantSettings {
+            oidc_client_secret: Some("value".to_owned()),
+            oidc_client_secret_file: Some(PathBuf::from("/run/secrets/oidc")),
+            ..oidc_settings()
+        };
+        let err = settings.oidc().unwrap_err().to_string();
+        assert!(err.contains("HOMESPACE_OIDC_CLIENT_SECRET_FILE"), "{err}");
     }
 }

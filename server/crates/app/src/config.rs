@@ -26,6 +26,15 @@ pub struct Config {
     #[arg(long, env = "DATABASE_URL")]
     pub database_url: String,
 
+    /// Password of the database user, when `DATABASE_URL` carries none; set this or
+    /// `HOMESPACE_DB_PASSWORD_FILE`.
+    #[arg(long, env = "HOMESPACE_DB_PASSWORD", hide_env_values = true)]
+    pub db_password: Option<String>,
+
+    /// File holding the database password (e.g. a Docker/Podman secret).
+    #[arg(long, env = "HOMESPACE_DB_PASSWORD_FILE")]
+    pub db_password_file: Option<PathBuf>,
+
     /// Secret that signs access tokens; set this or `HOMESPACE_JWT_SECRET_FILE`.
     #[arg(long, env = "HOMESPACE_JWT_SECRET", hide_env_values = true)]
     pub jwt_secret: Option<String>,
@@ -123,6 +132,10 @@ pub struct Config {
     #[arg(long, env = "HOMESPACE_OIDC_CLIENT_SECRET", hide_env_values = true)]
     pub oidc_client_secret: Option<String>,
 
+    /// File holding the client secret (e.g. a Docker/Podman secret).
+    #[arg(long, env = "HOMESPACE_OIDC_CLIENT_SECRET_FILE")]
+    pub oidc_client_secret_file: Option<PathBuf>,
+
     #[arg(
         long,
         env = "HOMESPACE_OIDC_SCOPES",
@@ -188,12 +201,23 @@ impl Config {
             oidc_issuer: self.oidc_issuer.clone(),
             oidc_client_id: self.oidc_client_id.clone(),
             oidc_client_secret: self.oidc_client_secret.clone(),
+            oidc_client_secret_file: self.oidc_client_secret_file.clone(),
             oidc_scopes: self.oidc_scopes.clone(),
             oidc_required_group: self.oidc_required_group.clone(),
             oidc_groups_claim: self.oidc_groups_claim.clone(),
             oidc_name: self.oidc_name.clone(),
             password_login: self.password_login,
         }
+    }
+
+    /// The database password from `HOMESPACE_DB_PASSWORD` or its file, if either is set.
+    pub fn db_password(&self) -> Result<Option<String>> {
+        Ok(auth::secrets::value_or_file(
+            "HOMESPACE_DB_PASSWORD",
+            self.db_password.as_deref(),
+            "HOMESPACE_DB_PASSWORD_FILE",
+            self.db_password_file.as_deref(),
+        )?)
     }
 
     /// Settings for single sign-on of tenant 1; `None` unless an issuer is configured.
