@@ -107,6 +107,8 @@ pub struct Tokens {
     /// Danger at 12%.
     pub danger_soft: Color,
     pub success: Color,
+    /// Versions that differ but work together.
+    pub warning: Color,
     pub backdrop: Color,
     pub shadow: Color,
 }
@@ -128,6 +130,7 @@ const LIGHT: Tokens = Tokens {
     on_danger: color!(0xffffff),
     danger_soft: color!(0xc0362c, 0.12),
     success: color!(0x15803d),
+    warning: color!(0xb45309),
     backdrop: color!(0x080a0e, 0.55),
     shadow: color!(0x101828, 0.08),
 };
@@ -149,6 +152,7 @@ const DARK: Tokens = Tokens {
     on_danger: color!(0x1a0705),
     danger_soft: color!(0xff8a80, 0.12),
     success: color!(0x5fd39a),
+    warning: color!(0xfbbf24),
     backdrop: color!(0x080a0e, 0.55),
     shadow: color!(0x000000, 0.45),
 };
@@ -883,5 +887,50 @@ pub fn switch_thumb(_theme: &Theme) -> container::Style {
         background: Some(Color::WHITE.into()),
         border: Border::default().rounded(f32::MAX),
         ..container::Style::default()
+    }
+}
+
+/// The colour of a version state: green, yellow or red.
+fn version_color(t: &Tokens, tone: client_core::versions::Tone) -> Color {
+    match tone {
+        client_core::versions::Tone::Same => t.success,
+        client_core::versions::Tone::Warning => t.warning,
+        client_core::versions::Tone::Error => t.danger,
+    }
+}
+
+/// The version chip above the sync status, tinted by its state.
+pub fn version_chip(
+    tone: client_core::versions::Tone,
+) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, status| {
+        let t = tokens(theme);
+        let color = version_color(&t, tone);
+        let alpha = match status {
+            button::Status::Hovered | button::Status::Pressed => SOFT_ALPHA * 2.0,
+            _ => SOFT_ALPHA,
+        };
+        button::Style {
+            background: Some(color.scale_alpha(alpha).into()),
+            text_color: color,
+            border: outline(color.scale_alpha(0.35), f32::MAX),
+            ..button::Style::default()
+        }
+    }
+}
+
+/// The dot of a version state.
+pub fn version_dot(tone: client_core::versions::Tone) -> impl Fn(&Theme) -> container::Style {
+    move |theme| container::Style {
+        background: Some(version_color(&tokens(theme), tone).into()),
+        border: Border::default().rounded(f32::MAX),
+        ..container::Style::default()
+    }
+}
+
+/// Text in the colour of a version state.
+pub fn version_text(tone: client_core::versions::Tone) -> impl Fn(&Theme) -> text::Style {
+    move |theme| text::Style {
+        color: Some(version_color(&tokens(theme), tone)),
     }
 }

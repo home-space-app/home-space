@@ -239,6 +239,10 @@ fun BrowseScreen(
         }
     }
 
+    val versionCheck = remember(session.client) { session.client.versionCheck() }
+    var bannerShown by remember(versionCheck) { mutableStateOf(showsVersionBanner(context, versionCheck)) }
+    var showingVersion by remember { mutableStateOf(false) }
+
     fun handle(entry: Entry, rowAction: RowAction) {
         when (rowAction) {
             RowAction.OPEN -> model.openFile(session, entry)
@@ -261,6 +265,10 @@ fun BrowseScreen(
             RowAction.REMOVE_OFFLINE -> model.removeOfflineCopy(session, entry)
             RowAction.CANCEL_DOWNLOAD -> session.client.cancelDownload(entry.id)
         }
+    }
+
+    if (showingVersion && versionCheck != null) {
+        VersionSheet(versionCheck, onDismiss = { showingVersion = false })
     }
 
     if (searching) {
@@ -328,6 +336,16 @@ fun BrowseScreen(
                 },
             ) { padding ->
                 Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+                    if (bannerShown && versionCheck != null) {
+                        VersionBanner(
+                            versionCheck,
+                            onDetails = { showingVersion = true },
+                            onDismiss = {
+                                UpdatePrefs.dismissBanner(context, versionCheck.serverVersion)
+                                bannerShown = false
+                            },
+                        )
+                    }
                     if (!selecting && path.size > 1) {
                         Breadcrumbs(
                             names = path.map { it.name },

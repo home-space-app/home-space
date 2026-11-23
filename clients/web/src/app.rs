@@ -14,6 +14,7 @@ use crate::{
         Shell, TransferList, TransfersPage, TrashPage,
     },
     session::Auth,
+    update::UpdateToast,
     uploads::{Sending, UploadItem, UploadPanel},
 };
 
@@ -105,6 +106,7 @@ pub fn App() -> impl IntoView {
             </Show>
             <Show when=move || auth.user.read().is_some()>
                 <div class="corner">
+                    <UpdateToast auth />
                     <IncomingToast auth />
                     <UploadPanel uploads />
                 </div>

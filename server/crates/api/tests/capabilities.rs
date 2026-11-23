@@ -25,6 +25,21 @@ async fn capabilities_report_the_upload_chunk_size(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn capabilities_report_the_version_and_every_feature(pool: PgPool) {
+    let app = setup(pool).await;
+    let token = app.user_token("alice").await;
+
+    let capabilities: protocol::Capabilities =
+        serde_json::from_value(app.get(CAPABILITIES, &token).await.json()).expect("capabilities");
+
+    assert_eq!(
+        capabilities.version.as_deref(),
+        Some(env!("CARGO_PKG_VERSION"))
+    );
+    assert_eq!(capabilities.features, protocol::features::ALL);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn capabilities_need_a_session(pool: PgPool) {
     let app = setup(pool).await;
 

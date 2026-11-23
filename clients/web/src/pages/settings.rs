@@ -1,4 +1,5 @@
-//! The user's own settings: profile, password and storage. Devices and share links are the
+//! The user's own settings: profile, password, storage and, for administrators, the check for
+//! new versions. Devices and share links are the
 //! other tabs.
 
 use leptos::{ev::SubmitEvent, prelude::*, task::spawn_local};
@@ -6,17 +7,21 @@ use leptos_router::components::A;
 
 use api_client::ApiError;
 use client_core::{
-    duplicates::DUPLICATES_TAB, share::SHARES_TAB, shared_link::initial, storage::bytes,
+    duplicates::DUPLICATES_TAB, share::SHARES_TAB, shared_link::initial, storage::bytes, update,
 };
 use protocol::{Event, Storage};
 
-use super::shell::{Tab, Tabs};
+use super::{
+    admin_users::Switch,
+    shell::{Tab, Tabs},
+};
 use crate::{
     components::{ErrorAlert, StorageBar},
     events,
     icon::Icon,
     load, route,
     session::{self, Auth},
+    update::{checks, set_checks},
 };
 
 /// The heading and tabs shared by every settings page.
@@ -72,8 +77,30 @@ pub fn SettingsPage(auth: Auth) -> impl IntoView {
                 <Show when=move || auth.user.get().is_some_and(|me| !me.external)>
                     <PasswordCard auth />
                 </Show>
+                <Show when=move || auth.user.get().is_some_and(|me| me.is_admin)>
+                    <UpdatesCard />
+                </Show>
             </div>
         </main>
+    }
+}
+
+/// Whether this browser asks GitHub for the latest release, to tell the administrator.
+#[component]
+fn UpdatesCard() -> impl IntoView {
+    let on = RwSignal::new(checks());
+    Effect::new(move |_| set_checks(on.get()));
+    view! {
+        <section class="card">
+            <h2 class="card__title">"Updates"</h2>
+            <div class="setting">
+                <div class="setting__text">
+                    <p class="setting__label">{update::CHECK_SETTING}</p>
+                    <p class="card__subtitle">{update::CHECK_SETTING_HINT}</p>
+                </div>
+                <Switch checked=on label=update::CHECK_SETTING />
+            </div>
+        </section>
     }
 }
 

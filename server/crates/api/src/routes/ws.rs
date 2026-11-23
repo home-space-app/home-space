@@ -236,20 +236,23 @@ impl Connection {
         Step::Send(Message::Ping(Default::default()))
     }
 
-    /// The client spoke: it is alive, and a hello names its device. Anything other than a
-    /// hello is ignored.
+    /// The client spoke: it is alive, and a hello names its device and its client
+    /// version. Anything other than a hello is ignored.
     async fn on_message(&mut self, incoming: Option<Result<Message, axum::Error>>) -> Step {
         let message = match incoming {
             Some(Ok(Message::Close(_)) | Err(_)) | None => return Step::Stop,
             Some(Ok(message)) => message,
         };
         self.heard = Instant::now();
-        if self.online.is_none()
-            && let Message::Text(text) = &message
+        if let Message::Text(text) = &message
             && let Ok(ClientMessage::Hello { device }) = serde_json::from_str(text.as_str())
         {
-            self.unregistered = Some(device);
-            self.register().await;
+            if self.online.is_none() {
+                self.unregistered = Some(device);
+                self.register().await;
+            } else {
+                self.record_client(&device).await;
+            }
         }
         Step::Wait
     }
@@ -283,6 +286,15 @@ impl Connection {
                 tracing::warn!(error = %err, "registering the websocket's device failed, will retry");
                 self.unregistered = Some(device);
             }
+        }
+    }
+
+    /// Records the client version a hello names for the session's device, so a client
+    /// updated without signing in again is shown with its new version. A failure only leaves
+    /// the old version shown.
+    async fn record_client(&self, device: &DeviceInfo) {
+        if let Err(err) = self.tenant.auth.session_device(&self.grant, device).await {
+            tracing::warn!(error = %err, "recording the websocket's client version failed");
         }
     }
 

@@ -24,8 +24,10 @@ const API_POLICY: &str = "default-src 'none'; frame-ancestors 'none'";
 /// The web client: everything comes from this server. WebAssembly needs `wasm-unsafe-eval`,
 /// and the client sets element styles (the width of a meter), hence `unsafe-inline` for styles
 /// only. The scripts written into `index.html` itself are allowed by their hashes, which
-/// [`web_policy`] puts in place of `{hashes}`.
+/// [`web_policy`] puts in place of `{hashes}`. Besides this server, it may only connect to
+/// GitHub's API, which it asks for the latest release to tell administrators about updates.
 const WEB_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'{hashes}; \
+    connect-src 'self' https://api.github.com; \
     style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; object-src 'none'; \
     frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 const HASHES_PLACEHOLDER: &str = "{hashes}";

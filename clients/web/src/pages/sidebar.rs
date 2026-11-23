@@ -353,6 +353,8 @@ fn AccountMenu(auth: Auth) -> impl IntoView {
                 <Icon name="logout" />
                 "Log out"
             </button>
+            <hr class="menu__divider" />
+            <p class="account-menu__version">{format!("Home Space {}", crate::update::VERSION)}</p>
         </div>
     }
 }

@@ -85,6 +85,8 @@ async fn login_from_a_device_registers_it_and_tags_the_session(pool: PgPool) {
         id: Uuid::now_v7(),
         name: "  Laptop ".to_owned(),
         platform: protocol::PLATFORM_LINUX.to_owned(),
+        version: None,
+        requires: Vec::new(),
     };
 
     let pair = auth
@@ -115,6 +117,8 @@ async fn a_blank_device_name_is_refused(pool: PgPool) {
         id: Uuid::now_v7(),
         name: " ".to_owned(),
         platform: protocol::PLATFORM_WEB.to_owned(),
+        version: None,
+        requires: Vec::new(),
     };
     let result = auth.login("alice", "password-1", Some(&device)).await;
     assert!(matches!(result, Err(AuthError::InvalidInput(_))));
@@ -125,6 +129,8 @@ fn laptop() -> DeviceInfo {
         id: Uuid::now_v7(),
         name: "Laptop".to_owned(),
         platform: protocol::PLATFORM_LINUX.to_owned(),
+        version: None,
+        requires: Vec::new(),
     }
 }
 
@@ -955,4 +961,62 @@ async fn unchecked_and_blocked_attempts_preserve_real_failures(pool: PgPool) {
     .await
     .expect("count");
     assert_eq!(failures, 3);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn login_records_the_client_version(pool: PgPool) {
+    let db = Db::from_pool(pool.clone());
+    let auth = service(pool);
+    let user = auth.create_user("alice", "password-1").await.expect("user");
+    let device = DeviceInfo {
+        version: Some("0.13.0".to_owned()),
+        requires: vec!["device_remove".to_owned()],
+        ..laptop()
+    };
+
+    auth.login("alice", "password-1", Some(&device))
+        .await
+        .expect("login");
+
+    let devices = db.devices(user.id).await.expect("devices");
+    assert_eq!(devices[0].client_version.as_deref(), Some("0.13.0"));
+    assert_eq!(devices[0].client_requires, ["device_remove"]);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_hello_from_an_updated_client_records_its_new_version(pool: PgPool) {
+    let db = Db::from_pool(pool.clone());
+    let auth = service(pool);
+    let user = auth.create_user("alice", "password-1").await.expect("user");
+    let device = DeviceInfo {
+        version: Some("0.13.0".to_owned()),
+        ..laptop()
+    };
+    let pair = auth
+        .login("alice", "password-1", Some(&device))
+        .await
+        .expect("login");
+    let updated = DeviceInfo {
+        version: Some("0.14.0".to_owned()),
+        ..device.clone()
+    };
+
+    auth.session_device(&grant_of(&auth, &pair).await, &updated)
+        .await
+        .expect("hello");
+
+    let devices = db.devices(user.id).await.expect("devices");
+    assert_eq!(devices[0].client_version.as_deref(), Some("0.14.0"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn an_overlong_client_version_is_refused(pool: PgPool) {
+    let auth = service(pool);
+    auth.create_user("alice", "password-1").await.expect("user");
+    let device = DeviceInfo {
+        version: Some("1".repeat(65)),
+        ..laptop()
+    };
+    let result = auth.login("alice", "password-1", Some(&device)).await;
+    assert!(matches!(result, Err(AuthError::InvalidInput(_))));
 }

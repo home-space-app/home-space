@@ -496,7 +496,7 @@ fn AccountRow(
 
 /// A switch for a yes/no setting.
 #[component]
-fn Switch(
+pub(crate) fn Switch(
     checked: RwSignal<bool>,
     #[prop(into)] label: String,
     #[prop(optional)] disabled: bool,

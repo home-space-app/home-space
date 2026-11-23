@@ -17,6 +17,14 @@ const HOSTNAME_FILES: [&str; 2] = ["/proc/sys/kernel/hostname", "/etc/hostname"]
 const HOSTNAME_VARS: [&str; 2] = ["COMPUTERNAME", "HOSTNAME"];
 const FALLBACK_NAME: &str = "Desktop";
 
+/// This app's version, reported to the server and compared with its own and the latest
+/// release's.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The server features (`protocol::features`) this app cannot work without. Add one only
+/// when the app relies on it with no fallback for older servers; see `docs/versioning.md`.
+pub const REQUIRES: &[&str] = &[];
+
 #[cfg(target_os = "linux")]
 const PLATFORM: &str = protocol::PLATFORM_LINUX;
 #[cfg(target_os = "macos")]
@@ -35,6 +43,11 @@ pub fn info() -> Option<DeviceInfo> {
             id,
             name: host_name(),
             platform: PLATFORM.to_owned(),
+            version: Some(VERSION.to_owned()),
+            requires: REQUIRES
+                .iter()
+                .map(|feature| (*feature).to_owned())
+                .collect(),
         }),
         Err(err) => {
             eprintln!("could not keep the device id: {err}");

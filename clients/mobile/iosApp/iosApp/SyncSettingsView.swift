@@ -8,6 +8,7 @@ struct SettingsView: View {
     let model: SessionModel
     let client: CoreClient
     let user: SignedInUser
+    @State private var checksForUpdates = UpdatePrefs.checks
 
     var body: some View {
         Form {
@@ -39,6 +40,15 @@ struct SettingsView: View {
                 NavigationLink("Sync") {
                     SyncSettingsView(model: model, client: client)
                 }
+            }
+            Section {
+                Toggle(updateLabels().checkSetting, isOn: $checksForUpdates)
+                    .onChange(of: checksForUpdates) { _, on in UpdatePrefs.checks = on }
+                LabeledContent("Version", value: appVersion())
+            } header: {
+                Text("About")
+            } footer: {
+                Text(updateLabels().checkSettingHint)
             }
             Section {
                 Button("Sign Out", role: .destructive) { model.requestSignOut(client: client) }

@@ -11,6 +11,7 @@ use client_core::{
         REMOVE_DEVICE_HINT, THIS_DEVICE, device_state, platform, remove_question, sign_out_question,
     },
     transfers::visible_to,
+    versions,
 };
 use protocol::{
     Device, DeviceVisibility, PLATFORM_ANDROID, PLATFORM_IOS, PLATFORM_LINUX, PLATFORM_MACOS,
@@ -44,6 +45,9 @@ const PILL_HEIGHT: f32 = 24.0;
 const PILL_SIZE: f32 = 12.0;
 const PILL_PADDING: [f32; 2] = [0.0, 8.0];
 const PILL_GAP: f32 = 6.0;
+const VERSION_GAP: f32 = 6.0;
+const VERSION_DOT: f32 = 6.0;
+const VERSION_WIDTH: f32 = 110.0;
 /// Between the state and what the device left unfinished, in [`device_state`].
 const STATE_SEPARATOR: &str = " · ";
 const NAME_INPUT: &str = "device-name";
@@ -349,6 +353,7 @@ fn header<'a>() -> Element<'a, Message> {
                 Length::FillPortion(VISIBLE_PORTION),
                 Alignment::Start
             ),
+            title("Version", VERSION_WIDTH, Alignment::Start),
             title("Last seen", DATE_WIDTH, Alignment::Start),
             space().width(MENU_WIDTH),
         ],
@@ -395,6 +400,7 @@ fn device_cells(device: &Device) -> iced::widget::Row<'_, Message> {
         name,
         state_cell(device, active),
         visible_cell(device),
+        version_cell(device),
         muted_cell(
             short_date(device.last_seen_at),
             DATE_WIDTH,
@@ -404,6 +410,27 @@ fn device_cells(device: &Device) -> iced::widget::Row<'_, Message> {
             Message::Menu(id, Placement::hanging(bounds, Horizontal::Right))
         }),
     ]
+}
+
+/// The last client version the device reported, after a dot in the colour of how it fits this
+/// server. Empty for a web browser, which runs the server's version.
+fn version_cell<'a>(device: &'a Device) -> Element<'a, Message> {
+    let dot = versions::device_tone(device).map(|tone| {
+        container(space())
+            .width(VERSION_DOT)
+            .height(VERSION_DOT)
+            .style(theme::version_dot(tone))
+    });
+    row![]
+        .push(dot)
+        .push(
+            versions::device_version(device)
+                .map(|version| ellipsized(version, ROW_SIZE, Alignment::Start)),
+        )
+        .spacing(VERSION_GAP)
+        .align_y(Alignment::Center)
+        .width(VERSION_WIDTH)
+        .into()
 }
 
 /// The state in a pill, with what the device left unfinished next to it.
@@ -511,6 +538,8 @@ mod tests {
             uploads: 0,
             visibility: Default::default(),
             visible_to: Vec::new(),
+            version: None,
+            compatibility: None,
         }
     }
 

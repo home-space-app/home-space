@@ -149,15 +149,16 @@ impl State {
             compact,
             Message::OpenTransfers,
         ));
-        let foot = column![
-            syncing::status_card(
+        let version = self.versions.sidebar(compact);
+        let foot = column![]
+            .push(version)
+            .push(syncing::status_card(
                 self.syncing.status(),
                 compact,
-                matches!(self.page, Page::SyncSettings)
-            ),
-            account(self.me.username.as_str(), compact)
-        ]
-        .spacing(FOOT_SPACING);
+                matches!(self.page, Page::SyncSettings),
+            ))
+            .push(account(self.me.username.as_str(), compact))
+            .spacing(FOOT_SPACING);
         let bar = container(column![places, space::vertical(), foot])
             .padding(PADDING)
             .width(width(self.window.width) - DIVIDER)

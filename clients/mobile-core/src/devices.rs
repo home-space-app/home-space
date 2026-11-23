@@ -6,11 +6,12 @@ use std::time::SystemTime;
 use client_core::{
     labels::{REMOVE_DEVICE_HINT, remove_question, sign_out_question},
     transfers::{VISIBILITIES, visibility_hint, visibility_title, visible_to},
+    versions,
 };
 use protocol::{Device, DeviceVisibility, SetDeviceVisibility, UserId, UserRef};
 use uuid::Uuid;
 
-use crate::{CoreClient, CoreError, MAX_DEVICE_NAME_CHARS, off_ui_thread};
+use crate::{CoreClient, CoreError, MAX_DEVICE_NAME_CHARS, VersionTone, off_ui_thread};
 
 const INVALID_CODE: &str = "invalid";
 const EMPTY_NAME: &str = "A device needs a name.";
@@ -103,6 +104,11 @@ pub struct UserDevice {
     pub sign_out_question: String,
     /// Asked before removing it, saying what that cancels; see [`remove_device_hint`].
     pub remove_question: String,
+    /// The last client version it reported, e.g. `0.13.0`, or `Unknown`. `None` for a web
+    /// browser, which runs the server's version.
+    pub version_label: Option<String>,
+    /// How its client fits this server, when its version is known.
+    pub version_tone: Option<VersionTone>,
 }
 
 impl From<Device> for UserDevice {
@@ -111,7 +117,11 @@ impl From<Device> for UserDevice {
         let can_sign_out = !device.current && (device.signed_in || device.uploads > 0);
         let sign_out_question = sign_out_question(&device);
         let remove_question = remove_question(&device);
+        let version_label = versions::device_version(&device).map(str::to_owned);
+        let version_tone = versions::device_tone(&device).map(Into::into);
         Self {
+            version_label,
+            version_tone,
             id: device.id.to_string(),
             name: device.name,
             platform: device.platform,

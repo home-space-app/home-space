@@ -78,6 +78,8 @@ fn device() -> Option<DeviceInfo> {
         id,
         name: browser_name(&agent).to_owned(),
         platform: PLATFORM_WEB.to_owned(),
+        version: Some(crate::update::VERSION.to_owned()),
+        requires: Vec::new(),
     })
 }
 
