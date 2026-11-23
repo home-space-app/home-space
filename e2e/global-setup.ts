@@ -12,10 +12,10 @@ export default async function globalSetup(_config: FullConfig) {
   process.env.E2E_RUN_ID ??= randomBytes(3).toString('hex');
 
   if (process.env.E2E_SKIP_BUILD !== '1') {
-    run('cargo', ['build', '-p', 'app'], paths.server);
+    run('cargo', ['build', '-p', 'app', '-p', 'ctl'], paths.server);
     run('trunk', ['build'], paths.web);
   }
-  for (const artifact of [paths.serverBinary, `${paths.webDist}/index.html`]) {
+  for (const artifact of [paths.serverBinary, paths.ctlBinary, `${paths.webDist}/index.html`]) {
     if (!existsSync(artifact)) {
       throw new Error(`${artifact} is missing; build it, or run without E2E_SKIP_BUILD=1`);
     }

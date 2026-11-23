@@ -17,7 +17,7 @@ npx playwright install chromium
 npm run test:web            # web only, in parallel
 ```
 
-The first run builds the server (`cargo build -p app`) and the web client (`trunk build`). Set
+The first run builds the server (`cargo build -p app -p ctl`) and the web client (`trunk build`). Set
 `E2E_SKIP_BUILD=1` to use what is already built.
 
 ### Android
@@ -50,7 +50,7 @@ Testcontainers needs Docker or podman.
 | When | What | Where |
 | --- | --- | --- |
 | Once per run | Build, start Postgres | `global-setup.ts` |
-| Per worker | A database, `homespace user add --password-stdin` for the admin, `homespace serve` on a free port | `fixtures/server.ts` |
+| Per worker | A database, `homespace` on a free port (it migrates), then `homespace-ctl user add --password-stdin` for the admin | `fixtures/server.ts` |
 | Per test | Fresh users through the admin API, so tests share a server without a reset | `fixtures/index.ts` (`users`) |
 | Per test | The server log, attached when the test fails | `fixtures/index.ts` (`serverLog`) |
 | Android, per worker | Appium and one session | `fixtures/android-test.ts` |

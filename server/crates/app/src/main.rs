@@ -1,5 +1,4 @@
 mod cli;
-mod commands;
 mod config;
 mod jobs;
 mod server;
@@ -11,7 +10,7 @@ use tracing_subscriber::EnvFilter;
 
 use db::Db;
 
-use cli::{Cli, Command};
+use cli::Cli;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -27,13 +26,5 @@ async fn main() -> Result<()> {
         .context("connecting to database")?;
     db.migrate().await.context("running migrations")?;
 
-    match cli.command {
-        Command::Migrate => {
-            tracing::info!("migrations applied");
-            Ok(())
-        }
-        Command::User(command) => commands::run_user(command, &db, &cli.config).await,
-        Command::Search(command) => commands::run_search(command, db, &cli.config).await,
-        Command::Serve => server::serve(db, &cli.config).await,
-    }
+    server::serve(db, &cli.config).await
 }

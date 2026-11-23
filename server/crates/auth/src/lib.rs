@@ -3,6 +3,7 @@
 
 mod error;
 mod hasher;
+pub mod offline;
 mod oidc;
 mod oidc_login;
 mod password;

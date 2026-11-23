@@ -28,4 +28,3 @@ ENV HOMESPACE_BIND=0.0.0.0:8080 \
 EXPOSE 8080
 VOLUME /data
 ENTRYPOINT ["homespace"]
-CMD ["serve"]

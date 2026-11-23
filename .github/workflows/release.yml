@@ -6,6 +6,8 @@
 # - server: Docker image (server + web client) for linux/amd64 and linux/arm64, pushed to Docker
 #   Hub as homespaceapp/home-space. Each platform builds on a native runner (emulating arm64 to
 #   compile Rust takes hours) and is pushed by digest; server-manifest then tags the multi-arch list.
+# - ctl: homespace-ctl, the administration tool, for Linux (x86_64, static musl), Windows
+#   (x86_64) and macOS (Apple Silicon), as .tar.gz / .zip. Not part of the server image.
 # - desktop: macOS .dmg (Apple Silicon), Windows .zip (x86_64), Linux .tar.gz, .deb, .rpm and
 #   .flatpak (x86_64)
 # - android: .apk (to install directly) and .aab (to upload to Google Play)
@@ -23,9 +25,9 @@
 #   ANDROID_KEY_ALIAS
 #   ANDROID_KEY_PASSWORD
 #
-# The macOS app is not signed or notarized, so Gatekeeper asks before the first launch
+# The macOS app and homespace-ctl are not signed or notarized, so Gatekeeper asks before the first launch
 # (right-click > Open, or xattr -dr com.apple.quarantine "/Applications/Home Space.app").
-# The Windows .exe is not signed either, so SmartScreen warns before the first launch.
+# The Windows .exe files are not signed either, so SmartScreen warns before the first launch.
 name: Release
 
 on:
@@ -161,6 +163,83 @@ jobs:
         env:
           VERSION: ${{ steps.meta.outputs.version }}
         run: docker buildx imagetools inspect "homespaceapp/home-space:$VERSION"
+
+  # homespace-ctl, the administration tool, shipped on its own (not in the server image).
+  # Linux is a static musl binary so it runs on any distribution, whatever its glibc.
+  ctl:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            platform: linux-x86_64
+            archive: tar.gz
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows-x86_64
+            archive: zip
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            platform: macos-arm64
+            archive: tar.gz
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+          key: ctl-${{ matrix.target }}
+      - name: Install musl
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+
+      - name: Build
+        working-directory: server
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+        run: cargo build --release --locked -p ctl --target ${{ matrix.target }}
+
+      - name: Make the .tar.gz
+        if: matrix.archive == 'tar.gz'
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          name="homespace-ctl-$VERSION-$PLATFORM"
+          dir="$RUNNER_TEMP/$name"
+          mkdir -p "$dir"
+          cp "server/target/$TARGET/release/homespace-ctl" LICENSE "$dir/"
+          tar -C "$RUNNER_TEMP" -czf "$name.tar.gz" "$name"
+          echo "ARCHIVE=$name.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Make the .zip
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          $name = "homespace-ctl-$env:VERSION-$env:PLATFORM"
+          $dir = Join-Path $env:RUNNER_TEMP $name
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Copy-Item "server/target/$env:TARGET/release/homespace-ctl.exe", LICENSE -Destination $dir
+          Compress-Archive -Path $dir -DestinationPath "$name.zip" -Force
+          "ARCHIVE=$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ctl-${{ matrix.platform }}
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
 
   desktop-macos:
     needs: version
@@ -385,7 +464,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: [version, server-manifest, desktop-macos, desktop-windows, desktop-linux, desktop-flatpak, android]
+    needs: [version, server-manifest, ctl, desktop-macos, desktop-windows, desktop-linux, desktop-flatpak, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -393,7 +472,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: dist
-          pattern: "{android,desktop-*}"
+          pattern: "{android,ctl-*,desktop-*}"
           merge-multiple: true
       - name: Checksums
         working-directory: dist

@@ -1,4 +1,4 @@
-//! `homespace serve`: wires the services together and runs the HTTP server.
+//! `homespace`: wires the services together and runs the HTTP server.
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
@@ -17,7 +17,7 @@ use crate::{config::Config, jobs, tenants};
 const SECONDS_PER_HOUR: u64 = 3600;
 
 /// The auth service of the default tenant, from the server configuration.
-pub fn auth_service(db: &Db, config: &Config) -> Result<AuthService> {
+fn auth_service(db: &Db, config: &Config) -> Result<AuthService> {
     let (jwt_secret, previous_jwt_secrets) = config.jwt_secrets()?;
     let auth_config = AuthConfig {
         tenant: TenantId::DEFAULT,

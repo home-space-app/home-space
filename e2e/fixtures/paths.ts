@@ -9,6 +9,7 @@ export const paths = {
   e2e: path.join(root, 'e2e'),
   server: path.join(root, 'server'),
   serverBinary: path.join(root, 'server/target/debug/homespace'),
+  ctlBinary: path.join(root, 'server/target/debug/homespace-ctl'),
   web: path.join(root, 'clients/web'),
   webDist: path.join(root, 'clients/web/dist'),
   androidApk:
