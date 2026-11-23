@@ -2,6 +2,14 @@
 
 **Status (2026-11-23):** plan only, nothing implemented.
 
+**Decided (2026-11-23):**
+- Postgres is never published on the host; it is reachable only on the compose network (D1, D4).
+- Secrets: both compose `secrets:` files and a plain env file are offered; compose secrets are
+  the default (D5).
+- Rootless by default: the tool and the containers run as the invoking user, no root (D3, D5).
+- Existing installs made with one of the documented methods are adopted and managed; anything
+  else is left alone (D11).
+
 ## Problem
 
 Running Home Space on a server today means reading the "Running on a server" section of the
@@ -49,9 +57,10 @@ database dump before an update, Postgres major-version upgrades.
  └──────────────────────────────┘
         │ reads/writes
         ▼
- /srv/homespace/  (install directory)
+ ~/.local/share/homespace/  (install directory, owned by the invoking user)
    compose.yaml        generated from the template embedded in homespace-ctl
-   homespace.env       settings and secrets, mode 0600
+   homespace.env       settings (and secrets in env-file mode), mode 0600
+   secrets/            one file per secret, mode 0600 (default secrets mode)
    ctl.toml            engine, compose command, install choices
    db/  files/         bind-mounted data (when chosen)
 ```
@@ -82,9 +91,8 @@ no published database port, no database password on the host, and no access to t
 directory (which with rootless Podman or `user:` is owned by another uid). It also works
 unchanged for object storage later.
 
-Alternatives considered:
-- *Connect to Postgres from the host* over the published `127.0.0.1:5433`: version skew between
-  the host tool and the schema, needs the password, can't reach the blobs for `search reindex`.
+Postgres stays on the compose network only (decided), which rules out connecting to it from the
+host. Other alternatives considered:
 - *Go through the admin HTTP API*: needs an admin token, so it can't create the first admin,
   and the API has no tenant or reindex endpoints.
 - *Two binaries* (`homespace-admin` in the image, `homespace-ctl` on the host): cleaner
@@ -134,7 +142,8 @@ its own `compose.yaml` into the install directory from a template embedded in th
 - `env_file: homespace.env` on `app` instead of listing every variable. This matters for
   multi-tenancy: tenant *n*'s variables are `HOMESPACE_JWT_SECRET_2`, `HOMESPACE_OIDC_ISSUER_2`
   and so on, and a fixed `environment:` list can't pass names that aren't known in advance.
-- Postgres not published on the host by default.
+- No `ports:` on `db` at all: Postgres is reachable only on the compose network (decided). Database
+  tools (`psql`, `pg_dump`) run through `compose exec db`.
 - Bind mounts or named volumes, as chosen in setup (bind mounts are the default for a server so
   `du`, backups and the uid ownership of `compose.prod.yaml` keep working).
 - A `healthcheck` on `app` that calls `/api/v1/health` (needs a tiny probe, since the
@@ -155,15 +164,21 @@ it is written.
 
 First-time setup asks, in this order, with defaults so Enter-Enter-Enter gives a working server:
 
-1. Install directory (`/srv/homespace` as root, `~/.local/share/homespace` otherwise).
+1. Install directory (`~/.local/share/homespace` by default; any directory the user owns).
 2. Public URL (`https://files.example.com`), port to publish (8080), bind address
    (`127.0.0.1` behind a proxy, `0.0.0.0` otherwise), and whether a reverse proxy sets
    `X-Forwarded-For` (`HOMESPACE_TRUST_FORWARDED_FOR`).
-3. Where the database and files live (bind directories or named volumes), and which host user
-   owns them. As root it offers to create a system user `homespace` and the directories with
-   mode 700; rootless Podman uses `podman unshare chown` as the README describes.
-4. Secrets: `HOMESPACE_DB_PASSWORD` (URL-safe characters only, since it goes into
-   `DATABASE_URL`) and `HOMESPACE_JWT_SECRET` are generated.
+3. Where the database and files live (bind directories under the install directory by default,
+   or named volumes). **Rootless by default**: the containers run as the invoking user (rootless
+   Podman, or rootless Docker when that is what is installed), the directories are created with
+   mode 700 and owned through `podman unshare chown` so the uid inside the container maps to
+   them, and the template has no `user:` lines. Rootful Docker still works but the wizard warns
+   that the daemon runs as root and asks before continuing; root installs with a dedicated
+   system user are not offered in the first version. A publish port below 1024 needs
+   `net.ipv4.ip_unprivileged_port_start` or a reverse proxy; the wizard says so.
+4. Secrets: the storage mode (compose secrets, the default, or env file), then
+   `HOMESPACE_DB_PASSWORD` (URL-safe characters only, since it may go into `DATABASE_URL`) and
+   `HOMESPACE_JWT_SECRET` are generated.
 5. Sign-in: password login on/off, optional single sign-on (issuer, client id/secret, button
    name, required group); the issuer is checked by fetching its discovery document.
 6. Limits: max upload size, transfer TTL, user deletion delay (pre-filled, can be skipped).
@@ -171,14 +186,35 @@ First-time setup asks, in this order, with defaults so Enter-Enter-Enter gives a
    the first administrator (username + password typed twice, passed to the container on stdin
    via `--password-stdin`), and print the URL.
 
-**Secrets** go into `homespace.env` with mode 0600, owned by the user running the tool. The
-server already reads `HOMESPACE_JWT_SECRET_FILE`, so a later option is compose `secrets:` files
-instead (see open questions).
+**Secrets** have two modes, chosen in setup and switchable later from the settings screen:
+
+- **Compose secrets (default).** Each secret is a file in `secrets/` (mode 0600), declared under
+  top-level `secrets:` with `file:` and mounted into the containers at `/run/secrets/<name>`. The
+  env file only holds `..._FILE` paths. Values never appear in `docker inspect`, `compose
+  config` or the process environment.
+- **Env file.** Secrets are plain variables in `homespace.env` (mode 0600), as the README does
+  today. Simpler to edit by hand and to adopt existing installs with (D11).
+
+What compose secrets need from the server, since today only `HOMESPACE_JWT_SECRET_FILE` exists:
+
+- `_FILE` variants for every secret: `HOMESPACE_JWT_SECRET_PREVIOUS_FILE`,
+  `HOMESPACE_OIDC_CLIENT_SECRET_FILE`, and their per-tenant forms (`..._2_FILE`), read by the
+  same `TenantSecrets` seam the multi-tenancy work added.
+- The database password out of `DATABASE_URL`: a `HOMESPACE_DB_PASSWORD_FILE` (or
+  `DATABASE_URL_FILE`) that the server combines with a password-less URL. Postgres reads
+  `POSTGRES_PASSWORD_FILE` already.
+
+Compose implementations handle file secrets a little differently (Docker Compose bind-mounts
+them; podman-compose's support of `uid`/`gid`/`mode` has varied between releases, to be checked
+against the versions D3 accepts). With rootless containers the mounted file is owned by the invoking user, which is
+the uid the container runs as, so no `uid:` mapping is needed. The engine probe (D3) records
+whether secrets work and falls back to env-file mode with a warning if not.
 
 **Multi-tenancy.** The settings screen shows tenant 1 with the unsuffixed names (as the server
 reads them) and a tab per further tenant with the `_n` names. `tenant add` (forwarded into the
 container, D1) creates the row and domain; the TUI then opens that tenant's tab with a freshly
-generated JWT secret, writes `HOMESPACE_JWT_SECRET_<n>` etc. into `homespace.env`, switches
+generated JWT secret, writes `HOMESPACE_JWT_SECRET_<n>` (or `secrets/jwt_secret_<n>` and
+`HOMESPACE_JWT_SECRET_<n>_FILE`, adding the secret to the compose file) and the other settings, switches
 `HOMESPACE_TENANT_MODE` to `host` when a second tenant appears (after asking), and offers the
 restart the server needs (the multi-tenancy plan: tenant changes need a restart). The
 `ensure_distinct_secrets` check runs before writing.
@@ -285,6 +321,30 @@ The release workflow builds `homespace-ctl` for `x86_64-unknown-linux-musl` and
 server image. Optional later: an install script (`curl ... | sh` that only downloads and checks
 the binary), `.deb`/`.rpm` like the desktop client.
 
+### D11. Existing installs
+
+`homespace-ctl adopt [<dir>]` (also offered by the wizard when it finds one) takes over an install
+only when it matches one of the documented methods; anything else is reported as "not managed"
+and left untouched, and the tool's other commands refuse to touch it.
+
+Recognised:
+- the README "Running on a server" setup: a checkout with `compose.yaml` + `compose.prod.yaml`
+  and a `.env` next to them;
+- the README "Compose" setup: `compose.yaml` alone, named volumes `pgdata` and `files`;
+- an install made by `homespace-ctl` itself.
+
+Detection: the compose project's containers (`com.docker.compose.project` labels, `compose ls`)
+and their config files, compared with the known files of released versions by hash; local
+edits are shown as a diff and the user decides whether to keep or drop them.
+
+Adopting: stop the stack, write the image-based template (D4) keeping the same volumes or bind
+directories and the same project name, so no data moves; carry the `.env` over in env-file mode
+(switching to compose secrets is offered afterwards); remove the Postgres port mapping; pin
+`HOMESPACE_VERSION` to the version that was running; start and wait for healthy. The original
+files are kept as `*.pre-ctl` for going back. Installs that run as root with a `homespace`
+system user (the README's production setup) are adopted as they are, rootful, since moving the
+data to rootless ownership is a separate step the tool offers but doesn't force.
+
 ## Phases
 
 1. **Split**: `config` and `admin` crates, `ctl` binary with the migrated commands (D8) running
@@ -305,26 +365,20 @@ same version.
 ## Open questions
 
 1. **Name**: `homespace-ctl`, `hsctl` or `homespace admin` (a subcommand of one binary)?
-2. **One binary in two places (D1)** vs. the TUI on the host connecting to Postgres directly.
-   The plan picks forwarding into the container; is a published database port acceptable
-   instead?
-3. **Secrets**: plain `homespace.env` (0600) for the first version, or compose `secrets:` files
-   with the `_FILE` variants from the start? Podman-compose's secret support is limited.
-4. **Install directory and owner**: `/srv/homespace` run as root with a `homespace` system user,
-   or rootless by default (the tool's user owns everything)?
-5. **Existing installs** set up from the README (repo checkout, `compose.yaml` +
-   `compose.prod.yaml`, `build:`): should `homespace-ctl adopt` import their `.env` and switch
-   them to the image-based template, or only new installs?
-6. **Update channel**: only stable releases, or an opt-in for pre-releases?
-7. **Automatic updates**: out of scope, or a systemd timer that runs `update --yes` (with the
+2. **Adopted root installs (D11)**: adopt the README's rootful production setup as it is (the
+   plan), or require moving it to rootless first?
+3. **Database password**: `HOMESPACE_DB_PASSWORD_FILE` combined with the URL, or a whole
+   `DATABASE_URL_FILE`?
+4. **Update channel**: only stable releases, or an opt-in for pre-releases?
+5. **Automatic updates**: out of scope, or a systemd timer that runs `update --yes` (with the
    dump) at night?
-8. **Rollback**: is restoring the pre-update dump acceptable when migrations ran, given writes
+6. **Rollback**: is restoring the pre-update dump acceptable when migrations ran, given writes
    made after the update are lost?
-9. **Remote management**: should the TUI manage a server over SSH from a laptop
+7. **Remote management**: should the TUI manage a server over SSH from a laptop
    (`--host ssh://server`, using `DOCKER_HOST`/`CONTAINER_HOST`), or always run on the server?
-10. **Deprecation**: keep `homespace user ...` working for one release (the plan), or drop it at
-    once since there are few installs?
-11. **Reverse proxy**: should setup also write a Caddy or nginx config, or only print a sample?
-12. **systemd**: for rootless Podman, generate a Quadlet / `systemctl --user` unit so the server
-    starts at boot (compose `restart: unless-stopped` doesn't survive a reboot there without
-    `podman-restart.service`)?
+8. **Deprecation**: keep `homespace user ...` working for one release (the plan), or drop it at
+   once since there are few installs?
+9. **Reverse proxy**: should setup also write a Caddy or nginx config, or only print a sample?
+10. **systemd**: for rootless Podman, generate a Quadlet / `systemctl --user` unit so the server
+   starts at boot (compose `restart: unless-stopped` doesn't survive a reboot there without
+   `podman-restart.service`)?
