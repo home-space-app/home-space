@@ -75,6 +75,9 @@ pub async fn tenant_settings(
         oidc_issuer: get("HOMESPACE_OIDC_ISSUER").await?,
         oidc_client_id: get("HOMESPACE_OIDC_CLIENT_ID").await?,
         oidc_client_secret: get("HOMESPACE_OIDC_CLIENT_SECRET").await?,
+        oidc_client_secret_file: get("HOMESPACE_OIDC_CLIENT_SECRET_FILE")
+            .await?
+            .map(PathBuf::from),
         oidc_scopes: get("HOMESPACE_OIDC_SCOPES")
             .await?
             .unwrap_or_else(|| DEFAULT_OIDC_SCOPES.to_owned()),

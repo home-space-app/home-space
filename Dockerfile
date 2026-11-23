@@ -12,13 +12,15 @@ RUN trunk build --release
 FROM toolchain AS server
 COPY shared shared
 COPY server server
+COPY docs/nginx docs/nginx
 WORKDIR /workspace/server
-RUN cargo build --release -p app \
+RUN cargo build --release -p app -p ctl \
     && mkdir /out-data
 
 FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:2c362104c7f7adc37e6bdc87451450ff3834871a6268d930815cbe561493f947 AS runtime
 COPY --from=server --chown=65532:65532 /out-data /data
 COPY --from=server /workspace/server/target/release/homespace /usr/local/bin/homespace
+COPY --from=server /workspace/server/target/release/homespace-ctl /usr/local/bin/homespace-ctl
 COPY --from=web /workspace/clients/web/dist /srv/web
 USER 65532:65532
 ENV HOMESPACE_BIND=0.0.0.0:8080 \

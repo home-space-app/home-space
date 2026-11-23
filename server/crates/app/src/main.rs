@@ -21,7 +21,8 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     cli.config.validate()?;
-    let db = Db::connect(&cli.config.database_url)
+    let db_password = cli.config.db_password()?;
+    let db = Db::connect_with_password(&cli.config.database_url, db_password.as_deref())
         .await
         .context("connecting to database")?;
     db.migrate().await.context("running migrations")?;
