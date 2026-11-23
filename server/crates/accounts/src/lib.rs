@@ -6,5 +6,5 @@ mod devices;
 mod error;
 
 pub use accounts::{AccountService, StorageReport};
-pub use devices::DeviceService;
+pub use devices::{DeviceService, SERVER_VERSION};
 pub use error::AccountError;

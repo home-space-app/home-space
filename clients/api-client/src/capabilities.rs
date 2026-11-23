@@ -1,6 +1,8 @@
 //! What the server supports (`/capabilities`), read once a session starts.
 
-use protocol::{Capabilities, ErrorCode, Me, TicketRequest, TicketResponse, paths};
+use protocol::{
+    Capabilities, Compatibility, ErrorCode, Me, TicketRequest, TicketResponse, compat, paths,
+};
 
 use crate::{ApiError, Client};
 
@@ -51,6 +53,24 @@ impl Client {
             }
             result => result,
         }
+    }
+
+    /// The server's version, as read on sign-in; `None` before that, when it could not be
+    /// read, or for a server from before 0.13.0.
+    pub fn server_version(&self) -> Option<String> {
+        self.capabilities()?.version
+    }
+
+    /// How a client of `version` that requires `requires` fits this server; `None` when the
+    /// server's capabilities could not be read, so nothing is shown rather than a guess.
+    pub fn compatibility(&self, version: &str, requires: &[&str]) -> Option<Compatibility> {
+        let capabilities = self.capabilities()?;
+        Some(compat::check(
+            capabilities.version.as_deref(),
+            &capabilities.features,
+            version,
+            requires,
+        ))
     }
 
     /// Finishes a sign-in: reads the server's capabilities, then returns the user. A server

@@ -301,6 +301,8 @@ mod tests {
             uploads: 0,
             visibility: DeviceVisibility::Owner,
             visible_to: Vec::new(),
+            version: None,
+            compatibility: None,
         };
         assert_eq!(visible_to(&device), "Only you");
         device.visibility = DeviceVisibility::Users;

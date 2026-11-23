@@ -17,3 +17,5 @@ uuid = { version = "1.29.0", features = ["serde"] }
 
 [dev-dependencies]
 serde_json = "1.0.154"
+
+[lints]

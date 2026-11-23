@@ -19,6 +19,7 @@
   --color-danger: light-dark(#c0362c, #ff8a80);
   --color-danger-soft: color-mix(in oklab, var(--color-danger) 12%, transparent);
   --color-success: light-dark(#15803d, #5fd39a);
+  --color-warning: light-dark(#b45309, #fbbf24);
   --color-backdrop: rgb(8 10 14 / 0.55);
   --color-shadow: light-dark(rgb(16 24 40 / 0.08), rgb(0 0 0 / 0.45));
 

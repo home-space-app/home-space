@@ -60,6 +60,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import uniffi.homespace_core.appVersion
+import uniffi.homespace_core.updateLabels
 import uniffi.homespace_core.CoreException
 import uniffi.homespace_core.CurrentUpload
 import uniffi.homespace_core.OfflineStatus
@@ -100,6 +102,8 @@ fun SettingsScreen(
     var settings by remember { mutableStateOf(auto.settings()) }
     var batteryHint by remember { mutableStateOf(false) }
     var choosingTheme by remember { mutableStateOf(false) }
+    var checksForUpdates by remember { mutableStateOf(UpdatePrefs.checks(context)) }
+    val updateLabels = remember { updateLabels() }
     val sources = remember(changes) { runCatching { auto.sources() }.getOrDefault(emptyList()) }
     val offline by produceState<OfflineStatus?>(null, changes) {
         value = runCatching { session.client.offlineStatus() }.getOrNull()
@@ -221,6 +225,25 @@ fun SettingsScreen(
                     ),
                 )
             }
+            SectionHeader("About")
+            ListItem(
+                leadingContent = { LeadingIcon(R.drawable.ic_info) },
+                headlineContent = { Text(updateLabels.checkSetting) },
+                supportingContent = { Text(updateLabels.checkSettingHint) },
+                trailingContent = { Switch(checked = checksForUpdates, onCheckedChange = null) },
+                modifier = Modifier.toggleable(
+                    value = checksForUpdates,
+                    role = Role.Switch,
+                    onValueChange = {
+                        UpdatePrefs.setChecks(context, it)
+                        checksForUpdates = it
+                    },
+                ),
+            )
+            ListItem(
+                leadingContent = { LeadingIcon(R.drawable.ic_smartphone) },
+                headlineContent = { Text("Home Space ${appVersion()}") },
+            )
         }
     }
 

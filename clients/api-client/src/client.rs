@@ -674,11 +674,11 @@ impl Client {
     }
 
     pub(crate) fn capabilities(&self) -> Option<Capabilities> {
-        *self
-            .shared
+        self.shared
             .capabilities
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     pub(crate) fn set_capabilities(&self, capabilities: Option<Capabilities>) {

@@ -14,6 +14,15 @@ struct ProfileView: View {
                 LabeledContent("Username", value: user.username)
                 LabeledContent("Server", value: client.baseUrl())
             }
+            if let check = client.versionCheck() {
+                Section {
+                    VersionRow(check: check)
+                } header: {
+                    Text("Version")
+                } footer: {
+                    Text(check.hint)
+                }
+            }
             Section {
                 if let error {
                     Text(error).foregroundStyle(.red)
@@ -77,6 +86,16 @@ private struct DeviceRow: View {
                 Text("\(platformName(device.platform)) · \(status)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let version = device.versionLabel {
+                    HStack(spacing: 4) {
+                        if let tone = device.versionTone {
+                            VersionDot(tone: tone, size: 6)
+                        }
+                        Text(version)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
             Spacer()
             if device.online {

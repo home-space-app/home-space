@@ -12,6 +12,10 @@ pub struct NewDevice<'a> {
     pub id: Uuid,
     pub name: &'a str,
     pub platform: &'a str,
+    /// The client's version, when it sent one.
+    pub version: Option<&'a str>,
+    /// The server features the client requires.
+    pub requires: &'a [String],
 }
 
 /// A device of a user.
@@ -28,6 +32,10 @@ pub struct Device {
     pub uploads: i64,
     /// Who can see it and send files to it.
     pub visibility: DeviceVisibility,
+    /// The client version it last signed in or connected with.
+    pub client_version: Option<String>,
+    /// The server features that client requires.
+    pub client_requires: Vec<String>,
 }
 
 /// A device another user (or its owner) can send files to.
@@ -71,14 +79,40 @@ impl Db {
         device: NewDevice<'_>,
     ) -> Result<(), DbError> {
         sqlx::query(
-            "INSERT INTO devices (user_id, id, name, platform) VALUES ($1, $2, $3, $4) \
+            "INSERT INTO devices (user_id, id, name, platform, client_version, client_requires) \
+             VALUES ($1, $2, $3, $4, $5, $6) \
              ON CONFLICT (user_id, id) DO UPDATE \
-             SET platform = EXCLUDED.platform, last_seen_at = now()",
+             SET platform = EXCLUDED.platform, client_version = EXCLUDED.client_version, \
+             client_requires = EXCLUDED.client_requires, last_seen_at = now()",
         )
         .bind(user)
         .bind(device.id)
         .bind(device.name)
         .bind(device.platform)
+        .bind(device.version)
+        .bind(device.requires)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
+    /// Records the client version and requirements device `id` of `user` connected with,
+    /// for a client updated without signing in again.
+    pub async fn set_device_client(
+        &self,
+        user: UserId,
+        id: Uuid,
+        version: Option<&str>,
+        requires: &[String],
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE devices SET client_version = $3, client_requires = $4 \
+             WHERE user_id = $1 AND id = $2",
+        )
+        .bind(user)
+        .bind(id)
+        .bind(version)
+        .bind(requires)
         .execute(self.pool())
         .await?;
         Ok(())
@@ -91,7 +125,8 @@ impl Db {
              EXISTS (SELECT 1 FROM sessions s WHERE s.user_id = d.user_id \
                      AND s.device_id = d.id AND s.expires_at > now()) AS signed_in, \
              (SELECT count(*) FROM uploads u WHERE u.owner_id = d.user_id \
-              AND u.device_id = d.id) AS uploads, d.visibility \
+              AND u.device_id = d.id) AS uploads, d.visibility, d.client_version, \
+             d.client_requires \
              FROM devices d WHERE d.user_id = $1 ORDER BY d.last_seen_at DESC, d.id",
         )
         .bind(user)

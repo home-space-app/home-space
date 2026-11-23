@@ -72,6 +72,10 @@ impl State {
         } else {
             shown
         };
+        let shown: Element<'_, Message> = match self.versions.banner() {
+            Some(banner) => column![banner, shown].spacing(SPACING).into(),
+            None => shown,
+        };
         let main = container(shown)
             .padding(MAIN_PADDING)
             .width(Length::Fill)
@@ -86,10 +90,12 @@ impl State {
             .map(|toast| toast.map(Message::Transfers));
         let panel =
             (!self.transfers.is_empty()).then(|| self.transfers.view().map(Message::Transfer));
-        if toast.is_some() || panel.is_some() {
+        let update = self.versions.toast();
+        if toast.is_some() || panel.is_some() || update.is_some() {
             layers.push(
                 container(
                     column![]
+                        .push(update)
                         .push(toast)
                         .push(panel)
                         .spacing(SPACING)

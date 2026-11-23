@@ -13,6 +13,7 @@ mod sso;
 mod sync;
 mod theme;
 mod transfers;
+mod update_prefs;
 mod viewers;
 
 const APP_TITLE: &str = "Home Space";

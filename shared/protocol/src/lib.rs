@@ -4,11 +4,13 @@ mod admin;
 mod auth;
 mod capabilities;
 mod change;
+pub mod compat;
 mod device;
 mod duplicates;
 pub mod encoding;
 mod error;
 mod event;
+pub mod features;
 mod health;
 mod ids;
 mod node;
@@ -25,6 +27,7 @@ mod transfer;
 mod trash;
 mod upload;
 mod validate;
+pub mod version;
 
 pub use admin::{Account, AccountDevice, CreateAccount, SetPassword, UpdateAccount};
 pub use auth::{
@@ -34,6 +37,7 @@ pub use auth::{
 };
 pub use capabilities::Capabilities;
 pub use change::{Change, ChangesQuery, ChangesResponse};
+pub use compat::{Compatibility, Incompatibility, Newer};
 pub use device::{
     Device, DeviceInfo, DeviceVisibility, PLATFORM_ANDROID, PLATFORM_IOS, PLATFORM_LINUX,
     PLATFORM_MACOS, PLATFORM_WEB, PLATFORM_WINDOWS, RenameDevice, SetDeviceVisibility,
@@ -69,3 +73,4 @@ pub use transfer::{
 pub use trash::{RestoreRequest, TrashItem};
 pub use upload::{ChunkResult, CreateUpload, UploadInfo, UploadSession, UploadsQuery};
 pub use validate::Validate;
+pub use version::Version;

@@ -380,6 +380,8 @@ mod tests {
                 id: phone,
                 name: "Phone",
                 platform: "android",
+                version: None,
+                requires: &[],
             },
         )
         .await

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::UserId;
+use crate::{Compatibility, UserId};
 
 /// Platform of a desktop client on Linux.
 pub const PLATFORM_LINUX: &str = "desktop-linux";
@@ -26,6 +26,12 @@ pub struct DeviceInfo {
     pub name: String,
     /// One of the `PLATFORM_*` values, or another short name.
     pub platform: String,
+    /// The client's version. Clients from before 0.13.0 do not send it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// The [`crate::features`] the client cannot work without.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<String>,
 }
 
 /// A device of the user, from `GET /devices`.
@@ -53,6 +59,13 @@ pub struct Device {
     /// With [`DeviceVisibility::Users`], the other users who can.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub visible_to: Vec<UserRef>,
+    /// The client version the device last signed in or connected with; `None` for one that
+    /// has not done so since 0.13.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// How the device's client fits this server, when its version is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility: Option<Compatibility>,
 }
 
 /// Body of `PATCH /devices/{id}`.

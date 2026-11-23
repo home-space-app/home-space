@@ -15,6 +15,8 @@ async fn login_names_the_device_the_client_was_given() {
         id: Uuid::from_u128(7),
         name: "Laptop".to_owned(),
         platform: PLATFORM_LINUX.to_owned(),
+        version: Some("0.13.0".to_owned()),
+        requires: Vec::new(),
     };
     Mock::given(method("POST"))
         .and(path(paths::LOGIN))

@@ -19,6 +19,11 @@ const SHARED_REFRESH_GRACE: Duration = Duration::seconds(10);
 /// behind re-checks its session anyway.
 const ENDED_CAPACITY: usize = 64;
 const MAX_PLATFORM_CHARS: usize = 32;
+/// Longest client version kept, such as `1.0.0-rc.1`.
+const MAX_VERSION_CHARS: usize = 64;
+/// Most required features a client may name, and the longest name kept.
+const MAX_REQUIRES: usize = 64;
+const MAX_FEATURE_CHARS: usize = 64;
 
 /// The sessions of one tenant's users.
 #[derive(Clone, Debug)]
@@ -267,6 +272,10 @@ impl Sessions {
         device: &DeviceInfo,
     ) -> Result<Uuid, AuthError> {
         if let Some(current) = grant.device_id {
+            let client = new_device(device)?;
+            self.db
+                .set_device_client(grant.user_id, current, client.version, client.requires)
+                .await?;
             return Ok(current);
         }
         let device = new_device(device)?;
@@ -311,21 +320,43 @@ impl Sessions {
 }
 
 /// `device` checked against what the server stores: a name of 1-100 characters, kept without
-/// surrounding blanks, and a platform of 1-32.
+/// surrounding blanks, a platform of 1-32, a version of at most 64 and at most 64 required
+/// features of at most 64 each.
 fn new_device(device: &DeviceInfo) -> Result<NewDevice<'_>, AuthError> {
     let name = device_name(&device.name).ok_or(AuthError::InvalidInput(
         "device name must be 1-100 characters",
     ))?;
     let platform = device.platform.trim();
-    if (1..=MAX_PLATFORM_CHARS).contains(&platform.chars().count()) {
-        Ok(NewDevice {
-            id: device.id,
-            name,
-            platform,
-        })
-    } else {
-        Err(AuthError::InvalidInput(
+    if !(1..=MAX_PLATFORM_CHARS).contains(&platform.chars().count()) {
+        return Err(AuthError::InvalidInput(
             "device platform must be 1-32 characters",
-        ))
+        ));
     }
+    let version = device
+        .version
+        .as_deref()
+        .map(str::trim)
+        .filter(|version| !version.is_empty());
+    if version.is_some_and(|version| version.chars().count() > MAX_VERSION_CHARS) {
+        return Err(AuthError::InvalidInput(
+            "client version must be at most 64 characters",
+        ));
+    }
+    if device.requires.len() > MAX_REQUIRES
+        || device
+            .requires
+            .iter()
+            .any(|feature| feature.chars().count() > MAX_FEATURE_CHARS)
+    {
+        return Err(AuthError::InvalidInput(
+            "a client may require at most 64 features of at most 64 characters",
+        ));
+    }
+    Ok(NewDevice {
+        id: device.id,
+        name,
+        platform,
+        version,
+        requires: &device.requires,
+    })
 }

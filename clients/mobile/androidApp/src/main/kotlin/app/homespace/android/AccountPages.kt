@@ -48,6 +48,7 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
@@ -56,6 +57,7 @@ import uniffi.homespace_core.CoreException
 import uniffi.homespace_core.QueuedUploadState
 import uniffi.homespace_core.TransferStatus
 import uniffi.homespace_core.UserDevice
+import uniffi.homespace_core.VersionCheck
 
 private const val PLATFORM_ANDROID = "android"
 private const val PLATFORM_IOS = "ios"
@@ -67,6 +69,8 @@ private const val PLATFORM_WEB = "web"
 private val PROFILE_AVATAR_SIZE = 72.dp
 private val BUTTON_HEIGHT = 48.dp
 private val AUDIENCE_ICON_SIZE = 16.dp
+/** Above the navigation bar (80) and the New button (56) with their margins. */
+private val UPDATE_CARD_BOTTOM = 164.dp
 
 /** The top-level destinations, in the navigation bar. */
 private enum class Tab(val title: String, val icon: Int, val selectedIcon: Int) {
@@ -110,7 +114,10 @@ fun SignedInScreen(session: Session.SignedIn, model: SessionViewModel) {
             model.showTransfers = false
         }
     }
+    val context = LocalContext.current
+    LaunchedEffect(Unit) { UpdateCheck.run(context) }
     val viewer = model.viewer
+    Box(modifier = Modifier.fillMaxSize()) {
     if (viewer != null) {
         ViewerScreen(session, model, viewer)
     } else when (page) {
@@ -140,6 +147,18 @@ fun SignedInScreen(session: Session.SignedIn, model: SessionViewModel) {
                 Tab.SETTINGS -> SettingsScreen(session, model, navigationBar, onOpenPage = { page = it })
             }
         }
+    }
+    // Over the tabs only, above the navigation bar and the New button.
+    val offer = UpdateCheck.offer
+    if (offer != null && viewer == null && page == null) {
+        UpdateCard(
+            offer = offer,
+            onClose = { UpdateCheck.offer = null },
+            onSkip = { UpdatePrefs.skip(context, offer.version) },
+            onOpen = { openLink(context, offer.url) },
+            modifier = Modifier.align(Alignment.BottomCenter).padding(start = 16.dp, end = 16.dp, bottom = UPDATE_CARD_BOTTOM),
+        )
+    }
     }
 
     // Here, because signing out and removing a copy are asked for from more than one screen.
@@ -236,6 +255,8 @@ private fun ProfileScreen(session: Session.SignedIn, model: SessionViewModel, on
     var renaming by remember { mutableStateOf<UserDevice?>(null) }
     var choosing by remember { mutableStateOf<UserDevice?>(null) }
     var ending by remember { mutableStateOf<Pair<UserDevice, DeviceEnding>?>(null) }
+    val versionCheck = remember(session.client) { session.client.versionCheck() }
+    var showingVersion by remember { mutableStateOf(false) }
     val changed = {
         renaming = null
         choosing = null
@@ -245,7 +266,7 @@ private fun ProfileScreen(session: Session.SignedIn, model: SessionViewModel, on
     SubPageScaffold(title = "Profile", onBack = onBack) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
             LazyColumn(modifier = Modifier.weight(1f)) {
-                item { ProfileHeader(session) }
+                item { ProfileHeader(session, versionCheck, onVersion = { showingVersion = true }) }
                 item { HorizontalDivider() }
                 if (devices?.isNotEmpty() == true) {
                     item { SectionHeader("Devices") }
@@ -273,6 +294,9 @@ private fun ProfileScreen(session: Session.SignedIn, model: SessionViewModel, on
                 Text("Sign out")
             }
         }
+    }
+    if (showingVersion && versionCheck != null) {
+        VersionSheet(versionCheck, onDismiss = { showingVersion = false })
     }
     renaming?.let { device ->
         RenameDeviceDialog(
@@ -305,7 +329,7 @@ private fun ProfileScreen(session: Session.SignedIn, model: SessionViewModel, on
 }
 
 @Composable
-private fun ProfileHeader(session: Session.SignedIn) {
+private fun ProfileHeader(session: Session.SignedIn, versionCheck: VersionCheck?, onVersion: () -> Unit) {
     Column(
         modifier = Modifier.fillMaxWidth().padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -336,6 +360,7 @@ private fun ProfileHeader(session: Session.SignedIn) {
                 )
             }
         }
+        versionCheck?.let { VersionChip(it, onVersion) }
     }
 }
 
@@ -374,6 +399,15 @@ private fun DeviceRow(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                }
+                device.versionLabel?.let { version ->
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        device.versionTone?.let { VersionDot(it, small = true) }
+                        Text(version, style = MaterialTheme.typography.bodyMedium.tabular(), maxLines = 1)
+                    }
                 }
             }
         },

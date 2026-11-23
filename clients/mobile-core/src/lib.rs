@@ -31,6 +31,7 @@ mod shares;
 mod transfers;
 mod trash;
 mod uploads;
+mod version;
 mod viewers;
 
 pub use autoupload::{
@@ -43,6 +44,7 @@ pub use files::DownloadListener;
 pub use offline::{OfflineProblem, OfflineState, OfflineStatus};
 pub use shares::{ShareExpiry, ShareForm, ShareFormState, ShareSaved};
 pub use transfers::{SendFile, SendTarget, TransferLists, TransferRow, TransferStatus};
+pub use version::{UpdateLabels, UpdateOffer, VersionCheck, VersionTone};
 pub use viewers::{Gallery, ImageFile, PdfFile, TextFile, TextFormat, ViewerInfo, ViewerKind};
 
 uniffi::setup_scaffolding!();
@@ -715,6 +717,11 @@ fn device_info(device: DeviceIdentity) -> Result<DeviceInfo, CoreError> {
             name
         },
         platform: PLATFORM.to_owned(),
+        version: Some(version::VERSION.to_owned()),
+        requires: version::REQUIRES
+            .iter()
+            .map(|feature| (*feature).to_owned())
+            .collect(),
     })
 }
 

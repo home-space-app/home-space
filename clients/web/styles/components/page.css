@@ -434,3 +434,20 @@
     width: auto;
   }
 }
+
+/* A setting: what it does on the left, its switch on the right. */
+.setting {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.setting__text {
+  flex: 1;
+}
+
+.setting__label {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 500;
+}

@@ -68,10 +68,12 @@ data class ExtendedColors(
     val success: Color,
     val successContainer: Color,
     val onSuccessContainer: Color,
+    /** Versions that differ but work together. */
+    val warning: Color,
 )
 
-private val ExtendedLight = ExtendedColors(Color(0xFF15803D), Color(0xFFC8F2D3), Color(0xFF00391B))
-private val ExtendedDark = ExtendedColors(Color(0xFF5FD39A), Color(0xFF00522A), Color(0xFFC8F2D3))
+private val ExtendedLight = ExtendedColors(Color(0xFF15803D), Color(0xFFC8F2D3), Color(0xFF00391B), Color(0xFFB45309))
+private val ExtendedDark = ExtendedColors(Color(0xFF5FD39A), Color(0xFF00522A), Color(0xFFC8F2D3), Color(0xFFFBBF24))
 
 val LocalExtendedColors = staticCompositionLocalOf { ExtendedLight }
 

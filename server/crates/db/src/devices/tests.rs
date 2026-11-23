@@ -7,6 +7,8 @@ fn device(id: Uuid) -> NewDevice<'static> {
         id,
         name: LAPTOP,
         platform: "desktop-linux",
+        version: None,
+        requires: &[],
     }
 }
 

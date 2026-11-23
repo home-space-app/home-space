@@ -18,5 +18,7 @@ pub mod sso;
 pub mod storage;
 pub mod text;
 pub mod transfers;
+pub mod update;
 pub mod uri_list;
+pub mod versions;
 pub mod viewers;

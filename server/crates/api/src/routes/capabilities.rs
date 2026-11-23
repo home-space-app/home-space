@@ -14,5 +14,10 @@ async fn capabilities(State(state): State<AppState>, _user: AuthUser) -> Json<Ca
     Json(Capabilities {
         upload_chunk_bytes: state.files.uploads.chunk_bytes(),
         stream_tickets: true,
+        version: Some(accounts::SERVER_VERSION.to_owned()),
+        features: protocol::features::ALL
+            .iter()
+            .map(|feature| (*feature).to_owned())
+            .collect(),
     })
 }

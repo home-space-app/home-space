@@ -11,6 +11,7 @@ mod pages;
 mod route;
 mod save_file;
 mod session;
+mod update;
 mod upload;
 mod uploads;
 mod viewers;

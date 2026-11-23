@@ -163,6 +163,8 @@ mod tests {
             uploads,
             visibility: Default::default(),
             visible_to: Vec::new(),
+            version: None,
+            compatibility: None,
         }
     }
 

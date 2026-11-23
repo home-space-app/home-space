@@ -201,3 +201,30 @@
     min-height: var(--touch-target);
   }
 }
+
+/* How the device's client version fits this server: green, yellow or red. */
+.version-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+
+.version-dot--same {
+  background: var(--color-success);
+}
+
+.version-dot--warning {
+  background: var(--color-warning);
+}
+
+.version-dot--error {
+  background: var(--color-danger);
+}
+
+.device-version {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

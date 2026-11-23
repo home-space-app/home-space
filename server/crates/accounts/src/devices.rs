@@ -8,11 +8,24 @@ use events::{DomainEvent, Events};
 use files::UploadService;
 use notifications::Hub;
 use protocol::{
-    Device, DeviceVisibility, RenameDevice, SetDeviceVisibility, TargetDevice, TransferTarget,
-    UserRef,
+    Compatibility, Device, DeviceVisibility, RenameDevice, SetDeviceVisibility, TargetDevice,
+    TransferTarget, UserRef,
 };
 
 use crate::AccountError;
+
+/// This server's version, which every crate of the workspace shares.
+pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// How a client of `version` that requires `requires` fits this server.
+fn client_compatibility(version: &str, requires: &[String]) -> Compatibility {
+    protocol::compat::check(
+        Some(SERVER_VERSION),
+        protocol::features::ALL,
+        version,
+        requires,
+    )
+}
 
 /// The devices users sign in from: who sees them, and which are online.
 #[derive(Clone, Debug)]
@@ -68,6 +81,11 @@ impl DeviceService {
                 last_seen_at: device.last_seen_at,
                 signed_in: device.signed_in,
                 uploads: device.uploads,
+                compatibility: device
+                    .client_version
+                    .as_deref()
+                    .map(|version| client_compatibility(version, &device.client_requires)),
+                version: device.client_version,
             })
             .collect())
     }

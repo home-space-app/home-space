@@ -83,6 +83,14 @@ struct MainTabs: View {
             ExportPicker(url: export.url) { model.exportFinished() }
                 .ignoresSafeArea()
         }
+        .overlay(alignment: .bottom) {
+            if let offer = UpdateCheck.shared.offer {
+                // Above the tab bar.
+                UpdateCard(offer: offer)
+                    .padding(.bottom, 60)
+            }
+        }
+        .task { await UpdateCheck.shared.run() }
         .modifier(TransferDialogs(center: model.transfers))
         .alert(
             "Something went wrong",

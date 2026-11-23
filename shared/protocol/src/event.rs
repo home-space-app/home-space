@@ -80,6 +80,8 @@ mod tests {
                 id: Uuid::nil(),
                 name: "Laptop".to_owned(),
                 platform: crate::PLATFORM_LINUX.to_owned(),
+                version: None,
+                requires: Vec::new(),
             },
         };
         let json = serde_json::to_string(&hello).expect("json");

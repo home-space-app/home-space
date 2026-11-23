@@ -24,6 +24,7 @@ mod toolbar;
 mod transfer_list;
 mod transfer_save;
 mod trash;
+mod version;
 mod viewer;
 mod visibility;
 
@@ -119,6 +120,8 @@ pub enum Message {
     Devices(devices::Message),
     OpenTransfers,
     Transfers(transfer_list::Message),
+    /// The version chip, banner and "New version available" toast.
+    Version(version::Message),
     Transfer(transfers::Message),
     Shortcut(Shortcut),
     Modifiers(Modifiers),
@@ -208,11 +211,14 @@ pub struct State {
     transfer_list: TransferList,
     /// Where the user went from unsaved edits in the viewer, while asked whether to drop them.
     leave_to: Option<Box<Message>>,
+    versions: version::Versions,
 }
 
 impl State {
     pub fn open(client: Client, me: Me) -> (Self, Task<Message>) {
+        let (versions, check) = version::Versions::new(&client);
         let mut state = Self {
+            versions,
             transfer_list: TransferList::new(me.id, me.lost_and_found_id),
             had_session: client.access_token().is_some(),
             client,
@@ -243,6 +249,7 @@ impl State {
             state.folder.load(&state.client),
             state.load_lost_and_found(),
             transfers.map(Message::Transfers),
+            check.map(Message::Version),
             size,
         ]);
         (state, task)
@@ -444,6 +451,10 @@ impl State {
                     .update(&self.client, transfer_list::Message::Save(id))
                     .map(Message::Transfers);
                 Task::batch([open, save])
+            }
+            Message::Version(message) => {
+                self.versions.update(message);
+                Task::none()
             }
             Message::Transfers(message) => self
                 .transfer_list

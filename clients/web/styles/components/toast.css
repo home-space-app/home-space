@@ -78,3 +78,12 @@
     margin-bottom: calc(var(--space-3) + var(--safe-bottom));
   }
 }
+
+/* The title's text takes the room left by the close button after it. */
+.toast__grow {
+  flex: 1;
+}
+
+.toast__close {
+  margin: -4px -6px -4px 0;
+}

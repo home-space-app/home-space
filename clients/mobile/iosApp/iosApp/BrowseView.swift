@@ -14,6 +14,8 @@ struct BrowseView: View {
     let client: CoreClient
     let user: SignedInUser
     @State private var path: [FolderRoute] = []
+    @State private var versionCheck: VersionCheck?
+    @State private var bannerShown = false
     private var router = AppRouter.shared
 
     var body: some View {
@@ -24,6 +26,18 @@ struct BrowseView: View {
                         model: model, client: client, user: user, folderId: route.id, title: route.title,
                         path: $path)
                 }
+        }
+        .safeAreaInset(edge: .top) {
+            if bannerShown, let check = versionCheck {
+                VersionBanner(check: check) {
+                    UpdatePrefs.dismissBanner(for: check)
+                    bannerShown = false
+                }
+            }
+        }
+        .onAppear {
+            versionCheck = client.versionCheck()
+            bannerShown = UpdatePrefs.showsBanner(for: versionCheck)
         }
         .onChange(of: router.openFolder, initial: true) { _, route in
             guard let route else { return }

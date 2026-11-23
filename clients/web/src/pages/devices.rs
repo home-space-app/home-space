@@ -7,6 +7,7 @@ use client_core::{
         REMOVE_DEVICE_HINT, THIS_DEVICE, device_state, platform, remove_question, sign_out_question,
     },
     transfers::visible_to,
+    versions::{self, Tone},
 };
 use protocol::{Device, DeviceVisibility, Event};
 
@@ -147,6 +148,9 @@ pub fn DevicesPage(auth: Auth) -> impl IntoView {
                                 "Visible to"
                             </th>
                             <th class="node-table__header-cell node-table__header-cell--modified">
+                                "Version"
+                            </th>
+                            <th class="node-table__header-cell node-table__header-cell--modified">
                                 "Last seen"
                             </th>
                             <th class="node-table__header-cell node-table__cell--actions"></th>
@@ -165,6 +169,7 @@ pub fn DevicesPage(auth: Auth) -> impl IntoView {
                                     device.visibility,
                                     device.visible_to.clone(),
                                     device.last_seen_at,
+                                    device.version.clone(),
                                 )
                             }
                             children=move |device| {
@@ -245,10 +250,19 @@ fn DeviceRow(
     } else {
         platform(&device.platform).to_owned()
     };
+    let version = versions::device_version(&device).map(str::to_owned);
+    let dot = versions::device_tone(&device).map(|tone| match tone {
+        Tone::Same => "version-dot version-dot--same",
+        Tone::Warning => "version-dot version-dot--warning",
+        Tone::Error => "version-dot version-dot--error",
+    });
     let last_seen = short_date(device.last_seen_at);
     let state = device_state(&device);
     let visibility = visible_to(&device);
-    let meta = format!("{kind} · {state} · {visibility}");
+    let meta = match &version {
+        Some(version) => format!("{kind} · {state} · {visibility} · {version}"),
+        None => format!("{kind} · {state} · {visibility}"),
+    };
     // The current device signs out with the account menu; one that is signed out and left
     // nothing behind has nothing to end.
     let can_sign_out = !device.current && (device.signed_in || device.uploads > 0);
@@ -342,6 +356,12 @@ fn DeviceRow(
                 <span class="device-visibility" class:device-visibility--hidden=hidden>
                     <Icon name=visibility_icon />
                     {visibility.clone()}
+                </span>
+            </td>
+            <td class="node-table__cell node-table__cell--modified">
+                <span class="device-version">
+                    {dot.map(|class| view! { <span class=class aria-hidden="true"></span> })}
+                    {version.clone()}
                 </span>
             </td>
             <td class="node-table__cell node-table__cell--modified">{last_seen.clone()}</td>

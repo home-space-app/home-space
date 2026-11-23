@@ -170,7 +170,7 @@ one.
 | GET | `/admin/users/{id}/devices` | the account's devices, most recently seen first |
 | DELETE | `/admin/users/{id}` | marks the account for deletion `HOMESPACE_USER_DELETION_DELAY_MINUTES` from now and signs it out; a background job then deletes it with all its files |
 | DELETE | `/admin/users/{id}/deletion` | cancels a pending deletion |
-| GET | `/capabilities` | what the server supports: `{upload_chunk_bytes}`, the largest request body of an upload |
+| GET | `/capabilities` | what the server supports: `{upload_chunk_bytes, stream_tickets, version, features}`; see [docs/versioning.md](docs/versioning.md) |
 | GET | `/nodes?parent_id=` | list folder (root when omitted) |
 | GET / PATCH / DELETE | `/nodes/{id}` | metadata / rename or move / delete (to the recycle bin; 409 for Lost & Found) |
 | POST | `/nodes/move` | `{ids, parent_id, on_conflict?}` → `{moved, skipped, conflicts, target}`; `on_conflict` is `abort` (default: report clashes, change nothing), `override` (merge) or `skip` (destination untouched, clashing files go to the recycle bin) |
@@ -181,7 +181,7 @@ one.
 | PATCH | `/uploads/{id}` | raw-body chunk with `Upload-Offset: N` → `{offset, node?}`; 409 with the right offset on a mismatch, `node` once complete |
 | GET / HEAD / DELETE | `/uploads/{id}` | current offset (also in `Upload-Offset`) / cancel |
 | GET | `/uploads?this_device=` | unfinished uploads `{id, parent_id?, node_id?, name, size, device_id?, transfer_item_id?, updated_at}`, or only the calling device's |
-| GET | `/devices` | the user's devices: `{id, name, platform, created_at, last_seen_at, signed_in, current, uploads, visibility, visible_to?}` |
+| GET | `/devices` | the user's devices: `{id, name, platform, created_at, last_seen_at, signed_in, current, uploads, visibility, visible_to?, version?, compatibility?}` |
 | PATCH / DELETE | `/devices/{id}` | rename `{name}` / remove: sign it out, decline the files waiting for it and take it off the list (it comes back if it signs in again) |
 | DELETE | `/devices/{id}/sessions` | sign out: end its sessions and cancel its unfinished uploads (it stays listed) |
 | PUT | `/devices/{id}/visibility` | `{visibility, users?}`: who can send files to the device: `owner` (default), `hidden`, `everyone` or `users` (the owner plus `users`) |

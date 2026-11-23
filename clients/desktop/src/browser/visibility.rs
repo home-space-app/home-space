@@ -331,6 +331,8 @@ mod tests {
             uploads: 0,
             visibility: DeviceVisibility::Owner,
             visible_to: Vec::new(),
+            version: None,
+            compatibility: None,
         }
     }
 
