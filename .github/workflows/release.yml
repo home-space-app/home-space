@@ -164,7 +164,7 @@ jobs:
           VERSION: ${{ steps.meta.outputs.version }}
         run: docker buildx imagetools inspect "homespaceapp/home-space:$VERSION"
 
-  # homespace-ctl, the administration tool, shipped on its own (not in the server image).
+  # homespace-ctl, the administration tool, shipped on its own (the server image has it too).
   # Linux is a static musl binary so it runs on any distribution, whatever its glibc.
   ctl:
     needs: version

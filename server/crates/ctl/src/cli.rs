@@ -7,6 +7,11 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(name = "homespace-ctl", about = "Manage a Home Space server", version)]
 pub struct Cli {
+    /// Read environment variables (such as `DATABASE_URL`) from this file first. No `.env` is
+    /// read otherwise.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub env_file: Option<PathBuf>,
+
     /// The database to work on. Unset, the commands run inside the app container of the
     /// server `homespace-ctl install` set up here.
     #[arg(long, env = "DATABASE_URL", hide_env_values = true, global = true)]

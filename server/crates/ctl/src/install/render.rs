@@ -370,7 +370,10 @@ mod tests {
         let compose = compose(&plan);
         assert!(compose.contains("\nname: homespace\n"));
         assert!(compose.contains("image: docker.io/library/postgres:18"));
-        assert!(compose.contains("image: docker.io/homespaceapp/home-space:latest"));
+        assert!(compose.contains(concat!(
+            "image: docker.io/homespaceapp/home-space:",
+            env!("CARGO_PKG_VERSION")
+        )));
         assert!(compose.contains("POSTGRES_PASSWORD: ${HOMESPACE_DB_PASSWORD}"));
         assert!(compose.contains("HOMESPACE_JWT_SECRET: ${HOMESPACE_JWT_SECRET}"));
         assert!(compose.contains("- pgdata:/var/lib/postgresql"));

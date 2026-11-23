@@ -3,42 +3,39 @@
 //! user and asks for a password only when it has to.
 
 use std::{
+    fs::DirBuilder,
     io::{ErrorKind, Write as _},
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::Path,
     process::Command,
 };
 
 use anyhow::{Context, Result};
+use rustix::process::{getegid, geteuid};
 
 use super::plan::Owner;
 
-/// The effective user and group of this process.
-fn effective_ids() -> Option<(u32, u32)> {
-    // /proc/self belongs to the effective uid and gid of the process.
-    std::fs::metadata("/proc/self")
-        .ok()
-        .map(|meta| (meta.uid(), meta.gid()))
-}
-
 pub fn is_root() -> bool {
-    effective_ids().is_some_and(|(uid, _)| uid == 0)
+    geteuid().is_root()
 }
 
 /// The user this process runs as.
 pub fn current_user() -> Result<Owner> {
-    let (uid, gid) = effective_ids().context("reading /proc/self")?;
     let name = output(Command::new("id").arg("-un"))?;
-    Ok(Owner { name, uid, gid })
+    Ok(Owner {
+        name,
+        uid: geteuid().as_raw(),
+        gid: getegid().as_raw(),
+    })
 }
 
 /// The host user `name`, `None` when there is none.
 pub fn find_user(name: &str) -> Result<Option<Owner>> {
-    let uid = Command::new("id").args(["-u", name]).output();
+    let uid = Command::new("id").args(["-u", "--", name]).output();
     match uid {
         Ok(out) if out.status.success() => {
             let uid = parse_id(&out.stdout)?;
-            let gid = output(Command::new("id").args(["-g", name]))?
+            let gid = output(Command::new("id").args(["-g", "--", name]))?
                 .parse()
                 .context("reading the group id")?;
             Ok(Some(Owner {
@@ -68,59 +65,70 @@ pub fn create_system_user(name: &str) -> Result<Owner> {
         "--no-create-home",
         "--shell",
         "/usr/sbin/nologin",
+        "--",
         name,
     ])?;
     find_user(name)?.with_context(|| format!("user {name} is missing after useradd"))
 }
 
-/// Makes `path` a directory owned by `owner` with `mode`, creating it if needed. An existing
-/// directory owned by someone else is given to `owner`.
-pub fn make_dir(path: &Path, owner: &Owner, mode: u32) -> Result<()> {
+/// Creates the directory `path` owned by `owner` with `mode`, and any missing parents (with
+/// the default owner and mode). `path` must not exist yet: the installer never takes over a
+/// directory that is there already.
+pub fn create_dir(path: &Path, owner: &Owner, mode: u32) -> Result<()> {
     let display = path.display().to_string();
-    let mode_arg = format!("{mode:o}");
-    match std::fs::metadata(path) {
-        Ok(meta) => {
-            anyhow::ensure!(meta.is_dir(), "{display} exists and is not a directory");
-            if meta.uid() != owner.uid || meta.gid() != owner.gid {
-                privileged(&["chown", &format!("{}:{}", owner.uid, owner.gid), &display])?;
-            }
-            if meta.mode() & 0o7777 != mode {
-                privileged(&["chmod", &mode_arg, &display])?;
-            }
-            Ok(())
-        }
-        Err(err) if err.kind() == ErrorKind::NotFound => {
-            if is_self(owner) && create_own_dir(path, mode).is_ok() {
-                return Ok(());
-            }
-            privileged(&[
-                "install",
-                "-d",
-                "-o",
-                &owner.uid.to_string(),
-                "-g",
-                &owner.gid.to_string(),
-                "-m",
-                &mode_arg,
-                &display,
-            ])
-        }
-        Err(err) => Err(err).with_context(|| format!("checking {display}")),
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => anyhow::bail!(
+            "{display} exists already; the installer only creates new directories, so pick \
+             another path or remove it"
+        ),
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => return Err(err).with_context(|| format!("checking {display}")),
     }
+    if is_self(owner) {
+        match create_own_dir(path, mode) {
+            Ok(()) => return Ok(()),
+            Err(err) if err.kind() == ErrorKind::PermissionDenied => {}
+            Err(err) => return Err(err).with_context(|| format!("creating {display}")),
+        }
+    }
+    if let Some(parent) = path.parent().filter(|parent| !parent.exists()) {
+        privileged(&["mkdir", "-p", "--", &parent.display().to_string()])?;
+    }
+    // Without -p, mkdir fails when the directory appeared in the meantime.
+    privileged(&["mkdir", "-m", &format!("{mode:o}"), "--", &display])?;
+    privileged(&[
+        "chown",
+        "--",
+        &format!("{}:{}", owner.uid, owner.gid),
+        &display,
+    ])
 }
 
 fn is_self(owner: &Owner) -> bool {
-    effective_ids() == Some((owner.uid, owner.gid))
+    geteuid().as_raw() == owner.uid && getegid().as_raw() == owner.gid
 }
 
 fn create_own_dir(path: &Path, mode: u32) -> std::io::Result<()> {
-    std::fs::create_dir_all(path)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    // `create` fails when the directory exists; the mode is set again past the umask.
+    DirBuilder::new().mode(mode).create(path)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
 }
 
-/// Whether `path` is a directory with anything in it.
-pub fn has_entries(path: &Path) -> bool {
-    std::fs::read_dir(path).is_ok_and(|mut entries| entries.next().is_some())
+/// Fails unless `path` is a directory that only `owner` may enter (mode 700), which is what
+/// keeps the world-readable secret files inside it private.
+pub fn ensure_private_dir(path: &Path, owner: &Owner) -> Result<()> {
+    let meta =
+        std::fs::symlink_metadata(path).with_context(|| format!("checking {}", path.display()))?;
+    anyhow::ensure!(
+        meta.is_dir() && meta.uid() == owner.uid && meta.mode() & 0o777 == 0o700,
+        "{} must be a directory of {} with mode 700",
+        path.display(),
+        owner.name
+    );
+    Ok(())
 }
 
 /// Writes `contents` to `path` (in a directory of this user) with `mode`, replacing any file
@@ -143,30 +151,6 @@ pub fn write_own_file(path: &Path, contents: &str, mode: u32) -> Result<()> {
         .with_context(|| format!("writing {display}"))?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
         .with_context(|| format!("setting the mode of {display}"))
-}
-
-/// Writes `contents` to `path`, through `sudo install` when this user may not write there.
-pub fn write_file_anywhere(path: &Path, contents: &str, mode: u32) -> Result<()> {
-    let direct = path
-        .parent()
-        .map_or(Ok(()), std::fs::create_dir_all)
-        .map_err(anyhow::Error::from)
-        .and_then(|()| write_own_file(path, contents, mode));
-    if direct.is_ok() {
-        return Ok(());
-    }
-    let mut temp = tempfile::NamedTempFile::new().context("creating a temporary file")?;
-    temp.write_all(contents.as_bytes())
-        .context("writing a temporary file")?;
-    let temp_path = temp.path().display().to_string();
-    privileged(&[
-        "install",
-        "-D",
-        "-m",
-        &format!("{mode:o}"),
-        &temp_path,
-        &path.display().to_string(),
-    ])
 }
 
 /// Runs `args`, through `sudo` unless this process is root.
@@ -211,4 +195,32 @@ pub fn output(command: &mut Command) -> Result<String> {
 pub fn free_port() -> Result<u16> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").context("finding a free port")?;
     Ok(listener.local_addr().context("finding a free port")?.port())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_new_directory_gets_its_mode_and_an_existing_one_is_refused() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let me = current_user().expect("current user");
+        let secrets = root.path().join("install").join("secrets");
+        create_dir(&secrets, &me, 0o700).expect("create");
+        ensure_private_dir(&secrets, &me).expect("private");
+
+        let error = create_dir(&secrets, &me, 0o700).expect_err("exists");
+        assert!(error.to_string().contains("exists already"), "{error}");
+        let error = create_dir(root.path(), &me, 0o750).expect_err("exists");
+        assert!(error.to_string().contains("exists already"), "{error}");
+    }
+
+    #[test]
+    fn a_directory_others_may_enter_is_not_private() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let me = current_user().expect("current user");
+        let open = root.path().join("open");
+        create_dir(&open, &me, 0o750).expect("create");
+        assert!(ensure_private_dir(&open, &me).is_err());
+    }
 }
