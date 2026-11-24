@@ -59,8 +59,8 @@ did use a second factor ([Single sign-on users](#single-sign-on-users)).
 |---|---|
 | Second factors | TOTP app, passkey or security key, recovery codes. Any one is enough. |
 | Passkey as first factor | Yes: a passkey with user verification signs in without the password. |
-| Sign-in protocol | Two steps. `/auth/login` answers `401 second-factor-required` with a short-lived `login_token`; the client finishes at `/auth/login/verify`. |
-| Sign-in on native apps | Only in the browser: desktop and mobile open the server's web sign-in page in the system browser and get a session through PKCE, like single sign-on ("browser sign-in"). The native password form goes away. TOTP and WebAuthn are built once, on the web. |
+| Sign-in protocol | `/auth/login` stays as it is for apps. For a user with 2FA it answers `403 second-factor-required` with a readable detail. The web client opts in to the two-step flow (`two_step: true`) and finishes at `/auth/login/verify`. |
+| Sign-in on native apps | TOTP and WebAuthn only on the web. Apps open the server's web sign-in page in the system browser and get a session through PKCE, like single sign-on ("browser sign-in"). The native password form and the apps' use of `/auth/login` stay until 1.0.0, for users without 2FA and for older servers. |
 | WebAuthn library | `webauthn-rs` on the server; `navigator.credentials` through `web-sys` in the web client. |
 | RP id | The tenant's primary domain host, as for protected folders. |
 | Secret storage | TOTP secrets encrypted with a new per-tenant key `HOMESPACE_SECRETS_KEY`. Recovery codes hashed. |
@@ -131,9 +131,12 @@ ability to decrypt. What is shared: the RP id helper, the `webauthn-rs` setup, t
 ### Password, then second factor
 
 ```
-POST /api/v1/auth/login            { username, password, device, cookie }
+POST /api/v1/auth/login            { username, password, device, cookie, two_step? }
   no second factor  → 200 TokenPair                      (unchanged)
-  has one           → 401 problem "second-factor-required"
+  has one           → 403 problem "second-factor-required"
+                        detail: "This account uses two-factor sign-in. Sign in in the browser,
+                                 or update the app."
+  has one, two_step → the same problem, plus
                         login_token: "…"                 (5 minutes, single use)
                         methods: ["totp", "webauthn", "recovery"]
                         webauthn: { publicKey: … }       (request options, only if the user has keys)
@@ -142,10 +145,17 @@ POST /api/v1/auth/login/verify     { login_token, totp | recovery_code | webauth
   → 200 TokenPair, or 401 unauthorized, or 429 too-many-attempts
 ```
 
-- A 401 problem rather than a 200 with a new shape: an old client that does not know
-  `second-factor-required` shows its usual sign-in failure instead of failing to parse a token pair.
-  The detail says "This account uses two-factor sign-in. Update the app to sign in." so the user
-  knows what to do.
+- The current endpoint keeps working for apps until 1.0.0. Only a client that sends
+  `two_step: true` (the web client) gets a `login_token`; every other caller just gets the
+  error, so no app has to learn a second step.
+- **403, not 401.** The API client turns every 401 into `ApiError::Unauthorized` and drops the
+  body, and the sign-in screens show "Invalid username or password" for it. Any other problem
+  arrives as `ApiError::Api { message: detail }`, which the released web client and the Android
+  app already show as is (`session.rs` `login`, `signInMessage` → `Failed`). So with 403, even
+  today's apps tell a 2FA user why they cannot sign in, instead of claiming the password is wrong.
+  The problem is only sent after the right password, so it tells nothing to someone guessing.
+- Clients should still show server errors better now, before 2FA ships (step 0 below), so the
+  next problems need no such care.
 - The `login_token` is a random value whose hash sits in a new `pending_logins` table
   (tenant, user, device, browser flag, expiry, attempts). It is not a JWT, so it can be used once
   and revoked.
@@ -198,13 +208,16 @@ Why the browser rather than native screens:
 
 What it costs:
 
-- The server must serve the web client. `HOMESPACE_WEB_ROOT` is optional today (the Docker image
-  ships it). A server without it answers `browser/start` with a minimal page saying sign-in needs
-  the web client; or the native password form stays as a fallback for such servers (open question).
+- The server must serve the web client for 2FA and passkeys. `HOMESPACE_WEB_ROOT` is optional
+  today (the Docker image ships it). Until 1.0.0 the native form still works without it for users
+  without 2FA; after that it is required (open question).
 - A switch to the browser and back on each new sign-in. Sessions last 30 days through refresh, so
   that is rare. iOS shows its "wants to use <domain> to sign in" prompt.
-- Older servers: new apps keep the current native form for servers without `browser_login`, until
-  the oldest supported server has it. Then the form is deleted.
+- Until 1.0.0 apps have both: the native form (users without 2FA, and older servers) and a
+  "Sign in in the browser" button when the server reports `browser_login`. When the native form
+  gets `second-factor-required`, a new app offers to continue in the browser. 1.0.0 removes the
+  native form and the apps' use of `/auth/login`; that is a breaking change, so it belongs to the
+  major version (`docs/versioning.md`).
 
 The flow: the system browser (loopback on desktop, Custom Tab, `ASWebAuthenticationSession`)
 opens the server's own sign-in page. When the user has signed in there, the server hands a
@@ -385,7 +398,7 @@ database dump (backups) would hand out every second factor. So:
 | `POST /me/reauthenticate` | Fresh proof for sensitive changes |
 | `DELETE /admin/users/{id}/second-factors` | Reset 2FA |
 
-New problem types for `docs/api-errors.md`: `second-factor-required` (401),
+New problem types for `docs/api-errors.md`: `second-factor-required` (403),
 `reauthentication-required` (403), `second-factor-setup-required` (403), `sso-mfa-required` (403),
 `invalid-code` (422, enrolment), `secrets-key-missing` (503 on TOTP enrolment).
 
@@ -403,25 +416,29 @@ client falls back to plain password sign-in on older servers.
 | `reauthentication` | Confirming sensitive changes |
 
 - Old client, new server, user without 2FA: nothing changes.
-- Old client, user with 2FA: the password sign-in fails with the "update the app" detail. On
+- Old client, user with 2FA: the password sign-in fails with `403 second-factor-required` and its
+  readable detail (see [Password, then second factor](#password-then-second-factor)). On
   desktop and mobile, the existing single sign-on button can be pointed at `browser/start` by the
   server when no provider is configured (`Providers.oidc` names "Sign in in the browser"), so even
   an old app can sign in through the web page. That is worth doing because it costs one branch.
 - New client, old server: the feature list lacks `two_factor`; the security settings are hidden.
-- No breaking change, so no major version bump. The two `oidc_codes` users move to
-  `login_codes` in the same migration.
+- New client, new server: native form for users without 2FA, browser sign-in for the rest.
+- No breaking change before 1.0.0. The two `oidc_codes` users move to `login_codes` in the same
+  migration. 1.0.0 drops the native form and the apps' password path of `/auth/login` (the web
+  page keeps using it with `two_step`).
 
 ## Clients
 
-- **api-client / client-core**: the browser sign-in generalised from `oidc_start_url` /
-  `oidc_exchange`; types for the security settings. The password `login` stays only for servers
-  without `browser_login` and is removed with the native form.
+- **api-client / client-core**: keep the problem of a 401 sign-in answer instead of collapsing it
+  into `Unauthorized`; the browser sign-in generalised from `oidc_start_url` / `oidc_exchange`;
+  types for the security settings. The password `login` stays until 1.0.0.
 - **Web (Leptos)**: second-step screen; "Sign in with a passkey" and conditional UI on the
   username field; Security page (TOTP with QR, keys, recovery codes, sign out everywhere);
   re-confirm dialog; the browser sign-in approve page. `navigator.credentials` through `web-sys`
   with JSON (de)serialisation of the options (`webauthn-rs-proto` types are shared).
-- **Desktop (iced)**: the login screen becomes "server address" + "Sign in", which runs
-  `sso.rs` against `browser/start`. No 2FA code in the app. Security settings open the web page.
+- **Desktop (iced)**: the native form stays until 1.0.0; a "Sign in in the browser" button runs
+  `sso.rs` against `browser/start`, and `second-factor-required` offers it. No 2FA code in the
+  app. Security settings open the web page.
 - **Android / iOS**: the same, with the existing Custom Tab / `ASWebAuthenticationSession` code.
   Security settings open the web page (a native screen can come later if wanted).
 
@@ -464,16 +481,18 @@ client falls back to plain password sign-in on older servers.
 
 ## Steps
 
+0. Now, before any 2FA: every client shows the server's problem `detail` on sign-in and
+   elsewhere, instead of a fixed message per error kind; the API client keeps the problem of
+   401 answers on sign-in. Ships in the next release so it is out before 2FA.
 1. Sessions remember `auth_methods` and `authenticated_at`; re-confirmation (`/me/reauthenticate`
    with the password) on the existing sensitive endpoints.
 2. TOTP and recovery codes: tables, secret key, two-step login, web screens, admin reset, CLI.
-3. Browser sign-in for native apps: server flow, web approve page, desktop/Android/iOS switch
-   their login screen to it (native form kept only for older servers); old apps' SSO button
-   pointed at it.
+3. Browser sign-in for native apps: server flow, web approve page, a "Sign in in the browser"
+   button in desktop/Android/iOS next to the native form; old apps' SSO button pointed at it.
 4. WebAuthn: security keys as second factor, then passkey sign-in, in the web client.
-6. Policy (`mfa_policy`), forced enrolment, `HOMESPACE_OIDC_REQUIRE_MFA`.
-7. Later: e-mail notifications when e-mail exists; removing the native password form once
-   every supported server has `browser_login`.
+5. Policy (`mfa_policy`), forced enrolment, `HOMESPACE_OIDC_REQUIRE_MFA`.
+6. 1.0.0: remove the native password form and the apps' password path of `/auth/login`.
+7. Later: e-mail notifications when e-mail exists.
 
 Each step is a release on its own and adds its feature name.
 
@@ -481,10 +500,11 @@ Each step is a release on its own and adds its feature name.
 
 1. **Passkeys without a password.** Should a passkey sign in on its own (recommended), or only be
    a second factor after the password?
-2. **Servers without the web client.** Browser sign-in is the only way native apps sign in
-   (decided 2026-11-24). For a server run without `HOMESPACE_WEB_ROOT`, should the server ship a
-   minimal built-in sign-in page, keep the native password form as a fallback, or simply require
-   the web client (recommended: require it, the Docker image and `homespace-ctl install` have it)?
+2. **Servers without the web client after 1.0.0.** Apps sign in only in the browser from 1.0.0
+   (decided 2026-11-24; native form and `/auth/login` for apps kept until then). For a server run
+   without `HOMESPACE_WEB_ROOT`, should the server then ship a minimal built-in sign-in page, or
+   simply require the web client (recommended: require it, the Docker image and
+   `homespace-ctl install` have it)?
 3. **TOTP secret key.** A new `HOMESPACE_SECRETS_KEY` per tenant (recommended), or store TOTP
    secrets in clear and rely on database access control?
 4. **Default policy.** Optional for everyone by default, or require 2FA for administrators from
