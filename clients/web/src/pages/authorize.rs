@@ -9,7 +9,7 @@ use protocol::{BrowserLoginApp, BrowserLoginFlow, ErrorCode, paths};
 
 use crate::{
     components::ErrorAlert,
-    session::{Auth, client, return_after_sign_in},
+    session::{Auth, client, in_place, return_after_sign_in},
 };
 
 const EXPIRED_MESSAGE: &str =
@@ -18,6 +18,8 @@ const MISSING_MESSAGE: &str = "This link is incomplete. Start signing in again i
 const APPROVED_MESSAGE: &str = "You are signed in. You can close this tab and go back to the app.";
 const DENIED_MESSAGE: &str = "The app was not signed in. You can close this tab.";
 const NO_WAY_BACK_MESSAGE: &str = "Could not go back to the app.";
+/// How long the tab stays open once the app is signed in.
+const CLOSE_AFTER_MS: u32 = 4_000;
 
 /// How far the user is with the app's request.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,7 +84,7 @@ pub fn AuthorizePage(auth: Auth) -> impl IntoView {
                 .with(Option::is_none)
                 .then(|| {
                     return_after_sign_in(&this_page);
-                    view! { <Redirect path="/login" /> }
+                    view! { <Redirect path="/login" options=in_place() /> }
                 })
         }}
         <Card>
@@ -211,9 +213,24 @@ fn go_back_to_app(redirect: &str, approved: bool) -> Step {
     let sent = web_sys::window().is_some_and(|window| window.location().replace(redirect).is_ok());
     match (sent, approved) {
         (false, _) => Step::Failed(NO_WAY_BACK_MESSAGE.to_owned()),
-        (true, true) => Step::Done(APPROVED_MESSAGE),
+        (true, true) => {
+            close_soon();
+            Step::Done(APPROVED_MESSAGE)
+        }
         (true, false) => Step::Done(DENIED_MESSAGE),
     }
+}
+
+/// Closes this tab a moment after the app got its sign-in, where the browser lets a page close
+/// its own tab (one the app opened and that is one page deep); otherwise the tab stays and
+/// says it can be closed.
+fn close_soon() {
+    spawn_local(async {
+        gloo_timers::future::TimeoutFuture::new(CLOSE_AFTER_MS).await;
+        if let Some(window) = web_sys::window() {
+            let _ = window.close();
+        }
+    });
 }
 
 /// A failed call as the user reads it; an ended session sends them to sign in again.

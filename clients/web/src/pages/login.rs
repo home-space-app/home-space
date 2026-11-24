@@ -6,7 +6,7 @@ use protocol::Providers;
 
 use crate::{
     components::ErrorAlert,
-    session::{Auth, after_sign_in, client},
+    session::{Auth, after_sign_in, client, in_place},
 };
 
 #[component]
@@ -63,7 +63,7 @@ pub fn Login(auth: Auth) -> impl IntoView {
 
     view! {
         <Show when=move || auth.user.get().is_some()>
-            <Redirect path=after_sign_in() />
+            <Redirect path=after_sign_in() options=in_place() />
         </Show>
         <main class="login">
             <section class="login__card">

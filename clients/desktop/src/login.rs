@@ -6,7 +6,8 @@ use iced::{
     keyboard::{self, Key, key::Named},
     task,
     widget::{
-        button, column, container, operation, row, scrollable, space, stack, svg, text, text_input,
+        Column, button, column, container, operation, row, scrollable, space, stack, svg, text,
+        text_input,
     },
 };
 use protocol::{Me, Providers};
@@ -66,6 +67,7 @@ const FAILED_BUTTONS_PADDING: Padding = Padding {
 };
 const HEADING_SIZE: f32 = 18.0;
 const RESUME_FAILED: &str = "Could not resume the session";
+const WAITING_FOR_BROWSER: &str = "Waiting for the browser…";
 /// How long the server field must rest before the server is asked how users sign in.
 const PROBE_DELAY: Duration = Duration::from_millis(600);
 
@@ -77,6 +79,8 @@ pub enum Message {
     Submit,
     TogglePassword,
     SignInWithProvider,
+    /// Signs in on the server's web page in the browser.
+    SignInInBrowser,
     Cancel,
     /// Tries the saved session again after it could not be resumed.
     RetryResume,
@@ -118,8 +122,8 @@ pub struct State {
     unreachable: bool,
     /// Bumped whenever the server changes, so answers about an earlier one are ignored.
     probe: u64,
-    /// The browser sign-in in progress, if any.
-    sso: Option<task::Handle>,
+    /// The browser sign-in in progress, if any, and where it signs in.
+    sso: Option<(sso::Via, task::Handle)>,
 }
 
 impl Default for State {
@@ -193,21 +197,16 @@ impl State {
                 }
                 Update::Task(Task::none())
             }
-            Message::SignInWithProvider | Message::Submit if self.is_unprotected() => {
+            Message::SignInWithProvider | Message::SignInInBrowser | Message::Submit
+                if self.is_unprotected() =>
+            {
                 self.error = Some(UNPROTECTED_SERVER.to_owned());
                 Update::Task(Task::none())
             }
-            Message::SignInWithProvider if self.busy => Update::Task(Task::none()),
-            Message::SignInWithProvider => {
-                self.busy = true;
-                self.error = None;
-                let (task, handle) =
-                    Task::perform(sso::sign_in(self.server_url()), Message::Finished).abortable();
-                self.sso = Some(handle);
-                Update::Task(task)
-            }
+            Message::SignInWithProvider => Update::Task(self.sign_in_via(sso::Via::Provider)),
+            Message::SignInInBrowser => Update::Task(self.sign_in_via(sso::Via::WebPage)),
             Message::Cancel => {
-                if let Some(handle) = self.sso.take() {
+                if let Some((_, handle)) = self.sso.take() {
                     handle.abort();
                 }
                 self.busy = false;
@@ -283,6 +282,26 @@ impl State {
         }
     }
 
+    /// Opens the browser to sign in `via` the provider or the web page, unless a sign-in runs.
+    fn sign_in_via(&mut self, via: sso::Via) -> Task<Message> {
+        if self.busy {
+            return Task::none();
+        }
+        self.busy = true;
+        self.error = None;
+        let (task, handle) =
+            Task::perform(sso::sign_in(self.server_url(), via), Message::Finished).abortable();
+        self.sso = Some((via, handle));
+        task
+    }
+
+    /// Whether the browser is signing in `via` the provider or the web page right now.
+    fn waiting_via(&self, via: sso::Via) -> bool {
+        self.sso
+            .as_ref()
+            .is_some_and(|(running, _)| *running == via)
+    }
+
     /// What is known about the server in the field.
     fn server_state(&self) -> ServerState {
         if self.restoring {
@@ -329,16 +348,56 @@ impl State {
         if let Some(reason) = &self.resume_failed {
             return centered(resume_failed(reason));
         }
-        let mut form = column![brand(), self.server_field()]
+        let form = column![brand(), self.server_field()]
             .spacing(FORM_GAP)
             .width(Length::Fill);
+        // A server with the web page signs in there, whatever the account needs; the form is
+        // for older servers.
+        let mut form = if self.providers.as_ref().is_some_and(|p| p.browser_login) {
+            self.web_page_sign_in(form)
+        } else {
+            self.native_sign_in(form)
+        };
+        if let Some(error) = &self.error {
+            form = form.push(alert_error(Icon::Error, error.as_str(), None));
+        }
+        let card = container(form)
+            .padding(CARD_PADDING)
+            .width(CARD_WIDTH)
+            .style(theme::panel);
+        stack![glow(), centered(card.into())].into()
+    }
+
+    /// One button that opens the server's sign-in page in the browser.
+    fn web_page_sign_in<'a>(&self, form: Column<'a, Message>) -> Column<'a, Message> {
+        let waiting = self.waiting_via(sso::Via::WebPage);
+        let label = if waiting {
+            WAITING_FOR_BROWSER
+        } else {
+            "Sign in"
+        };
+        let form = form.push(wide_button(
+            Some((Icon::Web, Tint::OnAccent)),
+            label.to_owned(),
+            theme::primary,
+            (!self.busy).then_some(Message::SignInInBrowser),
+        ));
+        if waiting {
+            form.push(cancel_button())
+        } else {
+            form
+        }
+    }
+
+    /// The identity provider's button and the password form, for servers without the page.
+    fn native_sign_in<'a>(&'a self, mut form: Column<'a, Message>) -> Column<'a, Message> {
         let provider = self
             .providers
             .as_ref()
             .and_then(|providers| providers.oidc.as_ref());
         if let Some(provider) = provider {
-            let label = if self.busy {
-                "Waiting for the browser…".to_owned()
+            let label = if self.waiting_via(sso::Via::Provider) {
+                WAITING_FOR_BROWSER.to_owned()
             } else {
                 format!("Sign in with {}", provider.name)
             };
@@ -348,13 +407,8 @@ impl State {
                 theme::primary,
                 (!self.busy).then_some(Message::SignInWithProvider),
             ));
-            if self.sso.is_some() {
-                form = form.push(wide_button(
-                    None,
-                    "Cancel".to_owned(),
-                    theme::secondary,
-                    Some(Message::Cancel),
-                ));
+            if self.waiting_via(sso::Via::Provider) {
+                form = form.push(cancel_button());
             }
         }
         let password_login = !self.first_probe_pending
@@ -393,14 +447,7 @@ impl State {
                     (!self.busy).then_some(Message::Submit),
                 ));
         }
-        if let Some(error) = &self.error {
-            form = form.push(alert_error(Icon::Error, error.as_str(), None));
-        }
-        let card = container(form)
-            .padding(CARD_PADDING)
-            .width(CARD_WIDTH)
-            .style(theme::panel);
-        stack![glow(), centered(card.into())].into()
+        form
     }
 
     /// The server's address, with what is known about it in the field and under it.
@@ -553,6 +600,15 @@ fn or_divider<'a>() -> Element<'a, Message> {
     .spacing(OR_GAP)
     .align_y(Alignment::Center)
     .into()
+}
+
+fn cancel_button<'a>() -> Element<'a, Message> {
+    wide_button(
+        None,
+        "Cancel".to_owned(),
+        theme::secondary,
+        Some(Message::Cancel),
+    )
 }
 
 fn wide_button<'a>(
@@ -946,5 +1002,58 @@ mod tests {
         let _ = state.update(Message::Cancel);
 
         assert_eq!((state.busy, state.sso.is_none()), (false, true));
+    }
+
+    fn password_only(browser_login: bool) -> Providers {
+        Providers {
+            password: true,
+            oidc: None,
+            browser_login,
+        }
+    }
+
+    #[test]
+    fn a_server_with_the_web_page_signs_in_only_there() {
+        let mut state = State::default();
+        let mut both = providers(true);
+        both.browser_login = true;
+        let _ = state.update(Message::ProvidersLoaded(state.probe, Ok(both)));
+
+        let mut ui = iced_test::simulator(state.view());
+
+        assert!(ui.find("Sign in").is_ok());
+        for native in ["Username", "Password", "Sign in with Keycloak"] {
+            assert!(ui.find(native).is_err(), "{native}");
+        }
+    }
+
+    #[test]
+    fn older_servers_keep_the_password_form() {
+        let mut state = State::default();
+        let _ = state.update(Message::ProvidersLoaded(
+            state.probe,
+            Ok(password_only(false)),
+        ));
+
+        let mut ui = iced_test::simulator(state.view());
+
+        assert!(ui.find("Username").is_ok());
+        assert!(ui.find("Password").is_ok());
+    }
+
+    #[test]
+    fn the_browser_sign_in_can_be_cancelled_while_it_waits() {
+        let mut state = State::default();
+        let _ = state.update(Message::ProvidersLoaded(
+            state.probe,
+            Ok(password_only(true)),
+        ));
+        let _ = state.update(Message::SignInInBrowser);
+
+        let mut ui = iced_test::simulator(state.view());
+
+        assert!(ui.find(WAITING_FOR_BROWSER).is_ok());
+        assert!(ui.find("Cancel").is_ok());
+        assert!(state.waiting_via(sso::Via::WebPage));
     }
 }

@@ -6,7 +6,7 @@ use leptos_router::{
 
 use crate::{
     components::ErrorAlert,
-    session::{Auth, after_sign_in, take_oidc_verifier},
+    session::{Auth, after_sign_in, in_place, take_oidc_verifier},
 };
 
 const ACCESS_DENIED_MESSAGE: &str = "You are not allowed to sign in with this account.";
@@ -46,7 +46,7 @@ pub fn OidcCallback(auth: Auth) -> impl IntoView {
 
     view! {
         <Show when=move || auth.user.get().is_some()>
-            <Redirect path=after_sign_in() />
+            <Redirect path=after_sign_in() options=in_place() />
         </Show>
         <main class="login">
             <section class="login__card">

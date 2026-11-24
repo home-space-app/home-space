@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use leptos::{prelude::*, task::spawn_local};
+use leptos_router::NavigateOptions;
 
 use api_client::{ApiError, Client, Pkce, VERIFIER_BYTES};
 use protocol::{DeviceInfo, Me, PLATFORM_WEB};
@@ -231,6 +232,15 @@ impl Auth {
 pub fn return_after_sign_in(path: &str) {
     if let Some(storage) = session_storage() {
         let _ = storage.set_item(RETURN_TO_KEY, path);
+    }
+}
+
+/// Navigates in place of the current page, so the sign-in steps leave no history behind: a
+/// tab the app opened for its sign-in then stays one page deep, which lets it close itself.
+pub fn in_place() -> NavigateOptions {
+    NavigateOptions {
+        replace: true,
+        ..NavigateOptions::default()
     }
 }
 

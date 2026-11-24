@@ -1,5 +1,6 @@
-//! Single sign-on for the desktop app (RFC 8252): opens the system browser at the server's
-//! sign-in URL and waits for the server to send the browser back to a port on this machine.
+//! Signing in in the system browser (RFC 8252), through the server's identity provider or the
+//! server's own web page: opens the browser at the server's sign-in URL and waits for the
+//! server to send the browser back to a port on this machine.
 
 use std::time::Duration;
 
@@ -21,6 +22,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_REQUEST_BYTES: usize = 8 * 1024;
 
 const ACCESS_DENIED_MESSAGE: &str = "You are not allowed to sign in with this account.";
+const CANCELLED_MESSAGE: &str = "Signing in was cancelled in the browser.";
 const FAILED_MESSAGE: &str = "Signing in failed. Please try again.";
 const TIMED_OUT_MESSAGE: &str = "Timed out waiting for the browser sign-in.";
 const BAD_ADDRESS_MESSAGE: &str = "The server address must start with http:// or https://";
@@ -28,6 +30,21 @@ const BAD_ADDRESS_MESSAGE: &str = "The server address must start with http:// or
 const DONE_PAGE: &str = "<!doctype html><meta charset=utf-8><title>Home Space</title>\
     <p style=\"font-family:system-ui;margin:3rem auto;max-width:28rem\">\
     You can close this tab and return to Home Space.</p>";
+/// [`DONE_PAGE`] once signed in, which also closes its tab after 4 seconds where the browser
+/// lets it (a tab that is one page deep, as the server's sign-in leaves it).
+const SIGNED_IN_PAGE: &str = "<!doctype html><meta charset=utf-8><title>Home Space</title>\
+    <p style=\"font-family:system-ui;margin:3rem auto;max-width:28rem\">\
+    You are signed in. You can close this tab and return to Home Space.</p>\
+    <script>setTimeout(() => window.close(), 4000)</script>";
+
+/// Where the browser signs in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Via {
+    /// The server's identity provider (single sign-on).
+    Provider,
+    /// The server's own web page, which signs in however the server allows.
+    WebPage,
+}
 
 /// How the server sent the browser back.
 #[derive(Debug, PartialEq, Eq)]
@@ -36,8 +53,8 @@ enum Callback {
     Error(String),
 }
 
-/// Signs in through the server's identity provider, using the system browser.
-pub async fn sign_in(server: String) -> Result<(Client, Me), String> {
+/// Signs in `via` the provider or the web page, using the system browser.
+pub async fn sign_in(server: String, via: Via) -> Result<(Client, Me), String> {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
         .map_err(|err| format!("Could not listen for the sign-in: {err}"))?;
@@ -50,9 +67,12 @@ pub async fn sign_in(server: String) -> Result<(Client, Me), String> {
     let pkce = Pkce::from_random(bytes);
 
     let client = session::client(&server);
-    let url = client
-        .oidc_start_url(&format!("http://127.0.0.1:{port}{CALLBACK_PATH}"), &pkce)
-        .map_err(|err| err.to_string())?;
+    let redirect = format!("http://127.0.0.1:{port}{CALLBACK_PATH}");
+    let url = match via {
+        Via::Provider => client.oidc_start_url(&redirect, &pkce),
+        Via::WebPage => client.browser_login_start_url(&redirect, &pkce),
+    }
+    .map_err(|err| err.to_string())?;
     // `open` would launch anything, so only ever hand it a web address.
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err(BAD_ADDRESS_MESSAGE.to_owned());
@@ -64,16 +84,24 @@ pub async fn sign_in(server: String) -> Result<(Client, Me), String> {
         .map_err(|_| TIMED_OUT_MESSAGE.to_owned())??;
     match callback {
         Callback::Code(code) => {
-            let me = client
-                .oidc_exchange(&code, &pkce)
-                .await
-                .map_err(|err| err.to_string())?;
+            let me = match via {
+                Via::Provider => client.oidc_exchange(&code, &pkce).await,
+                Via::WebPage => client.browser_login_exchange(&code, &pkce).await,
+            }
+            .map_err(|err| err.to_string())?;
             Ok((client, me))
         }
-        Callback::Error(reason) if reason == "access_denied" => {
-            Err(ACCESS_DENIED_MESSAGE.to_owned())
-        }
-        Callback::Error(_) => Err(FAILED_MESSAGE.to_owned()),
+        Callback::Error(reason) => Err(refusal(via, &reason).to_owned()),
+    }
+}
+
+/// What the user reads when the browser came back with `reason` instead of a code.
+fn refusal(via: Via, reason: &str) -> &'static str {
+    match (via, reason) {
+        // On the server's own page, the only refusal is the user pressing Cancel.
+        (Via::WebPage, "access_denied") => CANCELLED_MESSAGE,
+        (Via::Provider, "access_denied") => ACCESS_DENIED_MESSAGE,
+        _ => FAILED_MESSAGE,
     }
 }
 
@@ -89,7 +117,7 @@ async fn wait_for_callback(listener: &TcpListener) -> Result<Callback, String> {
             .await
             .ok()
             .flatten();
-        respond(&mut stream, callback.is_some()).await;
+        respond(&mut stream, callback.as_ref()).await;
         if let Some(callback) = callback {
             return Ok(callback);
         }
@@ -110,11 +138,11 @@ async fn read_callback(stream: &mut TcpStream) -> Option<Callback> {
     parse_request_line(text.lines().next()?)
 }
 
-async fn respond(stream: &mut TcpStream, found: bool) {
-    let (status, body) = if found {
-        ("200 OK", DONE_PAGE)
-    } else {
-        ("404 Not Found", "")
+async fn respond(stream: &mut TcpStream, callback: Option<&Callback>) {
+    let (status, body) = match callback {
+        Some(Callback::Code(_)) => ("200 OK", SIGNED_IN_PAGE),
+        Some(Callback::Error(_)) => ("200 OK", DONE_PAGE),
+        None => ("404 Not Found", ""),
     };
     let response = format!(
         "HTTP/1.1 {status}\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\n\
@@ -144,6 +172,16 @@ fn parse_request_line(line: &str) -> Option<Callback> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refusal_on_the_web_page_is_a_cancel() {
+        assert_eq!(refusal(Via::WebPage, "access_denied"), CANCELLED_MESSAGE);
+        assert_eq!(
+            refusal(Via::Provider, "access_denied"),
+            ACCESS_DENIED_MESSAGE
+        );
+        assert_eq!(refusal(Via::WebPage, "server_error"), FAILED_MESSAGE);
+    }
 
     #[test]
     fn reads_a_code() {

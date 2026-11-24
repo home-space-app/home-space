@@ -30,14 +30,18 @@ private const val SSO_SERVER = "sso_server"
 private const val SSO_VERIFIER = "sso_verifier"
 private const val SSO_NAME = "sso_name"
 private const val SSO_STARTED_AT = "sso_started_at"
+private const val SSO_BROWSER = "sso_browser"
 
 /** How long the server keeps a started sign-in open. */
 private const val SSO_LIFETIME_MILLIS = 10 * 60 * 1000L
 
 data class SavedSession(val server: String, val refreshToken: String)
 
-/** A single sign-on waiting for the browser to come back. */
-data class PendingSso(val server: String, val verifier: String, val name: String)
+/**
+ * A sign-in waiting for the browser to come back: a single sign-on with the provider `name`, or,
+ * when `browser` is set, a sign-in on the server's own web page.
+ */
+data class PendingSso(val server: String, val verifier: String, val name: String, val browser: Boolean = false)
 
 /**
  * What the app keeps between runs. Secrets are encrypted with a key in the Android Keystore.
@@ -111,7 +115,7 @@ class SessionStore(context: Context) {
             forgetPendingSso()
             return null
         }
-        return PendingSso(server, verifier, name)
+        return PendingSso(server, verifier, name, prefs.getBoolean(SSO_BROWSER, false))
     }
 
     /** Saved rather than held in memory: Android may kill the app while the browser is open. */
@@ -121,6 +125,7 @@ class SessionStore(context: Context) {
             .putString(SSO_SERVER, pending.server)
             .putString(SSO_VERIFIER, verifier)
             .putString(SSO_NAME, pending.name)
+            .putBoolean(SSO_BROWSER, pending.browser)
             .putLong(SSO_STARTED_AT, System.currentTimeMillis())
             .commit()
     }
@@ -130,6 +135,7 @@ class SessionStore(context: Context) {
             .remove(SSO_SERVER)
             .remove(SSO_VERIFIER)
             .remove(SSO_NAME)
+            .remove(SSO_BROWSER)
             .remove(SSO_STARTED_AT)
             .commit()
     }

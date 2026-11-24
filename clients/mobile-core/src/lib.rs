@@ -110,6 +110,9 @@ pub enum CoreError {
     /// A single sign-on ended in any other failure.
     #[error("signing in failed")]
     SsoFailed,
+    /// The user turned the app away on the server's sign-in page.
+    #[error("signing in was cancelled")]
+    SignInCancelled,
     /// What was typed as a server address is not an http or https URL.
     #[error("the server address must start with http:// or https://")]
     InvalidServerAddress,
@@ -168,10 +171,13 @@ pub struct SignInOptions {
     pub password: bool,
     /// Name of the identity provider for the sign-in button, when single sign-on is on.
     pub sso_name: Option<String>,
+    /// Whether the server's web page can sign the app in, for
+    /// [`CoreClient::begin_browser_sign_in`]. Older servers can't.
+    pub browser: bool,
 }
 
-/// A started single sign-on: open `url` in a browser and keep `verifier` for
-/// [`CoreClient::finish_sso`].
+/// A started sign-in in the browser: open `url` in a browser and keep `verifier` for
+/// [`CoreClient::finish_sso`] or [`CoreClient::finish_browser_sign_in`], whichever began it.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct SsoRequest {
     pub url: String,
@@ -391,6 +397,7 @@ impl CoreClient {
         Ok(SignInOptions {
             password: providers.password,
             sso_name: providers.oidc.map(|oidc| oidc.name),
+            browser: providers.browser_login,
         })
     }
 
@@ -422,9 +429,7 @@ impl CoreClient {
 
     /// Starts a single sign-on. The browser comes back to [`paths::MOBILE_OIDC_REDIRECT`].
     pub fn begin_sso(&self) -> Result<SsoRequest, CoreError> {
-        let mut bytes = [0u8; VERIFIER_BYTES];
-        rand::fill(&mut bytes);
-        let pkce = Pkce::from_random(bytes);
+        let pkce = fresh_pkce();
         let url = self
             .inner
             .oidc_start_url(paths::MOBILE_OIDC_REDIRECT, &pkce)?;
@@ -444,6 +449,41 @@ impl CoreClient {
         let inner = self.inner.clone();
         let pkce = Pkce::from_verifier(verifier);
         let me = off_ui_thread(async move { inner.oidc_exchange(&code, &pkce).await })
+            .await
+            .map_err(|err| match err {
+                ApiError::Unauthorized => CoreError::SsoExpired,
+                other => other.into(),
+            })?;
+        Ok(self.signed_in(me))
+    }
+
+    /// Starts a sign-in on the server's web page, where the user signs in however the server
+    /// allows and lets this app in. The browser comes back to [`paths::MOBILE_OIDC_REDIRECT`].
+    pub fn begin_browser_sign_in(&self) -> Result<SsoRequest, CoreError> {
+        let pkce = fresh_pkce();
+        let url = self
+            .inner
+            .browser_login_start_url(paths::MOBILE_OIDC_REDIRECT, &pkce)?;
+        Ok(SsoRequest {
+            url,
+            verifier: pkce.verifier().to_owned(),
+        })
+    }
+
+    /// Completes a sign-in on the server's web page from the URL the browser came back to.
+    pub async fn finish_browser_sign_in(
+        &self,
+        callback_url: String,
+        verifier: String,
+    ) -> Result<SignedInUser, CoreError> {
+        let code = login_code(&callback_url).map_err(|err| match err {
+            // On the server's own page, the only refusal is the user pressing Cancel.
+            CoreError::SsoDenied => CoreError::SignInCancelled,
+            other => other,
+        })?;
+        let inner = self.inner.clone();
+        let pkce = Pkce::from_verifier(verifier);
+        let me = off_ui_thread(async move { inner.browser_login_exchange(&code, &pkce).await })
             .await
             .map_err(|err| match err {
                 ApiError::Unauthorized => CoreError::SsoExpired,
@@ -725,6 +765,13 @@ fn device_info(device: DeviceIdentity) -> Result<DeviceInfo, CoreError> {
     })
 }
 
+/// A new verifier for one sign-in in the browser.
+fn fresh_pkce() -> Pkce {
+    let mut bytes = [0u8; VERIFIER_BYTES];
+    rand::fill(&mut bytes);
+    Pkce::from_random(bytes)
+}
+
 /// The login code in the URL the browser came back to, or why there is none.
 fn login_code(callback_url: &str) -> Result<String, CoreError> {
     let mut url = url::Url::parse(callback_url).map_err(|_| CoreError::SsoFailed)?;
@@ -843,6 +890,18 @@ mod tests {
         (client, recorder)
     }
 
+    /// A client for a server that is never asked anything.
+    fn offline_session_client() -> CoreClient {
+        let recorder = Arc::new(Recorder::default());
+        CoreClient::with_session(
+            "https://files.example.com".to_owned(),
+            device(),
+            recorder,
+            test_dir(),
+        )
+        .expect("client")
+    }
+
     fn tokens(refresh_token: &str) -> ResponseTemplate {
         ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "access_token": "access", "refresh_token": refresh_token, "expires_in": 900,
@@ -873,7 +932,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path(paths::PROVIDERS))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "password": false, "oidc": {"name": "Keycloak"},
+                "password": false, "oidc": {"name": "Keycloak"}, "browser_login": true,
             })))
             .mount(&server)
             .await;
@@ -884,6 +943,7 @@ mod tests {
             SignInOptions {
                 password: false,
                 sso_name: Some("Keycloak".to_owned()),
+                browser: true,
             }
         );
     }
@@ -1083,6 +1143,62 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, CoreError::SsoExpired), "{err:?}");
+    }
+
+    #[test]
+    fn begin_browser_sign_in_asks_for_the_mobile_redirect_and_names_the_device() {
+        let client = offline_session_client();
+        let request = client.begin_browser_sign_in().unwrap();
+
+        let url = url::Url::parse(&request.url).unwrap();
+        assert_eq!(url.path(), paths::BROWSER_LOGIN_START);
+        let query: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(query["redirect_uri"], paths::MOBILE_OIDC_REDIRECT);
+        assert_eq!(query["device_name"], "Pixel");
+        assert_eq!(
+            query["code_challenge"],
+            Pkce::from_verifier(request.verifier).challenge()
+        );
+    }
+
+    #[tokio::test]
+    async fn finish_browser_sign_in_exchanges_the_code_with_the_verifier() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(paths::BROWSER_LOGIN_EXCHANGE))
+            .and(body_partial_json(serde_json::json!({
+                "code": "login code",
+                "code_verifier": "the-verifier",
+                "device": {"id": DEVICE_ID},
+            })))
+            .respond_with(tokens("first"))
+            .mount(&server)
+            .await;
+        mount_me(&server).await;
+
+        let (client, recorder) = session_client(&server);
+        let user = client
+            .finish_browser_sign_in(
+                "app.homespace://oidc/callback?code=login%20code".into(),
+                "the-verifier".into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(user.username, "me");
+        assert_eq!(*recorder.0.lock().unwrap(), [Some("first".to_owned())]);
+    }
+
+    #[tokio::test]
+    async fn cancelling_on_the_web_page_is_not_a_refusal() {
+        let client = offline_session_client();
+        let err = client
+            .finish_browser_sign_in(
+                "app.homespace://oidc/callback?error=access_denied".into(),
+                "the-verifier".into(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CoreError::SignInCancelled), "{err:?}");
     }
 
     #[test]

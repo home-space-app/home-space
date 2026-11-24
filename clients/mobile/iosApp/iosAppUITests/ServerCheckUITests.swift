@@ -10,7 +10,12 @@ final class ServerCheckUITests: XCTestCase {
 
         let signIn = app.buttons["Sign in"]
         XCTAssertTrue(signIn.waitForExistence(timeout: 10), app.debugDescription)
-        XCTAssertTrue(app.textFields["Username"].exists)
-        XCTAssertTrue(app.secureTextFields["Password"].exists)
+        // A server with the web client signs in on its page, with no fields; one without it, in
+        // the form.
+        XCTAssertEqual(
+            app.textFields["Username"].exists,
+            app.secureTextFields["Password"].exists,
+            app.debugDescription
+        )
     }
 }
