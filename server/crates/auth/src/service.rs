@@ -429,8 +429,11 @@ impl AuthService {
         &self,
         redirect_uri: &str,
         code_challenge: &str,
+        address: Option<IpAddr>,
     ) -> Result<String, AuthError> {
-        self.oidc()?.start(redirect_uri, code_challenge).await
+        let oidc = self.oidc()?;
+        self.count_sign_in_start(address).await?;
+        oidc.start(redirect_uri, code_challenge).await
     }
 
     /// Finishes a single sign-on after the provider sent the user back, returning the client

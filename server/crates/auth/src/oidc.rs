@@ -21,6 +21,9 @@ const LOOPBACK_REDIRECT_PATH: &str = "/callback";
 const CHALLENGE_LEN: usize = 43;
 const MIN_VERIFIER_LEN: usize = 43;
 const MAX_VERIFIER_LEN: usize = 128;
+/// The longest app address taken. The longest real one, `http://[::1]:65535/callback`, is
+/// 27 bytes; the rest of the room is to spare. Kept in step with the `browser_logins` check.
+pub(crate) const MAX_NATIVE_REDIRECT_LEN: usize = 128;
 
 type Client = CoreClient<
     EndpointSet,
@@ -224,12 +227,20 @@ pub fn is_allowed_redirect(public_url: &str, redirect: &str) -> bool {
 /// The kind of app `redirect` belongs to, when it is an app's address: the mobile apps' fixed
 /// address or a desktop app's loopback address (RFC 8252). `None` for anything else, the web
 /// client's own address included.
+///
+/// A loopback address is taken only as written the way it is read back: a URL parser forgives
+/// leading zeros, `..` segments, tabs and line breaks, which would let a short address hide in a
+/// very long string that the server then stores and sends the browser to.
 pub(crate) fn native_app(redirect: &str) -> Option<BrowserLoginApp> {
     if redirect == paths::MOBILE_OIDC_REDIRECT {
         return Some(BrowserLoginApp::Mobile);
     }
+    if redirect.len() > MAX_NATIVE_REDIRECT_LEN {
+        return None;
+    }
     let url = Url::parse(redirect).ok()?;
-    let loopback = url.scheme() == "http"
+    let loopback = url.as_str() == redirect
+        && url.scheme() == "http"
         && matches!(url.host_str(), Some("127.0.0.1" | "[::1]"))
         && url.path() == LOOPBACK_REDIRECT_PATH
         && url.query().is_none()
@@ -355,6 +366,29 @@ mod tests {
         assert_eq!(native_app("https://files.example.com/login/callback"), None);
         assert_eq!(native_app("http://localhost:41234/callback"), None);
         assert_eq!(native_app("http://127.0.0.1:41234/callback?x=1"), None);
+    }
+
+    #[test]
+    fn loopback_redirects_are_taken_only_as_written() {
+        for redirect in [
+            "http://127.0.0.1:041234/callback",
+            "http://127.0.0.1:41234/x/../callback",
+            "http://127.0.0.1:41234/./callback",
+            "http://127.0.0.1:41234/call\tback",
+            "http://127.0.0.1:41234/call\nback",
+            "HTTP://127.0.0.1:41234/callback",
+            "http://0x7f.0.0.1:41234/callback",
+            "http://127.0.0.1:80/callback",
+            "http://127.0.0.1:41234\\callback",
+        ] {
+            assert_eq!(native_app(redirect), None, "{redirect:?}");
+        }
+        assert_eq!(
+            native_app("http://127.0.0.1/callback"),
+            Some(BrowserLoginApp::Desktop)
+        );
+        let padded = format!("http://127.0.0.1:{}41234/callback", "0".repeat(200));
+        assert_eq!(native_app(&padded), None);
     }
 
     #[test]

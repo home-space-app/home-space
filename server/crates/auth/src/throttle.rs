@@ -3,6 +3,9 @@
 //! An attempt is admitted against one or more counters, then settled with how the password
 //! check went: a success starts the count again, a wrong password stays counted, and a check
 //! that could not be made (the server was busy) is taken back.
+//!
+//! Started sign-ins are counted the same way, every one of them, since each leaves a row
+//! behind until it expires.
 
 use std::net::{IpAddr, Ipv6Addr};
 
@@ -30,6 +33,17 @@ pub(crate) const FREE_ADDRESS_FAILURES: u32 = 20;
 pub(crate) const MAX_ADDRESS_BLOCK: Duration = Duration::minutes(15);
 /// How long after its last wrong password an address starts from nothing again.
 const ADDRESS_ATTEMPTS_MEMORY: Duration = Duration::hours(1);
+/// The key started sign-ins from one address are counted under. No user has it: it is only
+/// ever counted under [`TenantId::SHARED`], which no user belongs to.
+const SIGN_IN_STARTS: &str = "sign-in-starts";
+/// Sign-ins one address may start before it has to wait: far more than a household signing
+/// in its apps, each start being one click on "Sign in".
+pub(crate) const FREE_SIGN_IN_STARTS: u32 = 30;
+/// How long after its last start an address starts from nothing again: as long as a started
+/// sign-in waits for its answer.
+const SIGN_IN_STARTS_MEMORY: Duration = Duration::minutes(10);
+/// The longest wait of an address that starts too many sign-ins.
+const MAX_SIGN_IN_STARTS_BLOCK: Duration = Duration::minutes(15);
 /// Leading bits of an IPv6 address that name a network; one subscriber usually owns them all.
 const IPV6_NETWORK_BITS: u32 = 64;
 
@@ -48,6 +62,8 @@ enum Scope {
     Key,
     /// One address, over every username of every tenant.
     Address,
+    /// Sign-ins started from one address, in the browser or with single sign-on.
+    Starts,
 }
 
 impl Counter {
@@ -72,10 +88,22 @@ impl Counter {
         }
     }
 
+    /// Sign-ins started from `source`, over every tenant. Each start stays counted, whether
+    /// or not it is ever finished.
+    pub(crate) fn sign_in_starts(source: impl Into<String>) -> Self {
+        Self {
+            tenant: TenantId::SHARED,
+            key: SIGN_IN_STARTS.to_owned(),
+            source: source.into(),
+            scope: Scope::Starts,
+        }
+    }
+
     fn memory(&self) -> Duration {
         match self.scope {
             Scope::Key => LOGIN_ATTEMPTS_MEMORY,
             Scope::Address => ADDRESS_ATTEMPTS_MEMORY,
+            Scope::Starts => SIGN_IN_STARTS_MEMORY,
         }
     }
 
@@ -83,6 +111,7 @@ impl Counter {
         match self.scope {
             Scope::Key => login_block,
             Scope::Address => address_block,
+            Scope::Starts => sign_in_starts_block,
         }
     }
 }
@@ -153,6 +182,9 @@ impl Attempt {
         outcome
     }
 
+    /// Leaves the attempt counted whatever comes of it, as a started sign-in is.
+    pub(crate) fn keep(self) {}
+
     async fn succeeded(&self) -> Result<(), AuthError> {
         for counter in &self.counters {
             match counter.scope {
@@ -162,6 +194,7 @@ impl Attempt {
                         .await?;
                 }
                 Scope::Address => self.take_back_one(counter).await?,
+                Scope::Starts => {}
             }
         }
         Ok(())
@@ -207,6 +240,12 @@ pub(crate) fn login_block(failures: u32) -> Option<Duration> {
 /// [`login_block`], up to [`MAX_ADDRESS_BLOCK`].
 pub(crate) fn address_block(failures: u32) -> Option<Duration> {
     doubling_block(failures, FREE_ADDRESS_FAILURES, MAX_ADDRESS_BLOCK)
+}
+
+/// How long an address must wait after starting `starts` sign-ins: not at all for the first
+/// [`FREE_SIGN_IN_STARTS`], then in the same steps as [`login_block`], up to 15 minutes.
+pub(crate) fn sign_in_starts_block(starts: u32) -> Option<Duration> {
+    doubling_block(starts, FREE_SIGN_IN_STARTS, MAX_SIGN_IN_STARTS_BLOCK)
 }
 
 /// No wait for the first `free` failures, then [`FIRST_LOGIN_BLOCK`], doubled with every

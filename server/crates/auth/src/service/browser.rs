@@ -13,16 +13,33 @@ use crate::{
 
 impl AuthService {
     /// Starts an app's browser sign-in: returns the web client page, relative to the server,
-    /// that asks the signed-in user to let the app in.
+    /// that asks the signed-in user to let the app in. Anyone may start one, so starts are
+    /// counted against `address`, and refused once it started too many.
     pub async fn browser_start(
         &self,
         redirect_uri: &str,
         code_challenge: &str,
         device_name: Option<&str>,
+        address: Option<IpAddr>,
     ) -> Result<String, AuthError> {
+        self.count_sign_in_start(address).await?;
         self.browser
             .start(redirect_uri, code_challenge, device_name)
             .await
+    }
+
+    /// Counts a sign-in started from `address`, in the browser or with single sign-on: each
+    /// leaves a row until it expires, so one address may only start so many.
+    pub(super) async fn count_sign_in_start(
+        &self,
+        address: Option<IpAddr>,
+    ) -> Result<(), AuthError> {
+        let Some(address) = address else {
+            return Ok(());
+        };
+        let counters = vec![Counter::sign_in_starts(attempt_source(address))];
+        self.throttle.admit(counters).await?.keep();
+        Ok(())
     }
 
     /// The app waiting on `flow`, to show the user before they answer.

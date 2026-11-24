@@ -228,8 +228,9 @@ one-time code to the app's redirect, and the app trades it with PKCE.
 GET  /api/v1/auth/browser/start?redirect_uri&code_challenge&device_name
                                      → 302 /authorize?flow=<id>     (10 minutes, single use)
      (the web client signs in first if needed, password or single sign-on, comes back, and
-      shows "The Home Space desktop app on “Laptop” wants to sign in as alice." with
-      Continue / Cancel)
+      shows "The Home Space desktop app wants to sign in to your account alice.", the device
+      name the app gave marked as its own claim, a warning that Continue gives full access,
+      and Continue / Cancel)
 GET  /api/v1/auth/browser/flows/{id}                (web session) → { app, device_name }
 POST /api/v1/auth/browser/approve  { flow }         (web session) → { redirect: …?code=… }
 POST /api/v1/auth/browser/deny     { flow }         (web session) → { redirect: …?error=access_denied }
@@ -243,6 +244,18 @@ POST /api/v1/auth/browser/exchange { code, code_verifier, device } → TokenPair
 - An unknown, expired or answered flow is `410 login-expired`; a server without the web client
   answers `start` with `503 browser-login-unavailable` and `Providers.browser_login: false`.
 - A wrong code at `exchange` counts against the address like a wrong password.
+- Anyone may call `start`, and each call stores a flow for 10 minutes, so (decided 2026-11-24):
+  - every start, here and at `oidc/start`, counts against the address (`Counter::sign_in_starts`,
+    over all tenants): 30 free, then `429 too-many-attempts` with waits doubling up to 15 minutes;
+  - a tenant has at most 500 flows waiting, then `503 server-busy` (retry after 60 s);
+  - an app address is taken only as `url` writes it back and at most 128 bytes, so a short
+    loopback address cannot hide in a long string (leading zeros, `..`, tabs) that would be
+    stored; the column has the same check (`0028_sign_in_limits.sql`).
+- The code only ever goes to the approving user's own device (their loopback, their mobile app),
+  so a link someone sends cannot hand them a session by itself. What is left needs the victim's
+  help or a malicious app already on their device, hence the page's wording: the device name is
+  the app's own claim, Continue gives full access, and "If someone sent you this link, press
+  Cancel".
 - The approve step is always an explicit click, even when the browser is already signed in, so a
   link someone sends cannot sign their app in to the victim's account.
 - When the tenant has a provider and no passwords, `browser/start` simply forwards to
@@ -316,8 +329,8 @@ Per tenant, in the `tenants` table (no secrets, so it fits the database):
 
 ## Data
 
-New migration (`0028_second_factors.sql`; `0027_browser_login.sql` already renamed
-`oidc_codes` to `login_codes` and added `browser_logins`):
+New migration (`0029_second_factors.sql`; `0027_browser_login.sql` already renamed
+`oidc_codes` to `login_codes` and added `browser_logins`, `0028_sign_in_limits.sql` limits them):
 
 ```sql
 CREATE TABLE user_totp (
