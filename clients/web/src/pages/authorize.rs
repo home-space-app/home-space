@@ -122,12 +122,16 @@ fn Question(
     });
     let asking = move || matches!(step.get(), Step::Asking(_) | Step::Sending);
     let sending = move || step.get() == Step::Sending;
-    let app = RwSignal::new(String::new());
+    // Kept while the answer is sent, when the step no longer holds it.
+    let asked = RwSignal::new(None::<BrowserLoginFlow>);
     Effect::new(move |_| {
         if let Step::Asking(flow) = step.get() {
-            app.set(describe(&flow));
+            asked.set(Some(flow));
         }
     });
+    let app = move || asked.with(|flow| flow.as_ref().map_or("An app", |flow| app_kind(flow)));
+    let device_name =
+        move || asked.with(|flow| flow.as_ref().and_then(|flow| flow.device_name.clone()));
     let username = move || {
         auth.user
             .with(|me| me.as_ref().map(|me| me.username.clone()))
@@ -146,10 +150,23 @@ fn Question(
         }}
         <Show when=asking>
             <p class="login__text">
-                {move || app.get()} " wants to sign in as " <strong>{username}</strong> "."
+                {app} " wants to sign in to your account " <strong>{username}</strong> "."
             </p>
+            {move || {
+                device_name()
+                    .map(|name| {
+                        view! {
+                            <p class="login__hint">
+                                "It says it is on the device “" {name}
+                                "”. The app chose that name itself, so do not go by it."
+                            </p>
+                        }
+                    })
+            }}
             <p class="login__hint">
-                "Continue only if you just started signing in from that app yourself."
+                "Continue gives the app full access to your account and files. Continue only if "
+                "you just pressed Sign in in that app yourself. If someone sent you this link, "
+                "press Cancel."
             </p>
             <div class="login__actions">
                 <button
@@ -196,15 +213,12 @@ fn is_flow_id(flow: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// "The Home Space desktop app on “Laptop”", from what the app said about itself.
-fn describe(flow: &BrowserLoginFlow) -> String {
-    let app = match flow.app {
+/// Which kind of app is asking, from where the server sends its answer: the one thing about
+/// the app its request cannot make up, unlike the device name.
+fn app_kind(flow: &BrowserLoginFlow) -> &'static str {
+    match flow.app {
         BrowserLoginApp::Desktop => "The Home Space desktop app",
         BrowserLoginApp::Mobile => "The Home Space mobile app",
-    };
-    match &flow.device_name {
-        Some(name) => format!("{app} on “{name}”"),
-        None => app.to_owned(),
     }
 }
 
@@ -249,17 +263,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_app_is_described_by_kind_and_device() {
+    fn the_app_is_named_by_its_kind_alone() {
         let flow = BrowserLoginFlow {
             app: BrowserLoginApp::Desktop,
-            device_name: Some("Laptop".to_owned()),
+            device_name: Some("Your iPhone".to_owned()),
         };
-        assert_eq!(describe(&flow), "The Home Space desktop app on “Laptop”");
+        assert_eq!(app_kind(&flow), "The Home Space desktop app");
         let flow = BrowserLoginFlow {
             app: BrowserLoginApp::Mobile,
             device_name: None,
         };
-        assert_eq!(describe(&flow), "The Home Space mobile app");
+        assert_eq!(app_kind(&flow), "The Home Space mobile app");
     }
 
     #[test]

@@ -236,6 +236,58 @@ async fn only_app_redirects_and_s256_challenges_start(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn a_redirect_is_taken_only_short_and_as_written(pool: PgPool) {
+    let (app, _web) = web_app(pool).await;
+    let padded = format!("http://127.0.0.1:{}54321/callback", "0".repeat(10_000));
+    let tabs = format!("http://127.0.0.1:54321/{}callback", "\t".repeat(10_000));
+    for redirect in [
+        padded.as_str(),
+        tabs.as_str(),
+        "http://127.0.0.1:54321/x/../callback",
+    ] {
+        let response = get(&app, &start_uri(redirect, &challenge()), None).await;
+        assert_eq!(
+            response.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{} bytes",
+            redirect.len()
+        );
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn one_address_may_start_only_so_many_sign_ins(pool: PgPool) {
+    let (app, _web) = web_app(pool).await;
+    let start_from = |address: &'static str| {
+        let app = &app;
+        async move {
+            app.send_with(
+                Method::GET,
+                &start_uri(LOOPBACK, &challenge()),
+                None,
+                axum::body::Body::empty(),
+                None,
+                &[("x-forwarded-for", address)],
+            )
+            .await
+        }
+    };
+    for _ in 0..30 {
+        assert_eq!(
+            start_from("198.51.100.7").await.status,
+            StatusCode::SEE_OTHER
+        );
+    }
+    let refused = start_from("198.51.100.7").await;
+    assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(problem_type(&refused), "too-many-attempts");
+    assert_eq!(
+        start_from("203.0.113.9").await.status,
+        StatusCode::SEE_OTHER
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn without_the_web_client_apps_cannot_start(pool: PgPool) {
     let app = setup(pool).await;
     let response = get(&app, &start_uri(LOOPBACK, &challenge()), None).await;

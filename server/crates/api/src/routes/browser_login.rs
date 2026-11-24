@@ -32,6 +32,7 @@ pub fn routes() -> Router<AppState> {
 async fn start(
     State(state): State<AppState>,
     tenant: Tenant,
+    ClientIp(address): ClientIp,
     ApiQuery(query): ApiQuery<BrowserLoginStartQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     if !state.serves_web {
@@ -43,6 +44,7 @@ async fn start(
             &query.redirect_uri,
             &query.code_challenge,
             query.device_name.as_deref(),
+            address,
         )
         .await?;
     // The page's URL names the flow, so keep it out of caches and `Referer` headers.

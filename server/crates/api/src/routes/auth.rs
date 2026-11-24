@@ -46,11 +46,12 @@ async fn providers(State(state): State<AppState>, tenant: Tenant) -> Json<Provid
 /// Sends the browser to the identity provider.
 async fn oidc_start(
     tenant: Tenant,
+    ClientIp(address): ClientIp,
     ApiQuery(query): ApiQuery<OidcStartQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let url = tenant
         .auth
-        .oidc_start(&query.redirect_uri, &query.code_challenge)
+        .oidc_start(&query.redirect_uri, &query.code_challenge, address)
         .await?;
     Ok(([(CACHE_CONTROL, "no-store")], Redirect::to(&url)))
 }

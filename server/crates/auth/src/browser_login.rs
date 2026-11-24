@@ -20,6 +20,11 @@ use crate::{
 /// How long an app waits for the user to sign in and answer.
 const BROWSER_LOGIN_TTL: Duration = Duration::minutes(10);
 const MAX_DEVICE_NAME_CHARS: usize = 64;
+/// Browser sign-ins one tenant may have waiting at once: far more than its people start in
+/// ten minutes, so that only a flood of starts from many addresses reaches it.
+const MAX_PENDING_BROWSER_LOGINS: u32 = 500;
+/// How long an app is told to wait when its tenant has too many sign-ins waiting.
+const FULL_RETRY_AFTER_SECS: u64 = 60;
 
 /// The browser sign-ins of one tenant.
 #[derive(Clone, Debug)]
@@ -62,14 +67,21 @@ impl BrowserLogin {
             client_challenge: code_challenge.to_owned(),
             device_name: device_name.and_then(clean_device_name),
         };
-        self.db
+        let inserted = self
+            .db
             .insert_browser_login(
                 self.tenant,
                 &hash_refresh_token(&flow),
                 &login,
                 OffsetDateTime::now_utc() + BROWSER_LOGIN_TTL,
+                MAX_PENDING_BROWSER_LOGINS,
             )
             .await?;
+        if !inserted {
+            return Err(AuthError::Busy {
+                retry_after: FULL_RETRY_AFTER_SECS,
+            });
+        }
         Ok(append_query(paths::WEB_AUTHORIZE, ("flow", flow)))
     }
 
