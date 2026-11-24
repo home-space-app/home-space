@@ -19,7 +19,7 @@ mod transfers;
 mod uploads;
 
 pub use capabilities::{FALLBACK_UPLOAD_CHUNK_BYTES, STREAMING_NEEDS_UPDATE};
-pub use client::{Client, TokenListener};
+pub use client::{Client, TokenListener, user_agent};
 pub use error::ApiError;
 pub use pkce::{Pkce, VERIFIER_BYTES};
 pub use releases::{Release, latest_release};

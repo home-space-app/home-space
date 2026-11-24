@@ -18,9 +18,6 @@ struct GithubRelease {
     html_url: String,
 }
 
-/// GitHub refuses API requests without a user agent; browsers set their own.
-#[cfg(not(target_arch = "wasm32"))]
-const USER_AGENT: &str = "home-space";
 /// How long the check may take before it is given up.
 #[cfg(not(target_arch = "wasm32"))]
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -38,7 +35,7 @@ async fn fetch(url: &str) -> Result<Release, reqwest::Error> {
         .header(reqwest::header::ACCEPT, "application/vnd.github+json");
     #[cfg(not(target_arch = "wasm32"))]
     let request = request
-        .header(reqwest::header::USER_AGENT, USER_AGENT)
+        .header(reqwest::header::USER_AGENT, crate::user_agent())
         .timeout(TIMEOUT);
     let release: GithubRelease = request.send().await?.error_for_status()?.json().await?;
     Ok(Release {

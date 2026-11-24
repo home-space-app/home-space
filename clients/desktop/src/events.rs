@@ -8,7 +8,10 @@ use iced::{
     futures::{SinkExt, Stream, StreamExt, channel::mpsc::Sender},
 };
 use tokio::time::{Instant, timeout};
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite};
+use tokio_tungstenite::{
+    MaybeTlsStream, WebSocketStream, connect_async,
+    tungstenite::{self, client::IntoClientRequest, http::HeaderValue, http::header::USER_AGENT},
+};
 
 use api_client::{ApiError, Client};
 use protocol::{Event, TicketRequest};
@@ -60,8 +63,7 @@ fn listen(client: Client) -> impl Stream<Item = Live> {
         loop {
             match client.ticket(&TicketRequest::Events).await {
                 Ok(ticket) => {
-                    let opening = connect_async(client.events_url(&ticket.ticket));
-                    if let Ok(Ok((mut socket, _))) = timeout(CONNECT_TIMEOUT, opening).await
+                    if let Some(mut socket) = open(&client.events_url(&ticket.ticket)).await
                         && greet(&client, &mut socket).await
                     {
                         let opened = Instant::now();
@@ -90,6 +92,19 @@ fn listen(client: Client) -> impl Stream<Item = Live> {
             delay = (delay * 2).min(MAX_RETRY);
         }
     })
+}
+
+async fn open(url: &str) -> Option<Socket> {
+    let mut request = url.into_client_request().ok()?;
+    request.headers_mut().insert(
+        USER_AGENT,
+        HeaderValue::from_str(api_client::user_agent()).ok()?,
+    );
+    let (socket, _) = timeout(CONNECT_TIMEOUT, connect_async(request))
+        .await
+        .ok()?
+        .ok()?;
+    Some(socket)
 }
 
 /// Sends the hello naming this device; `false` when the socket is already gone.
