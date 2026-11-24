@@ -19,7 +19,7 @@ keyring = { version = "4.2.0", optional = true }
 mimalloc = "0.1.52"
 # The decoders behind iced's image widget: the types `src/viewers.rs` shows in the image viewer.
 image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "tiff", "webp"] }
-notify = "8.2.1"
+notify = "9.0.0"
 # Renders the pages of the PDF viewer.
 pdf-core = { workspace = true, features = ["render"] }
 open = "5.4.5"
