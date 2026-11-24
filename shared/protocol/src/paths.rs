@@ -19,6 +19,13 @@ pub const OIDC_EXCHANGE: &str = "/api/v1/auth/oidc/exchange";
 /// Where single sign-on sends the browser back to the mobile apps (RFC 8252 private-use scheme).
 /// Not a route on the server: the apps claim this address on the device.
 pub const MOBILE_OIDC_REDIRECT: &str = "app.homespace://oidc/callback";
+/// Browser sign-in for apps: sends the system browser to the web client's [`WEB_AUTHORIZE`] page.
+pub const BROWSER_LOGIN_START: &str = "/api/v1/auth/browser/start";
+pub const BROWSER_LOGIN_APPROVE: &str = "/api/v1/auth/browser/approve";
+pub const BROWSER_LOGIN_DENY: &str = "/api/v1/auth/browser/deny";
+pub const BROWSER_LOGIN_EXCHANGE: &str = "/api/v1/auth/browser/exchange";
+/// The web client page where a signed-in user lets an app sign in; takes `flow`.
+pub const WEB_AUTHORIZE: &str = "/authorize";
 pub const ME: &str = "/api/v1/me";
 pub const ME_PASSWORD: &str = "/api/v1/me/password";
 pub const NODES: &str = "/api/v1/nodes";
@@ -60,6 +67,11 @@ pub const WEB_SHARE: &str = "/s";
 /// Header of `PATCH /uploads/{id}` naming where the chunk starts, and of upload responses
 /// naming how many bytes the server has.
 pub const UPLOAD_OFFSET: &str = "Upload-Offset";
+
+/// What the web client shows about the browser sign-in `flow` before the user lets it through.
+pub fn browser_login_flow(flow: &str) -> String {
+    format!("/api/v1/auth/browser/flows/{flow}")
+}
 
 pub fn upload(id: uuid::Uuid) -> String {
     format!("{UPLOADS}/{id}")

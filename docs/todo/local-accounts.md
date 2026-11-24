@@ -224,16 +224,24 @@ opens the server's own sign-in page. When the user has signed in there, the serv
 one-time code to the app's redirect, and the app trades it with PKCE.
 
 ```
-GET  /api/v1/auth/browser/start?redirect_uri&code_challenge  → 302 /login?flow=<id>
-     (the web client signs in, or is already signed in, and shows
-      "Sign in to Home Space on <device>?" with Continue / Cancel)
-POST /api/v1/auth/browser/approve  { flow }      (with the web session's token) → { redirect }
-POST /api/v1/auth/browser/exchange { code, code_verifier, device } → TokenPair
+GET  /api/v1/auth/browser/start?redirect_uri&code_challenge&device_name
+                                     → 302 /authorize?flow=<id>     (10 minutes, single use)
+     (the web client signs in first if needed, password or single sign-on, comes back, and
+      shows "The Home Space desktop app on “Laptop” wants to sign in as alice." with
+      Continue / Cancel)
+GET  /api/v1/auth/browser/flows/{id}                (web session) → { app, device_name }
+POST /api/v1/auth/browser/approve  { flow }         (web session) → { redirect: …?code=… }
+POST /api/v1/auth/browser/deny     { flow }         (web session) → { redirect: …?error=access_denied }
+POST /api/v1/auth/browser/exchange { code, code_verifier, device } → TokenPair (always in the body)
 ```
 
-- The same redirect rules as single sign-on (`is_allowed_redirect`), the same one-time codes
-  (`oidc_codes` is renamed to `login_codes`), the same PKCE check. Most of `OidcLogin` is reused;
-  the only new part is that the "provider" is the server's own web page.
+- Only app redirects start a flow: the loopback rule and the mobile address of single sign-on
+  (`oidc::native_app`); the web client signs in on its own. The same one-time codes
+  (`oidc_codes` is renamed to `login_codes` and gains `tenant_id`) and the same PKCE check
+  (`auth::login_codes::LoginCodes`, used by both). Flows are kept in `browser_logins`.
+- An unknown, expired or answered flow is `410 login-expired`; a server without the web client
+  answers `start` with `503 browser-login-unavailable` and `Providers.browser_login: false`.
+- A wrong code at `exchange` counts against the address like a wrong password.
 - The approve step is always an explicit click, even when the browser is already signed in, so a
   link someone sends cannot sign their app in to the victim's account.
 - When the tenant has a provider and no passwords, `browser/start` simply forwards to
@@ -307,7 +315,8 @@ Per tenant, in the `tenants` table (no secrets, so it fits the database):
 
 ## Data
 
-New migration (`0027_second_factors.sql`):
+New migration (`0028_second_factors.sql`; `0027_browser_login.sql` already renamed
+`oidc_codes` to `login_codes` and added `browser_logins`):
 
 ```sql
 CREATE TABLE user_totp (
@@ -350,7 +359,6 @@ ALTER TABLE users ADD COLUMN webauthn_handle BYTEA UNIQUE;
 -- A sign-in that passed the password and waits for the second factor, and the state of a
 -- WebAuthn ceremony between its two requests.
 CREATE TABLE pending_logins (...);   -- token_hash, tenant_id, user_id NULL, kind, state JSONB, attempts, expires_at
-ALTER TABLE oidc_codes RENAME TO login_codes;
 
 ALTER TABLE sessions ADD COLUMN auth_methods TEXT[] NOT NULL DEFAULT '{pwd}';
 ALTER TABLE sessions ADD COLUMN authenticated_at TIMESTAMPTZ;
@@ -388,7 +396,7 @@ database dump (backups) would hand out every second factor. So:
 | `POST /auth/login` | Unchanged request; may answer `second-factor-required` |
 | `POST /auth/login/verify` | Second step with TOTP, recovery code or WebAuthn assertion |
 | `POST /auth/passkey/start`, `/finish` | Passwordless sign-in |
-| `GET /auth/browser/start`, `POST /auth/browser/approve`, `/exchange` | Browser sign-in for native apps |
+| `GET /auth/browser/start`, `GET /auth/browser/flows/{id}`, `POST /auth/browser/approve`, `/deny`, `/exchange` | Browser sign-in for native apps (done: server and web) |
 | `GET /auth/providers` | Gains `passkeys: bool`, `browser_login: bool` |
 | `GET /me` | Gains `second_factors: { totp, webauthn: n, recovery_left: n }` |
 | `GET /me/security` | Factors, credentials with names and dates, the policy |
@@ -423,8 +431,8 @@ client falls back to plain password sign-in on older servers.
   an old app can sign in through the web page. That is worth doing because it costs one branch.
 - New client, old server: the feature list lacks `two_factor`; the security settings are hidden.
 - New client, new server: native form for users without 2FA, browser sign-in for the rest.
-- No breaking change before 1.0.0. The two `oidc_codes` users move to `login_codes` in the same
-  migration. 1.0.0 drops the native form and the apps' password path of `/auth/login` (the web
+- No breaking change before 1.0.0. `oidc_codes` became `login_codes` in `0027_browser_login.sql`,
+  with no change to `/auth/oidc/*`. 1.0.0 drops the native form and the apps' password path of `/auth/login` (the web
   page keeps using it with `two_step`).
 
 ## Clients
@@ -487,8 +495,11 @@ client falls back to plain password sign-in on older servers.
 1. Sessions remember `auth_methods` and `authenticated_at`; re-confirmation (`/me/reauthenticate`
    with the password) on the existing sensitive endpoints.
 2. TOTP and recovery codes: tables, secret key, two-step login, web screens, admin reset, CLI.
-3. Browser sign-in for native apps: server flow, web approve page, a "Sign in in the browser"
-   button in desktop/Android/iOS next to the native form; old apps' SSO button pointed at it.
+3. Browser sign-in for native apps: server flow and web approve page (`/authorize`) are done,
+   with the `browser_login` feature and `Providers.browser_login`; the api-client has
+   `browser_login_start_url` / `browser_login_exchange`. Still to do: a "Sign in in the
+   browser" button in desktop/Android/iOS next to the native form; old apps' SSO button
+   pointed at it.
 4. WebAuthn: security keys as second factor, then passkey sign-in, in the web client.
 5. Policy (`mfa_policy`), forced enrolment, `HOMESPACE_OIDC_REQUIRE_MFA`.
 6. 1.0.0: remove the native password form and the apps' password path of `/auth/login`.

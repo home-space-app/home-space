@@ -163,7 +163,10 @@ async fn providers_lists_password_login_without_oidc(pool: PgPool) {
         )
         .await;
     assert_eq!(response.status, StatusCode::OK);
-    assert_eq!(response.json(), json!({ "password": true, "oidc": null }));
+    assert_eq!(
+        response.json(),
+        json!({ "password": true, "oidc": null, "browser_login": false })
+    );
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -189,7 +192,7 @@ async fn providers_lists_the_configured_provider(pool: PgPool) {
         .await;
     assert_eq!(
         response.json(),
-        json!({ "password": false, "oidc": { "name": "Test IdP" } })
+        json!({ "password": false, "oidc": { "name": "Test IdP" }, "browser_login": false })
     );
 }
 

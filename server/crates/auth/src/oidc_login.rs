@@ -1,7 +1,6 @@
 //! Signing in through the tenant's identity provider, and creating the local user of a
 //! provider account on its first sign-in.
 
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use time::{Duration, OffsetDateTime};
 
 use db::{Db, DbError, OidcPending, TenantId, UserId};
@@ -9,14 +8,13 @@ use protocol::rules::MAX_USERNAME_LEN;
 
 use crate::{
     AuthError, OidcService,
-    oidc::{Identity, is_valid_challenge, verifier_matches},
+    login_codes::{LoginCodes, random_token},
+    oidc::{Identity, is_valid_challenge},
     sessions::Sessions,
     token::hash_refresh_token,
 };
 
 const OIDC_PENDING_TTL: Duration = Duration::minutes(10);
-const OIDC_CODE_TTL: Duration = Duration::seconds(60);
-const OIDC_TOKEN_BYTES: usize = 32;
 const USERNAME_ATTEMPTS: u32 = 20;
 pub(crate) const FALLBACK_USERNAME: &str = "user";
 
@@ -25,12 +23,14 @@ pub(crate) const FALLBACK_USERNAME: &str = "user";
 pub(crate) struct OidcLogin {
     db: Db,
     tenant: TenantId,
+    codes: LoginCodes,
     pub(crate) provider: OidcService,
 }
 
 impl OidcLogin {
     pub(crate) fn new(db: Db, tenant: TenantId, provider: OidcService) -> Self {
         Self {
+            codes: LoginCodes::new(db.clone(), tenant),
             db,
             tenant,
             provider,
@@ -120,16 +120,7 @@ impl OidcLogin {
         code: &str,
         code_verifier: &str,
     ) -> Result<UserId, AuthError> {
-        let stored = self
-            .db
-            .take_oidc_code(self.tenant, &hash_refresh_token(code))
-            .await?
-            .ok_or(AuthError::InvalidCredentials)?;
-        if verifier_matches(code_verifier, &stored.client_challenge) {
-            Ok(stored.user_id)
-        } else {
-            Err(AuthError::InvalidCredentials)
-        }
+        self.codes.redeem(code, code_verifier).await
     }
 
     /// Verifies the provider's answer, provisions the user and stores a login code for them.
@@ -145,16 +136,7 @@ impl OidcLogin {
             .await?;
         let user_id = self.user_for_identity(&identity).await?;
         sessions.require_may_sign_in(user_id).await?;
-        let login_code = random_token();
-        self.db
-            .insert_oidc_code(
-                &hash_refresh_token(&login_code),
-                user_id,
-                &pending.client_challenge,
-                OffsetDateTime::now_utc() + OIDC_CODE_TTL,
-            )
-            .await?;
-        Ok(login_code)
+        self.codes.issue(user_id, &pending.client_challenge).await
     }
 
     /// The local user for a provider account, created on first sign-in.
@@ -192,12 +174,6 @@ impl OidcLogin {
         }
         Err(AuthError::InvalidInput("no free username for this account"))
     }
-}
-
-fn random_token() -> String {
-    let mut bytes = [0u8; OIDC_TOKEN_BYTES];
-    rand::fill(&mut bytes);
-    URL_SAFE_NO_PAD.encode(bytes)
 }
 
 pub(crate) fn append_query(url: &str, (key, value): (&str, impl AsRef<str>)) -> String {

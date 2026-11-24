@@ -65,6 +65,7 @@ type, a bad id in the path, a missing header), **415** for a body in the wrong f
 | `gone` | 410 | `gone` | The share has expired. |
 | `changes-pruned` | 410 | `gone` | The changes asked for are no longer kept; list everything again. |
 | `transfer-gone` | 410 | `gone` | The transfer was declined, cancelled, saved or has expired. |
+| `login-expired` | 410 | `gone` | The browser sign-in of an app was already used, cancelled or has expired; start again from the app. |
 | `too-large` | 413 | `payload_too_large` | The body or upload is larger than `limit` bytes. |
 | `too-many-items` | 413 | `payload_too_large` | More than `limit` items at once, such as in a zip. |
 | `unsupported-media-type` | 415 | `bad_request` | The body is not in the format the endpoint takes. |
@@ -83,6 +84,7 @@ type, a bad id in the path, a missing header), **415** for a body in the wrong f
 | `internal` | 500 | `internal` | Something went wrong on the server. |
 | `identity-provider-failed` | 502 | `internal` | The identity provider could not be reached or answered with something invalid. |
 | `tenant-unavailable` | 503 | `internal` | The site of this host is disabled, being deleted, or not set up. |
+| `browser-login-unavailable` | 503 | `internal` | Apps cannot sign in in the browser: the server does not serve the web client (`HOMESPACE_WEB_ROOT`). |
 | `quota-exceeded` | 507 | `quota_exceeded` | Storing this would pass the account's `quota`; `available` bytes are left. |
 
 A test in `shared/protocol` checks that this table lists every problem type with its status.

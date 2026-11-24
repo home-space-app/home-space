@@ -41,6 +41,8 @@ pub enum ProblemType {
     ChangesPruned,
     /// The transfer was declined, cancelled, saved or has expired.
     TransferGone,
+    /// The browser sign-in of an app was already used, cancelled or has expired.
+    LoginExpired,
     /// An item with this name already exists in the folder.
     NameTaken,
     UsernameTaken,
@@ -82,6 +84,8 @@ pub enum ProblemType {
     QuotaExceeded,
     /// The site of this host is disabled, being deleted, or not set up.
     TenantUnavailable,
+    /// Apps cannot sign in in the browser: the server does not serve the web client.
+    BrowserLoginUnavailable,
     /// The identity provider could not be reached or answered with something invalid.
     IdentityProviderFailed,
     /// Something went wrong on the server.
@@ -90,7 +94,7 @@ pub enum ProblemType {
 
 impl ProblemType {
     /// Every problem type, for documentation and tests.
-    pub const ALL: [Self; 37] = [
+    pub const ALL: [Self; 39] = [
         Self::BadRequest,
         Self::BodyInterrupted,
         Self::UnsupportedMediaType,
@@ -106,6 +110,7 @@ impl ProblemType {
         Self::Gone,
         Self::ChangesPruned,
         Self::TransferGone,
+        Self::LoginExpired,
         Self::NameTaken,
         Self::UsernameTaken,
         Self::LostAndFound,
@@ -126,6 +131,7 @@ impl ProblemType {
         Self::TooManyItems,
         Self::QuotaExceeded,
         Self::TenantUnavailable,
+        Self::BrowserLoginUnavailable,
         Self::IdentityProviderFailed,
         Self::Internal,
     ];
@@ -203,6 +209,12 @@ impl ProblemType {
                 "transfer-gone",
                 C::Gone,
                 "The transfer is no longer available",
+            ),
+            Self::LoginExpired => (
+                410,
+                "login-expired",
+                C::Gone,
+                "The sign-in request is no longer valid",
             ),
             Self::NameTaken => (
                 409,
@@ -298,6 +310,12 @@ impl ProblemType {
                 "tenant-unavailable",
                 C::Internal,
                 "This site is not available",
+            ),
+            Self::BrowserLoginUnavailable => (
+                503,
+                "browser-login-unavailable",
+                C::Internal,
+                "Sign-in in the browser is not available on this server",
             ),
             Self::IdentityProviderFailed => (
                 502,

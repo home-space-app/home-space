@@ -36,8 +36,11 @@ pub fn routes() -> Router<AppState> {
         .route("/tickets", post(ticket))
 }
 
-async fn providers(tenant: Tenant) -> Json<Providers> {
-    Json(tenant.auth.providers())
+/// Apps can sign in in the browser where the web client is served and offers a way to sign in.
+async fn providers(State(state): State<AppState>, tenant: Tenant) -> Json<Providers> {
+    let mut providers = tenant.auth.providers();
+    providers.browser_login = state.serves_web && (providers.password || providers.oidc.is_some());
+    Json(providers)
 }
 
 /// Sends the browser to the identity provider.

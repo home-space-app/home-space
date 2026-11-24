@@ -78,6 +78,10 @@ pub struct Providers {
     pub password: bool,
     /// An OpenID Connect provider (Auth0, Keycloak, ...) is configured.
     pub oidc: Option<OidcProvider>,
+    /// Apps can sign in through the server's web page ([`BrowserLoginStartQuery`]); older
+    /// servers leave it out.
+    #[serde(default)]
+    pub browser_login: bool,
 }
 
 /// A configured OpenID Connect provider.
@@ -118,4 +122,59 @@ pub struct OidcExchangeRequest {
     /// cannot read, and leaves it out of the response.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cookie: bool,
+}
+
+/// Query of `GET /auth/browser/start`, which an app opens in the system browser to sign in
+/// through the server's web page.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BrowserLoginStartQuery {
+    /// Where the browser goes with the one-time code: a loopback URL or
+    /// [`MOBILE_OIDC_REDIRECT`](crate::paths::MOBILE_OIDC_REDIRECT).
+    pub redirect_uri: String,
+    /// Base64url (unpadded) SHA-256 of the `code_verifier` presented later (PKCE `S256`).
+    pub code_challenge: String,
+    /// The device's name, shown to the user before they let the app sign in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
+}
+
+/// What kind of app asks to sign in, told by its redirect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserLoginApp {
+    Desktop,
+    Mobile,
+}
+
+/// `GET /auth/browser/flows/{flow}`: the app waiting for the signed-in user to let it in.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserLoginFlow {
+    pub app: BrowserLoginApp,
+    /// The name the app gave for its device, if any. The app chose it, so it is no proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
+}
+
+/// `POST /auth/browser/approve` or `/deny`: the signed-in user's answer to a browser sign-in.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BrowserLoginDecision {
+    pub flow: String,
+}
+
+/// Where the web client sends the browser after the answer: the app's redirect with a `code`
+/// or an `error`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserLoginRedirect {
+    pub redirect: String,
+}
+
+/// `POST /auth/browser/exchange`: the app trades the one-time code for a session. Apps only,
+/// so the refresh token is always in the response.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BrowserLoginExchangeRequest {
+    pub code: String,
+    pub code_verifier: String,
+    /// The device signing in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<DeviceInfo>,
 }

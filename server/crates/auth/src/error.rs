@@ -33,6 +33,9 @@ pub enum AuthError {
     /// Single sign-on is not configured on this server.
     #[error("single sign-on is not enabled")]
     OidcDisabled,
+    /// The browser sign-in of an app is unknown, already answered or expired.
+    #[error("this sign-in request was already used, cancelled or has expired")]
+    LoginExpired,
     /// The identity provider authenticated the user but access is restricted to a group.
     #[error("access denied")]
     OidcDenied,
@@ -62,6 +65,7 @@ impl AsProblem for AuthError {
             Self::InvalidInput(_) => ProblemType::ValidationFailed,
             Self::OidcDisabled => ProblemType::SsoDisabled,
             Self::OidcDenied => ProblemType::SsoAccessDenied,
+            Self::LoginExpired => ProblemType::LoginExpired,
             Self::Oidc(_) => ProblemType::IdentityProviderFailed,
             Self::Hashing(_) | Self::Token(_) | Self::Join(_) | Self::Db(_) => {
                 ProblemType::Internal

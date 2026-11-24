@@ -28,6 +28,8 @@ const INVALID_LOGIN_MESSAGE: &str = "Invalid username or password";
 const OIDC_VERIFIER_KEY: &str = "homespace.oidc_verifier";
 const OIDC_CALLBACK_PATH: &str = "/login/callback";
 const OIDC_EXPIRED_MESSAGE: &str = "The sign-in expired. Please try again.";
+/// The page to come back to once the user has signed in, such as an app's browser sign-in.
+const RETURN_TO_KEY: &str = "homespace.return_to";
 
 thread_local! {
     static CLIENT: Client = build_client();
@@ -224,6 +226,32 @@ impl Auth {
     }
 }
 
+/// Comes back to `path` (with its query) after the next sign-in in this tab, password or single
+/// sign-on.
+pub fn return_after_sign_in(path: &str) {
+    if let Some(storage) = session_storage() {
+        let _ = storage.set_item(RETURN_TO_KEY, path);
+    }
+}
+
+/// Where to go once signed in: the page saved by [`return_after_sign_in`], once, or Home.
+pub fn after_sign_in() -> String {
+    let saved = session_storage().and_then(|storage| {
+        let path = storage.get_item(RETURN_TO_KEY).ok().flatten();
+        let _ = storage.remove_item(RETURN_TO_KEY);
+        path
+    });
+    saved
+        .filter(|path| is_local_path(path))
+        .unwrap_or_else(|| "/".to_owned())
+}
+
+/// Whether `path` stays on this site: absolute, and not `//host` or `/\host`, which browsers
+/// read as another site.
+fn is_local_path(path: &str) -> bool {
+    path.starts_with('/') && !path.starts_with("//") && !path.starts_with("/\\")
+}
+
 /// The verifier saved when the sign-in started; it can be used once.
 pub fn take_oidc_verifier() -> Option<String> {
     let storage = session_storage()?;
@@ -235,6 +263,16 @@ pub fn take_oidc_verifier() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_paths_on_this_site_are_returned_to() {
+        assert!(is_local_path("/authorize?flow=abc"));
+        assert!(is_local_path("/"));
+        assert!(!is_local_path("//evil.example.com/"));
+        assert!(!is_local_path("/\\evil.example.com/"));
+        assert!(!is_local_path("https://evil.example.com/"));
+        assert!(!is_local_path("javascript:alert(1)"));
+    }
 
     #[test]
     fn browsers_that_claim_to_be_others_are_named_for_themselves() {

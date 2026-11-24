@@ -10,7 +10,7 @@ use openidconnect::{
     reqwest,
     url::Url,
 };
-use protocol::paths;
+use protocol::{BrowserLoginApp, paths};
 use sha2::{Digest, Sha256};
 
 use crate::AuthError;
@@ -218,19 +218,25 @@ fn web_redirect_url(public_url: &str) -> String {
 /// mobile address, as it could a loopback port on a computer, but the code is useless to it
 /// without the PKCE verifier.
 pub fn is_allowed_redirect(public_url: &str, redirect: &str) -> bool {
-    if redirect == web_redirect_url(public_url) || redirect == paths::MOBILE_OIDC_REDIRECT {
-        return true;
+    redirect == web_redirect_url(public_url) || native_app(redirect).is_some()
+}
+
+/// The kind of app `redirect` belongs to, when it is an app's address: the mobile apps' fixed
+/// address or a desktop app's loopback address (RFC 8252). `None` for anything else, the web
+/// client's own address included.
+pub(crate) fn native_app(redirect: &str) -> Option<BrowserLoginApp> {
+    if redirect == paths::MOBILE_OIDC_REDIRECT {
+        return Some(BrowserLoginApp::Mobile);
     }
-    let Ok(url) = Url::parse(redirect) else {
-        return false;
-    };
-    url.scheme() == "http"
+    let url = Url::parse(redirect).ok()?;
+    let loopback = url.scheme() == "http"
         && matches!(url.host_str(), Some("127.0.0.1" | "[::1]"))
         && url.path() == LOOPBACK_REDIRECT_PATH
         && url.query().is_none()
         && url.fragment().is_none()
         && url.username().is_empty()
-        && url.password().is_none()
+        && url.password().is_none();
+    loopback.then_some(BrowserLoginApp::Desktop)
 }
 
 /// Whether `challenge` looks like an unpadded base64url SHA-256 digest.
@@ -330,6 +336,25 @@ mod tests {
         ] {
             assert!(!is_allowed_redirect(PUBLIC, redirect), "{redirect}");
         }
+    }
+
+    #[test]
+    fn only_app_redirects_are_native() {
+        assert_eq!(
+            native_app("app.homespace://oidc/callback"),
+            Some(BrowserLoginApp::Mobile)
+        );
+        assert_eq!(
+            native_app("http://127.0.0.1:41234/callback"),
+            Some(BrowserLoginApp::Desktop)
+        );
+        assert_eq!(
+            native_app("http://[::1]:41234/callback"),
+            Some(BrowserLoginApp::Desktop)
+        );
+        assert_eq!(native_app("https://files.example.com/login/callback"), None);
+        assert_eq!(native_app("http://localhost:41234/callback"), None);
+        assert_eq!(native_app("http://127.0.0.1:41234/callback?x=1"), None);
     }
 
     #[test]

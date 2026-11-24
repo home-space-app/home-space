@@ -684,6 +684,7 @@ mod tests {
             oidc: Some(protocol::OidcProvider {
                 name: "Keycloak".to_owned(),
             }),
+            browser_login: false,
         }
     }
 
@@ -826,6 +827,7 @@ mod tests {
         let password_only = Providers {
             password: true,
             oidc: None,
+            browser_login: false,
         };
         assert_eq!(sign_in_methods(&password_only), "Connected · password");
     }

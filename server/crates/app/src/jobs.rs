@@ -75,10 +75,10 @@ async fn prune_once(db: &Db, retention: Option<time::Duration>, device_retention
     }
     report(
         (
-            "removed expired single sign-on state",
-            "pruning single sign-on state failed",
+            "removed expired sign-in state",
+            "pruning sign-in state failed",
         ),
-        db.prune_oidc().await,
+        db.prune_sign_ins().await,
     );
     report(
         (

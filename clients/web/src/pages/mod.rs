@@ -1,5 +1,6 @@
 mod admin;
 mod admin_users;
+mod authorize;
 mod browser;
 mod conflict_dialog;
 mod delete_dialog;
@@ -25,6 +26,7 @@ mod viewer;
 mod visibility_dialog;
 
 pub use admin::{AdminPage, AdminTab};
+pub use authorize::AuthorizePage;
 pub use browser::Browser;
 pub use devices::DevicesPage;
 pub use duplicates::DuplicatesPage;
