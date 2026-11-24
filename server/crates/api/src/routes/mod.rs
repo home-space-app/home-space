@@ -1,5 +1,6 @@
 mod admin;
 mod auth;
+mod browser_login;
 mod capabilities;
 mod changes;
 mod devices;
@@ -25,6 +26,7 @@ pub fn routes() -> Router<AppState> {
         .route("/health", get(health))
         .merge(admin::routes())
         .merge(auth::routes())
+        .merge(browser_login::routes())
         .merge(capabilities::routes())
         .merge(changes::routes())
         .merge(devices::routes())

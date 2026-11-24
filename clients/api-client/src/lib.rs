@@ -1,6 +1,7 @@
 //! Typed HTTP client for the home-space API, shared by all Rust clients.
 
 mod accounts;
+mod browser_login;
 mod capabilities;
 mod client;
 mod devices;

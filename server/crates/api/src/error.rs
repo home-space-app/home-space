@@ -35,6 +35,9 @@ pub enum ApiError {
     /// The tenant of the host is disabled, being deleted, or not configured.
     #[error("this site is not available")]
     TenantUnavailable,
+    /// Apps cannot sign in in the browser, as the server does not serve the web client.
+    #[error("this server does not serve the web client, so apps cannot sign in in the browser")]
+    BrowserLoginUnavailable,
     /// The request cannot be read: the body, query, path or a header.
     #[error("{0}")]
     BadRequest(String),
@@ -108,6 +111,7 @@ impl AsProblem for ApiError {
             Self::TooManyConnections => ProblemType::TooManyConnections,
             Self::UnknownHost => ProblemType::UnknownHost,
             Self::TenantUnavailable => ProblemType::TenantUnavailable,
+            Self::BrowserLoginUnavailable => ProblemType::BrowserLoginUnavailable,
             Self::BadRequest(_) => ProblemType::BadRequest,
             Self::UnsupportedMediaType(_) => ProblemType::UnsupportedMediaType,
             Self::BodyTooLarge(_) => ProblemType::TooLarge,

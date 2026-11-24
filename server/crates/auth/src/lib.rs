@@ -1,8 +1,10 @@
 //! Authentication for home-space: password hashing, JWT access tokens and
 //! rotating refresh tokens.
 
+mod browser_login;
 mod error;
 mod hasher;
+mod login_codes;
 pub mod offline;
 mod oidc;
 mod oidc_login;

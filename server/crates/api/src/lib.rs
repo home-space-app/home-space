@@ -70,7 +70,8 @@ fn finish(router: Router, web: WebPolicy) -> Router {
 /// Like [`router`], but also serves the single-page web client from `web_root`.
 ///
 /// Unknown paths outside the API fall back to `index.html` for client-side routing.
-pub fn router_with_web(state: AppState, web_root: &Path) -> Router {
+pub fn router_with_web(mut state: AppState, web_root: &Path) -> Router {
+    state.serves_web = true;
     let index = web_root.join(INDEX_FILE);
     let web = WebPolicy::for_index(&index);
     let files = ServeDir::new(web_root).fallback(ServeFile::new(index));

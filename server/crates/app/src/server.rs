@@ -64,6 +64,7 @@ pub async fn serve(db: Db, config: &Config) -> Result<()> {
             config: config.summary()?,
         }),
         trust_forwarded_for: config.trust_forwarded_for,
+        serves_web: false,
     };
     jobs::spawn(&db, &state, config);
 

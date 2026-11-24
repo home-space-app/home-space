@@ -20,6 +20,9 @@ pub struct AppState {
     /// Whether a reverse proxy in front of the server names the client in `X-Forwarded-For`.
     /// Off, the header is ignored, since any client could put anything in it.
     pub trust_forwarded_for: bool,
+    /// Whether the server serves the web client, which apps need to sign in in the browser.
+    /// Set by [`router_with_web`](crate::router_with_web).
+    pub serves_web: bool,
 }
 
 /// Facts about the running server that only change with a restart.

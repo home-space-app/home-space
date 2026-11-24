@@ -1,6 +1,6 @@
 //! The authentication of one tenant, as the API uses it. The work is done by the parts it
-//! is made of: [`PasswordHasher`], [`LoginThrottle`], [`Sessions`], [`Tickets`] and
-//! [`OidcLogin`].
+//! is made of: [`PasswordHasher`], [`LoginThrottle`], [`Sessions`], [`Tickets`],
+//! [`OidcLogin`] and [`BrowserLogin`].
 
 use std::net::IpAddr;
 
@@ -16,6 +16,7 @@ use protocol::{
 
 use crate::{
     AuthError, Claims, OidcService, SharePasswords,
+    browser_login::BrowserLogin,
     hasher::PasswordHasher,
     offline,
     oidc_login::OidcLogin,
@@ -80,6 +81,7 @@ pub struct AuthService {
     sessions: Sessions,
     tickets: Tickets,
     oidc: Option<OidcLogin>,
+    browser: BrowserLogin,
     password_login: bool,
 }
 
@@ -94,6 +96,7 @@ impl AuthService {
             throttle: LoginThrottle::new(db.clone()),
             tenant: config.tenant,
             keys,
+            browser: BrowserLogin::new(db.clone(), config.tenant),
             db,
             oidc: None,
             password_login: true,
@@ -116,6 +119,7 @@ impl AuthService {
             tenant: config.tenant,
             keys,
             db: self.db.clone(),
+            browser: BrowserLogin::new(self.db.clone(), config.tenant),
             oidc: None,
             password_login: true,
         }
@@ -134,13 +138,16 @@ impl AuthService {
         self.tenant
     }
 
-    /// The ways users can sign in on this server.
+    /// The ways users can sign in on this server. Browser sign-in for apps needs the web
+    /// client, which this service knows nothing of, so it is left off here; the API turns it
+    /// on where the web client is served.
     pub fn providers(&self) -> Providers {
         Providers {
             password: self.password_login,
             oidc: self.oidc.as_ref().map(|oidc| OidcProvider {
                 name: oidc.provider.display_name().to_owned(),
             }),
+            browser_login: false,
         }
     }
 
@@ -453,5 +460,6 @@ impl AuthService {
     }
 }
 
+mod browser;
 #[cfg(test)]
 mod tests;

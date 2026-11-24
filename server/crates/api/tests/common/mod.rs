@@ -218,6 +218,7 @@ async fn build(
             },
         }),
         trust_forwarded_for: true,
+        serves_web: false,
     };
     TestApp {
         router: api::router(state.clone()),
@@ -230,6 +231,15 @@ async fn build(
 }
 
 impl TestApp {
+    /// The same server serving the web client from `dir`, which gets an `index.html`.
+    pub fn with_web(&self, dir: &tempfile::TempDir) -> Self {
+        std::fs::write(dir.path().join("index.html"), "<html>home-space</html>").expect("index");
+        Self {
+            router: api::router_with_web(self.state.clone(), dir.path()),
+            ..self.clone()
+        }
+    }
+
     pub async fn send(
         &self,
         method: Method,

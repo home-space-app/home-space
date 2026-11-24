@@ -7,11 +7,15 @@
 //! The list starts empty at 0.13.0: everything older is the baseline every server that
 //! reports a version has.
 
+/// Apps sign in through the server's web page: `/auth/browser/start`, `approve`, `deny`,
+/// `exchange` and `flows/{flow}`, and `browser_login` in `GET /auth/providers`.
+pub const BROWSER_LOGIN: &str = "browser_login";
+
 /// Every feature this server provides, each added with the release that introduced it.
-pub const ALL: &[&str] = &[];
+pub const ALL: &[&str] = &[BROWSER_LOGIN];
 
 /// What the user reads for each feature, in hints such as "These won't work: …".
-const DISPLAY_NAMES: &[(&str, &str)] = &[];
+const DISPLAY_NAMES: &[(&str, &str)] = &[(BROWSER_LOGIN, "Sign-in in the browser")];
 
 /// What the user reads for `feature`; the name itself for one this build does not know.
 pub fn display_name(feature: &str) -> &str {

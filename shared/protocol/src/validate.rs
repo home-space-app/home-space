@@ -15,6 +15,7 @@ use crate::rules::{
     password_problem, username_problem,
 };
 use crate::{
+    BrowserLoginDecision, BrowserLoginExchangeRequest, BrowserLoginStartQuery,
     ChangePasswordRequest, ChangesQuery, ContentQuery, CopyShared, CreateAccount,
     CreateFolderRequest, CreateShare, CreateTransfer, CreateUpload, DeviceSessionRequest,
     FieldError, IncomingQuery, ListQuery, LoginRequest, MoveRequest, OidcCallbackQuery,
@@ -200,6 +201,9 @@ macro_rules! shape_only {
 }
 
 shape_only!(
+    BrowserLoginDecision,
+    BrowserLoginExchangeRequest,
+    BrowserLoginStartQuery,
     ChangesQuery,
     ContentQuery,
     CreateTransfer,

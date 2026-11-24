@@ -107,6 +107,10 @@ impl Client {
         serde_json::to_string(&hello).ok()
     }
 
+    pub(crate) fn device(&self) -> Option<&DeviceInfo> {
+        self.device.as_ref()
+    }
+
     pub(crate) fn http(&self) -> &reqwest::Client {
         &self.http
     }

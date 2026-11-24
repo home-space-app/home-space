@@ -31,9 +31,10 @@ pub mod version;
 
 pub use admin::{Account, AccountDevice, CreateAccount, SetPassword, UpdateAccount};
 pub use auth::{
-    ChangePasswordRequest, DEVICE_SESSION_LABELS, DeviceSessionRequest, LoginRequest, Me,
-    OidcCallbackQuery, OidcExchangeRequest, OidcProvider, OidcStartQuery, Providers,
-    RefreshRequest, TokenPair,
+    BrowserLoginApp, BrowserLoginDecision, BrowserLoginExchangeRequest, BrowserLoginFlow,
+    BrowserLoginRedirect, BrowserLoginStartQuery, ChangePasswordRequest, DEVICE_SESSION_LABELS,
+    DeviceSessionRequest, LoginRequest, Me, OidcCallbackQuery, OidcExchangeRequest, OidcProvider,
+    OidcStartQuery, Providers, RefreshRequest, TokenPair,
 };
 pub use capabilities::Capabilities;
 pub use change::{Change, ChangesQuery, ChangesResponse};

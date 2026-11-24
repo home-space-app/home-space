@@ -9,9 +9,9 @@ use crate::{
     incoming::{self, IncomingToast},
     leave_guard,
     pages::{
-        AdminPage, AdminTab, Browser, DevicesPage, DuplicatesPage, LegacyViewer, Login,
-        OidcCallback, PublicSharePage, SearchPage, SettingsPage, SharedWithMePage, SharesPage,
-        Shell, TransferList, TransfersPage, TrashPage,
+        AdminPage, AdminTab, AuthorizePage, Browser, DevicesPage, DuplicatesPage, LegacyViewer,
+        Login, OidcCallback, PublicSharePage, SearchPage, SettingsPage, SharedWithMePage,
+        SharesPage, Shell, TransferList, TransfersPage, TrashPage,
     },
     session::Auth,
     update::UpdateToast,
@@ -45,6 +45,10 @@ pub fn App() -> impl IntoView {
                     <Route
                         path=path!("/login/callback")
                         view=move || view! { <OidcCallback auth /> }
+                    />
+                    <Route
+                        path=path!("/authorize")
+                        view=move || view! { <AuthorizePage auth /> }
                     />
                     <Route path=path!("/s/:token") view=PublicSharePage />
                     <ParentRoute path=path!("") view=move || view! { <Shell auth /> }>
