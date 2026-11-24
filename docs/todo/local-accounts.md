@@ -60,7 +60,7 @@ did use a second factor ([Single sign-on users](#single-sign-on-users)).
 | Second factors | TOTP app, passkey or security key, recovery codes. Any one is enough. |
 | Passkey as first factor | Yes: a passkey with user verification signs in without the password. |
 | Sign-in protocol | Two steps. `/auth/login` answers `401 second-factor-required` with a short-lived `login_token`; the client finishes at `/auth/login/verify`. |
-| Passkeys on native apps | Through the system browser, with the same PKCE code flow single sign-on uses ("browser sign-in"). Native forms keep password + TOTP. |
+| Sign-in on native apps | Only in the browser: desktop and mobile open the server's web sign-in page in the system browser and get a session through PKCE, like single sign-on ("browser sign-in"). The native password form goes away. TOTP and WebAuthn are built once, on the web. |
 | WebAuthn library | `webauthn-rs` on the server; `navigator.credentials` through `web-sys` in the web client. |
 | RP id | The tenant's primary domain host, as for protected folders. |
 | Secret storage | TOTP secrets encrypted with a new per-tenant key `HOMESPACE_SECRETS_KEY`. Recovery codes hashed. |
@@ -171,19 +171,44 @@ per-user id, never the username or the UUID).
 
 ### Browser sign-in for native apps
 
-WebAuthn needs the RP id's origin. The web client has it. Native apps do not:
+Desktop and mobile apps no longer have a sign-in form of their own. They ask for the server
+address (native, as now), then open the server's web sign-in page in the system browser, and
+the user signs in there with whatever the tenant offers: password, TOTP, recovery code, passkey,
+or the identity provider. The app gets its session through PKCE, as it does for single sign-on
+today. TOTP, WebAuthn, forced enrolment, "update the app" problems and future factors are then
+built and tested once, in the web client.
 
-- iOS allows passkeys of a domain only when the app lists it under Associated Domains at build
-  time, which cannot work for self-hosted servers on any domain.
-- Android Credential Manager needs `/.well-known/assetlinks.json` on the domain naming the app's
-  signing key. The server could serve it, so this is possible later.
-- Desktop: Windows has `webauthn.dll`, macOS needs the same associated-domain entitlement as iOS,
-  Linux has no platform passkeys at all, only USB keys over CTAP2.
+Why the browser rather than native screens:
 
-So native apps do what they already do for single sign-on: open the system browser (loopback on
-desktop, Custom Tab, `ASWebAuthenticationSession`) at the server's own sign-in page, which offers
-every method the tenant has. When the user has signed in there, the server hands a one-time code
-to the app's redirect, and the app trades it with PKCE.
+- **Passkeys can't be done natively anyway.** WebAuthn needs the RP id's origin. The web client
+  has it. Native apps do not:
+
+  - iOS allows passkeys of a domain only when the app lists it under Associated Domains at build
+    time, which cannot work for self-hosted servers on any domain.
+  - Android Credential Manager needs `/.well-known/assetlinks.json` on the domain naming the
+    app's signing key. The server could serve it, so this would be possible.
+  - Desktop: Windows has `webauthn.dll`, macOS needs the same associated-domain entitlement as
+    iOS, Linux has no platform passkeys at all, only USB keys over CTAP2.
+- **One sign-in screen instead of four** (web, iced, Compose, SwiftUI), each with code entry,
+  recovery codes, error states and forced enrolment.
+- **Password managers** fill the web form better than native fields, especially on desktop.
+- **The password never reaches the app.** Only the server's own page sees it (RFC 8252's advice).
+- **One flow for every tenant**: with a provider, the web page forwards to it, so apps no longer
+  pick between "password" and "single sign-on" buttons.
+
+What it costs:
+
+- The server must serve the web client. `HOMESPACE_WEB_ROOT` is optional today (the Docker image
+  ships it). A server without it answers `browser/start` with a minimal page saying sign-in needs
+  the web client; or the native password form stays as a fallback for such servers (open question).
+- A switch to the browser and back on each new sign-in. Sessions last 30 days through refresh, so
+  that is rare. iOS shows its "wants to use <domain> to sign in" prompt.
+- Older servers: new apps keep the current native form for servers without `browser_login`, until
+  the oldest supported server has it. Then the form is deleted.
+
+The flow: the system browser (loopback on desktop, Custom Tab, `ASWebAuthenticationSession`)
+opens the server's own sign-in page. When the user has signed in there, the server hands a
+one-time code to the app's redirect, and the app trades it with PKCE.
 
 ```
 GET  /api/v1/auth/browser/start?redirect_uri&code_challenge  → 302 /login?flow=<id>
@@ -200,12 +225,12 @@ POST /api/v1/auth/browser/exchange { code, code_verifier, device } → TokenPair
   link someone sends cannot sign their app in to the victim's account.
 - When the tenant has a provider and no passwords, `browser/start` simply forwards to
   `oidc/start`, so apps can always use one flow.
-- Native forms stay: password + TOTP or recovery code work in the app itself, and a "Sign in with
-  a passkey" button opens the browser flow. Apps that do not have the new screens yet can still
-  use their single sign-on button against servers that announce browser sign-in (see
-  [Features](#features-and-compatibility)).
-- Security keys over USB/NFC in the desktop app (CTAP2) can come later, through the
-  `Authenticator` trait planned for protected folders.
+- Old apps can still use their single sign-on button against servers that announce browser
+  sign-in (see [Features](#features-and-compatibility)).
+- App extensions (share sheet, file provider) are unaffected: they get their sessions from the
+  app's session through `/auth/device-sessions`, never by signing in.
+- Native WebAuthn is not planned. Protected folders still talk to security keys natively (CTAP2),
+  because they need the PRF output in the app; that is unlocking, not signing in.
 
 ### What a session remembers
 
@@ -388,17 +413,17 @@ client falls back to plain password sign-in on older servers.
 
 ## Clients
 
-- **api-client / client-core**: `login` returns `Signed(Me) | NeedsSecondFactor(Challenge)`;
-  `verify_second_factor`; the browser sign-in generalised from `oidc_start_url`; types for the
-  security settings.
+- **api-client / client-core**: the browser sign-in generalised from `oidc_start_url` /
+  `oidc_exchange`; types for the security settings. The password `login` stays only for servers
+  without `browser_login` and is removed with the native form.
 - **Web (Leptos)**: second-step screen; "Sign in with a passkey" and conditional UI on the
   username field; Security page (TOTP with QR, keys, recovery codes, sign out everywhere);
   re-confirm dialog; the browser sign-in approve page. `navigator.credentials` through `web-sys`
   with JSON (de)serialisation of the options (`webauthn-rs-proto` types are shared).
-- **Desktop (iced)**: TOTP/recovery code step in the login form; passkey button opens the system
-  browser (reuses `sso.rs`). Security settings link to the web page at first.
-- **Android / iOS**: same as desktop: code step in the native form, passkeys through Custom Tab /
-  `ASWebAuthenticationSession`. Security settings open the web page at first.
+- **Desktop (iced)**: the login screen becomes "server address" + "Sign in", which runs
+  `sso.rs` against `browser/start`. No 2FA code in the app. Security settings open the web page.
+- **Android / iOS**: the same, with the existing Custom Tab / `ASWebAuthenticationSession` code.
+  Security settings open the web page (a native screen can come later if wanted).
 
 ## Security notes
 
@@ -442,12 +467,13 @@ client falls back to plain password sign-in on older servers.
 1. Sessions remember `auth_methods` and `authenticated_at`; re-confirmation (`/me/reauthenticate`
    with the password) on the existing sensitive endpoints.
 2. TOTP and recovery codes: tables, secret key, two-step login, web screens, admin reset, CLI.
-3. Native clients: second-step screens in desktop, Android, iOS.
+3. Browser sign-in for native apps: server flow, web approve page, desktop/Android/iOS switch
+   their login screen to it (native form kept only for older servers); old apps' SSO button
+   pointed at it.
 4. WebAuthn: security keys as second factor, then passkey sign-in, in the web client.
-5. Browser sign-in for native apps; old apps' SSO button pointed at it.
 6. Policy (`mfa_policy`), forced enrolment, `HOMESPACE_OIDC_REQUIRE_MFA`.
-7. Later: native security keys over CTAP2 on desktop, Android Credential Manager with
-   `assetlinks.json`, e-mail notifications when e-mail exists.
+7. Later: e-mail notifications when e-mail exists; removing the native password form once
+   every supported server has `browser_login`.
 
 Each step is a release on its own and adds its feature name.
 
@@ -455,9 +481,10 @@ Each step is a release on its own and adds its feature name.
 
 1. **Passkeys without a password.** Should a passkey sign in on its own (recommended), or only be
    a second factor after the password?
-2. **Native passkeys.** Is the browser sign-in for native apps acceptable, or do you want
-   in-app passkeys on Android (needs the server to serve `assetlinks.json` with the app's signing
-   key) and Windows from the start? iOS and macOS cannot do in-app passkeys for arbitrary domains.
+2. **Servers without the web client.** Browser sign-in is the only way native apps sign in
+   (decided 2026-11-24). For a server run without `HOMESPACE_WEB_ROOT`, should the server ship a
+   minimal built-in sign-in page, keep the native password form as a fallback, or simply require
+   the web client (recommended: require it, the Docker image and `homespace-ctl install` have it)?
 3. **TOTP secret key.** A new `HOMESPACE_SECRETS_KEY` per tenant (recommended), or store TOTP
    secrets in clear and rely on database access control?
 4. **Default policy.** Optional for everyone by default, or require 2FA for administrators from
