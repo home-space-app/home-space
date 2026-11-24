@@ -17,7 +17,7 @@ WORKDIR /workspace/server
 RUN cargo build --release -p app -p ctl \
     && mkdir /out-data
 
-FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:2c362104c7f7adc37e6bdc87451450ff3834871a6268d930815cbe561493f947 AS runtime
+FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:838b58dceeba88a5dc8b088bca1a2e1e8e26ebe88d5e23a87137de09cc910e61 AS runtime
 COPY --from=server --chown=65532:65532 /out-data /data
 COPY --from=server /workspace/server/target/release/homespace /usr/local/bin/homespace
 COPY --from=server /workspace/server/target/release/homespace-ctl /usr/local/bin/homespace-ctl
