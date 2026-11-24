@@ -17,7 +17,8 @@ use tokio::net::TcpStream;
 use tokio::sync::watch;
 use tokio::time::{Instant, sleep, timeout};
 use tokio_tungstenite::{
-    Connector, MaybeTlsStream, WebSocketStream, connect_async_tls_with_config, tungstenite,
+    Connector, MaybeTlsStream, WebSocketStream, connect_async_tls_with_config,
+    tungstenite::{self, client::IntoClientRequest, http::HeaderValue, http::header::USER_AGENT},
 };
 
 use crate::{CoreClient, RUNTIME};
@@ -179,7 +180,12 @@ async fn stopping(stopped: &mut watch::Receiver<bool>) {
 /// Opens the socket and sends the hello naming this device; `None` when either fails.
 async fn connect(client: &api_client::Client, url: &str) -> Option<Socket> {
     let connector = TLS.clone().map(Connector::Rustls);
-    let opening = connect_async_tls_with_config(url, None, false, connector);
+    let mut request = url.into_client_request().ok()?;
+    request.headers_mut().insert(
+        USER_AGENT,
+        HeaderValue::from_str(api_client::user_agent()).ok()?,
+    );
+    let opening = connect_async_tls_with_config(request, None, false, connector);
     let (mut socket, _) = timeout(CONNECT_TIMEOUT, opening).await.ok()?.ok()?;
     if let Some(hello) = client.hello() {
         timeout(

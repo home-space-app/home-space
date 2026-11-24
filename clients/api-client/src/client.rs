@@ -24,6 +24,18 @@ const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 #[cfg(not(target_arch = "wasm32"))]
 const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
+pub fn user_agent() -> &'static str {
+    static USER_AGENT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        format!(
+            "home-space/{} ({}; {})",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        )
+    });
+    &USER_AGENT
+}
+
 /// Called with the new refresh token after every rotation, or `None` once the session ends.
 /// With a [cookie session](Client::with_cookie_session) the token is empty: the browser has it.
 pub type TokenListener = Arc<dyn Fn(Option<&str>) + Send + Sync>;
@@ -708,6 +720,7 @@ pub(crate) async fn decode<T: DeserializeOwned>(response: Response) -> Result<T,
 #[cfg(not(target_arch = "wasm32"))]
 fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
+        .user_agent(user_agent())
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(READ_TIMEOUT)
         .build()
