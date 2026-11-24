@@ -65,8 +65,30 @@ struct LoginView: View {
         }
     }
 
+    /// A server with the web page signs in there, whatever the account needs; the form is for
+    /// older servers.
     @ViewBuilder
     private func signIn(_ options: SignInOptions) -> some View {
+        if options.browser {
+            Section {
+                Button {
+                    Task { await model.signInOnWebPage(authenticate: authenticate) }
+                } label: {
+                    Text(model.busy ? "Signing in…" : "Sign in")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
+            }
+        } else {
+            nativeSignIn(options)
+        }
+    }
+
+    @ViewBuilder
+    private func nativeSignIn(_ options: SignInOptions) -> some View {
         if let name = options.ssoName {
             Section {
                 Button("Sign in with \(name)") {

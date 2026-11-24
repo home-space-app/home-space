@@ -165,6 +165,16 @@ class CoreClientTest {
     }
 
     @Test
+    fun beginBrowserSignInOpensTheServersPage() {
+        CoreClient("https://files.example.com").use { client ->
+            val request = client.beginBrowserSignIn()
+            assertTrue(request.url, request.url.startsWith("https://files.example.com/api/v1/auth/browser/start?"))
+            assertTrue(request.url, request.url.contains("redirect_uri=app.homespace"))
+            assertTrue(request.verifier.isNotEmpty())
+        }
+    }
+
+    @Test
     fun serverAddressesAreTidied() {
         assertEquals("https://files.example.com", normalizeServerUrl(" https://files.example.com/ "))
         assertThrows(CoreException.InvalidServerAddress::class.java) {

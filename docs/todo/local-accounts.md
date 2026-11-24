@@ -60,7 +60,7 @@ did use a second factor ([Single sign-on users](#single-sign-on-users)).
 | Second factors | TOTP app, passkey or security key, recovery codes. Any one is enough. |
 | Passkey as first factor | Yes: a passkey with user verification signs in without the password. |
 | Sign-in protocol | `/auth/login` stays as it is for apps. For a user with 2FA it answers `403 second-factor-required` with a readable detail. The web client opts in to the two-step flow (`two_step: true`) and finishes at `/auth/login/verify`. |
-| Sign-in on native apps | TOTP and WebAuthn only on the web. Apps open the server's web sign-in page in the system browser and get a session through PKCE, like single sign-on ("browser sign-in"). The native password form and the apps' use of `/auth/login` stay until 1.0.0, for users without 2FA and for older servers. |
+| Sign-in on native apps | TOTP and WebAuthn only on the web. Apps open the server's web sign-in page in the system browser and get a session through PKCE, like single sign-on ("browser sign-in"). A server that reports `browser_login` gets only a "Sign in" button that opens the page; the native password form and the apps' use of `/auth/login` stay until 1.0.0 for older servers and servers without the web client. |
 | WebAuthn library | `webauthn-rs` on the server; `navigator.credentials` through `web-sys` in the web client. |
 | RP id | The tenant's primary domain host, as for protected folders. |
 | Secret storage | TOTP secrets encrypted with a new per-tenant key `HOMESPACE_SECRETS_KEY`. Recovery codes hashed. |
@@ -213,9 +213,10 @@ What it costs:
   without 2FA; after that it is required (open question).
 - A switch to the browser and back on each new sign-in. Sessions last 30 days through refresh, so
   that is rare. iOS shows its "wants to use <domain> to sign in" prompt.
-- Until 1.0.0 apps have both: the native form (users without 2FA, and older servers) and a
-  "Sign in in the browser" button when the server reports `browser_login`. When the native form
-  gets `second-factor-required`, a new app offers to continue in the browser. 1.0.0 removes the
+- When the server reports `browser_login`, new apps show only a "Sign in" button that opens the
+  page, with no username and password fields (decided 2026-11-24): one way to sign in, which
+  covers passwords, single sign-on and every second factor. Until 1.0.0 the native form stays for
+  servers that don't report it (older servers, no web client). 1.0.0 removes the
   native form and the apps' use of `/auth/login`; that is a breaking change, so it belongs to the
   major version (`docs/versioning.md`).
 
@@ -430,7 +431,7 @@ client falls back to plain password sign-in on older servers.
   server when no provider is configured (`Providers.oidc` names "Sign in in the browser"), so even
   an old app can sign in through the web page. That is worth doing because it costs one branch.
 - New client, old server: the feature list lacks `two_factor`; the security settings are hidden.
-- New client, new server: native form for users without 2FA, browser sign-in for the rest.
+- New client, new server: browser sign-in only, for every user.
 - No breaking change before 1.0.0. `oidc_codes` became `login_codes` in `0027_browser_login.sql`,
   with no change to `/auth/oidc/*`. 1.0.0 drops the native form and the apps' password path of `/auth/login` (the web
   page keeps using it with `two_step`).
@@ -444,9 +445,9 @@ client falls back to plain password sign-in on older servers.
   username field; Security page (TOTP with QR, keys, recovery codes, sign out everywhere);
   re-confirm dialog; the browser sign-in approve page. `navigator.credentials` through `web-sys`
   with JSON (de)serialisation of the options (`webauthn-rs-proto` types are shared).
-- **Desktop (iced)**: the native form stays until 1.0.0; a "Sign in in the browser" button runs
-  `sso.rs` against `browser/start`, and `second-factor-required` offers it. No 2FA code in the
-  app. Security settings open the web page.
+- **Desktop (iced)**: with `browser_login`, one "Sign in" button runs `sso.rs` against
+  `browser/start`; otherwise the native form, until 1.0.0. No 2FA code in the app. Security
+  settings open the web page.
 - **Android / iOS**: the same, with the existing Custom Tab / `ASWebAuthenticationSession` code.
   Security settings open the web page (a native screen can come later if wanted).
 
@@ -497,9 +498,10 @@ client falls back to plain password sign-in on older servers.
 2. TOTP and recovery codes: tables, secret key, two-step login, web screens, admin reset, CLI.
 3. Browser sign-in for native apps: server flow and web approve page (`/authorize`) are done,
    with the `browser_login` feature and `Providers.browser_login`; the api-client has
-   `browser_login_start_url` / `browser_login_exchange`. Still to do: a "Sign in in the
-   browser" button in desktop/Android/iOS next to the native form; old apps' SSO button
-   pointed at it.
+   `browser_login_start_url` / `browser_login_exchange`. Desktop, Android and iOS show only a
+   "Sign in" button that opens the page when the server reports `browser_login`, and the native
+   form otherwise (`mobile-core`: `begin_browser_sign_in` / `finish_browser_sign_in`; Cancel on the page comes
+   back as `SignInCancelled`). Still to do: old apps' SSO button pointed at it.
 4. WebAuthn: security keys as second factor, then passkey sign-in, in the web client.
 5. Policy (`mfa_policy`), forced enrolment, `HOMESPACE_OIDC_REQUIRE_MFA`.
 6. 1.0.0: remove the native password form and the apps' password path of `/auth/login`.

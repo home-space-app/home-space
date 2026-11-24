@@ -246,21 +246,39 @@ final class SessionModel {
     /// Signs in through the identity provider. `authenticate` shows the browser sheet and returns
     /// the URL it came back to, or `nil` if the user closed it.
     func signInWithSso(authenticate: (URL) async throws -> URL?) async {
+        await signInInBrowser(
+            authenticate: authenticate,
+            begin: { try $0.beginSso() },
+            finish: { try await $0.finishSso(callbackUrl: $1, verifier: $2) }
+        )
+    }
+
+    /// Signs in on the server's web page, which can do what the form can't, such as passkeys.
+    func signInOnWebPage(authenticate: (URL) async throws -> URL?) async {
+        await signInInBrowser(
+            authenticate: authenticate,
+            begin: { try $0.beginBrowserSignIn() },
+            finish: { try await $0.finishBrowserSignIn(callbackUrl: $1, verifier: $2) }
+        )
+    }
+
+    private func signInInBrowser(
+        authenticate: (URL) async throws -> URL?,
+        begin: (CoreClient) throws -> SsoRequest,
+        finish: (CoreClient, String, String) async throws -> SignedInUser
+    ) async {
         error = nil
         busy = true
         defer { busy = false }
         do {
             let address = try normalizeServerUrl(input: server)
             let client = try newClient(server: address)
-            let request = try client.beginSso()
+            let request = try begin(client)
             guard let url = URL(string: request.url) else {
                 throw CoreError.SsoFailed
             }
             guard let callback = try await authenticate(url) else { return }
-            let user = try await client.finishSso(
-                callbackUrl: callback.absoluteString,
-                verifier: request.verifier
-            )
+            let user = try await finish(client, callback.absoluteString, request.verifier)
             enter(client, user)
         } catch {
             self.error = signInMessage(for: error)
@@ -838,6 +856,8 @@ private func signInMessage(for error: Error) -> String {
         "The sign-in expired. Please try again."
     case .SsoDenied:
         "You are not allowed to sign in with this account."
+    case .SignInCancelled:
+        "Signing in was cancelled in the browser."
     case .InvalidServerAddress:
         "The server address must start with http:// or https://"
     case .UnprotectedServerAddress:

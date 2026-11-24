@@ -228,6 +228,12 @@ private fun connectedLabel(options: SignInOptions): String = when {
 
 @Composable
 private fun SignInOptionsForm(options: SignInOptions, model: SessionViewModel) {
+    // A server with the web page signs in there, whatever the account needs; the form is for
+    // older servers.
+    if (options.browser) {
+        BrowserSignIn(model)
+        return
+    }
     options.ssoName?.let { name -> SsoButton(name, model) }
     if (options.ssoName != null && options.password) OrDivider()
     if (options.password) PasswordForm(model, onlyOption = options.ssoName == null)
@@ -262,7 +268,7 @@ private fun SsoWaiting(pending: PendingSso, model: SessionViewModel) {
             ) {
                 CircularProgressIndicator()
                 Text(
-                    "Signing in with ${pending.name}…",
+                    if (pending.browser) "Signing in in the browser…" else "Signing in with ${pending.name}…",
                     style = MaterialTheme.typography.titleLarge,
                     textAlign = TextAlign.Center,
                 )
@@ -332,6 +338,23 @@ private fun SsoButton(name: String, model: SessionViewModel) {
     ) {
         ButtonIcon(R.drawable.ic_key)
         Text("Sign in with $name")
+    }
+}
+
+/** One button that opens the server's sign-in page in the browser. */
+@Composable
+private fun BrowserSignIn(model: SessionViewModel) {
+    val context = LocalContext.current
+    Button(
+        enabled = !model.busy,
+        modifier = Modifier.fillMaxWidth().height(BUTTON_HEIGHT).testTag("login.browser"),
+        onClick = {
+            val url = model.beginBrowserSignIn() ?: return@Button
+            openBrowser(context, url, model)
+        },
+    ) {
+        ButtonIcon(R.drawable.ic_open_in_new)
+        Text("Sign in")
     }
 }
 

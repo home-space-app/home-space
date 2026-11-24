@@ -35,6 +35,7 @@ import uniffi.homespace_core.LiveEvent
 import uniffi.homespace_core.QueuedUpload
 import uniffi.homespace_core.SignInOptions
 import uniffi.homespace_core.SignedInUser
+import uniffi.homespace_core.SsoRequest
 import uniffi.homespace_core.TransferRow
 import uniffi.homespace_core.normalizeServerUrl
 import uniffi.homespace_core.viewerFor
@@ -299,12 +300,22 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
     }
 
     /** Starts a single sign-on and returns the URL to open in a browser. */
-    fun beginSso(name: String): String? {
+    fun beginSso(name: String): String? = begin { address ->
+        val request = CoreClient(address).use { it.beginSso() }
+        request to PendingSso(address, request.verifier, name)
+    }
+
+    /** Starts a sign-in on the server's web page and returns the URL to open in a browser. */
+    fun beginBrowserSignIn(): String? = begin { address ->
+        // A client with this device, whose name the page shows.
+        val request = newClient(address).use { it.beginBrowserSignIn() }
+        request to PendingSso(address, request.verifier, name = "", browser = true)
+    }
+
+    private fun begin(start: (String) -> Pair<SsoRequest, PendingSso>): String? {
         error = null
         return try {
-            val address = normalizeServerUrl(server)
-            val request = CoreClient(address).use { it.beginSso() }
-            val pending = PendingSso(address, request.verifier, name)
+            val (request, pending) = start(normalizeServerUrl(server))
             if (store.savePendingSso(pending)) {
                 pendingSso = pending
                 pendingSsoUrl = request.url
@@ -340,7 +351,12 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             val client = newClient(pending.server)
             try {
-                adoptAndEnter(client, client.finishSso(url, pending.verifier))
+                val user = if (pending.browser) {
+                    client.finishBrowserSignIn(url, pending.verifier)
+                } else {
+                    client.finishSso(url, pending.verifier)
+                }
+                adoptAndEnter(client, user)
             } catch (e: CoreException) {
                 client.close()
                 error = e.signInMessage()
@@ -883,6 +899,7 @@ private fun CoreException.signInMessage(): String = when (this) {
     is CoreException.SsoExpired -> "The sign-in expired. Please try again."
     is CoreException.SsoDenied -> "You are not allowed to sign in with this account."
     is CoreException.SsoFailed -> SIGN_IN_FAILED
+    is CoreException.SignInCancelled -> "Signing in was cancelled in the browser."
     is CoreException.InvalidServerAddress ->
         "The server address must start with http:// or https://"
     is CoreException.UnprotectedServerAddress ->
