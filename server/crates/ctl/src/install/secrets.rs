@@ -13,6 +13,12 @@ pub fn jwt_secret() -> String {
     STANDARD.encode(bytes)
 }
 
+/// The key that seals authenticator app secrets: as strong as the signing secret, and
+/// generated apart from it so that rotating one keeps the other.
+pub fn secrets_key() -> String {
+    jwt_secret()
+}
+
 /// A database password of letters and digits, so that it needs no quoting anywhere.
 pub fn db_password() -> String {
     // 62 letters and digits: bytes from 248 up are dropped so that every character is as likely.

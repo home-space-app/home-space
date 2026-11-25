@@ -92,6 +92,7 @@ pub(crate) fn account(found: db::Account) -> Account {
         username: found.username,
         is_admin: found.is_admin,
         external: found.external,
+        two_factor: found.two_factor,
         created_at: found.created_at,
         disabled: found.disabled_at.is_some(),
         quota_bytes: found.quota_bytes.map(to_u64),

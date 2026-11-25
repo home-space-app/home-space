@@ -15,13 +15,19 @@ pub const BROWSER_LOGIN: &str = "browser_login";
 /// `POST /me/reauthenticate` with the password clears for ten minutes.
 pub const REAUTHENTICATION: &str = "reauthentication";
 
+/// Accounts can add an authenticator app (`/me/totp`) and recovery codes
+/// (`/me/recovery-codes`); a sign-in with `two_step` may then finish at `/auth/login/verify`,
+/// and `/me/reauthenticate` takes a `code` too.
+pub const TWO_FACTOR: &str = "two_factor";
+
 /// Every feature this server provides, each added with the release that introduced it.
-pub const ALL: &[&str] = &[BROWSER_LOGIN, REAUTHENTICATION];
+pub const ALL: &[&str] = &[BROWSER_LOGIN, REAUTHENTICATION, TWO_FACTOR];
 
 /// What the user reads for each feature, in hints such as "These won't work: …".
 const DISPLAY_NAMES: &[(&str, &str)] = &[
     (BROWSER_LOGIN, "Sign-in in the browser"),
     (REAUTHENTICATION, "Confirming sensitive changes"),
+    (TWO_FACTOR, "Two-factor sign-in"),
 ];
 
 /// What the user reads for `feature`; the name itself for one this build does not know.

@@ -16,6 +16,7 @@ js-sys = "0.3.107"
 leptos = { version = "0.8.23", features = ["csr"] }
 leptos_router = "0.8.17"
 pdf-core.workspace = true
+qrcode = { version = "0.15.0", default-features = false, features = ["svg"] }
 protocol.workspace = true
 serde.workspace = true
 serde_json.workspace = true

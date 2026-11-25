@@ -49,9 +49,13 @@ pub struct Problem {
     /// The fields that failed validation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<FieldError>,
-    /// The ways the user can confirm it is them, such as `password`, when a change needs it.
+    /// The ways the user can confirm it is them, such as `password` or `totp`, when a change or
+    /// a sign-in needs it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub methods: Vec<String>,
+    /// What `POST /auth/login/verify` takes to finish a sign-in that needs a second factor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_token: Option<String>,
     /// The same as `code`, for clients from before RFC 9457. To be removed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<ErrorCode>,

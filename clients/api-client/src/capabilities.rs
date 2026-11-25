@@ -61,6 +61,17 @@ impl Client {
         self.capabilities()?.version
     }
 
+    /// Whether the server reported `feature`, one of [`protocol::features`]; `false` before
+    /// its capabilities were read, or when they could not be.
+    pub fn supports(&self, feature: &str) -> bool {
+        self.capabilities().is_some_and(|capabilities| {
+            capabilities
+                .features
+                .iter()
+                .any(|offered| offered == feature)
+        })
+    }
+
     /// How a client of `version` that requires `requires` fits this server; `None` when the
     /// server's capabilities could not be read, so nothing is shown rather than a guess.
     pub fn compatibility(&self, version: &str, requires: &[&str]) -> Option<Compatibility> {

@@ -27,6 +27,7 @@ mod nodes;
 mod oidc;
 mod refresh_tokens;
 mod search;
+mod second_factors;
 mod sessions;
 mod shares;
 mod storage;
@@ -50,6 +51,7 @@ pub use nodes::{DeletedNodes, FOLDER_MIME, FileState, NewContent, NewNode, NodeP
 pub use oidc::OidcPending;
 pub use protocol::{NodeId, NodeKind, OnConflict, Patch, SharePermission, UserId};
 pub use search::{ContentState, RankedNode};
+pub use second_factors::{PendingLogin, SecondFactorState, StoredTotp};
 pub use sessions::{Authentication, LiveSession};
 pub use shares::{
     NewShareLink, NewUserShare, OwnedShare, ReceivedShare, ShareLink, ShareRecipient, ShareUpdate,

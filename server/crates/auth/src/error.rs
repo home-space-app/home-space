@@ -58,6 +58,31 @@ pub enum AuthError {
     /// The identity provider could not be reached or sent something invalid.
     #[error("identity provider error: {0}")]
     Oidc(String),
+    /// The password was right and the account also needs a second factor. `login_token`
+    /// lets a client that asked for two steps finish at `/auth/login/verify`; others only
+    /// learn why the sign-in failed.
+    #[error("This account uses two-factor sign-in. Sign in in the browser, or update the app.")]
+    SecondFactorRequired {
+        login_token: Option<String>,
+        methods: Vec<&'static str>,
+    },
+    /// The authenticator app's code, or the recovery code, is wrong or was used already.
+    #[error("The code is wrong. Check it and try again.")]
+    InvalidCode,
+    /// An authenticator app is already set up.
+    #[error("An authenticator app is already set up. Remove it first to add another.")]
+    TotpExists,
+    /// No `HOMESPACE_SECRETS_KEY` is configured, so authenticator app secrets can't be kept.
+    #[error(
+        "Authenticator apps can't be used on this server yet: its administrator has to set \
+         HOMESPACE_SECRETS_KEY."
+    )]
+    SecretsKeyMissing,
+    /// A sealed secret opens with none of the configured keys.
+    #[error(
+        "an authenticator app secret could not be opened; is HOMESPACE_SECRETS_KEY the key it was sealed with?"
+    )]
+    Unsealing,
     #[error("password hashing failed: {0}")]
     Hashing(String),
     #[error("token encoding failed: {0}")]
@@ -79,6 +104,10 @@ impl AsProblem for AuthError {
             Self::WrongPassword => ProblemType::WrongPassword,
             Self::ReauthenticationRequired { .. } => ProblemType::ReauthenticationRequired,
             Self::NoPassword => ProblemType::NoPassword,
+            Self::SecondFactorRequired { .. } => ProblemType::SecondFactorRequired,
+            Self::InvalidCode => ProblemType::InvalidCode,
+            Self::TotpExists => ProblemType::TotpExists,
+            Self::SecretsKeyMissing => ProblemType::SecretsKeyMissing,
             Self::AccountDisabled => ProblemType::AccountDisabled,
             Self::UsernameTaken => ProblemType::UsernameTaken,
             Self::InvalidInput(_) => ProblemType::ValidationFailed,
@@ -86,7 +115,7 @@ impl AsProblem for AuthError {
             Self::OidcDenied => ProblemType::SsoAccessDenied,
             Self::LoginExpired => ProblemType::LoginExpired,
             Self::Oidc(_) => ProblemType::IdentityProviderFailed,
-            Self::Hashing(_) | Self::Token(_) | Self::Join(_) | Self::Db(_) => {
+            Self::Unsealing | Self::Hashing(_) | Self::Token(_) | Self::Join(_) | Self::Db(_) => {
                 ProblemType::Internal
             }
         }
@@ -100,6 +129,13 @@ impl AsProblem for AuthError {
             Self::ReauthenticationRequired { methods } => {
                 problem.methods = methods.iter().map(|&method| method.to_owned()).collect();
             }
+            Self::SecondFactorRequired {
+                login_token,
+                methods,
+            } => {
+                problem.login_token.clone_from(login_token);
+                problem.methods = methods.iter().map(|&method| method.to_owned()).collect();
+            }
             _ => {}
         }
     }
@@ -107,10 +143,13 @@ impl AsProblem for AuthError {
 
 /// What the user is asked to do to confirm it is them, given the ways they can.
 fn describe_reauthentication(methods: &[&str]) -> &'static str {
-    if methods.is_empty() {
-        "Sign in again to confirm it is you."
-    } else {
-        "Confirm it is you: enter your password again."
+    match (methods.contains(&"password"), methods.contains(&"totp")) {
+        (false, false) => "Sign in again to confirm it is you.",
+        (true, false) => "Confirm it is you: enter your password again.",
+        (true, true) => {
+            "Confirm it is you: enter your password or a code from your authenticator app."
+        }
+        (false, true) => "Confirm it is you: enter a code from your authenticator app.",
     }
 }
 

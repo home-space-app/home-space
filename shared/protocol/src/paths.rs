@@ -9,6 +9,8 @@ pub const HEALTH: &str = "/api/v1/health";
 /// Everything about signing in lives below this path; the refresh cookie is limited to it.
 pub const AUTH: &str = "/api/v1/auth";
 pub const LOGIN: &str = "/api/v1/auth/login";
+/// The second step of a sign-in that needs a second factor.
+pub const LOGIN_VERIFY: &str = "/api/v1/auth/login/verify";
 pub const REFRESH: &str = "/api/v1/auth/refresh";
 pub const LOGOUT: &str = "/api/v1/auth/logout";
 pub const DEVICE_SESSIONS: &str = "/api/v1/auth/device-sessions";
@@ -29,6 +31,11 @@ pub const WEB_AUTHORIZE: &str = "/authorize";
 pub const ME: &str = "/api/v1/me";
 pub const ME_PASSWORD: &str = "/api/v1/me/password";
 pub const ME_REAUTHENTICATE: &str = "/api/v1/me/reauthenticate";
+/// `POST` starts adding an authenticator app, `DELETE` removes it.
+pub const ME_TOTP: &str = "/api/v1/me/totp";
+pub const ME_TOTP_CONFIRM: &str = "/api/v1/me/totp/confirm";
+/// `POST` makes a new set of recovery codes.
+pub const ME_RECOVERY_CODES: &str = "/api/v1/me/recovery-codes";
 pub const NODES: &str = "/api/v1/nodes";
 pub const NODES_MOVE: &str = "/api/v1/nodes/move";
 pub const FOLDERS: &str = "/api/v1/folders";
@@ -84,6 +91,11 @@ pub fn admin_user(id: crate::UserId) -> String {
 
 pub fn admin_user_password(id: crate::UserId) -> String {
     format!("{ADMIN_USERS}/{id}/password")
+}
+
+/// `DELETE` removes an account's second factors, so it signs in with the password alone.
+pub fn admin_user_second_factors(id: crate::UserId) -> String {
+    format!("{ADMIN_USERS}/{id}/second-factors")
 }
 
 pub fn admin_user_devices(id: crate::UserId) -> String {

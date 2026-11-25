@@ -34,6 +34,9 @@ pub async fn run(command: UserCommand, db: &Db) -> Result<()> {
             let tenant = resolve(db, &tenant).await?;
             set_password(db, tenant, &username, password_stdin).await
         }
+        UserCommand::Reset2fa { username, tenant } => {
+            reset_second_factors(db, resolve(db, &tenant).await?, &username).await
+        }
     }
 }
 
@@ -101,6 +104,15 @@ async fn set_password(
         .await
         .context("changing password")?;
     println!("password updated for {username}");
+    Ok(())
+}
+
+async fn reset_second_factors(db: &Db, tenant: TenantId, username: &str) -> Result<()> {
+    let user = find(db, tenant, username).await?;
+    db.reset_second_factors(tenant, user.id)
+        .await
+        .context("resetting two-factor sign-in")?;
+    println!("two-factor sign-in reset for {username}; they were signed out everywhere");
     Ok(())
 }
 

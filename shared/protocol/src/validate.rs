@@ -18,12 +18,12 @@ use crate::{
     BrowserLoginDecision, BrowserLoginExchangeRequest, BrowserLoginStartQuery,
     ChangePasswordRequest, ChangesQuery, ContentQuery, CopyShared, CreateAccount,
     CreateFolderRequest, CreateShare, CreateTransfer, CreateUpload, DeviceSessionRequest,
-    FieldError, IncomingQuery, ListQuery, LoginRequest, MoveRequest, OidcCallbackQuery,
-    OidcExchangeRequest, OidcStartQuery, ReauthenticateRequest, RefreshRequest, RenameDevice,
-    RestoreRequest,
-    SaveTransfer, SearchQuery, SetDeviceVisibility, SetPassword, ShareAccessQuery,
-    ShareArchiveQuery, SharedFolderQuery, SharesQuery, TicketQuery, TicketRequest, UnlockShare,
-    UpdateAccount, UpdateRequest, UpdateShare, UploadQuery, UploadsQuery,
+    FieldError, IncomingQuery, ListQuery, LoginRequest, LoginVerifyRequest, MoveRequest,
+    OidcCallbackQuery, OidcExchangeRequest, OidcStartQuery, ReauthenticateRequest, RefreshRequest,
+    RenameDevice, RestoreRequest, SaveTransfer, SearchQuery, SetDeviceVisibility, SetPassword,
+    ShareAccessQuery, ShareArchiveQuery, SharedFolderQuery, SharesQuery, TicketQuery,
+    TicketRequest, TotpConfirmRequest, UnlockShare, UpdateAccount, UpdateRequest, UpdateShare,
+    UploadQuery, UploadsQuery,
 };
 
 /// A request that can say which of its fields are not acceptable.
@@ -193,6 +193,53 @@ impl Validate for CopyShared {
     }
 }
 
+/// The longest code a request may carry: a recovery code with spaces around it fits, and
+/// nothing longer is worth hashing.
+const MAX_CODE_LEN: usize = 32;
+
+fn code_problem(code: Option<&str>) -> Option<&'static str> {
+    code.is_some_and(|code| code.trim().is_empty() || code.len() > MAX_CODE_LEN)
+        .then_some("a code is 1 to 32 characters")
+}
+
+impl Validate for LoginVerifyRequest {
+    fn validate(&self) -> Result<(), Vec<FieldError>> {
+        let mut found = Violations::default();
+        let given = usize::from(self.code.is_some()) + usize::from(self.recovery_code.is_some());
+        found.check(
+            "/code",
+            (given != 1).then_some("give either a code or a recovery code"),
+        );
+        found.check("/code", code_problem(self.code.as_deref()));
+        found.check(
+            "/recovery_code",
+            code_problem(self.recovery_code.as_deref()),
+        );
+        found.finish()
+    }
+}
+
+impl Validate for TotpConfirmRequest {
+    fn validate(&self) -> Result<(), Vec<FieldError>> {
+        let mut found = Violations::default();
+        found.check("/code", code_problem(Some(&self.code)));
+        found.finish()
+    }
+}
+
+impl Validate for ReauthenticateRequest {
+    fn validate(&self) -> Result<(), Vec<FieldError>> {
+        let mut found = Violations::default();
+        let given = usize::from(self.password.is_some()) + usize::from(self.code.is_some());
+        found.check(
+            "/password",
+            (given != 1).then_some("give either the password or a code"),
+        );
+        found.check("/code", code_problem(self.code.as_deref()));
+        found.finish()
+    }
+}
+
 /// Requests whose shape is all there is to check here; the server's services check what
 /// depends on stored state.
 macro_rules! shape_only {
@@ -216,7 +263,6 @@ shape_only!(
     OidcCallbackQuery,
     OidcExchangeRequest,
     OidcStartQuery,
-    ReauthenticateRequest,
     RefreshRequest,
     RestoreRequest,
     SaveTransfer,
@@ -299,5 +345,38 @@ mod tests {
             quota_bytes: None,
         };
         assert_eq!(pointers(request.validate()), ["/username", "/password"]);
+    }
+
+    #[test]
+    fn a_second_step_takes_exactly_one_short_code() {
+        let verify = |code: Option<&str>, recovery_code: Option<&str>| LoginVerifyRequest {
+            login_token: "token".to_owned(),
+            code: code.map(str::to_owned),
+            recovery_code: recovery_code.map(str::to_owned),
+            device: None,
+            cookie: false,
+        };
+        assert_eq!(verify(Some("123456"), None).validate(), Ok(()));
+        assert_eq!(verify(None, Some("abcde-fghij")).validate(), Ok(()));
+        assert_eq!(pointers(verify(None, None).validate()), ["/code"]);
+        assert_eq!(pointers(verify(Some("1"), Some("2")).validate()), ["/code"]);
+        let long = "1".repeat(33);
+        assert_eq!(
+            pointers(verify(None, Some(&long)).validate()),
+            ["/recovery_code"]
+        );
+    }
+
+    #[test]
+    fn confirming_takes_the_password_or_a_code() {
+        let password = ReauthenticateRequest {
+            password: Some("secret".to_owned()),
+            code: None,
+        };
+        assert_eq!(password.validate(), Ok(()));
+        assert_eq!(
+            pointers(ReauthenticateRequest::default().validate()),
+            ["/password"]
+        );
     }
 }

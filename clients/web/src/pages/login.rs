@@ -1,8 +1,8 @@
 use leptos::{ev::SubmitEvent, prelude::*, task::spawn_local};
 use leptos_router::components::Redirect;
 
-use api_client::ApiError;
-use protocol::Providers;
+use api_client::{ApiError, SecondFactor, SecondFactorStep};
+use protocol::{ErrorCode, Providers};
 
 use crate::{
     components::ErrorAlert,
@@ -45,6 +45,8 @@ pub fn Login(auth: Auth) -> impl IntoView {
         }
     };
 
+    // Set once the password was right and the account also needs a second factor.
+    let second_step = RwSignal::new(None::<SecondFactorStep>);
     let submit = move |event: SubmitEvent| {
         event.prevent_default();
         busy.set(true);
@@ -54,7 +56,10 @@ pub fn Login(auth: Auth) -> impl IntoView {
                 .await;
             busy.set(false);
             match result {
-                Ok(()) => error.set(None),
+                Ok(step) => {
+                    error.set(None);
+                    second_step.set(step);
+                }
                 Err(message) => error.set(Some(message)),
             }
             password.set(String::new());
@@ -73,7 +78,7 @@ pub fn Login(auth: Auth) -> impl IntoView {
                 </header>
                 <ErrorAlert message=error />
                 {move || {
-                    oidc_name()
+                    second_step.with(Option::is_none).then(oidc_name).flatten()
                         .map(|name| {
                             view! {
                                 <button
@@ -89,7 +94,25 @@ pub fn Login(auth: Auth) -> impl IntoView {
                             }
                         })
                 }}
-                <form class="login__form" on:submit=submit hidden=move || !show_password()>
+                {move || {
+                    second_step
+                        .get()
+                        .map(|step| {
+                            view! {
+                                <SecondStep
+                                    auth
+                                    step
+                                    error
+                                    restart=move || second_step.set(None)
+                                />
+                            }
+                        })
+                }}
+                <form
+                    class="login__form"
+                    on:submit=submit
+                    hidden=move || !show_password() || second_step.with(Option::is_some)
+                >
                     <label class="field">
                         <span class="field__label">"Username"</span>
                         <input
@@ -122,5 +145,122 @@ pub fn Login(auth: Auth) -> impl IntoView {
                 </form>
             </section>
         </main>
+    }
+}
+
+/// The second step of a sign-in: a code from the authenticator app, or a recovery code.
+#[component]
+fn SecondStep(
+    auth: Auth,
+    step: SecondFactorStep,
+    error: RwSignal<Option<String>>,
+    restart: impl Fn() + Copy + 'static,
+) -> impl IntoView {
+    let code = RwSignal::new(String::new());
+    let recovery = RwSignal::new(false);
+    let busy = RwSignal::new(false);
+    let offers_recovery = step.methods.iter().any(|method| method == "recovery");
+    let token = StoredValue::new(step.login_token);
+    let submit = move |event: SubmitEvent| {
+        event.prevent_default();
+        if busy.get_untracked() {
+            return;
+        }
+        busy.set(true);
+        let given = code.get_untracked();
+        let by_recovery = recovery.get_untracked();
+        spawn_local(async move {
+            let factor = if by_recovery {
+                SecondFactor::RecoveryCode(&given)
+            } else {
+                SecondFactor::Code(&given)
+            };
+            let result = auth.verify(&token.get_value(), factor).await;
+            busy.set(false);
+            code.set(String::new());
+            match result {
+                Ok(()) => error.set(None),
+                // Too many wrong codes, or too slow: the password has to be given again.
+                Err(
+                    err @ ApiError::Api {
+                        code: ErrorCode::Gone,
+                        ..
+                    },
+                ) => {
+                    error.set(Some(err.to_string()));
+                    restart();
+                }
+                Err(err) => error.set(Some(err.to_string())),
+            }
+        });
+    };
+    view! {
+        <form class="login__form" on:submit=submit>
+            <p class="login__hint">
+                {move || {
+                    if recovery.get() {
+                        "Enter one of your recovery codes. Each one works once."
+                    } else {
+                        "Enter the code your authenticator app shows for Home Space."
+                    }
+                }}
+            </p>
+            <label class="field">
+                <span class="field__label">
+                    {move || if recovery.get() { "Recovery code" } else { "Code" }}
+                </span>
+                <input
+                    class="field__input"
+                    type="text"
+                    inputmode=move || (!recovery.get()).then_some("numeric")
+                    autocomplete=move || (!recovery.get()).then_some("one-time-code")
+                    autocapitalize="off"
+                    spellcheck="false"
+                    required
+                    autofocus
+                    prop:value=move || code.get()
+                    on:input:target=move |event| code.set(event.target().value())
+                />
+            </label>
+            <button
+                type="submit"
+                class="button button--primary button--block"
+                disabled=move || busy.get()
+            >
+                "Continue"
+            </button>
+            {offers_recovery
+                .then(|| {
+                    view! {
+                        <button
+                            type="button"
+                            class="button button--ghost button--block"
+                            on:click=move |_| {
+                                recovery.update(|on| *on = !*on);
+                                code.set(String::new());
+                                error.set(None);
+                            }
+                        >
+                            {move || {
+                                if recovery.get() {
+                                    "Use the authenticator app instead"
+                                } else {
+                                    "Lost your phone? Use a recovery code"
+                                }
+                            }}
+                        </button>
+                    }
+                })}
+            <button
+                type="button"
+                class="button button--ghost button--block"
+                on:click=move |_| {
+                    error.set(None);
+                    restart();
+                }
+            >
+                "Start over"
+            </button>
+        </form>
     }
 }

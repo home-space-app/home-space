@@ -14,21 +14,37 @@ use crate::{AuthError, password::MAX_PASSWORD_LEN, throttle::Counter};
 const RECENT: Duration = Duration::minutes(10);
 /// The name of the current password among the ways to confirm, as clients are told them.
 pub(crate) const PASSWORD_PROOF: &str = "password";
+/// The name of an authenticator app's code among the ways to confirm.
+pub(crate) const TOTP_PROOF: &str = "totp";
+
+/// How the user proves again who they are.
+#[derive(Clone, Copy, Debug)]
+pub enum ReauthProof<'a> {
+    /// Their current password.
+    Password(&'a str),
+    /// A code from their authenticator app.
+    Code(&'a str),
+}
 
 impl AuthService {
-    /// The user of `session_id` proves again who they are with their `password`, which allows
-    /// sensitive changes from that session for the next ten minutes.
+    /// The user of `session_id` proves again who they are, which allows sensitive changes
+    /// from that session for the next ten minutes.
     ///
-    /// Wrong passwords are throttled as when changing the password, counted for the session
-    /// asking, so a stolen session cannot be used to guess the password.
+    /// Wrong passwords and codes are throttled as when changing the password, counted for
+    /// the session asking, so a stolen session cannot be used to guess them.
     pub async fn reauthenticate(
         &self,
         user_id: UserId,
         session_id: Uuid,
-        password: &str,
+        proof: ReauthProof<'_>,
     ) -> Result<(), AuthError> {
-        self.check_current_password(user_id, session_id, password)
-            .await?;
+        match proof {
+            ReauthProof::Password(password) => {
+                self.check_current_password(user_id, session_id, password)
+                    .await?;
+            }
+            ReauthProof::Code(code) => self.check_current_code(user_id, session_id, code).await?,
+        }
         self.sessions.confirm(session_id, user_id).await
     }
 
@@ -49,12 +65,34 @@ impl AuthService {
             .find_user(user_id)
             .await?
             .ok_or(AuthError::InvalidCredentials)?;
-        let methods = if user.password_hash.is_some() {
-            vec![PASSWORD_PROOF]
-        } else {
-            Vec::new()
-        };
+        let mut methods = Vec::with_capacity(2);
+        if user.password_hash.is_some() {
+            methods.push(PASSWORD_PROOF);
+        }
+        if self.db.second_factors(user_id).await?.totp {
+            methods.push(TOTP_PROOF);
+        }
         Err(AuthError::ReauthenticationRequired { methods })
+    }
+
+    /// Checks a code of the authenticator app of `user_id`, given from `session_id`, with
+    /// wrong codes throttled like wrong current passwords.
+    async fn check_current_code(
+        &self,
+        user_id: UserId,
+        session_id: Uuid,
+        code: &str,
+    ) -> Result<(), AuthError> {
+        let user = self.user(user_id).await?;
+        let source = format!("session:{session_id}");
+        let attempt = self
+            .throttle
+            .admit(vec![Counter::key(user.tenant_id, &user.username, source)])
+            .await?;
+        let checked = self.check_totp(&user, code).await;
+        attempt
+            .settle(checked, |err| matches!(err, AuthError::InvalidCode))
+            .await
     }
 
     /// Checks the current password of `user_id`, given from `session_id`.

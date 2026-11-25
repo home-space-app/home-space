@@ -14,6 +14,8 @@ use protocol::{
     RefreshRequest, TicketRequest, TicketResponse, TokenPair,
 };
 
+use auth::ReauthProof;
+
 use crate::extract::{ApiJson, ApiQuery};
 use crate::{
     ApiError, AppState,
@@ -145,11 +147,12 @@ async fn login(
     let browser = browser(request.cookie, &headers, &tenant)?;
     let pair = tenant
         .auth
-        .login_from(
+        .login_with(
             &request.username,
             &request.password,
             request.device.as_ref(),
             address,
+            request.two_step,
         )
         .await?;
     Ok(session(&tenant, pair, browser))
@@ -218,7 +221,7 @@ async fn device_session(
 }
 
 /// The browser behind a request that asks for the cookie or relies on it; `None` for an app.
-fn browser(
+pub(super) fn browser(
     uses_cookie: bool,
     headers: &HeaderMap,
     tenant: &Tenant,
@@ -230,7 +233,7 @@ fn browser(
 
 /// The response that starts or continues a session. For a browser the refresh token goes
 /// into the cookie and is left out of the body, so that no script ever holds it.
-fn session(tenant: &Tenant, mut pair: TokenPair, browser: Option<Browser>) -> Response {
+pub(super) fn session(tenant: &Tenant, mut pair: TokenPair, browser: Option<Browser>) -> Response {
     let Some(browser) = browser else {
         return Json(pair).into_response();
     };
@@ -266,16 +269,22 @@ async fn change_password(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// The caller confirms it is them with their password, which allows sensitive changes from
-/// this session for the next ten minutes.
+/// The caller confirms it is them with their password or a code from their authenticator
+/// app, which allows sensitive changes from this session for the next ten minutes.
 async fn reauthenticate(
     tenant: Tenant,
     user: AuthUser,
     ApiJson(request): ApiJson<ReauthenticateRequest>,
 ) -> Result<StatusCode, ApiError> {
+    let proof = match (&request.password, &request.code) {
+        (Some(password), _) => ReauthProof::Password(password),
+        (None, Some(code)) => ReauthProof::Code(code),
+        // Validation lets through only requests with one of them.
+        (None, None) => return Err(ApiError::BadRequest("the password is missing".to_owned())),
+    };
     tenant
         .auth
-        .reauthenticate(user.id, user.session_id, &request.password)
+        .reauthenticate(user.id, user.session_id, proof)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }

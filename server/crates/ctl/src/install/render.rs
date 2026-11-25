@@ -20,6 +20,7 @@ const SECRETS_MOUNT: &str = "/run/secrets";
 pub enum SecretName {
     DbPassword,
     JwtSecret,
+    SecretsKey,
     OidcClientSecret,
 }
 
@@ -28,6 +29,7 @@ impl SecretName {
         match self {
             Self::DbPassword => "db_password",
             Self::JwtSecret => "jwt_secret",
+            Self::SecretsKey => "secrets_key",
             Self::OidcClientSecret => "oidc_client_secret",
         }
     }
@@ -37,6 +39,7 @@ impl SecretName {
         match self {
             Self::DbPassword => "HOMESPACE_DB_PASSWORD",
             Self::JwtSecret => "HOMESPACE_JWT_SECRET",
+            Self::SecretsKey => "HOMESPACE_SECRETS_KEY",
             Self::OidcClientSecret => "HOMESPACE_OIDC_CLIENT_SECRET",
         }
     }
@@ -47,6 +50,7 @@ pub fn secrets(plan: &InstallPlan) -> Vec<(SecretName, &str)> {
     let mut secrets = vec![
         (SecretName::DbPassword, plan.db_password.value.as_str()),
         (SecretName::JwtSecret, plan.jwt_secret.value.as_str()),
+        (SecretName::SecretsKey, plan.secrets_key.value.as_str()),
     ];
     if let Some(secret) = plan
         .auth
@@ -335,6 +339,10 @@ mod tests {
                 value: "jwtsecret".to_owned(),
                 generated: true,
             },
+            secrets_key: Secret {
+                value: "secretskey".to_owned(),
+                generated: true,
+            },
             proxy: Proxy::Nginx {
                 server_name: "files.example.com".to_owned(),
             },
@@ -405,6 +413,7 @@ mod tests {
         assert!(compose.contains("POSTGRES_PASSWORD_FILE: /run/secrets/db_password"));
         assert!(compose.contains("HOMESPACE_DB_PASSWORD_FILE: /run/secrets/db_password"));
         assert!(compose.contains("HOMESPACE_JWT_SECRET_FILE: /run/secrets/jwt_secret"));
+        assert!(compose.contains("HOMESPACE_SECRETS_KEY_FILE: /run/secrets/secrets_key"));
         assert!(
             compose.contains("HOMESPACE_OIDC_CLIENT_SECRET_FILE: /run/secrets/oidc_client_secret")
         );
@@ -450,6 +459,7 @@ mod tests {
         let text = env_file(&env_vars(&env_mode, Some(&owner)), false);
         assert!(text.contains("HOMESPACE_DB_PASSWORD='dbpass'\n"));
         assert!(text.contains("HOMESPACE_JWT_SECRET='jwtsecret'\n"));
+        assert!(text.contains("HOMESPACE_SECRETS_KEY='secretskey'\n"));
         assert!(text.contains("HOMESPACE_OIDC_CLIENT_SECRET='oidcsecret'\n"));
         assert!(text.contains("HOMESPACE_PASSWORD_LOGIN='false'\n"));
         assert!(text.contains("HOMESPACE_TRUST_FORWARDED_FOR='true'\n"));

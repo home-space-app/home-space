@@ -101,6 +101,14 @@ pub enum UserCommand {
         #[command(flatten)]
         tenant: TenantArg,
     },
+    /// Turn off a user's two-factor sign-in, for one who lost their authenticator app and
+    /// recovery codes: removes both and signs them out everywhere.
+    #[command(name = "reset-2fa")]
+    Reset2fa {
+        username: String,
+        #[command(flatten)]
+        tenant: TenantArg,
+    },
 }
 
 #[derive(clap::Args)]

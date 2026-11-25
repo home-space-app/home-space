@@ -128,6 +128,8 @@ pub struct InstallPlan {
     pub db_user: String,
     pub db_password: Secret,
     pub jwt_secret: Secret,
+    /// Seals authenticator app secrets (`HOMESPACE_SECRETS_KEY`); always generated.
+    pub secrets_key: Secret,
     pub proxy: Proxy,
     pub public_url: String,
     pub auth: Auth,

@@ -60,7 +60,8 @@ impl Db {
         Ok(pending)
     }
 
-    /// Deletes expired pending sign-ins, browser sign-ins and login codes, returning how many
+    /// Deletes expired pending sign-ins, browser sign-ins, login codes and sign-ins waiting for a
+    /// second factor, returning how many
     /// were removed.
     pub async fn prune_sign_ins(&self) -> Result<u64, DbError> {
         let mut removed = 0;
@@ -68,6 +69,7 @@ impl Db {
             "DELETE FROM oidc_pending WHERE expires_at <= now()",
             "DELETE FROM browser_logins WHERE expires_at <= now()",
             "DELETE FROM login_codes WHERE expires_at <= now()",
+            "DELETE FROM pending_logins WHERE expires_at <= now()",
         ] {
             removed += sqlx::query(query)
                 .execute(self.pool())

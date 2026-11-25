@@ -14,6 +14,8 @@ pub struct Account {
     pub is_admin: bool,
     /// Has no password, so signs in only through an identity provider.
     pub external: bool,
+    /// Signing in takes a second factor.
+    pub two_factor: bool,
     pub created_at: OffsetDateTime,
     pub disabled_at: Option<OffsetDateTime>,
     pub quota_bytes: Option<i64>,
@@ -39,6 +41,8 @@ pub struct DeletedAccount {
 macro_rules! account_select {
     () => {
         "SELECT u.id, u.username, u.is_admin, u.password_hash IS NULL AS external, \
+         EXISTS (SELECT 1 FROM user_totp t \
+            WHERE t.user_id = u.id AND t.confirmed_at IS NOT NULL) AS two_factor, \
          u.created_at, u.disabled_at, u.quota_bytes, u.delete_at, \
          COALESCE((SELECT SUM(n.size) FROM nodes n \
             WHERE n.owner_id = u.id AND n.kind = 'file' AND n.trashed_at IS NULL), 0)::BIGINT AS files, \

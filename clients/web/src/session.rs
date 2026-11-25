@@ -3,7 +3,7 @@ use std::sync::Arc;
 use leptos::{prelude::*, task::spawn_local};
 use leptos_router::NavigateOptions;
 
-use api_client::{ApiError, Client, Pkce, VERIFIER_BYTES};
+use api_client::{ApiError, Client, Pkce, SecondFactor, SecondFactorStep, SignIn, VERIFIER_BYTES};
 use protocol::{DeviceInfo, Me, PLATFORM_WEB};
 use uuid::Uuid;
 
@@ -157,16 +157,36 @@ impl Auth {
         auth
     }
 
-    /// Signs in; the error is a message fit for display.
-    pub async fn login(self, username: &str, password: &str) -> Result<(), String> {
-        match client().login(username, password).await {
-            Ok(me) => {
+    /// Signs in with the password; `Some` when the account also needs a second factor,
+    /// which [`verify`](Self::verify) takes. The error is a message fit for display.
+    pub async fn login(
+        self,
+        username: &str,
+        password: &str,
+    ) -> Result<Option<SecondFactorStep>, String> {
+        match client().login_two_step(username, password).await {
+            Ok(SignIn::Done(me)) => {
                 self.user.set(Some(me));
-                Ok(())
+                Ok(None)
             }
+            Ok(SignIn::SecondFactor(step)) => Ok(Some(step)),
             Err(ApiError::Unauthorized) => Err(INVALID_LOGIN_MESSAGE.to_owned()),
             Err(err) => Err(err.to_string()),
         }
+    }
+
+    /// Finishes a sign-in that waits for its second factor.
+    pub async fn verify(self, login_token: &str, factor: SecondFactor<'_>) -> Result<(), ApiError> {
+        let me = client().login_verify(login_token, factor).await?;
+        self.user.set(Some(me));
+        Ok(())
+    }
+
+    /// Asks the server who the user is again, after their account changed.
+    pub async fn reload(self) -> Result<(), ApiError> {
+        let me = client().me().await?;
+        self.user.set(Some(me));
+        Ok(())
     }
 
     /// Sends the browser to the single sign-on provider; it comes back to `/login/callback`.

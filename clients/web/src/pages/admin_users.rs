@@ -19,7 +19,7 @@ use client_core::{
 use protocol::{Account, AccountDevice, CreateAccount, Patch, ServerStatus, UpdateAccount, UserId};
 
 use crate::{
-    components::{ErrorAlert, Menu, MenuItem},
+    components::{ErrorAlert, Menu, MenuItem, reconfirm},
     icon::{Icon, platform_icon},
     load,
     locale::{medium_date, now, short_date, short_time},
@@ -767,7 +767,12 @@ fn EditUserPanel(
     let name = first.username.clone();
     let has_password = !first.external;
     let method = sign_in_method(&first, provider.as_deref());
-    let since = format!("{method} · since {}", medium_date(first.created_at));
+    let created = medium_date(first.created_at);
+    let header_provider = provider.clone();
+    let since = move || {
+        let method = account.with(|account| sign_in_method(account, header_provider.as_deref()));
+        format!("{method} · since {created}")
+    };
     let quota = QuotaInput::new(first.quota_bytes);
     let is_admin = RwSignal::new(first.is_admin);
     let password = RwSignal::new(String::new());
@@ -986,6 +991,10 @@ fn EditUserPanel(
                                 .into_any()
                         }}
                     </section>
+                    {has_password
+                        .then(|| {
+                            view! { <SecondFactorSection auth account problem on_saved /> }
+                        })}
                     <section class="sheet__section">
                         <h3 class="sheet__heading">"Devices"</h3>
                         {move || match devices.get() {
@@ -1156,5 +1165,103 @@ fn DeleteUserDialog(
                 </div>
             </div>
         </div>
+    }
+}
+
+/// Whether an account signs in with a second factor, and the administrator's reset for a
+/// user who lost theirs.
+#[component]
+fn SecondFactorSection(
+    auth: Auth,
+    account: Signal<Account>,
+    problem: RwSignal<Option<String>>,
+    on_saved: Callback<Account>,
+) -> impl IntoView {
+    let asking = RwSignal::new(false);
+    let busy = RwSignal::new(false);
+    let on = move || account.with(|account| account.two_factor);
+    let name = move || account.with(|account| account.username.clone());
+    let reconfirm = reconfirm::Reconfirm::get();
+    let reset = move |_| {
+        let id = account.get_untracked().id;
+        busy.set(true);
+        spawn_local(async move {
+            let client = session::client();
+            let result = async {
+                if reconfirm
+                    .confirmed(|| client.reset_second_factors(id))
+                    .await?
+                    .is_none()
+                {
+                    return Ok(None);
+                }
+                client.account(id).await.map(Some)
+            }
+            .await;
+            busy.set(false);
+            asking.set(false);
+            match result {
+                Ok(Some(updated)) => on_saved.run(updated),
+                Ok(None) => {}
+                Err(err) => problem.set(Some(auth.fail(&err))),
+            }
+        });
+    };
+    view! {
+        <section class="sheet__section">
+            <h3 class="sheet__heading">"Two-factor sign-in"</h3>
+            <Show
+                when=on
+                fallback=move || {
+                    view! {
+                        <p class="sheet__text">
+                            {move || format!("Off. {} can turn it on in their settings.", name())}
+                        </p>
+                    }
+                }
+            >
+                <p class="sheet__text">
+                    {move || {
+                        format!(
+                            "On: {} signs in with a code from an authenticator app. If they lost it and their recovery codes, reset it: they then sign in with the password alone, and are signed out everywhere.",
+                            name(),
+                        )
+                    }}
+                </p>
+                <Show
+                    when=move || asking.get()
+                    fallback=move || {
+                        view! {
+                            <button
+                                type="button"
+                                class="button button--small"
+                                on:click=move |_| asking.set(true)
+                            >
+                                "Reset two-factor sign-in"
+                            </button>
+                        }
+                    }
+                >
+                    <span class="card__confirm">
+                        {move || format!("Reset it for {}?", name())}
+                        <button
+                            type="button"
+                            class="button button--small"
+                            on:click=move |_| asking.set(false)
+                        >
+                            "Cancel"
+                        </button>
+                        <button
+                            type="button"
+                            class="button button--danger button--small"
+                            disabled=move || busy.get()
+                            on:click=reset
+                        >
+                            "Reset"
+                        </button>
+                    </span>
+                </Show>
+            </Show>
+        </section>
     }
 }

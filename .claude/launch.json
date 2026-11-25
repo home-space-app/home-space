@@ -4,7 +4,7 @@
     {
       "name": "server-with-web",
       "runtimeExecutable": "sh",
-      "runtimeArgs": ["-c", "cd server && HOMESPACE_BIND=127.0.0.1:8080 HOMESPACE_PORT=8080 HOMESPACE_WEB_ROOT=../clients/web/dist ./target/debug/homespace serve"],
+      "runtimeArgs": ["-c", "cd server && HOMESPACE_BIND=127.0.0.1:8080 HOMESPACE_PORT=8080 HOMESPACE_WEB_ROOT=../clients/web/dist HOMESPACE_SECRETS_KEY=dev-only-local-secrets-key-9f3Kq7Zx2Lm8 ./target/debug/homespace"],
       "port": 8080
     }
   ]

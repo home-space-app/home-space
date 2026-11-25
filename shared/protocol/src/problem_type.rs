@@ -61,6 +61,15 @@ pub enum ProblemType {
     ReauthenticationRequired,
     /// The account signs in through single sign-on and has no password.
     NoPassword,
+    /// The password was right, and the account also needs a second factor. With `two_step`
+    /// the problem carries a `login_token` for `POST /auth/login/verify` and the `methods`.
+    SecondFactorRequired,
+    /// The code from the authenticator app or the recovery code is wrong.
+    InvalidCode,
+    /// An authenticator app is already set up; it has to be removed before another is added.
+    TotpExists,
+    /// The server has no key to keep authenticator app secrets with, so none can be set up.
+    SecretsKeyMissing,
     /// A folder cannot be moved into itself or into one of its folders.
     MoveIntoItself,
     /// The item is a folder, and only a file can do this.
@@ -97,7 +106,7 @@ pub enum ProblemType {
 
 impl ProblemType {
     /// Every problem type, for documentation and tests.
-    pub const ALL: [Self; 40] = [
+    pub const ALL: [Self; 44] = [
         Self::BadRequest,
         Self::BodyInterrupted,
         Self::UnsupportedMediaType,
@@ -123,6 +132,10 @@ impl ProblemType {
         Self::WrongPassword,
         Self::ReauthenticationRequired,
         Self::NoPassword,
+        Self::SecondFactorRequired,
+        Self::InvalidCode,
+        Self::TotpExists,
+        Self::SecretsKeyMissing,
         Self::MoveIntoItself,
         Self::NotAFile,
         Self::InvalidName,
@@ -268,6 +281,25 @@ impl ProblemType {
                 "no-password",
                 C::BadRequest,
                 "The account has no password",
+            ),
+            Self::SecondFactorRequired => (
+                403,
+                "second-factor-required",
+                C::Forbidden,
+                "A second factor is needed to sign in",
+            ),
+            Self::InvalidCode => (422, "invalid-code", C::BadRequest, "The code is wrong"),
+            Self::TotpExists => (
+                409,
+                "totp-exists",
+                C::Conflict,
+                "An authenticator app is already set up",
+            ),
+            Self::SecretsKeyMissing => (
+                503,
+                "secrets-key-missing",
+                C::Internal,
+                "Two-factor sign-in is not set up on this server",
             ),
             Self::MoveIntoItself => (
                 422,

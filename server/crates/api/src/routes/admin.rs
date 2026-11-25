@@ -35,6 +35,10 @@ pub fn routes() -> Router<AppState> {
                 .delete(delete_account),
         )
         .route("/admin/users/{id}/password", put(set_password))
+        .route(
+            "/admin/users/{id}/second-factors",
+            delete(reset_second_factors),
+        )
         .route("/admin/users/{id}/devices", get(account_devices))
         .route("/admin/users/{id}/deletion", delete(cancel_deletion))
 }
@@ -82,6 +86,22 @@ async fn set_password(
     ApiJson(request): ApiJson<SetPassword>,
 ) -> Result<StatusCode, ApiError> {
     tenant.accounts.set_password(id, &request.password).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Removes an account's second factors and ends its sessions, so it signs in with the
+/// password alone. The administrator must have signed in or confirmed it is them recently.
+async fn reset_second_factors(
+    tenant: Tenant,
+    admin: AdminUser,
+    ApiPath(id): ApiPath<UserId>,
+) -> Result<StatusCode, ApiError> {
+    tenant.accounts.account(id).await?;
+    tenant
+        .auth
+        .require_recent_sign_in(admin.id, admin.session_id)
+        .await?;
+    tenant.auth.reset_second_factors(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

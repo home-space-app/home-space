@@ -71,6 +71,9 @@ pub async fn tenant_settings(
         jwt_secret: get("HOMESPACE_JWT_SECRET").await?,
         jwt_secret_file: get("HOMESPACE_JWT_SECRET_FILE").await?.map(PathBuf::from),
         jwt_secret_previous: get("HOMESPACE_JWT_SECRET_PREVIOUS").await?,
+        secrets_key: get("HOMESPACE_SECRETS_KEY").await?,
+        secrets_key_file: get("HOMESPACE_SECRETS_KEY_FILE").await?.map(PathBuf::from),
+        secrets_key_previous: get("HOMESPACE_SECRETS_KEY_PREVIOUS").await?,
         public_url: get("HOMESPACE_PUBLIC_URL").await?,
         oidc_issuer: get("HOMESPACE_OIDC_ISSUER").await?,
         oidc_client_id: get("HOMESPACE_OIDC_CLIENT_ID").await?,
@@ -128,6 +131,7 @@ async fn load_single(
     let tenant = single_tenant(tenants)?;
     let settings = config.tenant_settings();
     let tenant_config = settings.validate()?;
+    let base = base.with_secrets_key(tenant_config.secrets_key.clone());
     let auth = match tenant_config.oidc.clone() {
         Some(oidc_config) => {
             let oidc = OidcService::discover(oidc_config)
@@ -270,13 +274,15 @@ fn tenant_auth(
     tenant_config: &TenantConfig,
     provider: Option<Result<OidcService>>,
 ) -> Option<AuthService> {
-    let auth = base.for_tenant(AuthConfig {
-        tenant,
-        jwt_secret: tenant_config.jwt_secret.clone(),
-        previous_jwt_secrets: tenant_config.previous_jwt_secrets.clone(),
-        access_ttl: time::Duration::seconds(config.access_ttl_secs),
-        refresh_ttl: time::Duration::seconds(config.refresh_ttl_secs),
-    });
+    let auth = base
+        .for_tenant(AuthConfig {
+            tenant,
+            jwt_secret: tenant_config.jwt_secret.clone(),
+            previous_jwt_secrets: tenant_config.previous_jwt_secrets.clone(),
+            access_ttl: time::Duration::seconds(config.access_ttl_secs),
+            refresh_ttl: time::Duration::seconds(config.refresh_ttl_secs),
+        })
+        .with_secrets_key(tenant_config.secrets_key.clone());
     match provider {
         None => Some(auth),
         Some(Ok(oidc)) => {
@@ -406,6 +412,7 @@ mod tests {
             previous_jwt_secrets: previous
                 .map(|secret| vec![secret.as_bytes().to_vec()])
                 .unwrap_or_default(),
+            secrets_key: None,
             public_url: None,
             oidc: None,
             password_login: true,

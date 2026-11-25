@@ -13,6 +13,7 @@ use protocol::{Event, Storage};
 
 use super::{
     admin_users::Switch,
+    security::{self, SecurityCard},
     shell::{Tab, Tabs},
 };
 use crate::{
@@ -76,6 +77,9 @@ pub fn SettingsPage(auth: Auth) -> impl IntoView {
                 </section>
                 <Show when=move || auth.user.get().is_some_and(|me| !me.external)>
                     <PasswordCard auth />
+                </Show>
+                <Show when=move || security::offered(auth)>
+                    <SecurityCard auth />
                 </Show>
                 <Show when=move || auth.user.get().is_some_and(|me| me.is_admin)>
                     <UpdatesCard />

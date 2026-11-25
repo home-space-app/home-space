@@ -90,6 +90,10 @@ pub struct ServerConfig {
     pub refresh_ttl_secs: i64,
     /// A previous token signing secret is still accepted.
     pub previous_jwt_secret: bool,
+    /// `HOMESPACE_SECRETS_KEY` is set, so users can add an authenticator app; older servers
+    /// leave it out.
+    #[serde(default)]
+    pub secrets_key: bool,
     pub public_url: Option<String>,
     pub bind: String,
     /// The host port a container is published on (`HOMESPACE_PORT`); the server cannot see it.
@@ -190,6 +194,7 @@ mod tests {
                 access_ttl_secs: 0,
                 refresh_ttl_secs: 0,
                 previous_jwt_secret: false,
+                secrets_key: false,
                 public_url: None,
                 bind: String::new(),
                 published_port: None,

@@ -11,6 +11,12 @@ impl Client {
             .await
     }
 
+    /// One account; administrators only.
+    pub async fn account(&self, id: UserId) -> Result<Account, ApiError> {
+        self.send_json(|| self.http().get(self.url(&paths::admin_user(id))))
+            .await
+    }
+
     /// Creates an account that signs in with a password.
     pub async fn create_account(&self, request: &CreateAccount) -> Result<Account, ApiError> {
         self.send_json(|| self.http().post(self.url(paths::ADMIN_USERS)).json(request))

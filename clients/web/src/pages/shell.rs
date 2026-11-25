@@ -1,8 +1,12 @@
 use leptos::prelude::*;
 use leptos_router::components::{Outlet, Redirect};
 
-use super::{sidebar::Sidebar, viewer::FileViewer};
-use crate::session::Auth;
+use super::{
+    security::{FEW_RECOVERY_CODES, recovery_left},
+    sidebar::Sidebar,
+    viewer::FileViewer,
+};
+use crate::{route, session::Auth};
 
 #[component]
 pub fn Shell(auth: Auth) -> impl IntoView {
@@ -14,11 +18,39 @@ pub fn Shell(auth: Auth) -> impl IntoView {
             <div class="layout">
                 <Sidebar auth />
                 <div class="layout__main">
+                    <FewRecoveryCodes auth />
                     <Outlet />
                 </div>
             </div>
             <FileViewer auth />
         </Show>
+    }
+}
+
+/// A reminder to make new recovery codes once few are left, so the user can still sign in
+/// when they lose the authenticator app.
+#[component]
+fn FewRecoveryCodes(auth: Auth) -> impl IntoView {
+    let left = move || {
+        auth.user.with(|me| {
+            me.as_ref()
+                .map(|me| me.second_factors)
+                .filter(|factors| factors.totp && factors.recovery_codes_left <= FEW_RECOVERY_CODES)
+                .map(|factors| factors.recovery_codes_left)
+        })
+    };
+    move || {
+        left().map(|left| {
+            view! {
+                <p class="alert alert--warning banner" role="status">
+                    {recovery_left(left)}
+                    " "
+                    <leptos_router::components::A href=route::SETTINGS_PATH>
+                        "Make new ones in Settings."
+                    </leptos_router::components::A>
+                </p>
+            }
+        })
     }
 }
 

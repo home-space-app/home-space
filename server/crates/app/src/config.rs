@@ -48,6 +48,21 @@ pub struct Config {
     #[arg(long, env = "HOMESPACE_JWT_SECRET_PREVIOUS", hide_env_values = true)]
     pub jwt_secret_previous: Option<String>,
 
+    /// Key that seals the secrets of authenticator apps (two-factor sign-in) in the database;
+    /// set this or `HOMESPACE_SECRETS_KEY_FILE`. Without it no authenticator app can be added.
+    /// Keep it apart from the JWT secret, and never lose it: the apps added with it stop working.
+    #[arg(long, env = "HOMESPACE_SECRETS_KEY", hide_env_values = true)]
+    pub secrets_key: Option<String>,
+
+    /// File holding the secrets key (e.g. a Docker/Podman secret).
+    #[arg(long, env = "HOMESPACE_SECRETS_KEY_FILE")]
+    pub secrets_key_file: Option<PathBuf>,
+
+    /// Earlier secrets key that still opens what it sealed, for rotating the key. Each secret
+    /// is sealed again with the current key when its app's code is next accepted.
+    #[arg(long, env = "HOMESPACE_SECRETS_KEY_PREVIOUS", hide_env_values = true)]
+    pub secrets_key_previous: Option<String>,
+
     /// Where file content is kept. Only `local` exists today; object storage is planned.
     #[arg(long, env = "HOMESPACE_STORAGE", value_enum, default_value_t = StorageBackend::Local)]
     pub storage: StorageBackend,
@@ -197,6 +212,9 @@ impl Config {
             jwt_secret: self.jwt_secret.clone(),
             jwt_secret_file: self.jwt_secret_file.clone(),
             jwt_secret_previous: self.jwt_secret_previous.clone(),
+            secrets_key: self.secrets_key.clone(),
+            secrets_key_file: self.secrets_key_file.clone(),
+            secrets_key_previous: self.secrets_key_previous.clone(),
             public_url: self.public_url.clone(),
             oidc_issuer: self.oidc_issuer.clone(),
             oidc_client_id: self.oidc_client_id.clone(),
@@ -251,6 +269,7 @@ impl Config {
             access_ttl_secs: self.access_ttl_secs,
             refresh_ttl_secs: self.refresh_ttl_secs,
             previous_jwt_secret: !previous.is_empty(),
+            secrets_key: self.tenant_settings().secrets_key()?.is_some(),
             public_url: non_empty(&self.public_url).map(str::to_owned),
             bind: self.bind.to_string(),
             published_port: self.port,
