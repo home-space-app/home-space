@@ -80,9 +80,13 @@ did use a second factor ([Single sign-on users](#single-sign-on-users)).
   It is only saved after the user enters one valid code, so a mistyped scan never locks anyone out.
 - Accept the current step and one on each side (±30 s clock drift).
 - No replays: store the last accepted step per user and refuse any step at or before it.
-- One TOTP per user. Replacing it needs the old one or a recent sign-in.
-- Crate: `totp-rs` (small, maintained, does the URI). Or a 40-line HMAC on `hmac` + `sha1`, which
-  the server already pulls in; either is fine.
+- One TOTP per user. Replacing it means removing it and adding a new one, each with a recent
+  sign-in (decided 2026-11-25; `POST /me/totp` answers `409 totp-exists` while one is on).
+- SHA-1 only, on purpose: several apps ignore the `algorithm` of the QR code and compute SHA-1
+  anyway, and HMAC-SHA1 is not weakened by SHA-1's collisions. The window of one step either side
+  stays (a code works up to 30 s after it rolls over); asked on 2026-11-25 whether a 2-second
+  grace would do instead, it is kept as is unless decided otherwise.
+- Done as a 40-line HMAC on `hmac` + `sha1` (`auth::totp`), tested against RFC 6238's vectors.
 
 ### Passkeys and security keys (WebAuthn)
 
@@ -273,7 +277,9 @@ New columns on `sessions`:
 
 - `auth_methods TEXT[]`: what proved the user at sign-in, with the `amr` names of RFC 8176:
   `pwd`, `otp`, `hwk` (security key), `swk` / `user` (passkey with verification), plus `oidc` and,
-  when the provider says so, its own `mfa`.
+  when the provider says so, its own `mfa`, and `recovery` for a recovery code, which RFC 8176
+  has no name for. Re-confirming moves `authenticated_at` and leaves the methods as they were at
+  sign-in.
 - `authenticated_at TIMESTAMPTZ`: the last time the user proved who they are (sign-in or
   re-confirming). Refreshing tokens does not change it.
 
@@ -390,6 +396,9 @@ CREATE TABLE pending_logins (...);   -- token_hash, tenant_id, user_id NULL, kin
 
 -- Done in 0029_session_auth.sql: sessions.auth_methods TEXT[], sessions.authenticated_at,
 -- both also on login_codes.
+-- Done in 0030_second_factors.sql: user_totp, user_recovery_codes, and pending_logins
+-- (token_hash, tenant_id, user_id, attempts, expires_at). The WebAuthn tables, webauthn_handle
+-- and the ceremony state of pending_logins come with step 4, the tenants columns with step 5.
 
 ALTER TABLE tenants ADD COLUMN mfa_policy TEXT NOT NULL DEFAULT 'optional'
     CHECK (mfa_policy IN ('optional', 'admins', 'everyone'));
@@ -411,6 +420,10 @@ database dump (backups) would hand out every second factor. So:
   rotate` re-encrypts the rows.
 - Without the key, TOTP enrolment is refused with a clear message; passkeys and recovery codes
   still work (they store nothing secret). `homespace-ctl install` generates it.
+- Done: `auth::SecretBox`, read per tenant like the JWT secret, refused when it equals the JWT
+  secret. A secret opened with `_PREVIOUS` is sealed again with the current key when its code is
+  accepted, so `homespace-ctl secrets rotate` is only needed to finish a rotation at once; it is
+  not written yet. Administrators see in the server settings whether the key is set.
 - Not derived from `HOMESPACE_JWT_SECRET`: rotating that one would then destroy every TOTP.
 
 ## API summary
@@ -418,17 +431,17 @@ database dump (backups) would hand out every second factor. So:
 | Method and path | Purpose |
 |---|---|
 | `POST /auth/login` | Unchanged request; may answer `second-factor-required` |
-| `POST /auth/login/verify` | Second step with TOTP, recovery code or WebAuthn assertion |
+| `POST /auth/login/verify` | Second step with TOTP or recovery code (done), WebAuthn assertion (step 4) |
 | `POST /auth/passkey/start`, `/finish` | Passwordless sign-in |
 | `GET /auth/browser/start`, `GET /auth/browser/flows/{id}`, `POST /auth/browser/approve`, `/deny`, `/exchange` | Browser sign-in for native apps (done: server and web) |
 | `GET /auth/providers` | Gains `passkeys: bool`, `browser_login: bool` |
-| `GET /me` | Gains `second_factors: { totp, webauthn: n, recovery_left: n }` |
-| `GET /me/security` | Factors, credentials with names and dates, the policy |
-| `POST /me/totp`, `POST /me/totp/confirm`, `DELETE /me/totp` | Enrol, confirm, remove TOTP |
+| `GET /me` | Gains `second_factors: { totp, recovery_codes_left }` (done); `webauthn: n` with step 4 |
+| `GET /me/security` | Factors, credentials with names and dates, the policy (with step 4) |
+| `POST /me/totp`, `POST /me/totp/confirm`, `DELETE /me/totp` | Enrol, confirm, remove TOTP (done) |
 | `POST /me/webauthn/start`, `/finish`, `PATCH`/`DELETE /me/webauthn/{id}` | Add, rename, remove a key |
-| `POST /me/recovery-codes` | New set (voids the old) |
+| `POST /me/recovery-codes` | New set (voids the old) (done) |
 | `POST /me/reauthenticate` | Fresh proof for sensitive changes |
-| `DELETE /admin/users/{id}/second-factors` | Reset 2FA |
+| `DELETE /admin/users/{id}/second-factors` | Reset 2FA (done) |
 
 New problem types for `docs/api-errors.md`: `second-factor-required` (403),
 `reauthentication-required` (403), `second-factor-setup-required` (403), `sso-mfa-required` (403),
@@ -527,6 +540,18 @@ client falls back to plain password sign-in on older servers.
    [Re-confirming](#re-confirming-for-sensitive-changes-sudo-mode). Changing the password
    counts as confirming; device sign-out stays without it, for the released apps.
 2. TOTP and recovery codes: tables, secret key, two-step login, web screens, admin reset, CLI.
+   Done (feature `two_factor`): `0030_second_factors.sql`; `HOMESPACE_SECRETS_KEY`;
+   `/auth/login` with `two_step` and `/auth/login/verify`, wrong codes throttled per username
+   (`2fa`) and five ending the sign-in; `/me/totp`, `/me/totp/confirm`, `/me/recovery-codes`,
+   all behind `require_recent_sign_in`; `/me/reauthenticate` takes `{ code }` too, and
+   `methods` names `totp` for a user with an app; `Me.second_factors`, `Account.two_factor`;
+   `DELETE /admin/users/{id}/second-factors` and `homespace-ctl user reset-2fa`. Sessions record
+   `["pwd", "otp"]` or `["pwd", "recovery"]`. The api-client has `login_two_step`,
+   `login_verify` and `ApiError::ReauthenticationRequired`; the web client asks for the code
+   at sign-in (also on `/authorize`), has a "Two-factor sign-in" card in Settings with the QR
+   code and the recovery codes, a re-confirm dialog for every sensitive change, a reminder when
+   three or fewer recovery codes are left, and the administrator's reset in the user's panel.
+   Removing the app also removes the recovery codes, since there is no other factor yet.
 3. Browser sign-in for native apps: server flow and web approve page (`/authorize`) are done,
    with the `browser_login` feature and `Providers.browser_login`; the api-client has
    `browser_login_start_url` / `browser_login_exchange`. Desktop, Android and iOS show only a

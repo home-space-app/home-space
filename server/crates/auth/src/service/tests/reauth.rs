@@ -4,6 +4,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 
 use super::*;
+use crate::ReauthProof;
 
 const VERIFIER: &str = "a-verifier-long-enough-for-pkce-0123456789abcdef";
 
@@ -65,11 +66,13 @@ async fn a_sensitive_change_needs_a_recent_proof_which_the_password_gives(pool: 
     let refused = auth.require_recent_sign_in(user, session).await;
     assert_eq!(methods(refused), ["password"]);
 
-    let wrong = auth.reauthenticate(user, session, "wrong-password").await;
+    let wrong = auth
+        .reauthenticate(user, session, ReauthProof::Password("wrong-password"))
+        .await;
     assert!(matches!(wrong, Err(AuthError::WrongPassword)), "{wrong:?}");
     assert!(auth.require_recent_sign_in(user, session).await.is_err());
 
-    auth.reauthenticate(user, session, "password-1")
+    auth.reauthenticate(user, session, ReauthProof::Password("password-1"))
         .await
         .expect("confirmed");
     auth.require_recent_sign_in(user, session)
@@ -84,7 +87,11 @@ async fn guessing_the_password_to_confirm_is_throttled_like_changing_it(pool: Pg
     let grant = signed_in(&auth, None).await;
     for _ in 0..3 {
         let wrong = auth
-            .reauthenticate(grant.user_id, grant.session_id, "wrong-password")
+            .reauthenticate(
+                grant.user_id,
+                grant.session_id,
+                ReauthProof::Password("wrong-password"),
+            )
             .await;
         assert!(matches!(wrong, Err(AuthError::WrongPassword)));
     }
@@ -122,7 +129,11 @@ async fn a_user_without_a_password_is_asked_to_sign_in_again(pool: PgPool) {
         .await;
     assert!(methods(refused).is_empty());
     let confirm = auth
-        .reauthenticate(grant.user_id, grant.session_id, "password-1")
+        .reauthenticate(
+            grant.user_id,
+            grant.session_id,
+            ReauthProof::Password("password-1"),
+        )
         .await;
     assert!(matches!(confirm, Err(AuthError::NoPassword)), "{confirm:?}");
 }

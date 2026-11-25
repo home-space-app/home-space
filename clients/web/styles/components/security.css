@@ -1,0 +1,86 @@
+/* Two-factor sign-in: the settings card, the warning about recovery codes, and the
+   admin's reset. */
+
+.card__text {
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+}
+
+.card__text--warning {
+  color: var(--color-warning);
+  font-weight: 500;
+}
+
+.card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.card__confirm {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.steps {
+  padding-left: var(--space-5);
+  font-size: var(--text-sm);
+}
+
+.qr {
+  justify-self: start;
+  width: 192px;
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: #ffffff;
+  line-height: 0;
+}
+
+.qr svg {
+  width: 100%;
+  height: auto;
+}
+
+.secret-key,
+.recovery-codes code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  letter-spacing: 0.04em;
+  user-select: all;
+}
+
+.inline-form {
+  display: grid;
+  gap: var(--space-3);
+  max-width: 320px;
+}
+
+.field__input--code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  letter-spacing: 0.2em;
+}
+
+.recovery-codes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: var(--space-2) var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-hover);
+  list-style: none;
+}
+
+.banner {
+  margin: var(--space-3) var(--space-5) 0;
+}
+
+.alert--warning {
+  border-color: color-mix(in oklab, var(--color-warning) 35%, transparent);
+  background: color-mix(in oklab, var(--color-warning) 12%, transparent);
+  color: var(--color-text);
+}

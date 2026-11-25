@@ -30,10 +30,20 @@ pub(crate) const PASSWORD_METHOD: &str = "pwd";
 /// What a session records for single sign-on: the provider proved the user, in its own way.
 pub(crate) const OIDC_METHOD: &str = "oidc";
 
+/// What a session records after a code from an authenticator app (RFC 8176 `otp`).
+pub(crate) const OTP_METHOD: &str = "otp";
+/// What a session records after a recovery code; RFC 8176 has no name for one.
+pub(crate) const RECOVERY_METHOD: &str = "recovery";
+
 /// A sign-in with `method` that happens now.
 pub(crate) fn signed_in_now(method: &str) -> Authentication {
+    signed_in_now_with(&[method])
+}
+
+/// A sign-in with all of `methods` that happens now.
+pub(crate) fn signed_in_now_with(methods: &[&str]) -> Authentication {
     Authentication {
-        auth_methods: vec![method.to_owned()],
+        auth_methods: methods.iter().map(|&method| method.to_owned()).collect(),
         authenticated_at: OffsetDateTime::now_utc(),
     }
 }

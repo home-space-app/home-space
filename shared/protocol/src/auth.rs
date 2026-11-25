@@ -14,6 +14,70 @@ pub struct LoginRequest {
     /// cannot read, and leaves it out of the response.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cookie: bool,
+    /// Set by a client that can ask for a second factor: when the account needs one, the
+    /// `second-factor-required` problem then carries a `login_token` for
+    /// [`LoginVerifyRequest`]. Without it the problem only explains why the sign-in failed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub two_step: bool,
+}
+
+/// `POST /auth/login/verify`: the second step of a sign-in, with one of `code` and
+/// `recovery_code`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LoginVerifyRequest {
+    /// From the `second-factor-required` problem of the first step.
+    pub login_token: String,
+    /// The code the authenticator app shows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    /// One of the account's recovery codes, used up by this sign-in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_code: Option<String>,
+    /// The device signing in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<DeviceInfo>,
+    /// As in [`LoginRequest::cookie`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cookie: bool,
+}
+
+/// `POST /me/totp`: a new authenticator app secret, saved only once a code from it is
+/// confirmed with [`TotpConfirmRequest`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TotpEnrolment {
+    /// The secret in base32, for typing into the app.
+    pub secret: String,
+    /// The `otpauth://` address, for the QR code.
+    pub uri: String,
+}
+
+/// `POST /me/totp/confirm`: the first code from the new authenticator app.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TotpConfirmRequest {
+    pub code: String,
+}
+
+/// A new set of recovery codes, each usable once instead of the authenticator app. They are
+/// shown only now; a new set replaces the old one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryCodes {
+    pub codes: Vec<String>,
+}
+
+/// The second factors of an account, in [`Me`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecondFactors {
+    /// An authenticator app is set up, so signing in takes one of its codes.
+    pub totp: bool,
+    /// Recovery codes not used yet.
+    pub recovery_codes_left: u32,
+}
+
+impl SecondFactors {
+    /// Whether signing in takes a second factor.
+    pub fn enabled(&self) -> bool {
+        self.totp
+    }
 }
 
 /// `POST /me/password`: a signed-in user replaces their own password.
@@ -24,10 +88,15 @@ pub struct ChangePasswordRequest {
 }
 
 /// `POST /me/reauthenticate`: a signed-in user confirms it is them before a sensitive change,
-/// answering `reauthentication-required`. Later ways to confirm become fields of their own.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// answering `reauthentication-required`, with one of the `methods` it named: `password`, or
+/// `totp` as `code`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ReauthenticateRequest {
-    pub password: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    /// The code the authenticator app shows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
 }
 
 /// Refresh token submitted to rotate a session or log out.
@@ -76,6 +145,9 @@ pub struct Me {
     /// it out.
     #[serde(default)]
     pub external: bool,
+    /// The account's second factors; older servers leave it out.
+    #[serde(default)]
+    pub second_factors: SecondFactors,
 }
 
 /// How this server lets users sign in.

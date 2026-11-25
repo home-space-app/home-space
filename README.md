@@ -375,6 +375,13 @@ secret). To rotate it, set the new value and move the old one to `HOMESPACE_JWT_
 sessions keep working, and the old value can be removed once access tokens (15 minutes by default)
 signed with it have expired.
 
+Two-factor sign-in with an authenticator app needs `HOMESPACE_SECRETS_KEY` (or `_FILE`): it seals
+the apps' secrets in the database, so a backup does not hand them out. Generate it like the
+signing secret and keep it apart from it; it is rotated the same way with
+`HOMESPACE_SECRETS_KEY_PREVIOUS`. Without it nobody can add an app, and everything else works.
+`homespace-ctl install` generates one. A user who lost their app and recovery codes is reset by an
+administrator in the user's panel, or with `homespace-ctl user reset-2fa <username>`.
+
 Access tokens and tickets are signed with the same secret and each names its kind in a `typ`
 claim, so neither is accepted in place of the other.
 

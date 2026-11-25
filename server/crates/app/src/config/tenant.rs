@@ -20,6 +20,9 @@ pub struct TenantSettings {
     pub jwt_secret: Option<String>,
     pub jwt_secret_file: Option<PathBuf>,
     pub jwt_secret_previous: Option<String>,
+    pub secrets_key: Option<String>,
+    pub secrets_key_file: Option<PathBuf>,
+    pub secrets_key_previous: Option<String>,
     pub public_url: Option<String>,
     pub oidc_issuer: Option<String>,
     pub oidc_client_id: Option<String>,
@@ -37,6 +40,8 @@ pub struct TenantSettings {
 pub struct TenantConfig {
     pub jwt_secret: Vec<u8>,
     pub previous_jwt_secrets: Vec<Vec<u8>>,
+    /// Keeps authenticator app secrets; `None` without `HOMESPACE_SECRETS_KEY`.
+    pub secrets_key: Option<auth::SecretBox>,
     pub public_url: Option<String>,
     pub oidc: Option<auth::OidcConfig>,
     pub password_login: bool,
@@ -49,6 +54,7 @@ impl TenantSettings {
         Ok(TenantConfig {
             jwt_secret,
             previous_jwt_secrets,
+            secrets_key: self.secrets_key()?,
             public_url: non_empty(&self.public_url).map(str::to_owned),
             oidc: self.oidc()?,
             password_login: self.password_login,
@@ -105,6 +111,42 @@ impl TenantSettings {
             groups_claim: self.oidc_groups_claim.clone(),
             display_name: self.oidc_name.clone(),
         }))
+    }
+
+    /// The key that seals authenticator app secrets, with the previous one that still opens
+    /// them; `None` when no key is set. Optional: without it no authenticator app can be
+    /// added, and nothing else changes.
+    pub fn secrets_key(&self) -> Result<Option<auth::SecretBox>> {
+        let Some(current) = value_or_file(
+            &self.var("HOMESPACE_SECRETS_KEY"),
+            self.secrets_key.as_deref(),
+            &self.file_var("HOMESPACE_SECRETS_KEY"),
+            self.secrets_key_file.as_deref(),
+        )?
+        else {
+            return Ok(None);
+        };
+        check_secret(&self.var("HOMESPACE_SECRETS_KEY"), &current)?;
+        let previous = match non_empty(&self.secrets_key_previous) {
+            Some(secret) => {
+                check_secret(&self.var("HOMESPACE_SECRETS_KEY_PREVIOUS"), secret)?;
+                vec![secret.to_owned()]
+            }
+            None => Vec::new(),
+        };
+        let reuses_jwt_secret = [
+            self.jwt_secret.as_deref(),
+            self.jwt_secret_previous.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|jwt| jwt == current);
+        anyhow::ensure!(
+            !reuses_jwt_secret,
+            "{} must differ from the JWT secret, so that rotating one does not lose the other",
+            self.var("HOMESPACE_SECRETS_KEY")
+        );
+        Ok(Some(auth::SecretBox::new(&current, &previous)))
     }
 
     /// The current signing secret followed by the previous one, if any.
@@ -179,5 +221,34 @@ mod tests {
         };
         let err = settings.oidc().unwrap_err().to_string();
         assert!(err.contains("HOMESPACE_OIDC_CLIENT_SECRET_FILE"), "{err}");
+    }
+
+    const KEY: &str = "kq3ZcV0m8Tn1yWfLr7uGxP2aHs9EoJd4BbNiC6tM5QzK";
+
+    #[test]
+    fn the_secrets_key_is_optional_but_must_be_strong_and_its_own() {
+        assert!(
+            TenantSettings::default()
+                .secrets_key()
+                .expect("valid")
+                .is_none()
+        );
+        let weak = TenantSettings {
+            secrets_key: Some("short".to_owned()),
+            ..TenantSettings::default()
+        };
+        assert!(weak.secrets_key().is_err());
+        let reused = TenantSettings {
+            secrets_key: Some(KEY.to_owned()),
+            jwt_secret: Some(KEY.to_owned()),
+            ..TenantSettings::default()
+        };
+        let err = reused.secrets_key().unwrap_err().to_string();
+        assert!(err.contains("JWT secret"), "{err}");
+        let own = TenantSettings {
+            secrets_key: Some(KEY.to_owned()),
+            ..TenantSettings::default()
+        };
+        assert!(own.secrets_key().expect("valid").is_some());
     }
 }

@@ -15,7 +15,7 @@ use protocol::{
 };
 
 use crate::{
-    AuthError, Claims, OidcService, SharePasswords,
+    AuthError, Claims, OidcService, SecretBox, SharePasswords,
     browser_login::BrowserLogin,
     hasher::PasswordHasher,
     offline,
@@ -83,6 +83,8 @@ pub struct AuthService {
     oidc: Option<OidcLogin>,
     browser: BrowserLogin,
     password_login: bool,
+    /// Keeps authenticator app secrets; `None` without `HOMESPACE_SECRETS_KEY`.
+    secret_box: Option<SecretBox>,
 }
 
 impl AuthService {
@@ -100,6 +102,7 @@ impl AuthService {
             db,
             oidc: None,
             password_login: true,
+            secret_box: None,
         })
     }
 
@@ -122,6 +125,7 @@ impl AuthService {
             browser: BrowserLogin::new(self.db.clone(), config.tenant),
             oidc: None,
             password_login: true,
+            secret_box: None,
         }
     }
 
@@ -230,12 +234,30 @@ impl AuthService {
     /// An address is also counted over all usernames, so that trying a new name every time
     /// does not get around the limit, and nothing is hashed or stored for it while it waits.
     /// A device the user has signed in from before is not held up by this either.
+    ///
+    /// A user with a second factor gets [`AuthError::SecondFactorRequired`] after the right
+    /// password; see [`login_with`](Self::login_with) to finish such a sign-in.
     pub async fn login_from(
         &self,
         username: &str,
         password: &str,
         device: Option<&DeviceInfo>,
         address: Option<IpAddr>,
+    ) -> Result<TokenPair, AuthError> {
+        self.login_with(username, password, device, address, false)
+            .await
+    }
+
+    /// Like [`login_from`](Self::login_from); with `two_step`, the
+    /// [`AuthError::SecondFactorRequired`] of a user with a second factor carries the token
+    /// that [`login_verify`](Self::login_verify) finishes the sign-in with.
+    pub async fn login_with(
+        &self,
+        username: &str,
+        password: &str,
+        device: Option<&DeviceInfo>,
+        address: Option<IpAddr>,
+        two_step: bool,
     ) -> Result<TokenPair, AuthError> {
         // No user has such a name, so it is refused before anything is stored for it.
         // Nor has anyone a password that long, and hashing it would take its time.
@@ -251,6 +273,7 @@ impl AuthService {
         let user = attempt
             .settle(checked, |err| matches!(err, AuthError::WrongLogin))
             .await?;
+        self.ask_second_factor(&user, two_step).await?;
         self.sessions
             .start(user.id, device, &signed_in_now(PASSWORD_METHOD))
             .await
@@ -443,5 +466,9 @@ impl AuthService {
 
 mod browser;
 mod reauth;
+mod second_factor;
+
+pub use reauth::ReauthProof;
+pub use second_factor::SecondFactorProof;
 #[cfg(test)]
 mod tests;

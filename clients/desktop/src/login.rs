@@ -100,7 +100,7 @@ pub enum Message {
 
 pub enum Update {
     Task(Task<Message>),
-    SignedIn { client: Client, me: Me },
+    SignedIn { client: Box<Client>, me: Me },
 }
 
 pub struct State {
@@ -251,9 +251,10 @@ impl State {
                 ))
             }
             Message::Finished(Ok((client, me)))
-            | Message::Restored(Restored::SignedIn { client, me }) => {
-                Update::SignedIn { client, me }
-            }
+            | Message::Restored(Restored::SignedIn { client, me }) => Update::SignedIn {
+                client: Box::new(client),
+                me,
+            },
             Message::Finished(Err(err)) => {
                 self.busy = false;
                 self.sso = None;

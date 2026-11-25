@@ -97,6 +97,15 @@ pub fn config_groups(
         ),
         ..row("Token signing secret", "Set", "HOMESPACE_JWT_SECRET")
     });
+    sign_in.push(row(
+        "Authenticator apps",
+        if config.secrets_key {
+            "Can be added"
+        } else {
+            "Off: no secrets key"
+        },
+        "HOMESPACE_SECRETS_KEY",
+    ));
     vec![
         (
             "Uploads and storage",
@@ -510,6 +519,7 @@ mod tests {
             access_ttl_secs: 900,
             refresh_ttl_secs: 30 * 24 * 3600,
             previous_jwt_secret: false,
+            secrets_key: false,
             public_url: None,
             bind: "0.0.0.0:8080".to_owned(),
             published_port: None,

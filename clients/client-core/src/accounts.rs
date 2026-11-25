@@ -100,6 +100,8 @@ pub fn near_quota(account: &Account) -> bool {
 pub fn sign_in_method(account: &Account, provider: Option<&str>) -> String {
     if account.external {
         provider.unwrap_or("Single sign-on").to_owned()
+    } else if account.two_factor {
+        "Password and authenticator app".to_owned()
     } else {
         "Password".to_owned()
     }
@@ -177,6 +179,7 @@ mod tests {
             username: "Peter".to_owned(),
             is_admin: false,
             external: false,
+            two_factor: false,
             created_at: OffsetDateTime::UNIX_EPOCH,
             disabled: false,
             quota_bytes: quota,

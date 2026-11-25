@@ -12,6 +12,7 @@ mod oidc_callback;
 mod public_share;
 mod search;
 mod search_box;
+mod security;
 mod send_dialog;
 mod settings;
 mod share_dialog;

@@ -373,6 +373,7 @@ mod tests {
             lost_and_found_id: NodeId(Uuid::nil()),
             is_admin,
             external,
+            second_factors: protocol::SecondFactors::default(),
         }
     }
 

@@ -8,7 +8,7 @@ use protocol::{
     Capabilities, ChangesQuery, ChangesResponse, ClientMessage, CreateFolderRequest, DeviceInfo,
     DeviceSessionRequest, ErrorCode, FileVersion, Health, ListQuery, LoginRequest, Me, MoveRequest,
     MoveResponse, Node, NodeId, NodeProperties, OidcExchangeRequest, OnConflict, Patch, Problem,
-    Providers, RefreshRequest, RestoreRequest, SearchHit, SearchQuery, TicketRequest,
+    ProblemType, Providers, RefreshRequest, RestoreRequest, SearchHit, SearchQuery, TicketRequest,
     TicketResponse, TokenPair, TrashItem, UpdateRequest, paths,
 };
 #[cfg(not(target_arch = "wasm32"))]
@@ -123,6 +123,11 @@ impl Client {
         self.device.as_ref()
     }
 
+    /// Whether the browser keeps the refresh token in its cookie.
+    pub(crate) fn cookie_session(&self) -> bool {
+        self.cookie_session
+    }
+
     pub(crate) fn http(&self) -> &reqwest::Client {
         &self.http
     }
@@ -188,6 +193,7 @@ impl Client {
             password: password.to_owned(),
             device: self.device.clone(),
             cookie: self.cookie_session,
+            two_step: false,
         };
         let response = self
             .http
@@ -785,6 +791,12 @@ pub(crate) async fn error_from(response: Response) -> ApiError {
     if let Ok(problem) = response.json::<Problem>().await
         && let Some(code) = problem.code()
     {
+        if problem.kind() == Some(ProblemType::ReauthenticationRequired) {
+            return ApiError::ReauthenticationRequired {
+                message: problem.detail().to_owned(),
+                methods: problem.methods,
+            };
+        }
         ApiError::Api {
             code,
             message: problem.detail().to_owned(),

@@ -16,7 +16,7 @@ use sqlx::PgPool;
 use tower::ServiceExt;
 
 use api::AppState;
-use auth::{AuthConfig, AuthService};
+use auth::{AuthConfig, AuthService, SecretBox};
 use db::{Db, TenantDomain, TenantId};
 use events::Events;
 use files::{BlobStore, FileServices, FilesConfig};
@@ -34,6 +34,8 @@ pub const HOST_B: &str = "cloud.other.org";
 /// A domain whose tenant is recorded but not serving.
 pub const HOST_UNAVAILABLE: &str = "closed.example.net";
 const JWT_SECRET: &[u8] = b"integration-test-secret-integration";
+/// The key authenticator app secrets are sealed with, unless a test takes it away.
+const SECRETS_KEY: &str = "kq3ZcV0m8Tn1yWfLr7uGxP2aHs9EoJd4BbNiC6tM5QzK";
 
 /// The server as one tenant's clients reach it.
 #[derive(Clone)]
@@ -80,8 +82,11 @@ pub async fn setup_with(
     configure: impl FnOnce(AuthService) -> AuthService,
 ) -> TestApp {
     let db = Db::from_pool(pool);
-    let auth =
-        configure(AuthService::new(db.clone(), auth_config(TenantId::DEFAULT)).expect("auth"));
+    let auth = configure(
+        AuthService::new(db.clone(), auth_config(TenantId::DEFAULT))
+            .expect("auth")
+            .with_secrets_key(Some(secrets_key())),
+    );
     build(db, auth.clone(), None, |shared| {
         api::Tenants::single(tenant(TenantId::DEFAULT, Vec::new(), &auth, shared))
     })
@@ -97,8 +102,12 @@ pub async fn setup_two_tenants(pool: PgPool) -> (TestApp, TestApp) {
     let other = add_tenant(&pool, "Other").await;
     let closed = add_tenant(&pool, "Closed").await;
     let db = Db::from_pool(pool);
-    let a = AuthService::new(db.clone(), auth_config(TenantId::DEFAULT)).expect("auth");
-    let b = a.for_tenant(auth_config(other));
+    let a = AuthService::new(db.clone(), auth_config(TenantId::DEFAULT))
+        .expect("auth")
+        .with_secrets_key(Some(secrets_key()));
+    let b = a
+        .for_tenant(auth_config(other))
+        .with_secrets_key(Some(secrets_key()));
     let domains = [
         domain(HOST_A, TenantId::DEFAULT),
         domain(HOST_B, other),
@@ -137,6 +146,10 @@ fn domain(domain: &str, tenant_id: TenantId) -> TenantDomain {
         tenant_id,
         is_primary: true,
     }
+}
+
+fn secrets_key() -> SecretBox {
+    SecretBox::new(SECRETS_KEY, &[])
 }
 
 fn auth_config(tenant: TenantId) -> AuthConfig {
@@ -211,6 +224,7 @@ async fn build(
                 access_ttl_secs: 900,
                 refresh_ttl_secs: 30 * 24 * 3600,
                 previous_jwt_secret: false,
+                secrets_key: true,
                 public_url: None,
                 bind: "127.0.0.1:0".to_owned(),
                 published_port: None,

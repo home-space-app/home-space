@@ -40,7 +40,7 @@ impl App {
             (Screen::Login(state), Message::Login(message)) => match state.update(message) {
                 login::Update::Task(task) => task.map(Message::Login),
                 login::Update::SignedIn { client, me } => {
-                    let (state, task) = browser::State::open(client, me);
+                    let (state, task) = browser::State::open(*client, me);
                     self.screen = Screen::Browser(Box::new(state));
                     task.map(Message::Browser)
                 }

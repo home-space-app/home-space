@@ -5,6 +5,7 @@ use leptos_router::{
 };
 
 use crate::{
+    components::{ReconfirmDialog, reconfirm},
     events,
     incoming::{self, IncomingToast},
     leave_guard,
@@ -26,6 +27,7 @@ pub fn App() -> impl IntoView {
     provide_context(Sending(RwSignal::new(Default::default())));
     incoming::provide_incoming();
     leave_guard::provide();
+    reconfirm::provide();
     let hub = events::provide_hub();
     Effect::new(move |_| {
         if auth.user.read().is_some() {
@@ -114,6 +116,7 @@ pub fn App() -> impl IntoView {
                     <IncomingToast auth />
                     <UploadPanel uploads />
                 </div>
+                <ReconfirmDialog />
             </Show>
         </Router>
     }

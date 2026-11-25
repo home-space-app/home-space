@@ -127,6 +127,10 @@ pub fn ask(runtimes: &[Runtime]) -> Result<InstallPlan> {
         db_user,
         db_password,
         jwt_secret,
+        secrets_key: Secret {
+            value: secrets::secrets_key(),
+            generated: true,
+        },
         proxy,
         public_url,
         auth,
@@ -410,6 +414,7 @@ pub fn confirm_plan(plan: &InstallPlan) -> Result<bool> {
     println!("  Database user:   {}", plan.db_user);
     println!("  DB password:     {}", secret(&plan.db_password));
     println!("  JWT secret:      {}", secret(&plan.jwt_secret));
+    println!("  Secrets key:     {}", secret(&plan.secrets_key));
     println!("  Public URL:      {}", plan.public_url);
     println!("  Published on:    {}:{}", plan.listen, plan.port);
     println!(

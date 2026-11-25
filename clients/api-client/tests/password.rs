@@ -4,7 +4,7 @@ use wiremock::{
     matchers::{body_json, header, method, path},
 };
 
-use api_client::{ApiError, Client};
+use api_client::{ApiError, Client, Confirmation};
 use protocol::{ErrorCode, paths};
 
 async fn signed_in(server: &MockServer) -> Client {
@@ -95,7 +95,10 @@ async fn reauthenticate_sends_the_password_and_keeps_the_session() {
         .mount(&server)
         .await;
 
-    let error = client.reauthenticate("guess").await.expect_err("refused");
+    let error = client
+        .reauthenticate(Confirmation::Password("guess"))
+        .await
+        .expect_err("refused");
     assert!(matches!(
         error,
         ApiError::Api { code: ErrorCode::BadRequest, ref message } if message == "The current password is wrong."

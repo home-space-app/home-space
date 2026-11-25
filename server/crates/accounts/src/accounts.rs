@@ -2,7 +2,7 @@ use time::{Duration, OffsetDateTime};
 
 use auth::{AuthError, AuthService};
 use db::{Account, DatabaseInfo, Db, DbError, Device, TenantId, User, UserId, UserStorage};
-use protocol::{CreateAccount, Me, UpdateAccount, UserRef};
+use protocol::{CreateAccount, Me, SecondFactors, UpdateAccount, UserRef};
 
 use crate::AccountError;
 
@@ -59,12 +59,17 @@ impl AccountService {
     pub async fn me(&self, user: UserId) -> Result<Me, AccountError> {
         let found = self.caller(user).await?;
         let folders = self.db.special_folders(user).await?;
+        let factors = self.db.second_factors(user).await?;
         Ok(Me {
             id: found.id,
             username: found.username,
             lost_and_found_id: folders.lost_and_found_id,
             is_admin: found.is_admin,
             external: found.password_hash.is_none(),
+            second_factors: SecondFactors {
+                totp: factors.totp,
+                recovery_codes_left: u32::try_from(factors.recovery_codes_left).unwrap_or(0),
+            },
         })
     }
 

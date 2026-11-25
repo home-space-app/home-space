@@ -25,6 +25,14 @@ pub enum ApiError {
     Transport(String),
     #[error("unexpected response: {0}")]
     Decode(String),
+    /// A sensitive change needs the user to confirm it is them first, with one of `methods`
+    /// (`password`, `totp`) through [`Client::reauthenticate`](crate::Client::reauthenticate);
+    /// then the change can be sent again. With no methods, they sign in again.
+    #[error("{message}")]
+    ReauthenticationRequired {
+        message: String,
+        methods: Vec<String>,
+    },
     /// The server is older than the feature asked for; the message says what to do.
     #[error("{0}")]
     Unsupported(&'static str),
@@ -39,7 +47,9 @@ impl ApiError {
             Self::Transport(_) | Self::Decode(_) => true,
             Self::Api { code, .. } => matches!(code, ErrorCode::Conflict | ErrorCode::Internal),
             Self::Status { status, .. } => *status >= 500 || matches!(status, 408 | 429),
-            Self::Unauthorized | Self::Unsupported(_) => false,
+            Self::Unauthorized | Self::Unsupported(_) | Self::ReauthenticationRequired { .. } => {
+                false
+            }
         }
     }
 
@@ -49,7 +59,11 @@ impl ApiError {
         match self {
             Self::Transport(_) => true,
             Self::Status { status, .. } => is_gateway_status(*status),
-            Self::Unauthorized | Self::Api { .. } | Self::Decode(_) | Self::Unsupported(_) => false,
+            Self::Unauthorized
+            | Self::Api { .. }
+            | Self::Decode(_)
+            | Self::Unsupported(_)
+            | Self::ReauthenticationRequired { .. } => false,
         }
     }
 
@@ -62,6 +76,9 @@ impl ApiError {
             Self::Transport(_) => NETWORK_CODE.to_owned(),
             Self::Decode(_) => DECODE_CODE.to_owned(),
             Self::Unsupported(_) => UNSUPPORTED_CODE.to_owned(),
+            Self::ReauthenticationRequired { .. } => {
+                error_code_name(ErrorCode::Forbidden).to_owned()
+            }
         }
     }
 }

@@ -1,6 +1,7 @@
 use axum::{extract::FromRequestParts, http::request::Parts};
 
 use db::UserId;
+use uuid::Uuid;
 
 use super::{AuthUser, Tenant};
 use crate::{ApiError, AppState};
@@ -12,6 +13,8 @@ use crate::{ApiError, AppState};
 pub struct AdminUser {
     /// The administrator's own id.
     pub id: UserId,
+    /// The session the administrator signed in with.
+    pub session_id: Uuid,
 }
 
 impl FromRequestParts<AppState> for AdminUser {
@@ -24,6 +27,9 @@ impl FromRequestParts<AppState> for AdminUser {
         let user = AuthUser::from_request_parts(parts, state).await?;
         let tenant = Tenant::from_request_parts(parts, state).await?;
         tenant.accounts.require_admin(user.id).await?;
-        Ok(Self { id: user.id })
+        Ok(Self {
+            id: user.id,
+            session_id: user.session_id,
+        })
     }
 }

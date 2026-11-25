@@ -20,14 +20,18 @@ shares = { path = "crates/shares" }
 api = { path = "crates/api" }
 protocol = { path = "../shared/protocol", features = ["server"] }
 
+aes-gcm = "0.11.1"
 anyhow = "1.0.104"
 argon2 = "0.6.0"
 axum = { version = "0.8.9", features = ["ws"] }
 base64 = "0.23.1"
 bytes = "1"
+data-encoding = "2.11.1"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 dotenvy = "0.15.7"
 futures-util = "0.3.34"
+hkdf = "0.13.0"
+hmac = "0.13.0"
 http-body-util = "0.1.5"
 inquire = "0.9.5"
 jsonwebtoken = { version = "12.0.0", default-features = false, features = ["rust_crypto"] }
@@ -38,6 +42,7 @@ rand = "0.10.3"
 rustix = { version = "1.1.6", features = ["process"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.154"
+sha1 = "0.11.0"
 sha2 = "0.11.1"
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "time", "migrate", "macros"] }
 tempfile = "3.27.0"

@@ -37,7 +37,8 @@ Extension members, present only where they apply:
 | `limit` | bytes or items | `too-large`, `too-many-items` |
 | `quota`, `available` | bytes | `quota-exceeded` |
 | `current_offset` | bytes | `offset-mismatch` |
-| `methods` | names | `reauthentication-required`: the ways the user can confirm it is them, such as `password`; empty means sign in again |
+| `methods` | names | `reauthentication-required`: the ways the user can confirm it is them, `password` or `totp`; empty means sign in again. `second-factor-required`: the second factors the account can use, `totp` and `recovery` |
+| `login_token` | string | `second-factor-required`, when the sign-in asked for `two_step`: what `POST /auth/login/verify` takes, for 5 minutes and 5 wrong codes |
 | `errors` | `[{ "pointer", "detail" }]` | `validation-failed`: every field at fault, as a JSON Pointer into the body or query |
 
 ## Status codes
@@ -54,12 +55,14 @@ type, a bad id in the path, a missing header), **415** for a body in the wrong f
 | `forbidden` | 403 | `forbidden` | Signed in but not allowed, such as a non-administrator on `/admin`. |
 | `account-disabled` | 403 | `forbidden` | The account is disabled or marked for deletion. |
 | `sso-access-denied` | 403 | `forbidden` | The identity provider signed the user in, but they are not in the allowed group. |
+| `second-factor-required` | 403 | `forbidden` | The password was right, and the account also needs a second factor. Clients that sent `two_step` get a `login_token` and `methods`; others show the detail, which says to sign in in the browser. |
 | `reauthentication-required` | 403 | `forbidden` | A sensitive change needs the user to confirm it is them; see `methods`, then `POST /me/reauthenticate` and try again. |
 | `not-found` | 404 | `not_found` | No such item, or it belongs to someone else. Also unknown API paths. |
 | `sso-disabled` | 404 | `not_found` | Single sign-on is not set up. |
 | `method-not-allowed` | 405 | `bad_request` | The path exists, but not for this method. |
 | `name-taken` | 409 | `conflict` | An item with this name already exists in the folder. |
 | `username-taken` | 409 | `conflict` | The username is taken. |
+| `totp-exists` | 409 | `conflict` | An authenticator app is already set up; remove it before adding another. |
 | `lost-and-found` | 409 | `conflict` | Lost & Found, or a folder holding it, cannot be deleted. |
 | `offset-mismatch` | 409 | `conflict` | A chunk does not start at `current_offset`, where the upload ends. |
 | `transfer-not-ready` | 409 | `conflict` | The transfer's files are still being uploaded. |
@@ -76,6 +79,7 @@ type, a bad id in the path, a missing header), **415** for a body in the wrong f
 | `validation-failed` | 422 | `bad_request` | Some values are not acceptable; `errors` lists each one. |
 | `wrong-password` | 422 | `bad_request` | The current password given to change it is wrong. |
 | `no-password` | 422 | `bad_request` | The account signs in through single sign-on and has no password. |
+| `invalid-code` | 422 | `bad_request` | The code from the authenticator app, or the recovery code, is wrong. |
 | `move-into-itself` | 422 | `bad_request` | A folder cannot be moved into itself or into one of its folders. |
 | `not-a-file` | 422 | `bad_request` | Only a file can do this, and the item is a folder. |
 | `invalid-name` | 422 | `bad_request` | The name is empty, too long, `.` or `..`, or holds `/` or `\`. |
@@ -86,6 +90,7 @@ type, a bad id in the path, a missing header), **415** for a body in the wrong f
 | `internal` | 500 | `internal` | Something went wrong on the server. |
 | `identity-provider-failed` | 502 | `internal` | The identity provider could not be reached or answered with something invalid. |
 | `tenant-unavailable` | 503 | `internal` | The site of this host is disabled, being deleted, or not set up. |
+| `secrets-key-missing` | 503 | `internal` | No authenticator app can be added: the server has no `HOMESPACE_SECRETS_KEY` to keep its secret with. |
 | `browser-login-unavailable` | 503 | `internal` | Apps cannot sign in in the browser: the server does not serve the web client (`HOMESPACE_WEB_ROOT`). |
 | `quota-exceeded` | 507 | `quota_exceeded` | Storing this would pass the account's `quota`; `available` bytes are left. |
 
