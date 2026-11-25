@@ -15,9 +15,16 @@ fn device(id: Uuid) -> NewDevice<'static> {
 async fn session(db: &Db, user: UserId, device: Option<Uuid>) -> Uuid {
     let id = Uuid::now_v7();
     let expires = OffsetDateTime::now_utc() + time::Duration::days(1);
-    db.start_session(id, user, device, id.as_bytes(), expires)
-        .await
-        .expect("session");
+    db.start_session(
+        id,
+        user,
+        device,
+        &crate::sessions::signed_in_now(),
+        id.as_bytes(),
+        expires,
+    )
+    .await
+    .expect("session");
     id
 }
 

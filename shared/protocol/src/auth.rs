@@ -23,6 +23,13 @@ pub struct ChangePasswordRequest {
     pub new_password: String,
 }
 
+/// `POST /me/reauthenticate`: a signed-in user confirms it is them before a sensitive change,
+/// answering `reauthentication-required`. Later ways to confirm become fields of their own.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReauthenticateRequest {
+    pub password: String,
+}
+
 /// Refresh token submitted to rotate a session or log out.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RefreshRequest {

@@ -27,6 +27,23 @@ fn a_busy_server_asks_the_client_to_come_back() {
 }
 
 #[test]
+fn a_change_that_needs_a_proof_says_which_ones_will_do() {
+    let methods = vec!["password"];
+    let problem = ApiError::Auth(AuthError::ReauthenticationRequired { methods }).problem();
+    assert_eq!(problem.kind(), Some(ProblemType::ReauthenticationRequired));
+    assert_eq!(problem.status, Some(403));
+    assert_eq!(problem.methods, ["password"]);
+    assert_eq!(
+        problem.detail(),
+        "Confirm it is you: enter your password again."
+    );
+    let methods = Vec::new();
+    let problem = ApiError::Auth(AuthError::ReauthenticationRequired { methods }).problem();
+    assert!(problem.methods.is_empty());
+    assert_eq!(problem.detail(), "Sign in again to confirm it is you.");
+}
+
+#[test]
 fn too_many_connections_says_when_to_come_back() {
     let response = ApiError::TooManyConnections.into_response();
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);

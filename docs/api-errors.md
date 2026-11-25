@@ -37,6 +37,7 @@ Extension members, present only where they apply:
 | `limit` | bytes or items | `too-large`, `too-many-items` |
 | `quota`, `available` | bytes | `quota-exceeded` |
 | `current_offset` | bytes | `offset-mismatch` |
+| `methods` | names | `reauthentication-required`: the ways the user can confirm it is them, such as `password`; empty means sign in again |
 | `errors` | `[{ "pointer", "detail" }]` | `validation-failed`: every field at fault, as a JSON Pointer into the body or query |
 
 ## Status codes
@@ -53,6 +54,7 @@ type, a bad id in the path, a missing header), **415** for a body in the wrong f
 | `forbidden` | 403 | `forbidden` | Signed in but not allowed, such as a non-administrator on `/admin`. |
 | `account-disabled` | 403 | `forbidden` | The account is disabled or marked for deletion. |
 | `sso-access-denied` | 403 | `forbidden` | The identity provider signed the user in, but they are not in the allowed group. |
+| `reauthentication-required` | 403 | `forbidden` | A sensitive change needs the user to confirm it is them; see `methods`, then `POST /me/reauthenticate` and try again. |
 | `not-found` | 404 | `not_found` | No such item, or it belongs to someone else. Also unknown API paths. |
 | `sso-disabled` | 404 | `not_found` | Single sign-on is not set up. |
 | `method-not-allowed` | 405 | `bad_request` | The path exists, but not for this method. |

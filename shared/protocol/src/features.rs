@@ -11,11 +11,18 @@
 /// `exchange` and `flows/{flow}`, and `browser_login` in `GET /auth/providers`.
 pub const BROWSER_LOGIN: &str = "browser_login";
 
+/// Sensitive changes may answer `403 reauthentication-required`, which
+/// `POST /me/reauthenticate` with the password clears for ten minutes.
+pub const REAUTHENTICATION: &str = "reauthentication";
+
 /// Every feature this server provides, each added with the release that introduced it.
-pub const ALL: &[&str] = &[BROWSER_LOGIN];
+pub const ALL: &[&str] = &[BROWSER_LOGIN, REAUTHENTICATION];
 
 /// What the user reads for each feature, in hints such as "These won't work: …".
-const DISPLAY_NAMES: &[(&str, &str)] = &[(BROWSER_LOGIN, "Sign-in in the browser")];
+const DISPLAY_NAMES: &[(&str, &str)] = &[
+    (BROWSER_LOGIN, "Sign-in in the browser"),
+    (REAUTHENTICATION, "Confirming sensitive changes"),
+];
 
 /// What the user reads for `feature`; the name itself for one this build does not know.
 pub fn display_name(feature: &str) -> &str {

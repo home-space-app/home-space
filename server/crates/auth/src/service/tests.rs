@@ -1017,3 +1017,5 @@ async fn an_overlong_client_version_is_refused(pool: PgPool) {
     let result = auth.login("alice", "password-1", Some(&device)).await;
     assert!(matches!(result, Err(AuthError::InvalidInput(_))));
 }
+
+mod reauth;

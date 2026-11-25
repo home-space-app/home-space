@@ -76,3 +76,29 @@ async fn a_wrong_current_password_keeps_the_session() {
     ));
     client.me().await.expect("still signed in");
 }
+
+#[tokio::test]
+async fn reauthenticate_sends_the_password_and_keeps_the_session() {
+    let server = MockServer::start().await;
+    let client = signed_in(&server).await;
+    Mock::given(method("POST"))
+        .and(path(paths::ME_REAUTHENTICATE))
+        .and(header("authorization", "Bearer access"))
+        .and(body_json(json!({ "password": "guess" })))
+        .respond_with(ResponseTemplate::new(422).set_body_json(json!({
+            "type": "/api/v1/problems/wrong-password",
+            "status": 422,
+            "code": "bad_request",
+            "detail": "The current password is wrong.",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = client.reauthenticate("guess").await.expect_err("refused");
+    assert!(matches!(
+        error,
+        ApiError::Api { code: ErrorCode::BadRequest, ref message } if message == "The current password is wrong."
+    ));
+    client.me().await.expect("still signed in");
+}

@@ -50,7 +50,7 @@ pub use nodes::{DeletedNodes, FOLDER_MIME, FileState, NewContent, NewNode, NodeP
 pub use oidc::OidcPending;
 pub use protocol::{NodeId, NodeKind, OnConflict, Patch, SharePermission, UserId};
 pub use search::{ContentState, RankedNode};
-pub use sessions::LiveSession;
+pub use sessions::{Authentication, LiveSession};
 pub use shares::{
     NewShareLink, NewUserShare, OwnedShare, ReceivedShare, ShareLink, ShareRecipient, ShareUpdate,
     SharedAccess, SharedRoot,

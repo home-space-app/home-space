@@ -72,7 +72,10 @@ async fn approve(
     user: AuthUser,
     ApiJson(request): ApiJson<BrowserLoginDecision>,
 ) -> Result<Json<BrowserLoginRedirect>, ApiError> {
-    let redirect = tenant.auth.browser_approve(&request.flow, user.id).await?;
+    let redirect = tenant
+        .auth
+        .browser_approve(&request.flow, user.id, user.session_id)
+        .await?;
     Ok(Json(BrowserLoginRedirect { redirect }))
 }
 

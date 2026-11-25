@@ -29,6 +29,11 @@ pub enum AuthError {
     /// [`InvalidCredentials`](Self::InvalidCredentials) it leaves the session signed in.
     #[error("The current password is wrong.")]
     WrongPassword,
+    /// A sensitive change needs the user to have signed in or confirmed it was them within
+    /// the last minutes. `methods` are the ways they can confirm, such as `password`; with
+    /// none they have to sign in again.
+    #[error("{}", describe_reauthentication(.methods))]
+    ReauthenticationRequired { methods: Vec<&'static str> },
     /// The account signs in through single sign-on and has no password to change.
     #[error("This account signs in through single sign-on and has no password.")]
     NoPassword,
@@ -72,6 +77,7 @@ impl AsProblem for AuthError {
             Self::TooManyAttempts { .. } => ProblemType::TooManyAttempts,
             Self::Busy { .. } => ProblemType::ServerBusy,
             Self::WrongPassword => ProblemType::WrongPassword,
+            Self::ReauthenticationRequired { .. } => ProblemType::ReauthenticationRequired,
             Self::NoPassword => ProblemType::NoPassword,
             Self::AccountDisabled => ProblemType::AccountDisabled,
             Self::UsernameTaken => ProblemType::UsernameTaken,
@@ -87,9 +93,24 @@ impl AsProblem for AuthError {
     }
 
     fn extend(&self, problem: &mut Problem) {
-        if let Self::TooManyAttempts { retry_after } | Self::Busy { retry_after } = self {
-            problem.retry_after = Some(*retry_after);
+        match self {
+            Self::TooManyAttempts { retry_after } | Self::Busy { retry_after } => {
+                problem.retry_after = Some(*retry_after);
+            }
+            Self::ReauthenticationRequired { methods } => {
+                problem.methods = methods.iter().map(|&method| method.to_owned()).collect();
+            }
+            _ => {}
         }
+    }
+}
+
+/// What the user is asked to do to confirm it is them, given the ways they can.
+fn describe_reauthentication(methods: &[&str]) -> &'static str {
+    if methods.is_empty() {
+        "Sign in again to confirm it is you."
+    } else {
+        "Confirm it is you: enter your password again."
     }
 }
 

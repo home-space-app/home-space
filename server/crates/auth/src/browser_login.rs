@@ -4,8 +4,9 @@
 //! RFC 8252). The web page plays the part an identity provider plays in single sign-on.
 
 use time::{Duration, OffsetDateTime};
+use uuid::Uuid;
 
-use db::{Db, TenantId, UserId};
+use db::{Authentication, Db, TenantId, UserId};
 use protocol::{BrowserLoginFlow, paths};
 
 use crate::{
@@ -94,16 +95,23 @@ impl BrowserLogin {
         })
     }
 
-    /// The signed-in `user_id` lets the app in: returns its redirect with a one-time code.
+    /// `user_id`, signed in with `session_id`, lets the app in: returns its redirect with a
+    /// one-time code. The app's session will say the user signed in as they did for
+    /// `session_id`, so a click does not count as proving who they are.
     pub(crate) async fn approve(
         &self,
         sessions: &Sessions,
         flow: &str,
         user_id: UserId,
+        session_id: Uuid,
     ) -> Result<String, AuthError> {
         sessions.require_may_sign_in(user_id).await?;
+        let authentication = sessions.authentication(session_id, user_id).await?;
         let login = self.take(flow).await?;
-        let code = self.codes.issue(user_id, &login.client_challenge).await?;
+        let code = self
+            .codes
+            .issue(user_id, &login.client_challenge, authentication)
+            .await?;
         Ok(append_query(&login.client_redirect, ("code", code)))
     }
 
@@ -117,12 +125,13 @@ impl BrowserLogin {
         ))
     }
 
-    /// The user the app's `code` was issued to, when `code_verifier` answers its challenge.
+    /// The user the app's `code` was issued to and how they signed in, when `code_verifier`
+    /// answers its challenge.
     pub(crate) async fn exchange(
         &self,
         code: &str,
         code_verifier: &str,
-    ) -> Result<UserId, AuthError> {
+    ) -> Result<(UserId, Authentication), AuthError> {
         self.codes.redeem(code, code_verifier).await
     }
 

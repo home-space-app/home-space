@@ -4,7 +4,7 @@ use time::{Duration, OffsetDateTime};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use db::{Db, LiveSession, NewDevice, TenantId, UserId};
+use db::{Authentication, Db, LiveSession, NewDevice, TenantId, UserId};
 use protocol::{DEVICE_SESSION_LABELS, DeviceInfo, TokenPair, rules::device_name};
 
 use crate::{
@@ -24,6 +24,19 @@ const MAX_VERSION_CHARS: usize = 64;
 /// Most required features a client may name, and the longest name kept.
 const MAX_REQUIRES: usize = 64;
 const MAX_FEATURE_CHARS: usize = 64;
+
+/// The RFC 8176 `amr` name a session records for a password sign-in.
+pub(crate) const PASSWORD_METHOD: &str = "pwd";
+/// What a session records for single sign-on: the provider proved the user, in its own way.
+pub(crate) const OIDC_METHOD: &str = "oidc";
+
+/// A sign-in with `method` that happens now.
+pub(crate) fn signed_in_now(method: &str) -> Authentication {
+    Authentication {
+        auth_methods: vec![method.to_owned()],
+        authenticated_at: OffsetDateTime::now_utc(),
+    }
+}
 
 /// The sessions of one tenant's users.
 #[derive(Clone, Debug)]
@@ -78,10 +91,12 @@ impl Sessions {
 
     /// Starts a session, which exists only from here: after a verified password or provider
     /// login. Tokens cannot create one. A named device is registered to the user first.
+    /// `authentication` says how the user signed in.
     pub(crate) async fn start(
         &self,
         user_id: UserId,
         device: Option<&DeviceInfo>,
+        authentication: &Authentication,
     ) -> Result<TokenPair, AuthError> {
         self.require_may_sign_in(user_id).await?;
         let device = device.map(new_device).transpose()?;
@@ -95,6 +110,7 @@ impl Sessions {
                 session_id,
                 user_id,
                 device.map(|device| device.id),
+                authentication,
                 &hash_refresh_token(&refresh_token),
                 self.refresh_expiry(),
             )
@@ -262,6 +278,27 @@ impl Sessions {
             .live_session(self.tenant, session_id, user_id)
             .await?
             .ok_or(AuthError::InvalidCredentials)
+    }
+
+    /// How the user of the live session `session_id` of `user_id` signed in.
+    pub(crate) async fn authentication(
+        &self,
+        session_id: Uuid,
+        user_id: UserId,
+    ) -> Result<Authentication, AuthError> {
+        self.db
+            .session_authentication(self.tenant, session_id, user_id)
+            .await?
+            .ok_or(AuthError::InvalidCredentials)
+    }
+
+    /// Notes that the user of the live session `session_id` just proved again who they are.
+    pub(crate) async fn confirm(&self, session_id: Uuid, user_id: UserId) -> Result<(), AuthError> {
+        if self.db.confirm_session(session_id, user_id).await? {
+            Ok(())
+        } else {
+            Err(AuthError::InvalidCredentials)
+        }
     }
 
     /// The device of `grant`'s session. A session that names none takes `device`, which is

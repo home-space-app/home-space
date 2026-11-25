@@ -1,7 +1,7 @@
 use sqlx::FromRow;
 use time::OffsetDateTime;
 
-use crate::{Db, DbError, TenantId, UserId};
+use crate::{Authentication, Db, DbError, TenantId, UserId};
 
 /// A one-time code issued to a client after a successful sign-in, through single sign-on or
 /// the browser sign-in of an app.
@@ -10,6 +10,9 @@ pub struct LoginCode {
     pub user_id: UserId,
     /// S256 challenge of the verifier the client must present with the code.
     pub client_challenge: String,
+    /// How the user signed in, for the session the code starts.
+    #[sqlx(flatten)]
+    pub authentication: Authentication,
 }
 
 impl Db {
@@ -18,18 +21,21 @@ impl Db {
         &self,
         tenant: TenantId,
         code_hash: &[u8],
-        user_id: UserId,
-        client_challenge: &str,
+        code: &LoginCode,
         expires_at: OffsetDateTime,
     ) -> Result<(), DbError> {
         sqlx::query(
-            "INSERT INTO login_codes (tenant_id, code_hash, user_id, client_challenge, expires_at) \
-             VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO login_codes \
+             (tenant_id, code_hash, user_id, client_challenge, auth_methods, authenticated_at, \
+              expires_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(tenant)
         .bind(code_hash)
-        .bind(user_id)
-        .bind(client_challenge)
+        .bind(code.user_id)
+        .bind(&code.client_challenge)
+        .bind(&code.authentication.auth_methods)
+        .bind(code.authentication.authenticated_at)
         .bind(expires_at)
         .execute(self.pool())
         .await?;
@@ -46,7 +52,7 @@ impl Db {
         let code = sqlx::query_as::<_, LoginCode>(
             "DELETE FROM login_codes \
              WHERE tenant_id = $1 AND code_hash = $2 AND expires_at > now() \
-             RETURNING user_id, client_challenge",
+             RETURNING user_id, client_challenge, auth_methods, authenticated_at",
         )
         .bind(tenant)
         .bind(code_hash)
@@ -63,13 +69,25 @@ mod tests {
 
     use super::*;
 
+    fn code(user_id: UserId) -> LoginCode {
+        LoginCode {
+            user_id,
+            client_challenge: "challenge".to_owned(),
+            authentication: Authentication {
+                auth_methods: vec!["pwd".to_owned()],
+                authenticated_at: OffsetDateTime::now_utc() - Duration::minutes(5),
+            },
+        }
+    }
+
     #[sqlx::test(migrations = "../../migrations")]
     async fn a_login_code_is_taken_once_and_only_by_its_tenant(pool: PgPool) {
         let db = Db::from_pool(pool);
         let other = crate::tenants::add_test_tenant(&db).await;
         let alice = db.create_user(other, "alice", "x").await.expect("alice").id;
         let expires_at = OffsetDateTime::now_utc() + Duration::seconds(60);
-        db.insert_login_code(other, b"code", alice, "challenge", expires_at)
+        let issued = code(alice);
+        db.insert_login_code(other, b"code", &issued, expires_at)
             .await
             .expect("insert");
 
@@ -85,6 +103,10 @@ mod tests {
             .expect("still there for its own tenant");
         assert_eq!(here.user_id, alice);
         assert_eq!(here.client_challenge, "challenge");
+        let issued = issued.authentication;
+        assert_eq!(here.authentication.auth_methods, issued.auth_methods);
+        let drift = here.authentication.authenticated_at - issued.authenticated_at;
+        assert!(drift.abs() < Duration::milliseconds(1), "kept as issued");
         let again = db.take_login_code(other, b"code").await.expect("db");
         assert!(again.is_none(), "a code works only once");
     }
@@ -98,7 +120,7 @@ mod tests {
             .expect("alice")
             .id;
         let past = OffsetDateTime::now_utc() - Duration::seconds(1);
-        db.insert_login_code(TenantId::DEFAULT, b"old", alice, "challenge", past)
+        db.insert_login_code(TenantId::DEFAULT, b"old", &code(alice), past)
             .await
             .expect("insert");
         let taken = db
