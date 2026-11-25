@@ -7,7 +7,7 @@ test('a wrong password is refused, and says why', async ({ android, users }) => 
 
   await login.submit({ username: alice.username, password: 'not-the-password' });
 
-  await login.waitFor(login.problem('Invalid username or password'), 'the reason the sign-in failed');
+  await login.waitFor(login.problem('Invalid username or password.'), 'the reason the sign-in failed');
   expect(await login.isShown(tag('tab.files'))).toBe(false);
   // The right password still works after a wrong one.
   await login.signIn(alice);

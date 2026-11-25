@@ -10,8 +10,8 @@ use axum::{
 };
 use protocol::{
     ChangePasswordRequest, DeviceSessionRequest, LoginRequest, Me, OidcCallbackQuery,
-    OidcExchangeRequest, OidcStartQuery, Providers, RefreshRequest, TicketRequest, TicketResponse,
-    TokenPair,
+    OidcExchangeRequest, OidcProvider, OidcStartQuery, Providers, RefreshRequest, TicketRequest,
+    TicketResponse, TokenPair,
 };
 
 use crate::extract::{ApiJson, ApiQuery};
@@ -20,6 +20,10 @@ use crate::{
     browser::{Browser, refresh_cookie},
     extract::{AuthUser, ClientIp, Tenant},
 };
+
+/// The provider name apps from before browser sign-in show on their button, as "Sign in with
+/// your browser", where the server has no provider of its own.
+const BROWSER_PROVIDER_NAME: &str = "your browser";
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -40,20 +44,46 @@ pub fn routes() -> Router<AppState> {
 async fn providers(State(state): State<AppState>, tenant: Tenant) -> Json<Providers> {
     let mut providers = tenant.auth.providers();
     providers.browser_login = state.serves_web && (providers.password || providers.oidc.is_some());
+    // Apps from before browser sign-in only know a provider's button: give them one that signs
+    // in on the web page, through `oidc_start` and `oidc_exchange` below.
+    if providers.browser_login && providers.oidc.is_none() {
+        providers.oidc = Some(OidcProvider {
+            name: BROWSER_PROVIDER_NAME.to_owned(),
+            browser: true,
+        });
+    }
     Json(providers)
 }
 
 /// Sends the browser to the identity provider.
+///
+/// Without a provider, where the web client is served, an app from before browser sign-in is
+/// sent to the web page instead (see [`OidcProvider::browser`]).
 async fn oidc_start(
+    State(state): State<AppState>,
     tenant: Tenant,
     ClientIp(address): ClientIp,
     ApiQuery(query): ApiQuery<OidcStartQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let url = tenant
-        .auth
-        .oidc_start(&query.redirect_uri, &query.code_challenge, address)
-        .await?;
-    Ok(([(CACHE_CONTROL, "no-store")], Redirect::to(&url)))
+    let url = if state.serves_web && tenant.auth.providers().oidc.is_none() {
+        tenant
+            .auth
+            .browser_start(&query.redirect_uri, &query.code_challenge, None, address)
+            .await?
+    } else {
+        tenant
+            .auth
+            .oidc_start(&query.redirect_uri, &query.code_challenge, address)
+            .await?
+    };
+    // Either address carries a one-time id, so keep it out of caches and `Referer` headers.
+    Ok((
+        [
+            (CACHE_CONTROL, "no-store"),
+            (REFERRER_POLICY, "no-referrer"),
+        ],
+        Redirect::to(&url),
+    ))
 }
 
 /// Where the identity provider sends the browser back; hands the user on to the client.
@@ -79,20 +109,29 @@ async fn oidc_callback(
     ))
 }
 
+/// Without a provider, where the web client is served, the code is one of a browser sign-in
+/// that an app from before it started at [`oidc_start`].
 async fn oidc_exchange(
+    State(state): State<AppState>,
     tenant: Tenant,
+    ClientIp(address): ClientIp,
     headers: HeaderMap,
     ApiJson(request): ApiJson<OidcExchangeRequest>,
 ) -> Result<Response, ApiError> {
     let browser = browser(request.cookie, &headers, &tenant)?;
-    let pair = tenant
-        .auth
-        .oidc_exchange(
-            &request.code,
-            &request.code_verifier,
-            request.device.as_ref(),
-        )
-        .await?;
+    let (code, verifier, device) = (
+        &request.code,
+        &request.code_verifier,
+        request.device.as_ref(),
+    );
+    let pair = if state.serves_web && tenant.auth.providers().oidc.is_none() {
+        tenant
+            .auth
+            .browser_exchange(code, verifier, device, address)
+            .await?
+    } else {
+        tenant.auth.oidc_exchange(code, verifier, device).await?
+    };
     Ok(session(&tenant, pair, browser))
 }
 

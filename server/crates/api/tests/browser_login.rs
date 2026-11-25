@@ -303,6 +303,55 @@ async fn providers_announce_browser_sign_in_with_the_web_client(pool: PgPool) {
     let (app, _web) = web_app(pool).await;
     let providers = get(&app, "/api/v1/auth/providers", None).await.json();
     assert_eq!(providers["browser_login"], Value::Bool(true));
+    // Older apps get a provider button that signs in on the web page.
+    assert_eq!(
+        providers["oidc"],
+        json!({ "name": "your browser", "browser": true })
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn an_older_app_signs_in_on_the_web_page_through_its_provider_button(pool: PgPool) {
+    let (app, _web) = web_app(pool).await;
+    let token = app.user_token("alice").await;
+    let url = Url::parse_with_params(
+        "http://server/api/v1/auth/oidc/start",
+        [
+            ("redirect_uri", MOBILE),
+            ("code_challenge", challenge().as_str()),
+        ],
+    )
+    .expect("url");
+    let uri = format!("{}?{}", url.path(), url.query().expect("query"));
+    let response = get(&app, &uri, None).await;
+    assert_eq!(response.status, StatusCode::SEE_OTHER);
+    assert_eq!(response.headers["referrer-policy"], "no-referrer");
+    let page = Url::parse("http://server")
+        .expect("base")
+        .join(&response.location())
+        .expect("location");
+    assert_eq!(page.path(), "/authorize");
+    let flow = query(&page, "flow").expect("flow");
+
+    let response = decide(&app, "approve", &flow, &token).await;
+    let redirect =
+        Url::parse(response.json()["redirect"].as_str().expect("redirect")).expect("redirect url");
+    let code = query(&redirect, "code").expect("code");
+    let tokens = app
+        .json(
+            Method::POST,
+            "/api/v1/auth/oidc/exchange",
+            None,
+            json!({ "code": code, "code_verifier": VERIFIER }),
+        )
+        .await;
+    assert_eq!(tokens.status, StatusCode::OK, "{:?}", tokens.json());
+    let access = tokens.json()["access_token"]
+        .as_str()
+        .expect("access")
+        .to_owned();
+    let me = get(&app, "/api/v1/me", Some(&access)).await;
+    assert_eq!(me.json()["username"], "alice");
 }
 
 #[sqlx::test(migrations = "../../migrations")]

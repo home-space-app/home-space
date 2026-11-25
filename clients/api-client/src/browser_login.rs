@@ -7,7 +7,7 @@ use protocol::{
     TokenPair, paths,
 };
 
-use crate::{ApiError, Client, Pkce, client::decode};
+use crate::{ApiError, Client, Pkce, client::decode_sign_in};
 
 impl Client {
     /// The URL that starts an app's browser sign-in: open it in the system browser. The server
@@ -45,7 +45,7 @@ impl Client {
             .json(&request)
             .send()
             .await?;
-        let pair: TokenPair = decode(response).await?;
+        let pair: TokenPair = decode_sign_in(response).await?;
         self.store(pair);
         self.signed_in().await
     }

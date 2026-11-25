@@ -396,7 +396,7 @@ impl CoreClient {
         let providers = off_ui_thread(async move { inner.providers().await }).await?;
         Ok(SignInOptions {
             password: providers.password,
-            sso_name: providers.oidc.map(|oidc| oidc.name),
+            sso_name: providers.identity_provider().map(|oidc| oidc.name.clone()),
             browser: providers.browser_login,
         })
     }
@@ -961,6 +961,26 @@ mod tests {
         let err = client.login("me".into(), "no".into()).await.unwrap_err();
         assert!(matches!(err, CoreError::InvalidCredentials), "{err:?}");
         assert!(recorder.0.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_refused_password_keeps_the_servers_reason() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(paths::LOGIN))
+            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                "type": "/api/v1/problems/unauthorized", "status": 401,
+                "detail": "Invalid username or password.",
+            })))
+            .mount(&server)
+            .await;
+
+        let (client, _recorder) = session_client(&server);
+        let err = client.login("me".into(), "no".into()).await.unwrap_err();
+        assert!(
+            matches!(&err, CoreError::Failed { detail, .. } if detail == "Invalid username or password."),
+            "{err:?}"
+        );
     }
 
     #[tokio::test]

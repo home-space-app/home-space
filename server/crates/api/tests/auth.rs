@@ -233,3 +233,33 @@ async fn wrong_passwords_from_one_address_do_not_lock_out_another(pool: PgPool) 
     );
     assert_eq!(login(PASSWORD, "192.0.2.1").await, StatusCode::OK);
 }
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_refused_sign_in_says_why(pool: PgPool) {
+    let app = setup(pool).await;
+    app.user_token("alice").await;
+    let response = app
+        .json(
+            Method::POST,
+            "/api/v1/auth/login",
+            None,
+            json!({ "username": "alice", "password": "wrong-password" }),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(response.json()["detail"], "Invalid username or password.");
+
+    let response = app
+        .json(
+            Method::POST,
+            "/api/v1/auth/browser/exchange",
+            None,
+            json!({ "code": "unknown", "code_verifier": "0123456789abcdef0123456789abcdef0123456789abc" }),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response.json()["detail"],
+        "This sign-in has expired or was already used. Please sign in again."
+    );
+}

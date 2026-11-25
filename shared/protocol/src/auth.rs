@@ -84,11 +84,25 @@ pub struct Providers {
     pub browser_login: bool,
 }
 
+impl Providers {
+    /// The identity provider the tenant has, leaving out the stand-in for older apps (see
+    /// [`OidcProvider::browser`]).
+    pub fn identity_provider(&self) -> Option<&OidcProvider> {
+        self.oidc.as_ref().filter(|oidc| !oidc.browser)
+    }
+}
+
 /// A configured OpenID Connect provider.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OidcProvider {
     /// Name shown on the sign-in button.
     pub name: String,
+    /// Not a provider but the server's own web page, announced where there is no provider so
+    /// that apps from before [`Providers::browser_login`] get a button that signs in there:
+    /// `/auth/oidc/start` and `/auth/oidc/exchange` then run the browser sign-in. Clients that
+    /// know `browser_login` leave it out. Older servers leave the field out.
+    #[serde(default)]
+    pub browser: bool,
 }
 
 /// Query of `GET /auth/oidc/start`.

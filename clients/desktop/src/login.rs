@@ -23,6 +23,7 @@ const DEFAULT_SERVER: &str = "http://127.0.0.1:8080";
 /// Shown for an `http://` server outside the home network, where the password would cross
 /// the internet unencrypted.
 const UNPROTECTED_SERVER: &str = "Use https:// for a server outside your home network";
+const INVALID_LOGIN_MESSAGE: &str = "Invalid username or password.";
 const CARD_WIDTH: f32 = 400.0;
 const CARD_PADDING: f32 = 32.0;
 const FORM_GAP: f32 = 20.0;
@@ -394,7 +395,7 @@ impl State {
         let provider = self
             .providers
             .as_ref()
-            .and_then(|providers| providers.oidc.as_ref());
+            .and_then(Providers::identity_provider);
         if let Some(provider) = provider {
             let label = if self.waiting_via(sso::Via::Provider) {
                 WAITING_FOR_BROWSER.to_owned()
@@ -524,7 +525,7 @@ impl ServerState {
 }
 
 fn sign_in_methods(providers: &Providers) -> String {
-    match (providers.password, providers.oidc.is_some()) {
+    match (providers.password, providers.identity_provider().is_some()) {
         (true, true) => "Connected · password and single sign-on",
         (true, false) => "Connected · password",
         (false, true) => "Connected · single sign-on",
@@ -702,8 +703,17 @@ async fn sign_in(
     let me = client
         .login(&username, &password)
         .await
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| sign_in_error(&err))?;
     Ok((client, me))
+}
+
+/// A refused password sign-in as the user reads it. Servers say why in the error itself; only
+/// older ones give a bare `401`, which can only mean the username or password.
+fn sign_in_error(err: &ApiError) -> String {
+    match err {
+        ApiError::Unauthorized => INVALID_LOGIN_MESSAGE.to_owned(),
+        other => other.to_string(),
+    }
 }
 
 async fn fetch_providers(server: String) -> Result<Providers, String> {
@@ -739,6 +749,7 @@ mod tests {
             password,
             oidc: Some(protocol::OidcProvider {
                 name: "Keycloak".to_owned(),
+                browser: false,
             }),
             browser_login: false,
         }
@@ -1055,5 +1066,21 @@ mod tests {
         assert!(ui.find(WAITING_FOR_BROWSER).is_ok());
         assert!(ui.find("Cancel").is_ok());
         assert!(state.waiting_via(sso::Via::WebPage));
+    }
+
+    #[test]
+    fn a_refused_sign_in_shows_the_servers_reason() {
+        assert_eq!(
+            sign_in_error(&ApiError::Unauthorized),
+            INVALID_LOGIN_MESSAGE
+        );
+        let refused = ApiError::Api {
+            code: protocol::ErrorCode::Forbidden,
+            message: "This account uses two-factor sign-in.".to_owned(),
+        };
+        assert_eq!(
+            sign_in_error(&refused),
+            "This account uses two-factor sign-in."
+        );
     }
 }

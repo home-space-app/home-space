@@ -67,9 +67,9 @@ async fn a_wrong_current_password_changes_nothing(pool: PgPool) {
     let response = change(&app, &token, "not-the-password", NEW_PASSWORD).await;
     assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(response.json()["type"], "/api/v1/problems/wrong-password");
-    assert_eq!(response.json()["detail"], "the current password is wrong");
+    assert_eq!(response.json()["detail"], "The current password is wrong.");
     // Clients from before RFC 9457 still find the message where they look for it.
-    assert_eq!(response.json()["message"], "the current password is wrong");
+    assert_eq!(response.json()["message"], "The current password is wrong.");
     assert_eq!(app.get(ME, &token).await.status, StatusCode::OK);
     assert_eq!(login(&app, "alice", PASSWORD).await.status, StatusCode::OK);
 }

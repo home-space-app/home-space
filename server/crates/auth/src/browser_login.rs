@@ -51,11 +51,7 @@ impl BrowserLogin {
         code_challenge: &str,
         device_name: Option<&str>,
     ) -> Result<String, AuthError> {
-        if native_app(redirect_uri).is_none() {
-            return Err(AuthError::InvalidInput(
-                "redirect_uri must be a loopback or the mobile app address",
-            ));
-        }
+        require_app_redirect(redirect_uri)?;
         if !is_valid_challenge(code_challenge) {
             return Err(AuthError::InvalidInput(
                 "code_challenge must be an S256 challenge",
@@ -135,6 +131,16 @@ impl BrowserLogin {
             .take_browser_login(self.tenant, &hash_refresh_token(flow))
             .await?
             .ok_or(AuthError::LoginExpired)
+    }
+}
+
+/// Refuses a `redirect_uri` that is not an app's address: only apps sign in in the browser.
+pub(crate) fn require_app_redirect(redirect_uri: &str) -> Result<(), AuthError> {
+    match native_app(redirect_uri) {
+        Some(_) => Ok(()),
+        None => Err(AuthError::InvalidInput(
+            "redirect_uri must be a loopback or the mobile app address",
+        )),
     }
 }
 

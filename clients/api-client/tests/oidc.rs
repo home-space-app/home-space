@@ -7,6 +7,7 @@ use wiremock::{
 };
 
 use api_client::{ApiError, Client, Pkce, VERIFIER_BYTES};
+use protocol::ErrorCode;
 
 fn pkce() -> Pkce {
     Pkce::from_random([42; VERIFIER_BYTES])
@@ -116,4 +117,51 @@ async fn exchange_with_a_bad_code_is_unauthorized() {
 
     assert!(result.is_err());
     assert!(client.access_token().is_none());
+}
+
+#[tokio::test]
+async fn a_refused_sign_in_keeps_the_servers_reason() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/auth/login"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "type": "/api/v1/problems/unauthorized",
+            "title": "Not signed in",
+            "status": 401,
+            "detail": "Invalid username or password.",
+            "error": "unauthorized",
+            "message": "Invalid username or password.",
+        })))
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri());
+
+    let result = client.login("alice", "wrong").await;
+
+    assert_eq!(
+        result.expect_err("refused"),
+        ApiError::Api {
+            code: ErrorCode::Unauthorized,
+            message: "Invalid username or password.".to_owned(),
+        }
+    );
+}
+
+#[tokio::test]
+async fn an_older_servers_refusal_stays_unauthorized() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/auth/login"))
+        .respond_with(
+            ResponseTemplate::new(401).set_body_json(
+                json!({ "error": "unauthorized", "message": "invalid credentials" }),
+            ),
+        )
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri());
+
+    let result = client.login("alice", "wrong").await;
+
+    assert_eq!(result.expect_err("refused"), ApiError::Unauthorized);
 }

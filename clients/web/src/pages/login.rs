@@ -35,7 +35,7 @@ pub fn Login(auth: Auth) -> impl IntoView {
         providers.with(|found| {
             found
                 .as_ref()
-                .and_then(|found| found.oidc.as_ref())
+                .and_then(Providers::identity_provider)
                 .map(|oidc| oidc.name.clone())
         })
     };

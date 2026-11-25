@@ -10,7 +10,7 @@ use tokio::{
     time::timeout,
 };
 
-use api_client::{Client, Pkce, VERIFIER_BYTES};
+use api_client::{ApiError, Client, Pkce, VERIFIER_BYTES};
 use client_core::sso::{SsoReply, sso_reply};
 use protocol::Me;
 
@@ -24,6 +24,7 @@ const MAX_REQUEST_BYTES: usize = 8 * 1024;
 const ACCESS_DENIED_MESSAGE: &str = "You are not allowed to sign in with this account.";
 const CANCELLED_MESSAGE: &str = "Signing in was cancelled in the browser.";
 const FAILED_MESSAGE: &str = "Signing in failed. Please try again.";
+const EXPIRED_MESSAGE: &str = "The sign-in expired. Please try again.";
 const TIMED_OUT_MESSAGE: &str = "Timed out waiting for the browser sign-in.";
 const BAD_ADDRESS_MESSAGE: &str = "The server address must start with http:// or https://";
 
@@ -88,10 +89,19 @@ pub async fn sign_in(server: String, via: Via) -> Result<(Client, Me), String> {
                 Via::Provider => client.oidc_exchange(&code, &pkce).await,
                 Via::WebPage => client.browser_login_exchange(&code, &pkce).await,
             }
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| exchange_error(&err))?;
             Ok((client, me))
         }
         Callback::Error(reason) => Err(refusal(via, &reason).to_owned()),
+    }
+}
+
+/// A failed trade of the code for a session. Servers say why; an older one's bare `401` means
+/// the code expired or was already used.
+fn exchange_error(err: &ApiError) -> String {
+    match err {
+        ApiError::Unauthorized => EXPIRED_MESSAGE.to_owned(),
+        other => other.to_string(),
     }
 }
 
@@ -244,5 +254,15 @@ mod tests {
         assert!(favicon.starts_with("HTTP/1.1 404"));
         assert!(page.starts_with("HTTP/1.1 200"));
         assert!(page.contains("return to Home Space"));
+    }
+
+    #[test]
+    fn a_failed_exchange_says_why() {
+        assert_eq!(exchange_error(&ApiError::Unauthorized), EXPIRED_MESSAGE);
+        let refused = ApiError::Api {
+            code: protocol::ErrorCode::Forbidden,
+            message: "This account is disabled.".to_owned(),
+        };
+        assert_eq!(exchange_error(&refused), "This account is disabled.");
     }
 }

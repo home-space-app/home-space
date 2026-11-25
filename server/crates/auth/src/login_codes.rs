@@ -54,11 +54,11 @@ impl LoginCodes {
             .db
             .take_login_code(self.tenant, &hash_refresh_token(code))
             .await?
-            .ok_or(AuthError::InvalidCredentials)?;
+            .ok_or(AuthError::LoginCodeInvalid)?;
         if verifier_matches(code_verifier, &stored.client_challenge) {
             Ok(stored.user_id)
         } else {
-            Err(AuthError::InvalidCredentials)
+            Err(AuthError::LoginCodeInvalid)
         }
     }
 }
