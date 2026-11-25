@@ -99,6 +99,9 @@ pub enum AuthError {
         "an authenticator app secret could not be opened; is HOMESPACE_SECRETS_KEY the key it was sealed with?"
     )]
     Unsealing,
+    /// A secret could not be sealed.
+    #[error("an authenticator app secret could not be sealed")]
+    Sealing,
     #[error("password hashing failed: {0}")]
     Hashing(String),
     #[error("token encoding failed: {0}")]
@@ -135,9 +138,12 @@ impl AsProblem for AuthError {
             Self::OidcDenied => ProblemType::SsoAccessDenied,
             Self::LoginExpired => ProblemType::LoginExpired,
             Self::Oidc(_) => ProblemType::IdentityProviderFailed,
-            Self::Unsealing | Self::Hashing(_) | Self::Token(_) | Self::Join(_) | Self::Db(_) => {
-                ProblemType::Internal
-            }
+            Self::Unsealing
+            | Self::Sealing
+            | Self::Hashing(_)
+            | Self::Token(_)
+            | Self::Join(_)
+            | Self::Db(_) => ProblemType::Internal,
         }
     }
 

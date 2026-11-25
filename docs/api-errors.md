@@ -82,12 +82,12 @@ type, a bad id in the path, a missing header), **415** for a body in the wrong f
 | `wrong-password` | 422 | `bad_request` | The current password given to change it is wrong. |
 | `no-password` | 422 | `bad_request` | The account signs in through single sign-on and has no password. |
 | `invalid-code` | 422 | `bad_request` | The code from the authenticator app, or the recovery code, is wrong. |
-| `webauthn-failed` | 422 | `bad_request` | The passkey or security key could not be verified: a wrong or replayed answer, or one for another challenge. |
+| `webauthn-failed` | 422 | `bad_request` | The passkey or security key could not be verified: a wrong or replayed answer, one for another challenge, or one whose counter did not go up (two answers raced, or the key was copied). |
 | `move-into-itself` | 422 | `bad_request` | A folder cannot be moved into itself or into one of its folders. |
 | `not-a-file` | 422 | `bad_request` | Only a file can do this, and the item is a folder. |
 | `invalid-name` | 422 | `bad_request` | The name is empty, too long, `.` or `..`, or holds `/` or `\`. |
 | `invalid-transfer` | 422 | `bad_request` | The list of files of a transfer is not acceptable. |
-| `too-many-attempts` | 429 | `too_many_requests` | Too many wrong passwords; wait `retry_after` seconds. |
+| `too-many-attempts` | 429 | `too_many_requests` | Too many wrong passwords, or too many sign-ins started from one address (browser, single sign-on or passkey); wait `retry_after` seconds. |
 | `server-busy` | 429 | `too_many_requests` | Too many passwords are waiting to be checked; wait `retry_after` seconds. |
 | `too-many-connections` | 429 | `too_many_requests` | The account has as many live connections as it may; wait `retry_after` seconds. |
 | `internal` | 500 | `internal` | Something went wrong on the server. |

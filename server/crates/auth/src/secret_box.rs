@@ -48,7 +48,17 @@ impl SecretBox {
     }
 
     /// `plain`, sealed for `user` of `tenant` with the current key.
-    pub(crate) fn seal(&self, tenant: TenantId, user: UserId, plain: &[u8]) -> Vec<u8> {
+    ///
+    /// # Errors
+    ///
+    /// [`AuthError::Sealing`] when it cannot be encrypted, which AES-GCM allows only for a
+    /// message far longer than any secret.
+    pub(crate) fn seal(
+        &self,
+        tenant: TenantId,
+        user: UserId,
+        plain: &[u8],
+    ) -> Result<Vec<u8>, AuthError> {
         let mut nonce = [0u8; NONCE_BYTES];
         rand::fill(&mut nonce);
         let aad = associated_data(tenant, user);
@@ -61,8 +71,8 @@ impl SecretBox {
                     aad: &aad,
                 },
             )
-            .unwrap_or_default();
-        [nonce.as_slice(), &sealed].concat()
+            .map_err(|_| AuthError::Sealing)?;
+        Ok([nonce.as_slice(), &sealed].concat())
     }
 
     /// What `seal` sealed for `user` of `tenant`, with whichever key sealed it.
@@ -129,7 +139,7 @@ mod tests {
     fn a_sealed_secret_opens_only_for_its_tenant_and_user() {
         let keys = SecretBox::new(KEY, &[]);
         let user = UserId::new();
-        let sealed = keys.seal(TenantId::DEFAULT, user, b"secret");
+        let sealed = keys.seal(TenantId::DEFAULT, user, b"secret").expect("seal");
         assert_ne!(&sealed[NONCE_BYTES..], b"secret");
         let opened = keys.open(TenantId::DEFAULT, user, &sealed).expect("open");
         assert_eq!(
@@ -145,13 +155,18 @@ mod tests {
         );
         assert!(keys.open(TenantId(2), user, &sealed).is_err());
         assert!(keys.open(TenantId::DEFAULT, user, &sealed[..5]).is_err());
-        assert_ne!(sealed, keys.seal(TenantId::DEFAULT, user, b"secret"));
+        assert_ne!(
+            sealed,
+            keys.seal(TenantId::DEFAULT, user, b"secret").expect("seal")
+        );
     }
 
     #[test]
     fn an_earlier_key_still_opens_and_asks_to_seal_again() {
         let user = UserId::new();
-        let sealed = SecretBox::new(OLD_KEY, &[]).seal(TenantId::DEFAULT, user, b"secret");
+        let sealed = SecretBox::new(OLD_KEY, &[])
+            .seal(TenantId::DEFAULT, user, b"secret")
+            .expect("seal");
         let rotated = SecretBox::new(KEY, &[OLD_KEY.to_owned()]);
         let opened = rotated
             .open(TenantId::DEFAULT, user, &sealed)
