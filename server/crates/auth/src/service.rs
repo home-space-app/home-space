@@ -146,6 +146,7 @@ impl AuthService {
             password: self.password_login,
             oidc: self.oidc.as_ref().map(|oidc| OidcProvider {
                 name: oidc.provider.display_name().to_owned(),
+                browser: false,
             }),
             browser_login: false,
         }
@@ -266,13 +267,13 @@ impl AuthService {
             || username.chars().count() > MAX_USERNAME_LEN
             || password.len() > MAX_PASSWORD_LEN
         {
-            return Err(AuthError::InvalidCredentials);
+            return Err(AuthError::WrongLogin);
         }
         let counters = self.login_counters(username, device, address).await?;
         let attempt = self.throttle.admit(counters).await?;
         let checked = self.check_password(username, password).await;
         let user = attempt
-            .settle(checked, |err| matches!(err, AuthError::InvalidCredentials))
+            .settle(checked, |err| matches!(err, AuthError::WrongLogin))
             .await?;
         self.sessions.start(user.id, device).await
     }
@@ -317,8 +318,7 @@ impl AuthService {
             .and_then(|user| user.password_hash.clone())
             .filter(|_| self.password_login);
         let verified = self.hasher.verify_or_pretend(password, hash).await?;
-        user.filter(|_| verified)
-            .ok_or(AuthError::InvalidCredentials)
+        user.filter(|_| verified).ok_or(AuthError::WrongLogin)
     }
 
     /// Exchanges a refresh token for a new pair, revoking the old token.

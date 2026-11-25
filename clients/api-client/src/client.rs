@@ -6,7 +6,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use protocol::{
     Capabilities, ChangesQuery, ChangesResponse, ClientMessage, CreateFolderRequest, DeviceInfo,
-    DeviceSessionRequest, FileVersion, Health, ListQuery, LoginRequest, Me, MoveRequest,
+    DeviceSessionRequest, ErrorCode, FileVersion, Health, ListQuery, LoginRequest, Me, MoveRequest,
     MoveResponse, Node, NodeId, NodeProperties, OidcExchangeRequest, OnConflict, Patch, Problem,
     Providers, RefreshRequest, RestoreRequest, SearchHit, SearchQuery, TicketRequest,
     TicketResponse, TokenPair, TrashItem, UpdateRequest, paths,
@@ -195,7 +195,7 @@ impl Client {
             .json(&request)
             .send()
             .await?;
-        let pair: TokenPair = decode(response).await?;
+        let pair: TokenPair = decode_sign_in(response).await?;
         self.store(pair);
         self.signed_in().await
     }
@@ -235,7 +235,7 @@ impl Client {
             .json(&request)
             .send()
             .await?;
-        let pair: TokenPair = decode(response).await?;
+        let pair: TokenPair = decode_sign_in(response).await?;
         self.store(pair);
         self.signed_in().await
     }
@@ -740,6 +740,39 @@ pub(crate) async fn expect_success(response: Response) -> Result<(), ApiError> {
         Ok(())
     } else {
         Err(error_from(response).await)
+    }
+}
+
+/// Like [`decode`], for an answer to a sign-in (a password, or a code from the browser): see
+/// [`sign_in_error_from`].
+pub(crate) async fn decode_sign_in<T: DeserializeOwned>(response: Response) -> Result<T, ApiError> {
+    if response.status().is_success() {
+        Ok(response.json().await?)
+    } else {
+        Err(sign_in_error_from(response).await)
+    }
+}
+
+/// The detail older servers give every refused sign-in. It is not worth showing, so it stays
+/// [`ApiError::Unauthorized`], for which clients say "Invalid username or password" or that
+/// the sign-in expired.
+const OLD_SIGN_IN_DETAIL: &str = "invalid credentials";
+
+/// Like [`error_from`], but a refused sign-in keeps the server's reason: there is no session
+/// to end, and the reason is what the user needs to read, such as a wrong password or a sign-in
+/// that has to be finished in the browser. It arrives as `Api { code: Unauthorized }`.
+pub(crate) async fn sign_in_error_from(response: Response) -> ApiError {
+    if response.status() != StatusCode::UNAUTHORIZED {
+        return error_from(response).await;
+    }
+    match response.json::<Problem>().await {
+        Ok(problem) if !problem.detail().is_empty() && problem.detail() != OLD_SIGN_IN_DETAIL => {
+            ApiError::Api {
+                code: ErrorCode::Unauthorized,
+                message: problem.detail().to_owned(),
+            }
+        }
+        _ => ApiError::Unauthorized,
     }
 }
 

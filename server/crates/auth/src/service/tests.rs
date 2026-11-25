@@ -213,13 +213,13 @@ async fn login_fails_with_wrong_password(pool: PgPool) {
     let auth = service(pool);
     auth.create_user("alice", "password-1").await.expect("user");
     let result = auth.login("alice", "password-2", None).await;
-    assert!(matches!(result, Err(AuthError::InvalidCredentials)));
+    assert!(matches!(result, Err(AuthError::WrongLogin)));
 }
 
 #[sqlx::test(migrations = "../../migrations")]
 async fn login_fails_for_unknown_user(pool: PgPool) {
     let result = service(pool).login("nobody", "password-1", None).await;
-    assert!(matches!(result, Err(AuthError::InvalidCredentials)));
+    assert!(matches!(result, Err(AuthError::WrongLogin)));
 }
 
 #[test]
@@ -260,7 +260,7 @@ async fn three_wrong_passwords_block_sign_in_even_with_the_right_one(pool: PgPoo
     for _ in 0..3 {
         assert!(matches!(
             wrong(&auth, "alice").await,
-            Err(AuthError::InvalidCredentials)
+            Err(AuthError::WrongLogin)
         ));
     }
     let wait = retry_after(auth.login("alice", "password-1", None).await);
@@ -278,7 +278,7 @@ async fn each_further_wrong_password_doubles_the_wait(pool: PgPool) {
         wait_out(&pool).await;
         assert!(matches!(
             wrong(&auth, "alice").await,
-            Err(AuthError::InvalidCredentials)
+            Err(AuthError::WrongLogin)
         ));
         let wait = retry_after(wrong(&auth, "alice").await);
         assert!((expected - 1..=expected + 1).contains(&wait), "{wait}");
@@ -299,7 +299,7 @@ async fn the_right_password_resets_the_count(pool: PgPool) {
     for _ in 0..3 {
         assert!(matches!(
             wrong(&auth, "alice").await,
-            Err(AuthError::InvalidCredentials)
+            Err(AuthError::WrongLogin)
         ));
     }
     retry_after(wrong(&auth, "alice").await);
@@ -358,10 +358,7 @@ async fn flood(auth: &AuthService, address: Option<IpAddr>) {
         let result = auth
             .login_from(&format!("name-{attempt}"), "wrong-password", None, address)
             .await;
-        assert!(
-            matches!(result, Err(AuthError::InvalidCredentials)),
-            "{result:?}"
-        );
+        assert!(matches!(result, Err(AuthError::WrongLogin)), "{result:?}");
     }
 }
 
@@ -448,7 +445,7 @@ async fn a_sign_in_without_a_username_is_refused_and_not_counted(pool: PgPool) {
     let result = auth
         .login_from("", "password-1", None, address("192.0.2.1"))
         .await;
-    assert!(matches!(result, Err(AuthError::InvalidCredentials)));
+    assert!(matches!(result, Err(AuthError::WrongLogin)));
     assert_eq!(stored_attempts(&pool).await, 0);
 }
 
@@ -535,7 +532,7 @@ async fn an_overlong_username_is_refused_without_being_remembered(pool: PgPool) 
     let auth = service(pool.clone());
     let name = "x".repeat(MAX_USERNAME_LEN + 1);
     let result = auth.login(&name, "password-1", None).await;
-    assert!(matches!(result, Err(AuthError::InvalidCredentials)));
+    assert!(matches!(result, Err(AuthError::WrongLogin)));
     let remembered: i64 = sqlx::query_scalar("SELECT count(*) FROM login_attempts")
         .fetch_one(&pool)
         .await
@@ -935,7 +932,7 @@ async fn unchecked_and_blocked_attempts_preserve_real_failures(pool: PgPool) {
     for _ in 0..2 {
         assert!(matches!(
             auth.login("alice", "wrong", None).await,
-            Err(AuthError::InvalidCredentials)
+            Err(AuthError::WrongLogin)
         ));
     }
     auth.hasher.slots.close();
@@ -946,7 +943,7 @@ async fn unchecked_and_blocked_attempts_preserve_real_failures(pool: PgPool) {
     auth.hasher.slots = Arc::new(Semaphore::new(1));
     assert!(matches!(
         auth.login("alice", "wrong", None).await,
-        Err(AuthError::InvalidCredentials)
+        Err(AuthError::WrongLogin)
     ));
     for _ in 0..3 {
         assert!(matches!(

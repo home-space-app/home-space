@@ -192,7 +192,11 @@ async fn providers_lists_the_configured_provider(pool: PgPool) {
         .await;
     assert_eq!(
         response.json(),
-        json!({ "password": false, "oidc": { "name": "Test IdP" }, "browser_login": false })
+        json!({
+            "password": false,
+            "oidc": { "name": "Test IdP", "browser": false },
+            "browser_login": false,
+        })
     );
 }
 
@@ -612,4 +616,59 @@ async fn oidc_sessions_can_be_refreshed_and_logged_out(pool: PgPool) {
         )
         .await;
     assert_eq!(logout.status, StatusCode::NO_CONTENT);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_provider_only_tenant_sends_app_browser_sign_ins_to_the_provider(pool: PgPool) {
+    let idp = FakeIdp::start().await;
+    let web = tempfile::tempdir().expect("tempdir");
+    let options = Options {
+        password_login: false,
+        ..DEFAULTS
+    };
+    let app = setup_oidc(pool, &idp, options).await.with_web(&web);
+    let providers = app
+        .send(
+            Method::GET,
+            "/api/v1/auth/providers",
+            None,
+            Default::default(),
+            None,
+        )
+        .await;
+    assert_eq!(providers.json()["oidc"]["name"], "Test IdP");
+    assert_eq!(providers.json()["browser_login"], true);
+
+    let url = Url::parse_with_params(
+        "http://localhost/api/v1/auth/browser/start",
+        [
+            ("redirect_uri", "http://127.0.0.1:54321/callback"),
+            ("code_challenge", challenge().as_str()),
+        ],
+    )
+    .expect("url");
+    let uri = format!("{}?{}", url.path(), url.query().expect("query"));
+    let response = app
+        .send(Method::GET, &uri, None, Default::default(), None)
+        .await;
+    assert_eq!(response.status, StatusCode::SEE_OTHER);
+    let location = Url::parse(&response.location()).expect("provider url");
+    let query: HashMap<String, String> = location.query_pairs().into_owned().collect();
+    assert_eq!(query["client_id"], CLIENT_ID);
+
+    // The provider's answer comes back to the app, which trades it where it started.
+    idp.respond_with(IdToken::new("subject-1", &query["nonce"]))
+        .await;
+    let back = callback(&app, &[("state", &query["state"]), ("code", PROVIDER_CODE)]).await;
+    let (base, params) = client_redirect(&back);
+    assert_eq!(base, "http://127.0.0.1:54321/callback");
+    let tokens = app
+        .json(
+            Method::POST,
+            "/api/v1/auth/browser/exchange",
+            None,
+            json!({ "code": params["code"], "code_verifier": VERIFIER }),
+        )
+        .await;
+    assert_eq!(tokens.status, StatusCode::OK, "{:?}", tokens.json());
 }

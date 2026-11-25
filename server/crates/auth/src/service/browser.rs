@@ -8,6 +8,7 @@ use protocol::{BrowserLoginFlow, DeviceInfo, TokenPair};
 use super::AuthService;
 use crate::{
     AuthError,
+    browser_login::require_app_redirect,
     throttle::{Counter, attempt_source},
 };
 
@@ -15,6 +16,11 @@ impl AuthService {
     /// Starts an app's browser sign-in: returns the web client page, relative to the server,
     /// that asks the signed-in user to let the app in. Anyone may start one, so starts are
     /// counted against `address`, and refused once it started too many.
+    ///
+    /// A tenant that only signs in with its provider has nothing to ask on its page, so the
+    /// browser goes straight to the provider, which sends the code to the app as single
+    /// sign-on does; the app trades it at [`browser_exchange`](Self::browser_exchange) all the
+    /// same.
     pub async fn browser_start(
         &self,
         redirect_uri: &str,
@@ -23,6 +29,10 @@ impl AuthService {
         address: Option<IpAddr>,
     ) -> Result<String, AuthError> {
         self.count_sign_in_start(address).await?;
+        if let (false, Some(oidc)) = (self.password_login, &self.oidc) {
+            require_app_redirect(redirect_uri)?;
+            return oidc.start(redirect_uri, code_challenge).await;
+        }
         self.browser
             .start(redirect_uri, code_challenge, device_name)
             .await
@@ -74,7 +84,7 @@ impl AuthService {
         let attempt = self.throttle.admit(counters).await?;
         let redeemed = self.browser.exchange(code, code_verifier).await;
         let user_id = attempt
-            .settle(redeemed, |err| matches!(err, AuthError::InvalidCredentials))
+            .settle(redeemed, |err| matches!(err, AuthError::LoginCodeInvalid))
             .await?;
         self.sessions.start(user_id, device).await
     }

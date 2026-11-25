@@ -1,43 +1,54 @@
 use protocol::{AsProblem, Problem, ProblemType};
 
 /// Errors returned by the authentication layer.
+///
+/// What a user can run into is said as a sentence, since clients show the problem's `detail`
+/// as it is.
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
-    /// Unknown user, wrong password or invalid/expired/revoked token.
+    /// Invalid, expired or revoked token, or a wrong share link password.
     #[error("invalid credentials")]
     InvalidCredentials,
+    /// Unknown user or wrong password at sign-in. A `401` like
+    /// [`InvalidCredentials`](Self::InvalidCredentials), with a detail the sign-in shows.
+    #[error("Invalid username or password.")]
+    WrongLogin,
+    /// The one-time code an app or the web client trades for a session is unknown, used,
+    /// expired, or does not match its verifier.
+    #[error("This sign-in has expired or was already used. Please sign in again.")]
+    LoginCodeInvalid,
     /// Too many wrong passwords for this username: no password is checked until the wait,
     /// in whole seconds, is over.
-    #[error("too many failed sign-in attempts, try again in {}", describe_wait(*retry_after))]
+    #[error("Too many failed sign-in attempts. Try again in {}.", describe_wait(*retry_after))]
     TooManyAttempts { retry_after: u64 },
     /// More passwords are waiting to be checked than the server takes on at once; `retry_after`
     /// is in whole seconds.
-    #[error("the server is busy, try again in {}", describe_wait(*retry_after))]
+    #[error("The server is busy. Try again in {}.", describe_wait(*retry_after))]
     Busy { retry_after: u64 },
     /// The current password given to change it is wrong. Unlike
     /// [`InvalidCredentials`](Self::InvalidCredentials) it leaves the session signed in.
-    #[error("the current password is wrong")]
+    #[error("The current password is wrong.")]
     WrongPassword,
     /// The account signs in through single sign-on and has no password to change.
-    #[error("this account signs in through single sign-on and has no password")]
+    #[error("This account signs in through single sign-on and has no password.")]
     NoPassword,
     /// The account is disabled or marked for deletion, so it may not sign in.
-    #[error("this account is disabled")]
+    #[error("This account is disabled.")]
     AccountDisabled,
     /// The username is already taken.
-    #[error("username already exists")]
+    #[error("This username is already taken.")]
     UsernameTaken,
     /// The username or password does not meet the requirements.
     #[error("invalid input: {0}")]
     InvalidInput(&'static str),
     /// Single sign-on is not configured on this server.
-    #[error("single sign-on is not enabled")]
+    #[error("Single sign-on is not enabled.")]
     OidcDisabled,
     /// The browser sign-in of an app is unknown, already answered or expired.
-    #[error("this sign-in request was already used, cancelled or has expired")]
+    #[error("This sign-in request was already used, cancelled or has expired.")]
     LoginExpired,
     /// The identity provider authenticated the user but access is restricted to a group.
-    #[error("access denied")]
+    #[error("You are not allowed to sign in with this account.")]
     OidcDenied,
     /// The identity provider could not be reached or sent something invalid.
     #[error("identity provider error: {0}")]
@@ -55,7 +66,9 @@ pub enum AuthError {
 impl AsProblem for AuthError {
     fn problem_type(&self) -> ProblemType {
         match self {
-            Self::InvalidCredentials => ProblemType::Unauthorized,
+            Self::InvalidCredentials | Self::WrongLogin | Self::LoginCodeInvalid => {
+                ProblemType::Unauthorized
+            }
             Self::TooManyAttempts { .. } => ProblemType::TooManyAttempts,
             Self::Busy { .. } => ProblemType::ServerBusy,
             Self::WrongPassword => ProblemType::WrongPassword,

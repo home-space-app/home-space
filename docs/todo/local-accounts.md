@@ -259,7 +259,7 @@ POST /api/v1/auth/browser/exchange { code, code_verifier, device } → TokenPair
 - The approve step is always an explicit click, even when the browser is already signed in, so a
   link someone sends cannot sign their app in to the victim's account.
 - When the tenant has a provider and no passwords, `browser/start` simply forwards to
-  `oidc/start`, so apps can always use one flow.
+  `oidc/start`, so apps can always use one flow (done).
 - Old apps can still use their single sign-on button against servers that announce browser
   sign-in (see [Features](#features-and-compatibility)).
 - App extensions (share sheet, file provider) are unaffected: they get their sessions from the
@@ -505,7 +505,13 @@ client falls back to plain password sign-in on older servers.
 
 0. Now, before any 2FA: every client shows the server's problem `detail` on sign-in and
    elsewhere, instead of a fixed message per error kind; the API client keeps the problem of
-   401 answers on sign-in. Ships in the next release so it is out before 2FA.
+   401 answers on sign-in. Ships in the next release so it is out before 2FA. Done: the server
+   says sign-in refusals as sentences (`AuthError::WrongLogin` "Invalid username or password.",
+   `LoginCodeInvalid` for a used or expired code, sentence-case `TooManyAttempts`, `Busy`,
+   `AccountDisabled`, …); the api-client's `login`, `oidc_exchange` and
+   `browser_login_exchange` turn a 401 with a detail into `Api { code: Unauthorized, message }`,
+   and keep `Unauthorized` for older servers' bare "invalid credentials"; desktop, web,
+   Android and iOS show that message, with their fixed text only for older servers.
 1. Sessions remember `auth_methods` and `authenticated_at`; re-confirmation (`/me/reauthenticate`
    with the password) on the existing sensitive endpoints.
 2. TOTP and recovery codes: tables, secret key, two-step login, web screens, admin reset, CLI.
@@ -514,9 +520,15 @@ client falls back to plain password sign-in on older servers.
    `browser_login_start_url` / `browser_login_exchange`. Desktop, Android and iOS show only a
    "Sign in" button that opens the page when the server reports `browser_login`, and the native
    form otherwise (`mobile-core`: `begin_browser_sign_in` / `finish_browser_sign_in`; Cancel on the page comes
-   back as `SignInCancelled`). Still to do: old apps' SSO button pointed at it.
+   back as `SignInCancelled`). Done too: where there is no provider, `/auth/providers` announces
+   a stand-in `oidc: { name: "your browser", browser: true }`, and `/auth/oidc/start` and
+   `/auth/oidc/exchange` then run the browser sign-in, so older apps' "Sign in with your
+   browser" button works; new clients skip it (`Providers::identity_provider`). A tenant with
+   only its provider sends `browser/start` straight to the provider.
 4. WebAuthn: security keys as second factor, then passkey sign-in, in the web client.
-5. Policy (`mfa_policy`), forced enrolment, `HOMESPACE_OIDC_REQUIRE_MFA`.
+5. Policy (`mfa_policy`), forced enrolment, `HOMESPACE_OIDC_REQUIRE_MFA`, and an administrator's
+   security settings screen in the web client: who must use a second factor, how long sessions
+   last, and how often the second factor is asked again.
 6. 1.0.0: remove the native password form and the apps' password path of `/auth/login`.
 7. Later: e-mail notifications when e-mail exists.
 
@@ -524,25 +536,27 @@ Each step is a release on its own and adds its feature name.
 
 ## Open questions
 
-1. **Passkeys without a password.** Should a passkey sign in on its own (recommended), or only be
-   a second factor after the password?
+1. **Passkeys without a password.** Decided 2026-11-25: a passkey or security key signs in on its
+   own, without the password, as the large providers allow.
 2. **Servers without the web client after 1.0.0.** Apps sign in only in the browser from 1.0.0
    (decided 2026-11-24; native form and `/auth/login` for apps kept until then). For a server run
    without `HOMESPACE_WEB_ROOT`, should the server then ship a minimal built-in sign-in page, or
    simply require the web client (recommended: require it, the Docker image and
    `homespace-ctl install` have it)?
-3. **TOTP secret key.** A new `HOMESPACE_SECRETS_KEY` per tenant (recommended), or store TOTP
-   secrets in clear and rely on database access control?
-4. **Default policy.** Optional for everyone by default, or require 2FA for administrators from
-   the start (with forced enrolment on next sign-in)?
-5. **Password login off.** When `HOMESPACE_PASSWORD_LOGIN=false`, should passkey sign-in stay
-   available for local accounts, or should "off" mean provider only?
+3. **TOTP secret key.** Decided 2026-11-25: TOTP secrets are encrypted with
+   `HOMESPACE_SECRETS_KEY`, never stored in clear.
+4. **Default policy.** Decided 2026-11-25: optional for everyone by default; an administrator can
+   require it later (step 5).
+5. **Password login off.** Decided 2026-11-25, following 1: passkeys count as a sign-in of their
+   own, so with `HOMESPACE_PASSWORD_LOGIN=false` passkey sign-in stays available for local
+   accounts; "off" turns off passwords only.
 6. **Provider users.** Leave 2FA to the provider (recommended), or also allow local TOTP/passkeys
    for them as an extra layer?
-7. **Account recovery.** Without e-mail, recovery is recovery codes plus an admin reset. Is that
-   enough for now, or should e-mail sending (and password reset by e-mail) be planned first?
-8. **Remember this device.** Should a device skip the second factor for 30 days after a sign-in?
-   Recommended no: sessions already last 30 days through refresh, so the factor is only asked on a
-   new sign-in anyway.
+7. **Account recovery.** Decided 2026-11-25: recovery codes plus an admin reset are enough; e-mail
+   is not needed now.
+8. **Remember this device.** Decided 2026-11-25: no separate "remember this device". A sign-in
+   with the password and the second factor keeps its session as sessions are kept today, so the
+   factor is asked again only on a new sign-in. How long sessions last and how often the second
+   factor is asked again become settings an administrator can tune (step 5).
 9. **Scope of "local accounts".** Should this plan also cover invitations (an admin sends a link,
    the user picks their password and adds a passkey) instead of the admin choosing the password?
