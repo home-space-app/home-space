@@ -6,6 +6,9 @@ use leptos_router::NavigateOptions;
 use api_client::{ApiError, Client, Pkce, SecondFactor, SecondFactorStep, SignIn, VERIFIER_BYTES};
 use protocol::{DeviceInfo, Me, PLATFORM_WEB};
 use uuid::Uuid;
+use web_sys::AbortSignal;
+
+use crate::webauthn;
 
 /// Where the refresh token used to be kept. The server now keeps it in a cookie that scripts
 /// cannot read; a token still found here is handed over once and removed.
@@ -180,6 +183,29 @@ impl Auth {
         let me = client().login_verify(login_token, factor).await?;
         self.user.set(Some(me));
         Ok(())
+    }
+
+    /// Signs in with a passkey: the browser offers the ones it has for this site, in a dialog
+    /// or, with `quietly`, in the username field's autofill. `Ok(false)` when the user
+    /// cancelled, which needs no message.
+    pub async fn passkey_sign_in(self, quietly: Option<&AbortSignal>) -> Result<bool, String> {
+        let challenge = client()
+            .passkey_start()
+            .await
+            .map_err(|err| err.to_string())?;
+        let challenge_id = challenge
+            .challenge_id
+            .ok_or("The server sent no challenge for the passkey.")?;
+        let answer = match webauthn::get(challenge.options, quietly).await {
+            Ok(answer) => answer,
+            Err(failure) => return failure.message().map_or(Ok(false), Err),
+        };
+        let me = client()
+            .passkey_finish(challenge_id, &answer)
+            .await
+            .map_err(|err| err.to_string())?;
+        self.user.set(Some(me));
+        Ok(true)
     }
 
     /// Asks the server who the user is again, after their account changed.

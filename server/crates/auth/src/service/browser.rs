@@ -19,25 +19,39 @@ impl AuthService {
     /// that asks the signed-in user to let the app in. Anyone may start one, so starts are
     /// counted against `address`, and refused once it started too many.
     ///
-    /// A tenant that only signs in with its provider has nothing to ask on its page, so the
+    /// A tenant that signs in only with its provider has nothing to ask on its page, so the
     /// browser goes straight to the provider, which sends the code to the app as single
     /// sign-on does; the app trades it at [`browser_exchange`](Self::browser_exchange) all the
-    /// same.
+    /// same. Passkeys are a sign-in of their own, though: when one of the tenant's passkeys
+    /// works at `host`, the name the request was sent to, the page offers it beside the
+    /// provider.
     pub async fn browser_start(
         &self,
         redirect_uri: &str,
         code_challenge: &str,
         device_name: Option<&str>,
+        host: Option<&str>,
         address: Option<IpAddr>,
     ) -> Result<String, AuthError> {
         self.count_sign_in_start(address).await?;
-        if let (false, Some(oidc)) = (self.password_login, &self.oidc) {
+        if let (false, Some(oidc)) = (self.password_login, &self.oidc)
+            && !self.passkeys_at(host).await?
+        {
             require_app_redirect(redirect_uri)?;
             return oidc.start(redirect_uri, code_challenge).await;
         }
         self.browser
             .start(redirect_uri, code_challenge, device_name)
             .await
+    }
+
+    /// Whether one of the tenant's passkeys was made for `host`, so it can sign in there.
+    async fn passkeys_at(&self, host: Option<&str>) -> Result<bool, AuthError> {
+        let Some(host) = host else {
+            return Ok(false);
+        };
+        let rp_id = host.to_ascii_lowercase();
+        Ok(self.db.tenant_has_passkeys(self.tenant, &rp_id).await?)
     }
 
     /// Counts a sign-in started from `address`, in the browser or with single sign-on: each

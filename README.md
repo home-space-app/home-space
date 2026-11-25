@@ -312,7 +312,7 @@ tokens, so the rest of the API works as before. Setting `HOMESPACE_OIDC_ISSUER` 
 | `HOMESPACE_OIDC_REQUIRED_GROUP` | Only members of this group may sign in. Optional. |
 | `HOMESPACE_OIDC_GROUPS_CLAIM` | ID token claim listing the groups (default `groups`). |
 | `HOMESPACE_OIDC_SCOPES` | Default `openid profile email`. |
-| `HOMESPACE_PASSWORD_LOGIN` | `false` allows only the provider. Default `true`. |
+| `HOMESPACE_PASSWORD_LOGIN` | `false` turns off passwords: users sign in with the provider, and local accounts with a passkey. Default `true`. |
 
 The issuer and public URL must use https (plain http is accepted for `localhost` only). Register
 `<HOMESPACE_PUBLIC_URL>/api/v1/auth/oidc/callback` as the redirect URI at the provider.
@@ -381,6 +381,11 @@ signing secret and keep it apart from it; it is rotated the same way with
 `HOMESPACE_SECRETS_KEY_PREVIOUS`. Without it nobody can add an app, and everything else works.
 `homespace-ctl install` generates one. A user who lost their app and recovery codes is reset by an
 administrator in the user's panel, or with `homespace-ctl user reset-2fa <username>`.
+
+Passkeys and security keys need no setting, but they need the web client on the server's https
+address, or on `localhost` for development: browsers allow them nowhere else, and never on an IP
+address. A passkey belongs to the host name it was made on, so one made on
+`files.example.com` does not work when the server is reached as `cloud.example.com`.
 
 Access tokens and tickets are signed with the same secret and each names its kind in a `typ`
 claim, so neither is accepted in place of the other.

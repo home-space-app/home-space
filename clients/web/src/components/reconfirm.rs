@@ -1,6 +1,6 @@
 //! Confirming it is the user before a sensitive change: when the server answers
-//! `reauthentication-required`, a dialog asks for the password or a code from the
-//! authenticator app, and the change is sent again.
+//! `reauthentication-required`, a dialog asks for the password, a code from the authenticator
+//! app, or a passkey or security key, and the change is sent again.
 
 use std::future::Future;
 
@@ -10,10 +10,11 @@ use leptos::{ev::SubmitEvent, prelude::*, task::spawn_local};
 use api_client::{ApiError, Confirmation};
 
 use super::ErrorAlert;
-use crate::session;
+use crate::{session, webauthn};
 
 const PASSWORD: &str = "password";
 const TOTP: &str = "totp";
+const WEBAUTHN: &str = "webauthn";
 
 /// What the dialog asks for, and where its answer goes.
 struct Question {
@@ -64,6 +65,31 @@ impl Reconfirm {
     }
 }
 
+/// Confirms it is the user with one of their passkeys or security keys: `Ok(false)` when they
+/// cancelled the browser's dialog.
+async fn confirm_with_key() -> Result<bool, String> {
+    let client = session::client();
+    let challenge = client
+        .reauth_webauthn_options()
+        .await
+        .map_err(|err| err.to_string())?;
+    let challenge_id = challenge
+        .challenge_id
+        .ok_or("The server sent no challenge for the key.")?;
+    let credential = match webauthn::get(challenge.options, None).await {
+        Ok(credential) => credential,
+        Err(failure) => return failure.message().map_or(Ok(false), Err),
+    };
+    client
+        .reauthenticate(Confirmation::WebAuthn {
+            challenge_id,
+            credential: &credential,
+        })
+        .await
+        .map(|()| true)
+        .map_err(|err| err.to_string())
+}
+
 /// The dialog, shown while a change waits for the user to confirm.
 #[component]
 pub fn ReconfirmDialog() -> impl IntoView {
@@ -89,6 +115,22 @@ pub fn ReconfirmDialog() -> impl IntoView {
         secret.set(String::new());
         use_code.set(false);
         error.set(None);
+    };
+    let use_key = move |_| {
+        if busy.get_untracked() {
+            return;
+        }
+        busy.set(true);
+        error.set(None);
+        spawn_local(async move {
+            let result = confirm_with_key().await;
+            busy.set(false);
+            match result {
+                Ok(true) => close(true),
+                Ok(false) => {}
+                Err(message) => error.set(Some(message)),
+            }
+        });
     };
     let submit = move |event: SubmitEvent| {
         event.prevent_default();
@@ -176,6 +218,16 @@ pub fn ReconfirmDialog() -> impl IntoView {
                                         "Use a code from your authenticator app instead"
                                     }
                                 }}
+                            </button>
+                        </Show>
+                        <Show when=move || offers(WEBAUTHN) && webauthn::available()>
+                            <button
+                                type="button"
+                                class="button button--block"
+                                disabled=move || busy.get()
+                                on:click=use_key
+                            >
+                                "Use your passkey or security key"
                             </button>
                         </Show>
                         <div class="modal__actions">

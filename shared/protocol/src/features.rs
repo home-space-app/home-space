@@ -20,12 +20,18 @@ pub const REAUTHENTICATION: &str = "reauthentication";
 /// and `/me/reauthenticate` takes a `code` too.
 pub const TWO_FACTOR: &str = "two_factor";
 
+/// Accounts can add passkeys and security keys (`/me/webauthn`), which count as a second
+/// factor; a passkey signs in on its own (`/auth/passkey/start`, `finish`, and `passkeys` in
+/// `GET /auth/providers`); `/auth/login/verify` and `/me/reauthenticate` take `webauthn`.
+pub const PASSKEYS: &str = "passkeys";
+
 /// Every feature this server provides, each added with the release that introduced it.
-pub const ALL: &[&str] = &[BROWSER_LOGIN, REAUTHENTICATION, TWO_FACTOR];
+pub const ALL: &[&str] = &[BROWSER_LOGIN, PASSKEYS, REAUTHENTICATION, TWO_FACTOR];
 
 /// What the user reads for each feature, in hints such as "These won't work: …".
 const DISPLAY_NAMES: &[(&str, &str)] = &[
     (BROWSER_LOGIN, "Sign-in in the browser"),
+    (PASSKEYS, "Passkeys"),
     (REAUTHENTICATION, "Confirming sensitive changes"),
     (TWO_FACTOR, "Two-factor sign-in"),
 ];

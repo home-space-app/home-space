@@ -753,6 +753,7 @@ mod tests {
                 browser: false,
             }),
             browser_login: false,
+            passkeys: false,
         }
     }
 
@@ -896,6 +897,7 @@ mod tests {
             password: true,
             oidc: None,
             browser_login: false,
+            passkeys: false,
         };
         assert_eq!(sign_in_methods(&password_only), "Connected · password");
     }
@@ -1021,6 +1023,7 @@ mod tests {
             password: true,
             oidc: None,
             browser_login,
+            passkeys: false,
         }
     }
 

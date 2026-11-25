@@ -122,7 +122,9 @@ async fn a_waiting_sign_in_is_found_only_by_its_tenant_and_finishes_once(pool: P
         pending,
         PendingLogin {
             user_id: alice,
-            attempts: 0
+            attempts: 0,
+            webauthn_state: None,
+            webauthn_origin: None,
         }
     );
     assert_eq!(
@@ -163,7 +165,8 @@ async fn an_administrators_reset_removes_the_factors_and_ends_the_sessions(pool:
     .await
     .expect("session");
     let accounts = db.accounts(TenantId::DEFAULT).await.expect("accounts");
-    assert!(accounts[0].two_factor);
+    assert!(accounts[0].authenticator_app);
+    assert!(!accounts[0].webauthn);
 
     assert!(matches!(
         db.reset_second_factors(other, alice).await,

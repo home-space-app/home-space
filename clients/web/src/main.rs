@@ -15,6 +15,7 @@ mod update;
 mod upload;
 mod uploads;
 mod viewers;
+mod webauthn;
 
 fn main() {
     console_error_panic_hook::set_once();

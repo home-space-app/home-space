@@ -1,7 +1,10 @@
 //! The signed-in user's own password: changing it (`/me/password`) and confirming it is them
 //! with it (`/me/reauthenticate`).
 
-use protocol::{ChangePasswordRequest, ReauthenticateRequest, paths};
+use protocol::{
+    ChangePasswordRequest, PublicKeyCredential, ReauthenticateRequest, WebAuthnAnswer, paths,
+};
+use uuid::Uuid;
 
 use crate::{ApiError, Client, client::expect_success};
 
@@ -13,6 +16,12 @@ pub enum Confirmation<'a> {
     Password(&'a str),
     /// `totp`: a code from their authenticator app.
     Code(&'a str),
+    /// `webauthn`: a passkey's or security key's answer to the challenge of
+    /// [`reauth_webauthn_options`](Client::reauth_webauthn_options).
+    WebAuthn {
+        challenge_id: Uuid,
+        credential: &'a PublicKeyCredential,
+    },
 }
 
 impl Client {
@@ -42,11 +51,21 @@ impl Client {
         let request = match proof {
             Confirmation::Password(password) => ReauthenticateRequest {
                 password: Some(password.to_owned()),
-                code: None,
+                ..ReauthenticateRequest::default()
             },
             Confirmation::Code(code) => ReauthenticateRequest {
-                password: None,
                 code: Some(code.to_owned()),
+                ..ReauthenticateRequest::default()
+            },
+            Confirmation::WebAuthn {
+                challenge_id,
+                credential,
+            } => ReauthenticateRequest {
+                webauthn: Some(WebAuthnAnswer {
+                    challenge_id,
+                    credential: credential.clone(),
+                }),
+                ..ReauthenticateRequest::default()
             },
         };
         let response = self

@@ -78,6 +78,22 @@ pub enum AuthError {
          HOMESPACE_SECRETS_KEY."
     )]
     SecretsKeyMissing,
+    /// The answer of a passkey or security key is wrong, replayed, for another challenge, or
+    /// from a credential the account does not have here.
+    #[error("The passkey or security key could not be verified. Try again.")]
+    WebAuthnFailed,
+    /// Passkeys and security keys can't be used from where the request came; says why.
+    #[error("{0}")]
+    WebAuthnUnavailable(&'static str),
+    /// The account has as many passkeys and security keys as it may.
+    #[error(
+        "This account has {} passkeys and security keys, the most it may have. Remove one first.",
+        db::MAX_WEBAUTHN_CREDENTIALS
+    )]
+    TooManyKeys,
+    /// A passkey or security key of the account that does not exist.
+    #[error("There is no such passkey or security key.")]
+    UnknownKey,
     /// A sealed secret opens with none of the configured keys.
     #[error(
         "an authenticator app secret could not be opened; is HOMESPACE_SECRETS_KEY the key it was sealed with?"
@@ -108,6 +124,10 @@ impl AsProblem for AuthError {
             Self::InvalidCode => ProblemType::InvalidCode,
             Self::TotpExists => ProblemType::TotpExists,
             Self::SecretsKeyMissing => ProblemType::SecretsKeyMissing,
+            Self::WebAuthnFailed => ProblemType::WebAuthnFailed,
+            Self::WebAuthnUnavailable(_) => ProblemType::WebAuthnUnavailable,
+            Self::TooManyKeys => ProblemType::TooManyKeys,
+            Self::UnknownKey => ProblemType::NotFound,
             Self::AccountDisabled => ProblemType::AccountDisabled,
             Self::UsernameTaken => ProblemType::UsernameTaken,
             Self::InvalidInput(_) => ProblemType::ValidationFailed,
@@ -142,14 +162,20 @@ impl AsProblem for AuthError {
 }
 
 /// What the user is asked to do to confirm it is them, given the ways they can.
-fn describe_reauthentication(methods: &[&str]) -> &'static str {
-    match (methods.contains(&"password"), methods.contains(&"totp")) {
-        (false, false) => "Sign in again to confirm it is you.",
-        (true, false) => "Confirm it is you: enter your password again.",
-        (true, true) => {
-            "Confirm it is you: enter your password or a code from your authenticator app."
-        }
-        (false, true) => "Confirm it is you: enter a code from your authenticator app.",
+fn describe_reauthentication(methods: &[&str]) -> String {
+    let ways: Vec<&str> = [
+        ("password", "enter your password again"),
+        ("totp", "enter a code from your authenticator app"),
+        ("webauthn", "use your passkey or security key"),
+    ]
+    .into_iter()
+    .filter(|(method, _)| methods.contains(method))
+    .map(|(_, way)| way)
+    .collect();
+    match ways.as_slice() {
+        [] => "Sign in again to confirm it is you.".to_owned(),
+        [way] => format!("Confirm it is you: {way}."),
+        [first @ .., last] => format!("Confirm it is you: {}, or {last}.", first.join(", ")),
     }
 }
 

@@ -165,7 +165,7 @@ async fn providers_lists_password_login_without_oidc(pool: PgPool) {
     assert_eq!(response.status, StatusCode::OK);
     assert_eq!(
         response.json(),
-        json!({ "password": true, "oidc": null, "browser_login": false })
+        json!({ "password": true, "oidc": null, "browser_login": false, "passkeys": false })
     );
 }
 
@@ -196,6 +196,7 @@ async fn providers_lists_the_configured_provider(pool: PgPool) {
             "password": false,
             "oidc": { "name": "Test IdP", "browser": false },
             "browser_login": false,
+            "passkeys": false,
         })
     );
 }
@@ -671,4 +672,70 @@ async fn a_provider_only_tenant_sends_app_browser_sign_ins_to_the_provider(pool:
         )
         .await;
     assert_eq!(tokens.status, StatusCode::OK, "{:?}", tokens.json());
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_provider_only_tenant_keeps_its_page_where_a_local_passkey_works(pool: PgPool) {
+    let idp = FakeIdp::start().await;
+    let web = tempfile::tempdir().expect("tempdir");
+    let options = Options {
+        password_login: false,
+        ..DEFAULTS
+    };
+    let app = setup_oidc(pool, &idp, options).await.with_web(&web);
+    let alice = app.auth.create_user("alice", PASSWORD).await.expect("user");
+    app.db
+        .add_webauthn_credential(
+            app.auth.tenant(),
+            alice.id,
+            db::NewCredential {
+                id: uuid::Uuid::now_v7(),
+                credential_id: b"alice-passkey",
+                credential: r#"{"counter":0}"#,
+                kind: "passkey",
+                rp_id: "files.example.com",
+                name: "Passkey",
+            },
+            &[b"code".to_vec()],
+        )
+        .await
+        .expect("passkey");
+
+    let url = Url::parse_with_params(
+        "http://localhost/api/v1/auth/browser/start",
+        [
+            ("redirect_uri", "http://127.0.0.1:54321/callback"),
+            ("code_challenge", challenge().as_str()),
+        ],
+    )
+    .expect("url");
+    let uri = format!("{}?{}", url.path(), url.query().expect("query"));
+    let start = |host: &'static str| {
+        let app = &app;
+        let uri = uri.clone();
+        async move {
+            let response = app
+                .send_with(
+                    Method::GET,
+                    &uri,
+                    None,
+                    Default::default(),
+                    None,
+                    &[("host", host)],
+                )
+                .await;
+            assert_eq!(response.status, StatusCode::SEE_OTHER);
+            response.location()
+        }
+    };
+
+    // Where alice's passkey works, the page offers it beside the provider.
+    let page = start("Files.Example.com:8443").await;
+    assert!(page.starts_with("/authorize?flow="), "{page}");
+    // Elsewhere nobody could use a passkey, so the browser goes straight to the provider.
+    for host in ["other.example.com", "192.168.1.10:8080"] {
+        let provider = Url::parse(&start(host).await).expect("provider url");
+        let query: HashMap<String, String> = provider.query_pairs().into_owned().collect();
+        assert_eq!(query["client_id"], CLIENT_ID, "{host}");
+    }
 }

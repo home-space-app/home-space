@@ -17,6 +17,10 @@ pub struct Account {
     /// out.
     #[serde(default)]
     pub two_factor: bool,
+    /// Which second factors: `totp` and `webauthn` (passkeys and security keys); older servers
+    /// leave it out.
+    #[serde(default)]
+    pub factors: Vec<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     /// The account exists but may not sign in. Always so while it is marked for deletion.

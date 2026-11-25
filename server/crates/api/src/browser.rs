@@ -76,6 +76,33 @@ pub fn refuse_other_sites(headers: &HeaderMap, tenant: &TenantContext) -> Result
     }
 }
 
+/// The origin of the page a request to `tenant` comes from, when it is one of this server's
+/// own pages; `None` for another site's page and for apps, which send no `Origin`.
+pub fn own_origin<'a>(headers: &'a HeaderMap, tenant: &TenantContext) -> Option<&'a str> {
+    origin(headers).filter(|origin| is_own_origin(origin, headers, tenant.public_url.as_deref()))
+}
+
+/// Whether the address the request was sent to is a name rather than an IP address, as
+/// passkeys need.
+pub fn sent_to_a_name(headers: &HeaderMap, tenant: &TenantContext) -> bool {
+    host_name(headers, tenant).is_some()
+}
+
+/// The host the request was sent to, without the port, when it is a name rather than an IP
+/// address: what a passkey made on this server's pages there is bound to.
+pub fn host_name<'a>(headers: &'a HeaderMap, tenant: &'a TenantContext) -> Option<&'a str> {
+    let host = headers
+        .get(HOST)
+        .and_then(|value| value.to_str().ok())
+        .or_else(|| {
+            let url = tenant.public_url.as_deref()?;
+            url.split_once("://")
+                .map(|(_, rest)| rest.split('/').next().unwrap_or_default())
+        })
+        .map(authority_host)?;
+    (!host.is_empty() && host.trim_matches(['[', ']']).parse::<IpAddr>().is_err()).then_some(host)
+}
+
 /// The refresh token in the request's cookies.
 pub fn refresh_cookie(headers: &HeaderMap) -> Option<&str> {
     headers

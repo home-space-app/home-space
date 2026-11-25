@@ -68,6 +68,7 @@ impl AccountService {
             external: found.password_hash.is_none(),
             second_factors: SecondFactors {
                 totp: factors.totp,
+                webauthn: u32::try_from(factors.webauthn).unwrap_or(0),
                 recovery_codes_left: u32::try_from(factors.recovery_codes_left).unwrap_or(0),
             },
         })

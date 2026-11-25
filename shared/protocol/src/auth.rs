@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{DeviceInfo, NodeId, UserId};
+use crate::{DeviceInfo, NodeId, PublicKeyCredential, UserId, WebAuthnAnswer};
 
 /// Credentials submitted to log in.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -21,8 +21,8 @@ pub struct LoginRequest {
     pub two_step: bool,
 }
 
-/// `POST /auth/login/verify`: the second step of a sign-in, with one of `code` and
-/// `recovery_code`.
+/// `POST /auth/login/verify`: the second step of a sign-in, with one of `code`,
+/// `recovery_code` and `webauthn`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LoginVerifyRequest {
     /// From the `second-factor-required` problem of the first step.
@@ -33,6 +33,10 @@ pub struct LoginVerifyRequest {
     /// One of the account's recovery codes, used up by this sign-in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery_code: Option<String>,
+    /// The browser's answer to the challenge of `POST /auth/login/webauthn`, from a passkey or
+    /// security key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webauthn: Option<PublicKeyCredential>,
     /// The device signing in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<DeviceInfo>,
@@ -57,8 +61,9 @@ pub struct TotpConfirmRequest {
     pub code: String,
 }
 
-/// A new set of recovery codes, each usable once instead of the authenticator app. They are
-/// shown only now; a new set replaces the old one.
+/// A new set of recovery codes, each usable once instead of a second factor. They are shown
+/// only now; a new set replaces the old one. Empty after confirming an authenticator app when
+/// the account already had another second factor, and so its codes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecoveryCodes {
     pub codes: Vec<String>,
@@ -69,6 +74,9 @@ pub struct RecoveryCodes {
 pub struct SecondFactors {
     /// An authenticator app is set up, so signing in takes one of its codes.
     pub totp: bool,
+    /// Passkeys and security keys; older servers leave it out.
+    #[serde(default)]
+    pub webauthn: u32,
     /// Recovery codes not used yet.
     pub recovery_codes_left: u32,
 }
@@ -76,7 +84,7 @@ pub struct SecondFactors {
 impl SecondFactors {
     /// Whether signing in takes a second factor.
     pub fn enabled(&self) -> bool {
-        self.totp
+        self.totp || self.webauthn > 0
     }
 }
 
@@ -88,8 +96,8 @@ pub struct ChangePasswordRequest {
 }
 
 /// `POST /me/reauthenticate`: a signed-in user confirms it is them before a sensitive change,
-/// answering `reauthentication-required`, with one of the `methods` it named: `password`, or
-/// `totp` as `code`.
+/// answering `reauthentication-required`, with one of the `methods` it named: `password`,
+/// `totp` as `code`, or `webauthn` with the answer to `POST /me/reauthenticate/webauthn`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ReauthenticateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -97,6 +105,8 @@ pub struct ReauthenticateRequest {
     /// The code the authenticator app shows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webauthn: Option<WebAuthnAnswer>,
 }
 
 /// Refresh token submitted to rotate a session or log out.
@@ -161,6 +171,10 @@ pub struct Providers {
     /// servers leave it out.
     #[serde(default)]
     pub browser_login: bool,
+    /// Users can sign in with a passkey ([`crate::PasskeyFinish`]) on this address; older
+    /// servers leave it out.
+    #[serde(default)]
+    pub passkeys: bool,
 }
 
 impl Providers {

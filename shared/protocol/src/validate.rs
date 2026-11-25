@@ -25,6 +25,10 @@ use crate::{
     TicketRequest, TotpConfirmRequest, UnlockShare, UpdateAccount, UpdateRequest, UpdateShare,
     UploadQuery, UploadsQuery,
 };
+use crate::{
+    LoginWebAuthnRequest, MAX_KEY_NAME_LEN, PasskeyFinish, RenameWebAuthnKey, WebAuthnFinish,
+    WebAuthnStart,
+};
 
 /// A request that can say which of its fields are not acceptable.
 pub trait Validate {
@@ -205,10 +209,12 @@ fn code_problem(code: Option<&str>) -> Option<&'static str> {
 impl Validate for LoginVerifyRequest {
     fn validate(&self) -> Result<(), Vec<FieldError>> {
         let mut found = Violations::default();
-        let given = usize::from(self.code.is_some()) + usize::from(self.recovery_code.is_some());
+        let given = usize::from(self.code.is_some())
+            + usize::from(self.recovery_code.is_some())
+            + usize::from(self.webauthn.is_some());
         found.check(
             "/code",
-            (given != 1).then_some("give either a code or a recovery code"),
+            (given != 1).then_some("give one of a code, a recovery code and a passkey"),
         );
         found.check("/code", code_problem(self.code.as_deref()));
         found.check(
@@ -230,12 +236,41 @@ impl Validate for TotpConfirmRequest {
 impl Validate for ReauthenticateRequest {
     fn validate(&self) -> Result<(), Vec<FieldError>> {
         let mut found = Violations::default();
-        let given = usize::from(self.password.is_some()) + usize::from(self.code.is_some());
+        let given = usize::from(self.password.is_some())
+            + usize::from(self.code.is_some())
+            + usize::from(self.webauthn.is_some());
         found.check(
             "/password",
-            (given != 1).then_some("give either the password or a code"),
+            (given != 1).then_some("give one of the password, a code and a passkey"),
         );
         found.check("/code", code_problem(self.code.as_deref()));
+        found.finish()
+    }
+}
+
+/// What is wrong with the name of a passkey or security key, if anything.
+fn key_name_problem(name: &str) -> Option<String> {
+    if name.trim().is_empty() {
+        Some("give the key a name".to_owned())
+    } else if name.chars().count() > MAX_KEY_NAME_LEN {
+        Some(format!("use at most {MAX_KEY_NAME_LEN} characters"))
+    } else {
+        None
+    }
+}
+
+impl Validate for WebAuthnFinish {
+    fn validate(&self) -> Result<(), Vec<FieldError>> {
+        let mut found = Violations::default();
+        found.check("/name", self.name.as_deref().and_then(key_name_problem));
+        found.finish()
+    }
+}
+
+impl Validate for RenameWebAuthnKey {
+    fn validate(&self) -> Result<(), Vec<FieldError>> {
+        let mut found = Violations::default();
+        found.check("/name", key_name_problem(&self.name));
         found.finish()
     }
 }
@@ -259,10 +294,12 @@ shape_only!(
     IncomingQuery,
     ListQuery,
     LoginRequest,
+    LoginWebAuthnRequest,
     MoveRequest,
     OidcCallbackQuery,
     OidcExchangeRequest,
     OidcStartQuery,
+    PasskeyFinish,
     RefreshRequest,
     RestoreRequest,
     SaveTransfer,
@@ -273,6 +310,7 @@ shape_only!(
     SharedFolderQuery,
     SharesQuery,
     TicketQuery,
+    WebAuthnStart,
     TicketRequest,
     UnlockShare,
     UpdateAccount,
@@ -353,6 +391,7 @@ mod tests {
             login_token: "token".to_owned(),
             code: code.map(str::to_owned),
             recovery_code: recovery_code.map(str::to_owned),
+            webauthn: None,
             device: None,
             cookie: false,
         };
@@ -371,12 +410,23 @@ mod tests {
     fn confirming_takes_the_password_or_a_code() {
         let password = ReauthenticateRequest {
             password: Some("secret".to_owned()),
-            code: None,
+            ..ReauthenticateRequest::default()
         };
         assert_eq!(password.validate(), Ok(()));
         assert_eq!(
             pointers(ReauthenticateRequest::default().validate()),
             ["/password"]
         );
+    }
+
+    #[test]
+    fn a_key_name_is_short_and_not_blank() {
+        let rename = |name: &str| RenameWebAuthnKey {
+            name: name.to_owned(),
+        };
+        assert_eq!(rename("YubiKey 5C").validate(), Ok(()));
+        assert_eq!(pointers(rename("  ").validate()), ["/name"]);
+        assert_eq!(pointers(rename(&"é".repeat(65)).validate()), ["/name"]);
+        assert_eq!(rename(&"é".repeat(64)).validate(), Ok(()));
     }
 }

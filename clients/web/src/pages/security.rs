@@ -1,5 +1,5 @@
-//! Two-factor sign-in in the user's settings: adding an authenticator app, its recovery codes,
-//! and removing it.
+//! Two-factor sign-in in the user's settings: the authenticator app, passkeys and security
+//! keys (in `keys`), and the recovery codes.
 
 use leptos::{ev::SubmitEvent, prelude::*, task::spawn_local};
 use qrcode::{QrCode, render::svg};
@@ -11,6 +11,10 @@ use crate::{
     components::{ErrorAlert, reconfirm::Reconfirm},
     session::{self, Auth},
 };
+
+mod keys;
+
+use keys::KeysSection;
 
 /// Few enough recovery codes left to suggest making new ones.
 pub const FEW_RECOVERY_CODES: u32 = 3;
@@ -66,74 +70,55 @@ pub fn SecurityCard(auth: Auth) -> impl IntoView {
         });
     };
 
+    let passkeys = move || session::client().supports(features::PASSKEYS);
+    let show_codes = Callback::new(move |codes: Vec<String>| step.set(Step::Codes(codes)));
+
     view! {
         <section class="card settings-grid__wide">
-            <h2 class="card__title">"Two-factor sign-in"</h2>
+            <h2 class="card__title">"Two-factor sign-in and passkeys"</h2>
             <ErrorAlert message=error />
             {move || match step.get() {
-                Step::Overview if factors().totp => {
-                    let left = factors().recovery_codes_left;
-                    view! {
-                        <p class="card__text">
-                            "On. Signing in takes a code from your authenticator app as well as your password."
-                        </p>
-                        <p class="card__text" class:card__text--warning=left <= FEW_RECOVERY_CODES>
-                            {recovery_left(left)}
-                        </p>
-                        <div class="card__actions">
-                            <button
-                                class="button"
-                                disabled=move || busy.get()
-                                on:click=move |_| run(Action::NewCodes)
-                            >
-                                "New recovery codes"
-                            </button>
-                            <Show
-                                when=move || confirm_removal.get()
-                                fallback=move || {
-                                    view! {
-                                        <button
-                                            class="button button--danger"
-                                            on:click=move |_| confirm_removal.set(true)
-                                        >
-                                            "Turn off"
-                                        </button>
-                                    }
-                                }
-                            >
-                                <span class="card__confirm">
-                                    "Turn off two-factor sign-in?"
-                                    <button class="button" on:click=move |_| confirm_removal.set(false)>
-                                        "Keep it"
-                                    </button>
-                                    <button
-                                        class="button button--danger"
-                                        disabled=move || busy.get()
-                                        on:click=move |_| {
-                                            confirm_removal.set(false);
-                                            run(Action::Remove);
-                                        }
-                                    >
-                                        "Turn off"
-                                    </button>
-                                </span>
-                            </Show>
-                        </div>
-                    }
-                        .into_any()
-                }
                 Step::Overview => {
                     view! {
                         <p class="card__text">
-                            "Off. Add an authenticator app, such as Google Authenticator, Aegis or 1Password, so that a stolen password alone cannot open your account."
+                            {move || {
+                                if factors().enabled() {
+                                    "On. Signing in with your password also takes a passkey, a security key or a code from your authenticator app."
+                                } else {
+                                    "Off. Add an authenticator app or a passkey, so that a stolen password alone cannot open your account."
+                                }
+                            }}
                         </p>
-                        <button
-                            class="button button--primary card__action"
-                            disabled=move || busy.get()
-                            on:click=move |_| run(Action::Start)
-                        >
-                            "Set up an authenticator app"
-                        </button>
+                        <h3 class="card__heading">"Authenticator app"</h3>
+                        <AppSection
+                            on=Signal::derive(move || factors().totp)
+                            busy
+                            confirm_removal
+                            run
+                        />
+                        <Show when=passkeys>
+                            <KeysSection auth error on_codes=show_codes />
+                        </Show>
+                        <Show when=move || factors().enabled()>
+                            <h3 class="card__heading">"Recovery codes"</h3>
+                            <p
+                                class="card__text"
+                                class:card__text--warning=move || {
+                                    factors().recovery_codes_left <= FEW_RECOVERY_CODES
+                                }
+                            >
+                                {move || recovery_left(factors().recovery_codes_left)}
+                            </p>
+                            <div class="card__actions">
+                                <button
+                                    class="button"
+                                    disabled=move || busy.get()
+                                    on:click=move |_| run(Action::NewCodes)
+                                >
+                                    "New recovery codes"
+                                </button>
+                            </div>
+                        </Show>
                     }
                         .into_any()
                 }
@@ -146,6 +131,66 @@ pub fn SecurityCard(auth: Auth) -> impl IntoView {
                 }
             }}
         </section>
+    }
+}
+
+/// Whether the authenticator app is set up, with the button to add or remove it.
+#[component]
+fn AppSection(
+    on: Signal<bool>,
+    busy: RwSignal<bool>,
+    confirm_removal: RwSignal<bool>,
+    run: impl Fn(Action) + Copy + Send + Sync + 'static,
+) -> impl IntoView {
+    move || {
+        if !on.get() {
+            return view! {
+                <p class="card__text">"Codes from an app such as Google Authenticator, Aegis or 1Password."</p>
+                <div class="card__actions">
+                    <button
+                        class="button"
+                        disabled=move || busy.get()
+                        on:click=move |_| run(Action::Start)
+                    >
+                        "Set up an authenticator app"
+                    </button>
+                </div>
+            }
+                .into_any();
+        }
+        view! {
+            <p class="card__text">"Set up. Signing in can take a code from it."</p>
+            <div class="card__actions">
+                <Show
+                    when=move || confirm_removal.get()
+                    fallback=move || {
+                        view! {
+                            <button class="button button--danger" on:click=move |_| confirm_removal.set(true)>
+                                "Remove"
+                            </button>
+                        }
+                    }
+                >
+                    <span class="card__confirm">
+                        "Remove the authenticator app?"
+                        <button class="button" on:click=move |_| confirm_removal.set(false)>
+                            "Keep it"
+                        </button>
+                        <button
+                            class="button button--danger"
+                            disabled=move || busy.get()
+                            on:click=move |_| {
+                                confirm_removal.set(false);
+                                run(Action::Remove);
+                            }
+                        >
+                            "Remove"
+                        </button>
+                    </span>
+                </Show>
+            </div>
+        }
+            .into_any()
     }
 }
 
@@ -163,7 +208,14 @@ impl Action {
     /// to show next, or `None` when they cancelled.
     async fn run(self, reconfirm: Reconfirm) -> Result<Option<Step>, ApiError> {
         let client = session::client();
-        let codes = |RecoveryCodes { codes }| Step::Codes(codes);
+        // Confirming an app on an account that has a key already brings no new codes.
+        let codes = |RecoveryCodes { codes }| {
+            if codes.is_empty() {
+                Step::Overview
+            } else {
+                Step::Codes(codes)
+            }
+        };
         Ok(match self {
             Self::Start => reconfirm
                 .confirmed(|| client.start_totp())
@@ -252,7 +304,7 @@ fn ShowCodes(codes: Vec<String>, done: impl Fn() + Copy + 'static) -> impl IntoV
     );
     view! {
         <p class="alert alert--success" role="status">
-            "Save these recovery codes somewhere safe. Each one signs you in once if you lose your authenticator app. They are shown only now."
+            "Save these recovery codes somewhere safe. Each one signs you in once if you lose your passkeys, security keys and authenticator app. They are shown only now."
         </p>
         <ul class="recovery-codes">
             {codes.into_iter().map(|code| view! { <li><code>{code}</code></li> }).collect_view()}
@@ -274,7 +326,7 @@ fn ShowCodes(codes: Vec<String>, done: impl Fn() + Copy + 'static) -> impl IntoV
 /// How many recovery codes are left, as a sentence.
 pub fn recovery_left(left: u32) -> String {
     match left {
-        0 => "No recovery codes left. Make new ones so you can still sign in without the app."
+        0 => "No recovery codes left. Make new ones so you can still sign in if you lose your devices."
             .to_owned(),
         1 => "1 recovery code left.".to_owned(),
         _ => format!("{left} recovery codes left."),

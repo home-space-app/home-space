@@ -132,7 +132,7 @@ async fn with_an_app_signing_in_takes_a_code_or_a_recovery_code(pool: PgPool) {
     let me = app.get("/api/v1/me", &token).await.json();
     assert_eq!(
         me["second_factors"],
-        json!({ "totp": true, "recovery_codes_left": 10 })
+        json!({ "totp": true, "webauthn": 0, "recovery_codes_left": 10 })
     );
 
     // An app that cannot ask for the code is told why, and given nothing to go on with.

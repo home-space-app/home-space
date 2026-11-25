@@ -37,7 +37,7 @@ Extension members, present only where they apply:
 | `limit` | bytes or items | `too-large`, `too-many-items` |
 | `quota`, `available` | bytes | `quota-exceeded` |
 | `current_offset` | bytes | `offset-mismatch` |
-| `methods` | names | `reauthentication-required`: the ways the user can confirm it is them, `password` or `totp`; empty means sign in again. `second-factor-required`: the second factors the account can use, `totp` and `recovery` |
+| `methods` | names | `reauthentication-required`: the ways the user can confirm it is them, `password`, `totp` or `webauthn`; empty means sign in again. `second-factor-required`: the second factors the account can use, `totp`, `webauthn` and `recovery` |
 | `login_token` | string | `second-factor-required`, when the sign-in asked for `two_step`: what `POST /auth/login/verify` takes, for 5 minutes and 5 wrong codes |
 | `errors` | `[{ "pointer", "detail" }]` | `validation-failed`: every field at fault, as a JSON Pointer into the body or query |
 
@@ -51,6 +51,7 @@ type, a bad id in the path, a missing header), **415** for a body in the wrong f
 |---|---|---|---|
 | `bad-request` | 400 | `bad_request` | The body, query, path or a header cannot be read. |
 | `body-interrupted` | 400 | `bad_request` | The request body stopped arriving. What arrived of an upload is kept. |
+| `webauthn-unavailable` | 400 | `bad_request` | Passkeys and security keys cannot be used here: the page is not https (or `localhost`), is an IP address, or is not the server's own. |
 | `unauthorized` | 401 | `unauthorized` | No session, an invalid, expired or revoked token, or a wrong username or password. |
 | `forbidden` | 403 | `forbidden` | Signed in but not allowed, such as a non-administrator on `/admin`. |
 | `account-disabled` | 403 | `forbidden` | The account is disabled or marked for deletion. |
@@ -63,6 +64,7 @@ type, a bad id in the path, a missing header), **415** for a body in the wrong f
 | `name-taken` | 409 | `conflict` | An item with this name already exists in the folder. |
 | `username-taken` | 409 | `conflict` | The username is taken. |
 | `totp-exists` | 409 | `conflict` | An authenticator app is already set up; remove it before adding another. |
+| `too-many-keys` | 409 | `conflict` | The account has 20 passkeys and security keys, the most it may; remove one first. |
 | `lost-and-found` | 409 | `conflict` | Lost & Found, or a folder holding it, cannot be deleted. |
 | `offset-mismatch` | 409 | `conflict` | A chunk does not start at `current_offset`, where the upload ends. |
 | `transfer-not-ready` | 409 | `conflict` | The transfer's files are still being uploaded. |
@@ -80,6 +82,7 @@ type, a bad id in the path, a missing header), **415** for a body in the wrong f
 | `wrong-password` | 422 | `bad_request` | The current password given to change it is wrong. |
 | `no-password` | 422 | `bad_request` | The account signs in through single sign-on and has no password. |
 | `invalid-code` | 422 | `bad_request` | The code from the authenticator app, or the recovery code, is wrong. |
+| `webauthn-failed` | 422 | `bad_request` | The passkey or security key could not be verified: a wrong or replayed answer, or one for another challenge. |
 | `move-into-itself` | 422 | `bad_request` | A folder cannot be moved into itself or into one of its folders. |
 | `not-a-file` | 422 | `bad_request` | Only a file can do this, and the item is a folder. |
 | `invalid-name` | 422 | `bad_request` | The name is empty, too long, `.` or `..`, or holds `/` or `\`. |

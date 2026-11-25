@@ -36,6 +36,16 @@ pub const ME_TOTP: &str = "/api/v1/me/totp";
 pub const ME_TOTP_CONFIRM: &str = "/api/v1/me/totp/confirm";
 /// `POST` makes a new set of recovery codes.
 pub const ME_RECOVERY_CODES: &str = "/api/v1/me/recovery-codes";
+/// `GET` lists the user's passkeys and security keys.
+pub const ME_WEBAUTHN: &str = "/api/v1/me/webauthn";
+pub const ME_WEBAUTHN_START: &str = "/api/v1/me/webauthn/start";
+pub const ME_WEBAUTHN_FINISH: &str = "/api/v1/me/webauthn/finish";
+/// The challenge a passkey or security key answers to confirm it is the user.
+pub const ME_REAUTHENTICATE_WEBAUTHN: &str = "/api/v1/me/reauthenticate/webauthn";
+/// The challenge for a passkey or security key as the second step of a sign-in.
+pub const LOGIN_WEBAUTHN: &str = "/api/v1/auth/login/webauthn";
+pub const PASSKEY_START: &str = "/api/v1/auth/passkey/start";
+pub const PASSKEY_FINISH: &str = "/api/v1/auth/passkey/finish";
 pub const NODES: &str = "/api/v1/nodes";
 pub const NODES_MOVE: &str = "/api/v1/nodes/move";
 pub const FOLDERS: &str = "/api/v1/folders";
@@ -94,6 +104,11 @@ pub fn admin_user_password(id: crate::UserId) -> String {
 }
 
 /// `DELETE` removes an account's second factors, so it signs in with the password alone.
+/// `PATCH` renames, `DELETE` removes one of the user's passkeys and security keys.
+pub fn me_webauthn_key(id: uuid::Uuid) -> String {
+    format!("{ME_WEBAUTHN}/{id}")
+}
+
 pub fn admin_user_second_factors(id: crate::UserId) -> String {
     format!("{ADMIN_USERS}/{id}/second-factors")
 }

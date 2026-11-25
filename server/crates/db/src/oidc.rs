@@ -70,6 +70,7 @@ impl Db {
             "DELETE FROM browser_logins WHERE expires_at <= now()",
             "DELETE FROM login_codes WHERE expires_at <= now()",
             "DELETE FROM pending_logins WHERE expires_at <= now()",
+            "DELETE FROM webauthn_ceremonies WHERE expires_at <= now()",
         ] {
             removed += sqlx::query(query)
                 .execute(self.pool())

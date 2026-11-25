@@ -1,13 +1,54 @@
 use leptos::{ev::SubmitEvent, prelude::*, task::spawn_local};
 use leptos_router::components::Redirect;
+use web_sys::AbortController;
 
-use api_client::{ApiError, SecondFactor, SecondFactorStep};
-use protocol::{ErrorCode, Providers};
+use api_client::{ApiError, SecondFactorStep};
+use protocol::Providers;
 
 use crate::{
     components::ErrorAlert,
     session::{Auth, after_sign_in, client, in_place},
+    webauthn,
 };
+
+mod second_step;
+
+use second_step::SecondStep;
+
+/// The passkey request that waits in the username field's autofill while the form is open.
+#[derive(Clone, Copy)]
+struct QuietPasskey(StoredValue<Option<AbortController>, LocalStorage>);
+
+impl QuietPasskey {
+    fn new() -> Self {
+        Self(StoredValue::new_local(None))
+    }
+
+    /// Offers the browser's passkeys in the autofill, where it can; picking one signs in.
+    fn start(self, auth: Auth, error: RwSignal<Option<String>>) {
+        spawn_local(async move {
+            if !webauthn::conditional_available().await {
+                return;
+            }
+            let Ok(controller) = AbortController::new() else {
+                return;
+            };
+            let signal = controller.signal();
+            self.stop();
+            self.0.set_value(Some(controller));
+            if let Err(message) = auth.passkey_sign_in(Some(&signal)).await {
+                error.set(Some(message));
+            }
+        });
+    }
+
+    /// Withdraws the autofill request, so another one (the passkey button's) can be made.
+    fn stop(self) {
+        if let Some(controller) = self.0.try_update_value(Option::take).flatten() {
+            controller.abort();
+        }
+    }
+}
 
 #[component]
 pub fn Login(auth: Auth) -> impl IntoView {
@@ -17,9 +58,18 @@ pub fn Login(auth: Auth) -> impl IntoView {
     let busy = RwSignal::new(false);
     // Until the server answers, show the password form so a server without single sign-on works.
     let providers = RwSignal::new(None::<Providers>);
+    let quiet = QuietPasskey::new();
+    on_cleanup(move || quiet.stop());
     spawn_local(async move {
         match client().providers().await {
-            Ok(found) => providers.set(Some(found)),
+            Ok(found) => {
+                // The autofill offers passkeys in the username field, which only the password
+                // form has.
+                if found.passkeys && found.password && webauthn::available() {
+                    quiet.start(auth, error);
+                }
+                providers.set(Some(found));
+            }
             Err(
                 ApiError::Unauthorized
                 | ApiError::Api { .. }
@@ -39,6 +89,29 @@ pub fn Login(auth: Auth) -> impl IntoView {
                 .map(|oidc| oidc.name.clone())
         })
     };
+    let passkeys = move || {
+        providers.with(|found| found.as_ref().is_some_and(|found| found.passkeys))
+            && webauthn::available()
+    };
+    let sign_in_with_passkey = move |_| {
+        quiet.stop();
+        busy.set(true);
+        spawn_local(async move {
+            let result = auth.passkey_sign_in(None).await;
+            busy.set(false);
+            match result {
+                Ok(true) => {
+                    error.set(None);
+                    return;
+                }
+                Ok(false) => {}
+                Err(message) => error.set(Some(message)),
+            }
+            if show_password() {
+                quiet.start(auth, error);
+            }
+        });
+    };
     let sign_in_with_provider = move |_| {
         if let Err(message) = Auth::start_oidc() {
             error.set(Some(message));
@@ -49,6 +122,7 @@ pub fn Login(auth: Auth) -> impl IntoView {
     let second_step = RwSignal::new(None::<SecondFactorStep>);
     let submit = move |event: SubmitEvent| {
         event.prevent_default();
+        quiet.stop();
         busy.set(true);
         spawn_local(async move {
             let result = auth
@@ -88,12 +162,25 @@ pub fn Login(auth: Auth) -> impl IntoView {
                                 >
                                     {format!("Sign in with {name}")}
                                 </button>
-                                <Show when=show_password>
+                                <Show when=move || show_password() || passkeys()>
                                     <p class="login__divider">"or"</p>
                                 </Show>
                             }
                         })
                 }}
+                <Show when=move || passkeys() && second_step.with(Option::is_none)>
+                    <button
+                        type="button"
+                        class="button button--block"
+                        disabled=move || busy.get()
+                        on:click=sign_in_with_passkey
+                    >
+                        "Sign in with a passkey"
+                    </button>
+                    <Show when=show_password>
+                        <p class="login__divider">"or"</p>
+                    </Show>
+                </Show>
                 {move || {
                     second_step
                         .get()
@@ -118,7 +205,7 @@ pub fn Login(auth: Auth) -> impl IntoView {
                         <input
                             class="field__input"
                             type="text"
-                            autocomplete="username"
+                            autocomplete="username webauthn"
                             required
                             prop:value=move || username.get()
                             on:input:target=move |event| username.set(event.target().value())
@@ -145,122 +232,5 @@ pub fn Login(auth: Auth) -> impl IntoView {
                 </form>
             </section>
         </main>
-    }
-}
-
-/// The second step of a sign-in: a code from the authenticator app, or a recovery code.
-#[component]
-fn SecondStep(
-    auth: Auth,
-    step: SecondFactorStep,
-    error: RwSignal<Option<String>>,
-    restart: impl Fn() + Copy + 'static,
-) -> impl IntoView {
-    let code = RwSignal::new(String::new());
-    let recovery = RwSignal::new(false);
-    let busy = RwSignal::new(false);
-    let offers_recovery = step.methods.iter().any(|method| method == "recovery");
-    let token = StoredValue::new(step.login_token);
-    let submit = move |event: SubmitEvent| {
-        event.prevent_default();
-        if busy.get_untracked() {
-            return;
-        }
-        busy.set(true);
-        let given = code.get_untracked();
-        let by_recovery = recovery.get_untracked();
-        spawn_local(async move {
-            let factor = if by_recovery {
-                SecondFactor::RecoveryCode(&given)
-            } else {
-                SecondFactor::Code(&given)
-            };
-            let result = auth.verify(&token.get_value(), factor).await;
-            busy.set(false);
-            code.set(String::new());
-            match result {
-                Ok(()) => error.set(None),
-                // Too many wrong codes, or too slow: the password has to be given again.
-                Err(
-                    err @ ApiError::Api {
-                        code: ErrorCode::Gone,
-                        ..
-                    },
-                ) => {
-                    error.set(Some(err.to_string()));
-                    restart();
-                }
-                Err(err) => error.set(Some(err.to_string())),
-            }
-        });
-    };
-    view! {
-        <form class="login__form" on:submit=submit>
-            <p class="login__hint">
-                {move || {
-                    if recovery.get() {
-                        "Enter one of your recovery codes. Each one works once."
-                    } else {
-                        "Enter the code your authenticator app shows for Home Space."
-                    }
-                }}
-            </p>
-            <label class="field">
-                <span class="field__label">
-                    {move || if recovery.get() { "Recovery code" } else { "Code" }}
-                </span>
-                <input
-                    class="field__input"
-                    type="text"
-                    inputmode=move || (!recovery.get()).then_some("numeric")
-                    autocomplete=move || (!recovery.get()).then_some("one-time-code")
-                    autocapitalize="off"
-                    spellcheck="false"
-                    required
-                    autofocus
-                    prop:value=move || code.get()
-                    on:input:target=move |event| code.set(event.target().value())
-                />
-            </label>
-            <button
-                type="submit"
-                class="button button--primary button--block"
-                disabled=move || busy.get()
-            >
-                "Continue"
-            </button>
-            {offers_recovery
-                .then(|| {
-                    view! {
-                        <button
-                            type="button"
-                            class="button button--ghost button--block"
-                            on:click=move |_| {
-                                recovery.update(|on| *on = !*on);
-                                code.set(String::new());
-                                error.set(None);
-                            }
-                        >
-                            {move || {
-                                if recovery.get() {
-                                    "Use the authenticator app instead"
-                                } else {
-                                    "Lost your phone? Use a recovery code"
-                                }
-                            }}
-                        </button>
-                    }
-                })}
-            <button
-                type="button"
-                class="button button--ghost button--block"
-                on:click=move |_| {
-                    error.set(None);
-                    restart();
-                }
-            >
-                "Start over"
-            </button>
-        </form>
     }
 }

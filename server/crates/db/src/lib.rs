@@ -38,6 +38,7 @@ mod tx;
 mod uploads;
 mod users;
 mod versions;
+mod webauthn;
 
 pub use accounts::{Account, DeletedAccount};
 pub use browser_logins::BrowserLogin;
@@ -66,6 +67,9 @@ pub use transfers::{
 pub use trash::{LOST_AND_FOUND, SpecialFolders, TrashedNode};
 pub use tx::Tx;
 pub use uploads::{NewUpload, Upload};
+pub use webauthn::{
+    Ceremony, MAX_WEBAUTHN_CREDENTIALS, NewCeremony, NewCredential, StoredCredential,
+};
 
 use sqlx::{
     Postgres, Transaction,
