@@ -277,8 +277,10 @@ New columns on `sessions`:
 - `authenticated_at TIMESTAMPTZ`: the last time the user proved who they are (sign-in or
   re-confirming). Refreshing tokens does not change it.
 
-Extension sessions (`start_for_extension`) copy both from their parent. Existing sessions get
-`{'pwd'}` or `{'oidc'}` and their `created_at`.
+Extension sessions (`start_for_extension`) copy both from their parent, and an app let in from
+the browser copies them from the web session that pressed Continue (through `login_codes`,
+which carry them too), so a click is no new proof. Existing sessions get `{'pwd'}` or
+`{'oidc'}` and their `created_at` (done: `0029_session_auth.sql`).
 
 ### Re-confirming for sensitive changes ("sudo mode")
 
@@ -286,13 +288,24 @@ These need `authenticated_at` within the last 10 minutes, or the request carries
 (current password, a TOTP code or a WebAuthn assertion):
 
 - change password; add or remove TOTP, passkeys or security keys; new recovery codes;
-- sign out other devices;
 - later: protected folder unlockers, deleting one's own account.
+
+Signing out a device (`DELETE /devices/{id}/sessions`, `DELETE /devices/{id}`) does **not**
+need it (decided 2026-11-25). The desktop and Android apps already call it and cannot confirm,
+so asking would break them before 1.0.0. A stolen session that signs out the owner's devices
+only makes the owner sign in again, and it cannot change the password without the current one.
 
 The answer otherwise is `403 reauthentication-required`, with `methods` like the sign-in step, so
 the client can ask and retry. `POST /me/reauthenticate` takes the proof and moves
 `authenticated_at` forward. `change_password` keeps its own current-password check, which counts
-as the proof.
+as the proof and moves it too.
+
+Done (step 1): `AuthService::require_recent_sign_in` answers the problem, with
+`methods: ["password"]` for a user with a password and none for a provider user, who signs in
+again; `POST /me/reauthenticate { password }` (feature `reauthentication`), throttled with the
+same per-session counter as changing the password. No endpoint calls the check yet: the first
+are the TOTP and recovery code ones of step 2, and the api-client learns to tell the problem
+apart (today it is an `Api { code: Forbidden }`) with the web dialog that answers it.
 
 ## Single sign-on users
 
@@ -329,8 +342,9 @@ Per tenant, in the `tenants` table (no secrets, so it fits the database):
 
 ## Data
 
-New migration (`0029_second_factors.sql`; `0027_browser_login.sql` already renamed
-`oidc_codes` to `login_codes` and added `browser_logins`, `0028_sign_in_limits.sql` limits them):
+New migration (`0030_second_factors.sql`; `0027_browser_login.sql` already renamed
+`oidc_codes` to `login_codes` and added `browser_logins`, `0028_sign_in_limits.sql` limits them,
+and `0029_session_auth.sql` added the session columns below):
 
 ```sql
 CREATE TABLE user_totp (
@@ -374,12 +388,8 @@ ALTER TABLE users ADD COLUMN webauthn_handle BYTEA UNIQUE;
 -- WebAuthn ceremony between its two requests.
 CREATE TABLE pending_logins (...);   -- token_hash, tenant_id, user_id NULL, kind, state JSONB, attempts, expires_at
 
-ALTER TABLE sessions ADD COLUMN auth_methods TEXT[] NOT NULL DEFAULT '{pwd}';
-ALTER TABLE sessions ADD COLUMN authenticated_at TIMESTAMPTZ;
-UPDATE sessions s SET auth_methods = '{oidc}' FROM users u
-    WHERE u.id = s.user_id AND u.password_hash IS NULL;
-UPDATE sessions SET authenticated_at = created_at;
-ALTER TABLE sessions ALTER COLUMN authenticated_at SET NOT NULL;
+-- Done in 0029_session_auth.sql: sessions.auth_methods TEXT[], sessions.authenticated_at,
+-- both also on login_codes.
 
 ALTER TABLE tenants ADD COLUMN mfa_policy TEXT NOT NULL DEFAULT 'optional'
     CHECK (mfa_policy IN ('optional', 'admins', 'everyone'));
@@ -513,7 +523,9 @@ client falls back to plain password sign-in on older servers.
    and keep `Unauthorized` for older servers' bare "invalid credentials"; desktop, web,
    Android and iOS show that message, with their fixed text only for older servers.
 1. Sessions remember `auth_methods` and `authenticated_at`; re-confirmation (`/me/reauthenticate`
-   with the password) on the existing sensitive endpoints.
+   with the password). Done: see [What a session remembers](#what-a-session-remembers) and
+   [Re-confirming](#re-confirming-for-sensitive-changes-sudo-mode). Changing the password
+   counts as confirming; device sign-out stays without it, for the released apps.
 2. TOTP and recovery codes: tables, secret key, two-step login, web screens, admin reset, CLI.
 3. Browser sign-in for native apps: server flow and web approve page (`/authorize`) are done,
    with the `browser_login` feature and `Providers.browser_login`; the api-client has

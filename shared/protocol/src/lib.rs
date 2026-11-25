@@ -33,6 +33,7 @@ pub use admin::{Account, AccountDevice, CreateAccount, SetPassword, UpdateAccoun
 pub use auth::{
     BrowserLoginApp, BrowserLoginDecision, BrowserLoginExchangeRequest, BrowserLoginFlow,
     BrowserLoginRedirect, BrowserLoginStartQuery, ChangePasswordRequest, DEVICE_SESSION_LABELS,
+    ReauthenticateRequest,
     DeviceSessionRequest, LoginRequest, Me, OidcCallbackQuery, OidcExchangeRequest, OidcProvider,
     OidcStartQuery, Providers, RefreshRequest, TokenPair,
 };

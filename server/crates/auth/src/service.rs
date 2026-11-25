@@ -21,7 +21,7 @@ use crate::{
     offline,
     oidc_login::OidcLogin,
     password::MAX_PASSWORD_LEN,
-    sessions::Sessions,
+    sessions::{PASSWORD_METHOD, Sessions, signed_in_now},
     throttle::{Counter, LoginThrottle, attempt_source},
     tickets::Tickets,
     token::Keys,
@@ -179,11 +179,8 @@ impl AuthService {
     }
 
     /// Replaces the password of a signed-in user after checking the current one, and ends
-    /// their other sessions; `session_id` is the session asking, which stays signed in.
-    ///
-    /// Wrong current passwords are throttled like wrong sign-ins, counted for the session
-    /// asking, so a stolen session cannot be used to guess the password. Sign-in is not
-    /// affected: whoever holds a session must not be able to keep its owner from signing in.
+    /// their other sessions; `session_id` is the session asking, which stays signed in, and
+    /// counts as just confirmed (see [`reauthenticate`](Self::reauthenticate)).
     pub async fn change_password(
         &self,
         user_id: UserId,
@@ -191,29 +188,8 @@ impl AuthService {
         current: &str,
         new: &str,
     ) -> Result<(), AuthError> {
-        let user = self
-            .db
-            .find_user(user_id)
-            .await?
-            .ok_or(AuthError::InvalidCredentials)?;
-        let hash = user.password_hash.ok_or(AuthError::NoPassword)?;
         crate::password::check_new(new)?;
-        // No password is that long, so it is not worth a count or the time to hash it.
-        if current.len() > MAX_PASSWORD_LEN {
-            return Err(AuthError::WrongPassword);
-        }
-        let source = format!("session:{session_id}");
-        let attempt = self
-            .throttle
-            .admit(vec![Counter::key(user.tenant_id, user.username, source)])
-            .await?;
-        let checked = match self.hasher.verify(current, hash).await {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(AuthError::WrongPassword),
-            Err(err) => Err(err),
-        };
-        attempt
-            .settle(checked, |err| matches!(err, AuthError::WrongPassword))
+        self.check_current_password(user_id, session_id, current)
             .await?;
         let hashed = self.hasher.hash(new).await?;
         self.db
@@ -275,7 +251,9 @@ impl AuthService {
         let user = attempt
             .settle(checked, |err| matches!(err, AuthError::WrongLogin))
             .await?;
-        self.sessions.start(user.id, device).await
+        self.sessions
+            .start(user.id, device, &signed_in_now(PASSWORD_METHOD))
+            .await
     }
 
     /// What a sign-in counts against: the username, from a device the user signed in from
@@ -454,8 +432,8 @@ impl AuthService {
         code_verifier: &str,
         device: Option<&DeviceInfo>,
     ) -> Result<TokenPair, AuthError> {
-        let user_id = self.oidc()?.exchange(code, code_verifier).await?;
-        self.sessions.start(user_id, device).await
+        let (user_id, authentication) = self.oidc()?.exchange(code, code_verifier).await?;
+        self.sessions.start(user_id, device, &authentication).await
     }
 
     fn oidc(&self) -> Result<&OidcLogin, AuthError> {
@@ -464,5 +442,6 @@ impl AuthService {
 }
 
 mod browser;
+mod reauth;
 #[cfg(test)]
 mod tests;

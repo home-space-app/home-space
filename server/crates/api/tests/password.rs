@@ -115,3 +115,33 @@ async fn changing_needs_a_session(pool: PgPool) {
         .await;
     assert_eq!(response.status, StatusCode::UNAUTHORIZED);
 }
+
+const REAUTHENTICATE: &str = "/api/v1/me/reauthenticate";
+
+async fn reauthenticate(app: &TestApp, token: Option<&str>, password: &str) -> common::Response {
+    app.json(
+        Method::POST,
+        REAUTHENTICATE,
+        token,
+        json!({ "password": password }),
+    )
+    .await
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn confirming_takes_the_current_password_and_keeps_the_session(pool: PgPool) {
+    let app = setup(pool).await;
+    let token = app.user_token("alice").await;
+
+    let wrong = reauthenticate(&app, Some(&token), "not-the-password").await;
+    assert_eq!(wrong.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(wrong.json()["type"], "/api/v1/problems/wrong-password");
+    assert_eq!(app.get(ME, &token).await.status, StatusCode::OK);
+
+    let right = reauthenticate(&app, Some(&token), PASSWORD).await;
+    assert_eq!(right.status, StatusCode::NO_CONTENT);
+    assert_eq!(app.get(ME, &token).await.status, StatusCode::OK);
+
+    let signed_out = reauthenticate(&app, None, PASSWORD).await;
+    assert_eq!(signed_out.status, StatusCode::UNAUTHORIZED);
+}

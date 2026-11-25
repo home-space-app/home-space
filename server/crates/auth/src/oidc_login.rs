@@ -3,14 +3,14 @@
 
 use time::{Duration, OffsetDateTime};
 
-use db::{Db, DbError, OidcPending, TenantId, UserId};
+use db::{Authentication, Db, DbError, OidcPending, TenantId, UserId};
 use protocol::rules::MAX_USERNAME_LEN;
 
 use crate::{
     AuthError, OidcService,
     login_codes::{LoginCodes, random_token},
     oidc::{Identity, is_valid_challenge},
-    sessions::Sessions,
+    sessions::{OIDC_METHOD, Sessions, signed_in_now},
     token::hash_refresh_token,
 };
 
@@ -113,13 +113,13 @@ impl OidcLogin {
         Ok(append_query(&pending.client_redirect, params))
     }
 
-    /// The user the one-time `code` from the redirect was issued to, when `code_verifier`
-    /// answers the client's challenge.
+    /// The user the one-time `code` from the redirect was issued to and how they signed in,
+    /// when `code_verifier` answers the client's challenge.
     pub(crate) async fn exchange(
         &self,
         code: &str,
         code_verifier: &str,
-    ) -> Result<UserId, AuthError> {
+    ) -> Result<(UserId, Authentication), AuthError> {
         self.codes.redeem(code, code_verifier).await
     }
 
@@ -136,7 +136,13 @@ impl OidcLogin {
             .await?;
         let user_id = self.user_for_identity(&identity).await?;
         sessions.require_may_sign_in(user_id).await?;
-        self.codes.issue(user_id, &pending.client_challenge).await
+        self.codes
+            .issue(
+                user_id,
+                &pending.client_challenge,
+                signed_in_now(OIDC_METHOD),
+            )
+            .await
     }
 
     /// The local user for a provider account, created on first sign-in.

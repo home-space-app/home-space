@@ -1,6 +1,7 @@
-//! Changing the signed-in user's own password (`/me/password`).
+//! The signed-in user's own password: changing it (`/me/password`) and confirming it is them
+//! with it (`/me/reauthenticate`).
 
-use protocol::{ChangePasswordRequest, paths};
+use protocol::{ChangePasswordRequest, ReauthenticateRequest, paths};
 
 use crate::{ApiError, Client, client::expect_success};
 
@@ -16,6 +17,24 @@ impl Client {
             .send(|| {
                 self.http()
                     .post(self.url(paths::ME_PASSWORD))
+                    .json(&request)
+            })
+            .await?;
+        expect_success(response).await
+    }
+
+    /// Confirms it is the signed-in user with their password, which allows sensitive changes
+    /// from this session for the next ten minutes, after the server answered one with
+    /// `reauthentication-required`. A wrong password is a `BadRequest`, not `Unauthorized`.
+    /// Needs [`REAUTHENTICATION`](protocol::features::REAUTHENTICATION).
+    pub async fn reauthenticate(&self, password: &str) -> Result<(), ApiError> {
+        let request = ReauthenticateRequest {
+            password: password.to_owned(),
+        };
+        let response = self
+            .send(|| {
+                self.http()
+                    .post(self.url(paths::ME_REAUTHENTICATE))
                     .json(&request)
             })
             .await?;

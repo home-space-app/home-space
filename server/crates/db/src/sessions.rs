@@ -1,7 +1,18 @@
+use sqlx::FromRow;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{Db, DbError, TenantId, UserId};
+
+/// How a session's user proved who they are.
+#[derive(Clone, Debug, PartialEq, Eq, FromRow)]
+pub struct Authentication {
+    /// What proved them at sign-in, by their RFC 8176 `amr` names, such as `pwd` or `oidc`.
+    pub auth_methods: Vec<String>,
+    /// The last time they proved it: at sign-in, or when they confirmed it was them later.
+    /// Refreshing tokens does not move it.
+    pub authenticated_at: OffsetDateTime,
+}
 
 /// A session that has not ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -12,22 +23,26 @@ pub struct LiveSession {
 
 impl Db {
     /// Starts a session with its first refresh token, on `device_id` when the client named a
-    /// device, which must be registered first.
+    /// device, which must be registered first. `authentication` says how the user signed in.
     pub async fn start_session(
         &self,
         session_id: Uuid,
         user_id: UserId,
         device_id: Option<Uuid>,
+        authentication: &Authentication,
         token_hash: &[u8],
         expires_at: OffsetDateTime,
     ) -> Result<(), DbError> {
         let mut tx = self.pool().begin().await?;
         sqlx::query(
-            "INSERT INTO sessions (id, user_id, device_id, expires_at) VALUES ($1, $2, $3, $4)",
+            "INSERT INTO sessions (id, user_id, device_id, auth_methods, authenticated_at, expires_at) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(session_id)
         .bind(user_id)
         .bind(device_id)
+        .bind(&authentication.auth_methods)
+        .bind(authentication.authenticated_at)
         .bind(expires_at)
         .execute(&mut *tx)
         .await?;
@@ -91,6 +106,44 @@ impl Db {
         Ok(device.map(|device_id| LiveSession { device_id }))
     }
 
+    /// How the user of `session_id`, an unexpired session of `user_id` on `tenant`, signed in.
+    pub async fn session_authentication(
+        &self,
+        tenant: TenantId,
+        session_id: Uuid,
+        user_id: UserId,
+    ) -> Result<Option<Authentication>, DbError> {
+        let authentication = sqlx::query_as::<_, Authentication>(
+            "SELECT s.auth_methods, s.authenticated_at FROM sessions s \
+             JOIN users u ON u.id = s.user_id \
+             WHERE s.id = $1 AND s.user_id = $2 AND s.expires_at > now() AND u.tenant_id = $3",
+        )
+        .bind(session_id)
+        .bind(user_id)
+        .bind(tenant)
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(authentication)
+    }
+
+    /// Notes that the user of `session_id`, an unexpired session of `user_id`, just proved
+    /// again who they are. Returns `false` when the session has ended.
+    pub async fn confirm_session(
+        &self,
+        session_id: Uuid,
+        user_id: UserId,
+    ) -> Result<bool, DbError> {
+        let confirmed = sqlx::query(
+            "UPDATE sessions SET authenticated_at = now() \
+             WHERE id = $1 AND user_id = $2 AND expires_at > now()",
+        )
+        .bind(session_id)
+        .bind(user_id)
+        .execute(self.pool())
+        .await?;
+        Ok(confirmed.rows_affected() == 1)
+    }
+
     /// Tags a session that names no device with `device_id`, which must be registered
     /// first. A session that already has a device keeps it.
     pub async fn attach_device(
@@ -113,7 +166,8 @@ impl Db {
 
     /// Starts a session labelled `label` for an extension of the app on the device of
     /// `parent`, the app's own session, with its first refresh token. An earlier session with
-    /// that label started by `parent` ends.
+    /// that label started by `parent` ends. The new session says the user signed in as they
+    /// did for `parent`.
     ///
     /// Returns the device, or `None` when `parent` has ended, names no device, or is itself
     /// an extension's session.
@@ -150,15 +204,18 @@ impl Db {
             .execute(&mut *tx)
             .await?;
         sqlx::query(
-            "INSERT INTO sessions (id, user_id, device_id, label, parent_session_id, expires_at) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
+            "INSERT INTO sessions \
+             (id, user_id, device_id, label, parent_session_id, auth_methods, authenticated_at, \
+              expires_at) \
+             SELECT $1, $2, $3, $4, id, auth_methods, authenticated_at, $5 \
+             FROM sessions WHERE id = $6",
         )
         .bind(session_id)
         .bind(user_id)
         .bind(device)
         .bind(label)
-        .bind(parent)
         .bind(expires_at)
+        .bind(parent)
         .execute(&mut *tx)
         .await?;
         insert_token(&mut tx, session_id, user_id, token_hash, expires_at).await?;
@@ -220,6 +277,15 @@ async fn insert_token(
     Ok(())
 }
 
+/// A password sign-in just now, for tests that need a session.
+#[cfg(test)]
+pub(crate) fn signed_in_now() -> Authentication {
+    Authentication {
+        auth_methods: vec!["pwd".to_owned()],
+        authenticated_at: OffsetDateTime::now_utc(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use sqlx::PgPool;
@@ -251,6 +317,62 @@ mod tests {
         .execute(pool)
         .await
         .expect("token");
+    }
+
+    /// Sessions from before `0029_session_auth.sql` say they were started with a password, or
+    /// by single sign-on for users without one, when they were created.
+    #[sqlx::test(migrations = false)]
+    async fn upgrade_says_how_existing_sessions_signed_in(pool: PgPool) {
+        let mut before = sqlx::migrate!("../../migrations");
+        let upto = before
+            .migrations
+            .iter()
+            .position(|migration| migration.version == 29)
+            .expect("0029");
+        before.migrations = before.migrations[..upto].to_vec().into();
+        before.run(&pool).await.expect("migrate");
+        let (local, provider) = (Uuid::now_v7(), Uuid::now_v7());
+        sqlx::query(
+            "INSERT INTO users (id, tenant_id, username, password_hash) \
+             VALUES ($1, 1, 'alice', 'x'), ($2, 1, 'bob', NULL)",
+        )
+        .bind(local)
+        .bind(provider)
+        .execute(&pool)
+        .await
+        .expect("users");
+        let (password, sso) = (Uuid::now_v7(), Uuid::now_v7());
+        sqlx::query(
+            "INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES \
+             ($1, $2, now() - interval '3 days', now() + interval '1 day'), \
+             ($3, $4, now() - interval '1 day', now() + interval '1 day')",
+        )
+        .bind(password)
+        .bind(local)
+        .bind(sso)
+        .bind(provider)
+        .execute(&pool)
+        .await
+        .expect("sessions");
+
+        sqlx::raw_sql(include_str!("../../../migrations/0029_session_auth.sql"))
+            .execute(&pool)
+            .await
+            .expect("upgrade");
+
+        let db = Db::from_pool(pool);
+        for (session, user, method, days) in
+            [(password, local, "pwd", 3), (sso, provider, "oidc", 1)]
+        {
+            let authentication = db
+                .session_authentication(TenantId::DEFAULT, session, UserId::from(user))
+                .await
+                .expect("db")
+                .expect("still signed in");
+            assert_eq!(authentication.auth_methods, [method]);
+            let age = OffsetDateTime::now_utc() - authentication.authenticated_at;
+            assert_eq!(age.whole_days(), days, "since it was created");
+        }
     }
 
     #[sqlx::test(migrations = false)]
@@ -317,9 +439,16 @@ mod tests {
         let db = Db::from_pool(pool.clone());
         let (app, files) = (Uuid::now_v7(), Uuid::now_v7());
         let expires = OffsetDateTime::now_utc() + time::Duration::days(30);
-        db.start_session(app, UserId::from(user), Some(device), b"app", expires)
-            .await
-            .expect("start");
+        db.start_session(
+            app,
+            UserId::from(user),
+            Some(device),
+            &signed_in_now(),
+            b"app",
+            expires,
+        )
+        .await
+        .expect("start");
         db.start_device_session(app, UserId::from(user), "files", files, b"files", expires)
             .await
             .expect("extension")
@@ -356,9 +485,16 @@ mod tests {
         let db = Db::from_pool(pool.clone());
         let session = Uuid::now_v7();
         let expires = OffsetDateTime::now_utc() + time::Duration::days(1);
-        db.start_session(session, UserId::from(user), None, b"one", expires)
-            .await
-            .expect("start");
+        db.start_session(
+            session,
+            UserId::from(user),
+            None,
+            &signed_in_now(),
+            b"one",
+            expires,
+        )
+        .await
+        .expect("start");
         assert!(
             db.continue_session(session, UserId::from(user), b"two", expires)
                 .await
@@ -386,7 +522,7 @@ mod tests {
         let alice = db.create_user(other, "alice", "x").await.expect("alice").id;
         let session = Uuid::now_v7();
         let expires = OffsetDateTime::now_utc() + time::Duration::days(1);
-        db.start_session(session, alice, None, b"token", expires)
+        db.start_session(session, alice, None, &signed_in_now(), b"token", expires)
             .await
             .expect("start");
 

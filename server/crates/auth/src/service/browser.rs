@@ -2,6 +2,8 @@
 
 use std::net::IpAddr;
 
+use uuid::Uuid;
+
 use db::UserId;
 use protocol::{BrowserLoginFlow, DeviceInfo, TokenPair};
 
@@ -57,10 +59,18 @@ impl AuthService {
         self.browser.describe(flow).await
     }
 
-    /// `user_id` lets the app waiting on `flow` sign in as them: returns the app's redirect,
-    /// carrying the one-time code.
-    pub async fn browser_approve(&self, flow: &str, user_id: UserId) -> Result<String, AuthError> {
-        self.browser.approve(&self.sessions, flow, user_id).await
+    /// `user_id`, signed in with `session_id`, lets the app waiting on `flow` sign in as them:
+    /// returns the app's redirect, carrying the one-time code. The app's session says they
+    /// signed in as they did for `session_id`.
+    pub async fn browser_approve(
+        &self,
+        flow: &str,
+        user_id: UserId,
+        session_id: Uuid,
+    ) -> Result<String, AuthError> {
+        self.browser
+            .approve(&self.sessions, flow, user_id, session_id)
+            .await
     }
 
     /// The user turned away the app waiting on `flow`: returns the app's redirect, carrying
@@ -83,9 +93,9 @@ impl AuthService {
             .unwrap_or_default();
         let attempt = self.throttle.admit(counters).await?;
         let redeemed = self.browser.exchange(code, code_verifier).await;
-        let user_id = attempt
+        let (user_id, authentication) = attempt
             .settle(redeemed, |err| matches!(err, AuthError::LoginCodeInvalid))
             .await?;
-        self.sessions.start(user_id, device).await
+        self.sessions.start(user_id, device, &authentication).await
     }
 }

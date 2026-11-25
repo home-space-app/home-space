@@ -5,7 +5,7 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use time::{Duration, OffsetDateTime};
 
-use db::{Db, TenantId, UserId};
+use db::{Authentication, Db, LoginCode, TenantId, UserId};
 
 use crate::{AuthError, oidc::verifier_matches, token::hash_refresh_token};
 
@@ -24,39 +24,45 @@ impl LoginCodes {
         Self { db, tenant }
     }
 
-    /// A new code for `user_id`, usable once within a minute with the verifier of `challenge`.
+    /// A new code for `user_id`, who signed in as `authentication` says, usable once within a
+    /// minute with the verifier of `challenge`.
     pub(crate) async fn issue(
         &self,
         user_id: UserId,
         challenge: &str,
+        authentication: Authentication,
     ) -> Result<String, AuthError> {
         let code = random_token();
+        let stored = LoginCode {
+            user_id,
+            client_challenge: challenge.to_owned(),
+            authentication,
+        };
         self.db
             .insert_login_code(
                 self.tenant,
                 &hash_refresh_token(&code),
-                user_id,
-                challenge,
+                &stored,
                 OffsetDateTime::now_utc() + LOGIN_CODE_TTL,
             )
             .await?;
         Ok(code)
     }
 
-    /// The user `code` was issued to, when `code_verifier` answers its challenge. The code is
-    /// used up either way.
+    /// The user `code` was issued to and how they signed in, when `code_verifier` answers its
+    /// challenge. The code is used up either way.
     pub(crate) async fn redeem(
         &self,
         code: &str,
         code_verifier: &str,
-    ) -> Result<UserId, AuthError> {
+    ) -> Result<(UserId, Authentication), AuthError> {
         let stored = self
             .db
             .take_login_code(self.tenant, &hash_refresh_token(code))
             .await?
             .ok_or(AuthError::LoginCodeInvalid)?;
         if verifier_matches(code_verifier, &stored.client_challenge) {
-            Ok(stored.user_id)
+            Ok((stored.user_id, stored.authentication))
         } else {
             Err(AuthError::LoginCodeInvalid)
         }

@@ -56,6 +56,9 @@ pub enum ProblemType {
     MarkedForDeletion,
     /// The current password given to change it is wrong.
     WrongPassword,
+    /// A sensitive change needs the user to confirm it is them first; `methods` says how,
+    /// and without any they sign in again.
+    ReauthenticationRequired,
     /// The account signs in through single sign-on and has no password.
     NoPassword,
     /// A folder cannot be moved into itself or into one of its folders.
@@ -94,7 +97,7 @@ pub enum ProblemType {
 
 impl ProblemType {
     /// Every problem type, for documentation and tests.
-    pub const ALL: [Self; 39] = [
+    pub const ALL: [Self; 40] = [
         Self::BadRequest,
         Self::BodyInterrupted,
         Self::UnsupportedMediaType,
@@ -118,6 +121,7 @@ impl ProblemType {
         Self::TransferNotReady,
         Self::MarkedForDeletion,
         Self::WrongPassword,
+        Self::ReauthenticationRequired,
         Self::NoPassword,
         Self::MoveIntoItself,
         Self::NotAFile,
@@ -252,6 +256,12 @@ impl ProblemType {
                 "wrong-password",
                 C::BadRequest,
                 "The current password is wrong",
+            ),
+            Self::ReauthenticationRequired => (
+                403,
+                "reauthentication-required",
+                C::Forbidden,
+                "Confirm it is you first",
             ),
             Self::NoPassword => (
                 422,

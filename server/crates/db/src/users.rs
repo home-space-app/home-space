@@ -152,7 +152,8 @@ impl Db {
 
 impl Db {
     /// Replaces a user's password hash and ends every session except `keep`, the one that
-    /// asked for the change, and the sessions `keep` started for its extensions.
+    /// asked for the change, and the sessions `keep` started for its extensions. The current
+    /// password was given for it, so `keep`'s user has just confirmed it is them.
     pub async fn change_password_hash(
         &self,
         id: UserId,
@@ -183,6 +184,11 @@ impl Db {
         .bind(keep)
         .execute(&mut *tx)
         .await?;
+        sqlx::query("UPDATE sessions SET authenticated_at = now() WHERE id = $1 AND user_id = $2")
+            .bind(keep)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
         Ok(())
     }

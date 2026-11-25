@@ -10,8 +10,8 @@ use axum::{
 };
 use protocol::{
     ChangePasswordRequest, DeviceSessionRequest, LoginRequest, Me, OidcCallbackQuery,
-    OidcExchangeRequest, OidcProvider, OidcStartQuery, Providers, RefreshRequest, TicketRequest,
-    TicketResponse, TokenPair,
+    OidcExchangeRequest, OidcProvider, OidcStartQuery, Providers, ReauthenticateRequest,
+    RefreshRequest, TicketRequest, TicketResponse, TokenPair,
 };
 
 use crate::extract::{ApiJson, ApiQuery};
@@ -37,6 +37,7 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/device-sessions", post(device_session))
         .route("/me", get(me))
         .route("/me/password", post(change_password))
+        .route("/me/reauthenticate", post(reauthenticate))
         .route("/tickets", post(ticket))
 }
 
@@ -261,6 +262,20 @@ async fn change_password(
             &request.current_password,
             &request.new_password,
         )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The caller confirms it is them with their password, which allows sensitive changes from
+/// this session for the next ten minutes.
+async fn reauthenticate(
+    tenant: Tenant,
+    user: AuthUser,
+    ApiJson(request): ApiJson<ReauthenticateRequest>,
+) -> Result<StatusCode, ApiError> {
+    tenant
+        .auth
+        .reauthenticate(user.id, user.session_id, &request.password)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
