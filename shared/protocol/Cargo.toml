@@ -13,6 +13,7 @@ base64 = "0.23.1"
 serde = { version = "1", features = ["derive"] }
 sqlx = { version = "0.9.0", default-features = false, features = ["derive", "postgres", "uuid"], optional = true }
 time = { version = "0.3.55", features = ["serde", "formatting", "parsing"] }
+webauthn-rs-proto = "0.6.2"
 uuid = { version = "1.29.0", features = ["serde"] }
 
 [dev-dependencies]

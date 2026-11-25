@@ -15,6 +15,7 @@ mod transfers;
 mod trash;
 mod uploads;
 mod users;
+mod webauthn;
 mod ws;
 
 use axum::{Json, Router, routing::get};
@@ -39,6 +40,7 @@ pub fn routes() -> Router<AppState> {
         .merge(users::routes())
         .merge(search::routes())
         .merge(second_factor::routes())
+        .merge(webauthn::routes())
         .merge(shared::routes())
         .merge(shares::routes())
         .merge(storage::routes())

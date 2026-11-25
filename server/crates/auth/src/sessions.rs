@@ -34,6 +34,14 @@ pub(crate) const OIDC_METHOD: &str = "oidc";
 pub(crate) const OTP_METHOD: &str = "otp";
 /// What a session records after a recovery code; RFC 8176 has no name for one.
 pub(crate) const RECOVERY_METHOD: &str = "recovery";
+/// What a session records after a security key or a passkey that stays on its device
+/// (RFC 8176 `hwk`, proof of possession of a hardware key).
+pub(crate) const HWK_METHOD: &str = "hwk";
+/// What a session records after a passkey that syncs between devices (RFC 8176 `swk`, a
+/// software key).
+pub(crate) const SWK_METHOD: &str = "swk";
+/// What a session records when the authenticator checked a PIN or biometrics (RFC 8176 `user`).
+pub(crate) const USER_METHOD: &str = "user";
 
 /// A sign-in with `method` that happens now.
 pub(crate) fn signed_in_now(method: &str) -> Authentication {

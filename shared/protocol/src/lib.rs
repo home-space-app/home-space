@@ -28,6 +28,7 @@ mod trash;
 mod upload;
 mod validate;
 pub mod version;
+mod webauthn;
 
 pub use admin::{Account, AccountDevice, CreateAccount, SetPassword, UpdateAccount};
 pub use auth::{
@@ -76,3 +77,9 @@ pub use trash::{RestoreRequest, TrashItem};
 pub use upload::{ChunkResult, CreateUpload, UploadInfo, UploadSession, UploadsQuery};
 pub use validate::Validate;
 pub use version::Version;
+pub use webauthn::{
+    AssertionChallenge, CreationChallengeResponse, LoginWebAuthnRequest, MAX_KEY_NAME_LEN,
+    PasskeyFinish, PublicKeyCredential, RegisterPublicKeyCredential, RegistrationChallenge,
+    RenameWebAuthnKey, RequestChallengeResponse, WebAuthnAdded, WebAuthnAnswer, WebAuthnFinish,
+    WebAuthnKey, WebAuthnKind, WebAuthnStart,
+};

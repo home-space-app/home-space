@@ -25,15 +25,20 @@ tokio.workspace = true
 uuid = "1.29.0"
 wasm-bindgen = "0.2.130"
 wasm-bindgen-futures = "0.4.80"
+# Turns the server's WebAuthn challenges into what navigator.credentials takes, and back.
+webauthn-rs-proto = { version = "0.6.2", features = ["wasm"] }
 
 [dependencies.web-sys]
 version = "0.3.107"
 features = [
+    "AbortController",
+    "AbortSignal",
     "Blob",
     "BlobPropertyBag",
     "CanvasRenderingContext2d",
     "Clipboard",
     "CloseEvent",
+    "CredentialsContainer",
     "Crypto",
     "CssStyleDeclaration",
     "DataTransfer",

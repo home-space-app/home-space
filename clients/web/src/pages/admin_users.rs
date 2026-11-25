@@ -1168,6 +1168,16 @@ fn DeleteUserDialog(
     }
 }
 
+/// The second factors of `account`, as words for a sentence.
+fn factors_said(account: &Account) -> &'static str {
+    let has = |factor: &str| account.factors.iter().any(|named| named == factor);
+    match (has("totp") || account.factors.is_empty(), has("webauthn")) {
+        (true, true) => "a code from an authenticator app, or a passkey or security key",
+        (false, true) => "a passkey or security key",
+        _ => "a code from an authenticator app",
+    }
+}
+
 /// Whether an account signs in with a second factor, and the administrator's reset for a
 /// user who lost theirs.
 #[component]
@@ -1223,8 +1233,9 @@ fn SecondFactorSection(
                 <p class="sheet__text">
                     {move || {
                         format!(
-                            "On: {} signs in with a code from an authenticator app. If they lost it and their recovery codes, reset it: they then sign in with the password alone, and are signed out everywhere.",
+                            "On: {} signs in with {}. If they lost it and their recovery codes, reset it: their authenticator app, passkeys and security keys are removed, they sign in with the password alone, and are signed out everywhere.",
                             name(),
+                            factors_said(&account.get()),
                         )
                     }}
                 </p>

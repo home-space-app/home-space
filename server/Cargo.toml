@@ -60,9 +60,17 @@ url = "2"
 wiremock = "0.6.5"
 zip = { version = "9.5.0", default-features = false, features = ["time"] }
 uuid = { version = "1.29.0", features = ["v7", "serde"] }
+webauthn-rs-proto = "0.6.2"
+webauthn-rs = { version = "0.6.2", features = ["conditional-ui", "danger-allow-state-serialisation", "danger-credential-internals"] }
 
 [workspace.lints.clippy]
 # docs/todo/server-refactoring.md (G1): long and tangled functions are flagged; existing ones
 # carry an `#[expect]` naming the finding that will fix them.
 too_many_lines = "warn"
 cognitive_complexity = "warn"
+
+# webauthn-rs 0.6.2 needs crypto-glue with rsa 0.10.0, which jsonwebtoken uses too. The fix is
+# on crypto-glue's main branch but not released yet (0.2.2 asks for an rsa feature 0.10.0
+# dropped). Remove this once crypto-glue 0.2.3 is on crates.io.
+[patch.crates-io]
+crypto-glue = { git = "https://github.com/kanidm/crypto-glue", rev = "f267bc22b3f28e95672129b168200820c6beeaf6" }

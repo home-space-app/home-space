@@ -1,5 +1,5 @@
 //! Second factors of local accounts: the authenticator app (TOTP), recovery codes, and the
-//! sign-ins that wait for one of them.
+//! sign-ins that wait for one of them. Passkeys and security keys are in `webauthn`.
 
 use sqlx::FromRow;
 use time::OffsetDateTime;
@@ -22,16 +22,29 @@ pub struct StoredTotp {
 pub struct SecondFactorState {
     /// A confirmed authenticator app.
     pub totp: bool,
+    /// Passkeys and security keys.
+    pub webauthn: i64,
     /// Recovery codes not used yet.
     pub recovery_codes_left: i64,
 }
 
+impl SecondFactorState {
+    /// Whether signing in with the password asks for a second factor.
+    pub fn any(&self) -> bool {
+        self.totp || self.webauthn > 0
+    }
+}
+
 /// A sign-in that passed the password and waits for the second factor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, FromRow)]
+#[derive(Clone, Debug, PartialEq, Eq, FromRow)]
 pub struct PendingLogin {
     pub user_id: UserId,
     /// Wrong codes so far.
     pub attempts: i32,
+    /// The security key challenge sent for it (webauthn-rs state, JSON), if one was asked.
+    pub webauthn_state: Option<String>,
+    /// The page that asked for that challenge.
+    pub webauthn_origin: Option<String>,
 }
 
 impl Db {
@@ -71,16 +84,17 @@ impl Db {
         Ok(totp)
     }
 
-    /// Confirms the user's new authenticator app with a code of time step `step` and gives
-    /// them `recovery_codes` (hashes) in place of any they had, in one transaction.
-    /// `NotFound` when there is no unconfirmed app or `step` was already used.
+    /// Confirms the user's new authenticator app with a code of time step `step`, in one
+    /// transaction with giving them `recovery_codes` (hashes) when it is their first second
+    /// factor; returns whether it was. `NotFound` when there is no unconfirmed app or `step`
+    /// was already used.
     pub async fn confirm_totp(
         &self,
         tenant: TenantId,
         user: UserId,
         step: i64,
         recovery_codes: &[Vec<u8>],
-    ) -> Result<(), DbError> {
+    ) -> Result<bool, DbError> {
         let mut tx = self.pool().begin().await?;
         let confirmed = sqlx::query(
             "UPDATE user_totp SET confirmed_at = now(), last_step = $2 \
@@ -93,9 +107,12 @@ impl Db {
         if confirmed.rows_affected() == 0 {
             return Err(DbError::NotFound);
         }
-        replace_codes(&mut tx, tenant, user, recovery_codes).await?;
+        let first = !has_webauthn(&mut tx, user).await?;
+        if first {
+            replace_codes(&mut tx, tenant, user, recovery_codes).await?;
+        }
         tx.commit().await?;
-        Ok(())
+        Ok(first)
     }
 
     /// Records that a code of time step `step` was accepted, unless that step or a later one
@@ -155,6 +172,7 @@ impl Db {
         let state = sqlx::query_as::<_, SecondFactorState>(
             "SELECT EXISTS (SELECT 1 FROM user_totp \
                 WHERE user_id = $1 AND confirmed_at IS NOT NULL) AS totp, \
+             (SELECT COUNT(*) FROM user_webauthn WHERE user_id = $1) AS webauthn, \
              (SELECT COUNT(*) FROM user_recovery_codes \
                 WHERE user_id = $1 AND used_at IS NULL) AS recovery_codes_left",
         )
@@ -164,11 +182,17 @@ impl Db {
         Ok(state)
     }
 
-    /// Removes the user's authenticator app and recovery codes, so they sign in with the
-    /// password alone. Their sessions are kept.
-    pub async fn remove_second_factors(&self, user: UserId) -> Result<(), DbError> {
+    /// Removes the user's authenticator app, and with it the recovery codes when it was their
+    /// last second factor, so they sign in with the password alone. Their sessions are kept.
+    pub async fn remove_totp(&self, user: UserId) -> Result<(), DbError> {
         let mut tx = self.pool().begin().await?;
-        remove_factors(&mut tx, user).await?;
+        sqlx::query("DELETE FROM user_totp WHERE user_id = $1")
+            .bind(user)
+            .execute(&mut *tx)
+            .await?;
+        if !has_webauthn(&mut tx, user).await? {
+            remove_factors(&mut tx, user).await?;
+        }
         tx.commit().await?;
         Ok(())
     }
@@ -228,7 +252,8 @@ impl Db {
         token_hash: &[u8],
     ) -> Result<Option<PendingLogin>, DbError> {
         let pending = sqlx::query_as::<_, PendingLogin>(
-            "SELECT user_id, attempts FROM pending_logins \
+            "SELECT user_id, attempts, webauthn_state::TEXT AS webauthn_state, webauthn_origin \
+             FROM pending_logins \
              WHERE tenant_id = $1 AND token_hash = $2 AND expires_at > now()",
         )
         .bind(tenant)
@@ -254,6 +279,25 @@ impl Db {
         Ok(attempts)
     }
 
+    /// Keeps the security key challenge sent for the waiting sign-in, replacing an earlier one.
+    pub async fn set_pending_webauthn(
+        &self,
+        token_hash: &[u8],
+        origin: &str,
+        state: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE pending_logins SET webauthn_origin = $2, webauthn_state = $3::JSONB \
+             WHERE token_hash = $1",
+        )
+        .bind(token_hash)
+        .bind(origin)
+        .bind(state)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
     /// Removes the waiting sign-in, returning whether it was still there, so it finishes
     /// only once.
     pub async fn take_pending_login(&self, token_hash: &[u8]) -> Result<bool, DbError> {
@@ -265,7 +309,7 @@ impl Db {
     }
 }
 
-async fn replace_codes(
+pub(crate) async fn replace_codes(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     tenant: TenantId,
     user: UserId,
@@ -287,14 +331,43 @@ async fn replace_codes(
     Ok(())
 }
 
-async fn remove_factors(
+/// Whether the user has a passkey or security key.
+pub(crate) async fn has_webauthn(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user: UserId,
+) -> Result<bool, DbError> {
+    let has = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM user_webauthn WHERE user_id = $1)")
+        .bind(user)
+        .fetch_one(&mut **tx)
+        .await?;
+    Ok(has)
+}
+
+/// Whether the user has a confirmed authenticator app.
+pub(crate) async fn has_totp(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user: UserId,
+) -> Result<bool, DbError> {
+    let has = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM user_totp WHERE user_id = $1 AND confirmed_at IS NOT NULL)",
+    )
+    .bind(user)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(has)
+}
+
+/// Removes every second factor of the user, the recovery codes and what waits for them.
+pub(crate) async fn remove_factors(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user: UserId,
 ) -> Result<(), DbError> {
     for query in [
         "DELETE FROM user_totp WHERE user_id = $1",
+        "DELETE FROM user_webauthn WHERE user_id = $1",
         "DELETE FROM user_recovery_codes WHERE user_id = $1",
         "DELETE FROM pending_logins WHERE user_id = $1",
+        "DELETE FROM webauthn_ceremonies WHERE user_id = $1",
     ] {
         sqlx::query(query).bind(user).execute(&mut **tx).await?;
     }

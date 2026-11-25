@@ -20,6 +20,7 @@ mod tickets;
 mod token;
 mod totp;
 mod urls;
+mod webauthn;
 
 pub use error::AuthError;
 pub use oidc::{OidcConfig, OidcService};
@@ -30,3 +31,4 @@ pub use share_passwords::SharePasswords;
 pub use throttle::LOGIN_ATTEMPTS_MEMORY;
 pub use token::{Claims, new_share_token};
 pub use urls::is_https_or_loopback;
+pub use webauthn::RelyingParty;

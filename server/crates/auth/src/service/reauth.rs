@@ -6,6 +6,7 @@ use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use db::UserId;
+use protocol::PublicKeyCredential;
 
 use super::AuthService;
 use crate::{AuthError, password::MAX_PASSWORD_LEN, throttle::Counter};
@@ -16,6 +17,8 @@ const RECENT: Duration = Duration::minutes(10);
 pub(crate) const PASSWORD_PROOF: &str = "password";
 /// The name of an authenticator app's code among the ways to confirm.
 pub(crate) const TOTP_PROOF: &str = "totp";
+/// The name of a passkey or security key among the ways to confirm.
+pub(crate) const WEBAUTHN_PROOF: &str = "webauthn";
 
 /// How the user proves again who they are.
 #[derive(Clone, Copy, Debug)]
@@ -24,6 +27,12 @@ pub enum ReauthProof<'a> {
     Password(&'a str),
     /// A code from their authenticator app.
     Code(&'a str),
+    /// A passkey's or security key's answer to the challenge of
+    /// [`reauth_webauthn_options`](AuthService::reauth_webauthn_options).
+    WebAuthn {
+        challenge_id: Uuid,
+        answer: &'a PublicKeyCredential,
+    },
 }
 
 impl AuthService {
@@ -44,6 +53,13 @@ impl AuthService {
                     .await?;
             }
             ReauthProof::Code(code) => self.check_current_code(user_id, session_id, code).await?,
+            ReauthProof::WebAuthn {
+                challenge_id,
+                answer,
+            } => {
+                self.check_current_key(user_id, session_id, challenge_id, answer)
+                    .await?;
+            }
         }
         self.sessions.confirm(session_id, user_id).await
     }
@@ -65,12 +81,16 @@ impl AuthService {
             .find_user(user_id)
             .await?
             .ok_or(AuthError::InvalidCredentials)?;
-        let mut methods = Vec::with_capacity(2);
+        let mut methods = Vec::with_capacity(3);
         if user.password_hash.is_some() {
             methods.push(PASSWORD_PROOF);
         }
-        if self.db.second_factors(user_id).await?.totp {
+        let factors = self.db.second_factors(user_id).await?;
+        if factors.totp {
             methods.push(TOTP_PROOF);
+        }
+        if factors.webauthn > 0 {
+            methods.push(WEBAUTHN_PROOF);
         }
         Err(AuthError::ReauthenticationRequired { methods })
     }
@@ -92,6 +112,29 @@ impl AuthService {
         let checked = self.check_totp(&user, code).await;
         attempt
             .settle(checked, |err| matches!(err, AuthError::InvalidCode))
+            .await
+    }
+
+    /// Checks the answer of a passkey or security key of `user_id`, given from `session_id`,
+    /// with wrong answers throttled like wrong current passwords.
+    async fn check_current_key(
+        &self,
+        user_id: UserId,
+        session_id: Uuid,
+        challenge_id: Uuid,
+        answer: &PublicKeyCredential,
+    ) -> Result<(), AuthError> {
+        let user = self.user(user_id).await?;
+        let source = format!("session:{session_id}");
+        let attempt = self
+            .throttle
+            .admit(vec![Counter::key(user.tenant_id, &user.username, source)])
+            .await?;
+        let checked = self
+            .check_reauth_webauthn(user_id, challenge_id, answer)
+            .await;
+        attempt
+            .settle(checked, |err| matches!(err, AuthError::WebAuthnFailed))
             .await
     }
 

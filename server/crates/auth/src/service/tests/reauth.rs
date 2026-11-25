@@ -162,7 +162,13 @@ async fn an_app_let_in_from_the_browser_signed_in_as_the_browser_did(pool: PgPoo
     age(&pool, &web, 20).await;
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(VERIFIER.as_bytes()));
     let page = auth
-        .browser_start("http://127.0.0.1:4711/callback", &challenge, None, None)
+        .browser_start(
+            "http://127.0.0.1:4711/callback",
+            &challenge,
+            None,
+            None,
+            None,
+        )
         .await
         .expect("start");
     let flow = page.rsplit_once("flow=").expect("flow").1;

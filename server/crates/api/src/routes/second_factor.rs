@@ -26,7 +26,8 @@ pub fn routes() -> Router<AppState> {
         .route("/me/recovery-codes", post(new_recovery_codes))
 }
 
-/// Finishes a sign-in that answered `second-factor-required` with a code.
+/// Finishes a sign-in that answered `second-factor-required` with a code, or a passkey's or
+/// security key's answer.
 async fn login_verify(
     tenant: Tenant,
     ClientIp(address): ClientIp,
@@ -34,11 +35,12 @@ async fn login_verify(
     ApiJson(request): ApiJson<LoginVerifyRequest>,
 ) -> Result<Response, ApiError> {
     let browser = browser(request.cookie, &headers, &tenant)?;
-    let proof = match (&request.code, &request.recovery_code) {
-        (Some(code), _) => SecondFactorProof::Totp(code),
-        (None, Some(code)) => SecondFactorProof::Recovery(code),
+    let proof = match (&request.code, &request.recovery_code, &request.webauthn) {
+        (Some(code), _, _) => SecondFactorProof::Totp(code),
+        (None, Some(code), _) => SecondFactorProof::Recovery(code),
+        (None, None, Some(answer)) => SecondFactorProof::WebAuthn(answer),
         // Validation lets through only requests with one of them.
-        (None, None) => return Err(ApiError::BadRequest("a code is missing".to_owned())),
+        (None, None, None) => return Err(ApiError::BadRequest("a code is missing".to_owned())),
     };
     let pair = tenant
         .auth

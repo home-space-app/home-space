@@ -153,6 +153,7 @@ impl AuthService {
                 browser: false,
             }),
             browser_login: false,
+            passkeys: false,
         }
     }
 
@@ -467,6 +468,7 @@ impl AuthService {
 mod browser;
 mod reauth;
 mod second_factor;
+mod webauthn;
 
 pub use reauth::ReauthProof;
 pub use second_factor::SecondFactorProof;

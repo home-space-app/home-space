@@ -44,8 +44,13 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Apps can sign in in the browser where the web client is served and offers a way to sign in.
-async fn providers(State(state): State<AppState>, tenant: Tenant) -> Json<Providers> {
+async fn providers(
+    State(state): State<AppState>,
+    tenant: Tenant,
+    headers: HeaderMap,
+) -> Json<Providers> {
     let mut providers = tenant.auth.providers();
+    providers.passkeys = crate::browser::sent_to_a_name(&headers, &tenant);
     providers.browser_login = state.serves_web && (providers.password || providers.oidc.is_some());
     // Apps from before browser sign-in only know a provider's button: give them one that signs
     // in on the web page, through `oidc_start` and `oidc_exchange` below.
@@ -71,7 +76,14 @@ async fn oidc_start(
     let url = if state.serves_web && tenant.auth.providers().oidc.is_none() {
         tenant
             .auth
-            .browser_start(&query.redirect_uri, &query.code_challenge, None, address)
+            // Without a provider the page is always asked, wherever passkeys work.
+            .browser_start(
+                &query.redirect_uri,
+                &query.code_challenge,
+                None,
+                None,
+                address,
+            )
             .await?
     } else {
         tenant
@@ -276,11 +288,17 @@ async fn reauthenticate(
     user: AuthUser,
     ApiJson(request): ApiJson<ReauthenticateRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let proof = match (&request.password, &request.code) {
-        (Some(password), _) => ReauthProof::Password(password),
-        (None, Some(code)) => ReauthProof::Code(code),
+    let proof = match (&request.password, &request.code, &request.webauthn) {
+        (Some(password), _, _) => ReauthProof::Password(password),
+        (None, Some(code), _) => ReauthProof::Code(code),
+        (None, None, Some(answer)) => ReauthProof::WebAuthn {
+            challenge_id: answer.challenge_id,
+            answer: &answer.credential,
+        },
         // Validation lets through only requests with one of them.
-        (None, None) => return Err(ApiError::BadRequest("the password is missing".to_owned())),
+        (None, None, None) => {
+            return Err(ApiError::BadRequest("the password is missing".to_owned()));
+        }
     };
     tenant
         .auth

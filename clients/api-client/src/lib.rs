@@ -18,6 +18,7 @@ mod shares;
 mod storage;
 mod transfers;
 mod uploads;
+mod webauthn;
 
 pub use capabilities::{FALLBACK_UPLOAD_CHUNK_BYTES, STREAMING_NEEDS_UPDATE};
 pub use client::{Client, TokenListener, user_agent};

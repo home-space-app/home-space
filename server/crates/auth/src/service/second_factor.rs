@@ -1,14 +1,14 @@
-//! Two-factor sign-in with an authenticator app (TOTP) and recovery codes, as [`AuthService`]
-//! offers it: the second step of a sign-in, adding and removing the app, new recovery codes,
-//! and an administrator's reset.
+//! Two-factor sign-in as [`AuthService`] offers it: the second step of a sign-in, adding and
+//! removing the authenticator app (TOTP), new recovery codes, and an administrator's reset.
+//! Passkeys and security keys are in `webauthn`.
 
 use std::net::IpAddr;
 
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
-use db::{DbError, User, UserId};
-use protocol::{DeviceInfo, RecoveryCodes, TokenPair, TotpEnrolment};
+use db::{DbError, PendingLogin, SecondFactorState, User, UserId};
+use protocol::{DeviceInfo, PublicKeyCredential, RecoveryCodes, TokenPair, TotpEnrolment};
 
 use super::AuthService;
 use crate::{
@@ -30,7 +30,9 @@ const SECOND_FACTOR_SOURCE: &str = "2fa";
 /// The issuer an authenticator app shows next to the account.
 const TOTP_ISSUER: &str = "Home Space";
 /// The second factors a sign-in can finish with, as clients are told them.
-const SECOND_FACTOR_METHODS: [&str; 2] = ["totp", "recovery"];
+const TOTP_FACTOR: &str = "totp";
+const WEBAUTHN_FACTOR: &str = "webauthn";
+const RECOVERY_FACTOR: &str = "recovery";
 
 /// What finishes a sign-in that waits for its second factor.
 #[derive(Clone, Copy, Debug)]
@@ -39,6 +41,9 @@ pub enum SecondFactorProof<'a> {
     Totp(&'a str),
     /// One of the recovery codes, used up by this.
     Recovery(&'a str),
+    /// The browser's answer to the challenge of
+    /// [`login_webauthn_options`](AuthService::login_webauthn_options).
+    WebAuthn(&'a PublicKeyCredential),
 }
 
 impl AuthService {
@@ -59,7 +64,8 @@ impl AuthService {
         user: &User,
         two_step: bool,
     ) -> Result<(), AuthError> {
-        if !self.db.second_factors(user.id).await?.totp {
+        let factors = self.db.second_factors(user.id).await?;
+        if !factors.any() {
             return Ok(());
         }
         if !user.may_sign_in() {
@@ -82,7 +88,7 @@ impl AuthService {
         };
         Err(AuthError::SecondFactorRequired {
             login_token,
-            methods: SECOND_FACTOR_METHODS.to_vec(),
+            methods: factor_names(factors),
         })
     }
 
@@ -119,19 +125,16 @@ impl AuthService {
             SECOND_FACTOR_SOURCE,
         ));
         let attempt = self.throttle.admit(counters).await?;
-        let checked = self.check_second_factor(&user, proof).await;
-        let method = match attempt
-            .settle(checked, |err| matches!(err, AuthError::InvalidCode))
-            .await
-        {
+        let checked = self.check_second_factor(&user, &pending, proof).await;
+        let method = match attempt.settle(checked, is_wrong_factor).await {
             Ok(method) => method,
-            Err(AuthError::InvalidCode) => {
+            Err(err) if is_wrong_factor(&err) => {
                 let failures = self.db.count_pending_login_failure(&token_hash).await?;
                 if failures.is_none_or(|failures| failures >= MAX_CODE_FAILURES) {
                     self.db.take_pending_login(&token_hash).await?;
                     return Err(AuthError::LoginExpired);
                 }
-                return Err(AuthError::InvalidCode);
+                return Err(err);
             }
             Err(err) => return Err(err),
         };
@@ -146,9 +149,13 @@ impl AuthService {
     async fn check_second_factor(
         &self,
         user: &User,
+        pending: &PendingLogin,
         proof: SecondFactorProof<'_>,
     ) -> Result<&'static str, AuthError> {
         match proof {
+            SecondFactorProof::WebAuthn(answer) => {
+                self.check_login_webauthn(user, pending, answer).await
+            }
             SecondFactorProof::Totp(code) => {
                 self.check_totp(user, code).await?;
                 Ok(OTP_METHOD)
@@ -221,7 +228,8 @@ impl AuthService {
     }
 
     /// Confirms the new authenticator app with its first `code`: from now on signing in takes
-    /// one of its codes. Returns the user's recovery codes, which replace any earlier ones.
+    /// one of its codes. Returns the user's recovery codes when it is their first second
+    /// factor; with another one already they keep theirs, and the list is empty.
     pub async fn confirm_totp(
         &self,
         user_id: UserId,
@@ -240,38 +248,41 @@ impl AuthService {
             .ok_or(AuthError::InvalidCode)?;
         let codes = recovery_codes::new_set();
         let hashes = hashes(&codes);
-        match self
+        let first = match self
             .db
             .confirm_totp(self.tenant, user_id, step, &hashes)
             .await
         {
             Err(DbError::NotFound) => return Err(AuthError::InvalidCode),
             other => other?,
-        }
+        };
         tracing::info!(user = %user_id, "authenticator app added");
-        Ok(RecoveryCodes { codes })
+        Ok(RecoveryCodes {
+            codes: if first { codes } else { Vec::new() },
+        })
     }
 
-    /// Removes the authenticator app and the recovery codes of the user of `session_id`, who
-    /// must have signed in or confirmed it is them recently. Their sessions stay.
+    /// Removes the authenticator app of the user of `session_id`, who must have signed in or
+    /// confirmed it is them recently; with the last second factor the recovery codes go too.
+    /// Their sessions stay.
     pub async fn remove_totp(&self, user_id: UserId, session_id: Uuid) -> Result<(), AuthError> {
         self.require_recent_sign_in(user_id, session_id).await?;
-        self.db.remove_second_factors(user_id).await?;
+        self.db.remove_totp(user_id).await?;
         tracing::info!(user = %user_id, "authenticator app removed");
         Ok(())
     }
 
     /// A new set of recovery codes for the user of `session_id`, voiding the old ones. They
-    /// must have an authenticator app, and have signed in or confirmed it is them recently.
+    /// must have a second factor, and have signed in or confirmed it is them recently.
     pub async fn new_recovery_codes(
         &self,
         user_id: UserId,
         session_id: Uuid,
     ) -> Result<RecoveryCodes, AuthError> {
         self.require_recent_sign_in(user_id, session_id).await?;
-        if !self.db.second_factors(user_id).await?.totp {
+        if !self.db.second_factors(user_id).await?.any() {
             return Err(AuthError::InvalidInput(
-                "recovery codes need an authenticator app",
+                "recovery codes need a second factor",
             ));
         }
         let codes = recovery_codes::new_set();
@@ -303,6 +314,23 @@ impl AuthService {
             .filter(|user| user.tenant_id == self.tenant)
             .ok_or(AuthError::InvalidCredentials)
     }
+}
+
+/// Whether `err` is a wrong second factor, which counts as a failed attempt.
+fn is_wrong_factor(err: &AuthError) -> bool {
+    matches!(err, AuthError::InvalidCode | AuthError::WebAuthnFailed)
+}
+
+/// The second factors a sign-in of an account with `factors` can finish with.
+fn factor_names(factors: SecondFactorState) -> Vec<&'static str> {
+    [
+        (factors.totp, TOTP_FACTOR),
+        (factors.webauthn > 0, WEBAUTHN_FACTOR),
+        (factors.recovery_codes_left > 0, RECOVERY_FACTOR),
+    ]
+    .into_iter()
+    .filter_map(|(has, name)| has.then_some(name))
+    .collect()
 }
 
 fn hashes(codes: &[String]) -> Vec<Vec<u8>> {

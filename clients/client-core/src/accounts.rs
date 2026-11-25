@@ -99,12 +99,19 @@ pub fn near_quota(account: &Account) -> bool {
 /// How the user signs in.
 pub fn sign_in_method(account: &Account, provider: Option<&str>) -> String {
     if account.external {
-        provider.unwrap_or("Single sign-on").to_owned()
-    } else if account.two_factor {
-        "Password and authenticator app".to_owned()
-    } else {
-        "Password".to_owned()
+        return provider.unwrap_or("Single sign-on").to_owned();
     }
+    let has = |factor: &str| account.factors.iter().any(|named| named == factor);
+    // Servers from before `factors` only say whether there is a second factor, which was
+    // always an authenticator app.
+    let app = has("totp") || (account.two_factor && account.factors.is_empty());
+    match (app, has("webauthn")) {
+        (false, false) => "Password",
+        (true, false) => "Password and authenticator app",
+        (false, true) => "Password and passkey",
+        (true, true) => "Password, authenticator app and passkey",
+    }
+    .to_owned()
 }
 
 /// Which accounts the list shows.
@@ -180,6 +187,7 @@ mod tests {
             is_admin: false,
             external: false,
             two_factor: false,
+            factors: Vec::new(),
             created_at: OffsetDateTime::UNIX_EPOCH,
             disabled: false,
             quota_bytes: quota,
@@ -228,6 +236,28 @@ mod tests {
         assert!(near_quota(&account(19 * GIB, Some(20 * GIB))));
         assert!(!near_quota(&account(GIB, Some(20 * GIB))));
         assert!(!near_quota(&account(GIB, None)));
+    }
+
+    #[test]
+    fn the_sign_in_method_names_each_second_factor() {
+        let with = |two_factor: bool, factors: &[&str]| Account {
+            two_factor,
+            factors: factors.iter().map(|&factor| factor.to_owned()).collect(),
+            ..account(0, None)
+        };
+        assert_eq!(sign_in_method(&with(false, &[]), None), "Password");
+        assert_eq!(
+            sign_in_method(&with(true, &[]), None),
+            "Password and authenticator app"
+        );
+        assert_eq!(
+            sign_in_method(&with(true, &["webauthn"]), None),
+            "Password and passkey"
+        );
+        assert_eq!(
+            sign_in_method(&with(true, &["totp", "webauthn"]), None),
+            "Password, authenticator app and passkey"
+        );
     }
 
     #[test]

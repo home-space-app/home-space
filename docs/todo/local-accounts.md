@@ -103,15 +103,28 @@ A passkey with user verification proves possession and a PIN or biometric, so it
 factors and the password is not asked. A non-discoverable security key without verification only
 replaces the TOTP code.
 
-- Server: `webauthn-rs` (from Kanidm, the most used Rust implementation, does attestation
-  `none`, counters, backup flags). Its ceremony state is kept in the database between the two
-  requests (feature `danger-allow-state-serialisation`; the state is not secret, only bound to
-  the challenge), in a table that expires after 5 minutes, so it works with several server
-  processes.
+- Server: `webauthn-rs` 0.6 (from Kanidm, the most used Rust implementation, does attestation
+  `none`, counters, backup flags). Since 0.6 it is pure Rust (RustCrypto through `crypto-glue`),
+  so no OpenSSL: `homespace-ctl` stays a static binary and the server image is unchanged. Until
+  `crypto-glue` 0.2.3 is released, `server/Cargo.toml` patches it to the git commit that lets it
+  share `rsa` 0.10 with `jsonwebtoken`. Its ceremony state is kept in the database between the
+  two requests (feature `danger-allow-state-serialisation`; the state is not secret, only bound
+  to the challenge), for 5 minutes, so it works with several server processes.
 - Attestation: `none`. HomeSpace does not need to know the brand of the key.
-- RP id: the host of the tenant's primary domain; RP name: the tenant name. The RP id is stored
-  with each credential so a domain move can be detected and explained ("this passkey was made
-  for files.old.example").
+- RP id (decided 2026-11-25): the host of the page that asks, not a configured name. The
+  request's `Origin` must be one of the server's own (as for the cookie), https or `localhost`,
+  and its host becomes the RP id; an IP address gets no passkeys, as WebAuthn allows none. So
+  single mode without a public URL works, and a server reached under two names has passkeys for
+  each. RP name: "Home Space". The RP id is stored with each credential, only credentials of the
+  page's RP id are offered, and the settings say "Works only on files.old.example" for others.
+- Stored: webauthn-rs's `Credential` as JSON, plus `kind` (`passkey` or `security_key`), so one
+  credential type converts to `Passkey`, `SecurityKey` or `DiscoverableKey` per ceremony
+  (feature `danger-credential-internals`, which only adds those conversions). A passkey is
+  registered with `residentKey: required` set on webauthn-rs's options, so a YubiKey with a PIN
+  keeps the account too.
+- Only a `passkey` signs in on its own; either kind answers the second step after the password
+  and re-confirming (user verification `preferred`, all of the account's credentials allowed,
+  no `security-key` hint, so a phone's passkey can answer as well).
 - Each credential has a name the user can change ("YubiKey 5C", "Pixel"), and shows when it was
   added and last used.
 - Signature counters are checked when the authenticator sends them (synced passkeys send 0).
@@ -127,6 +140,8 @@ ability to decrypt. What is shared: the RP id helper, the `webauthn-rs` setup, t
 
 - 10 codes of 10 characters from an unambiguous alphabet (`xxxxx-xxxxx`), shown once when the
   first second factor is added, and again only by generating a new set (which voids the old one).
+  Removing the last second factor removes them (decided 2026-11-25): removing the app while a
+  key remains keeps them, and confirming an app on an account with a key brings no new ones.
 - Stored as SHA-256 (they are random and long, argon2 adds nothing), each usable once.
 - Using one signs the user in and shows a warning with how many are left.
 
@@ -142,12 +157,17 @@ POST /api/v1/auth/login            { username, password, device, cookie, two_ste
                                  or update the app."
   has one, two_step → the same problem, plus
                         login_token: "…"                 (5 minutes, single use)
-                        methods: ["totp", "webauthn", "recovery"]
-                        webauthn: { publicKey: … }       (request options, only if the user has keys)
+                        methods: ["totp", "webauthn", "recovery"]   (what the account has)
 
-POST /api/v1/auth/login/verify     { login_token, totp | recovery_code | webauthn, device, cookie }
-  → 200 TokenPair, or 401 unauthorized, or 429 too-many-attempts
+POST /api/v1/auth/login/webauthn   { login_token }       → { options: { publicKey: … } }
+POST /api/v1/auth/login/verify     { login_token, code | recovery_code | webauthn, device, cookie }
+  → 200 TokenPair, or 422 invalid-code / webauthn-failed, or 410 login-expired,
+    or 429 too-many-attempts
 ```
+
+- The security key challenge has its own request (decided 2026-11-25) rather than riding in the
+  problem: `/auth/login` stays as it is, and a page that asks again gets a new challenge, which
+  replaces the last in the waiting sign-in.
 
 - The current endpoint keeps working for apps until 1.0.0. Only a client that sends
   `two_step: true` (the web client) gets a `login_token`; every other caller just gets the
@@ -161,8 +181,8 @@ POST /api/v1/auth/login/verify     { login_token, totp | recovery_code | webauth
 - Clients should still show server errors better now, before 2FA ships (step 0 below), so the
   next problems need no such care.
 - The `login_token` is a random value whose hash sits in a new `pending_logins` table
-  (tenant, user, device, browser flag, expiry, attempts). It is not a JWT, so it can be used once
-  and revoked.
+  (tenant, user, attempts, expiry). It is not a JWT, so it can be used once and revoked. The
+  device and `cookie` are sent again with `/verify`, so the table does not keep them.
 - The password is checked **before** the second factor is asked, and the answer for a wrong
   password stays `401 unauthorized`. Asking for the factor only after a right password tells an
   attacker the password was right; that is accepted everywhere (GitHub, Google), because the factor
@@ -175,9 +195,12 @@ POST /api/v1/auth/login/verify     { login_token, totp | recovery_code | webauth
 ### Passkey sign-in (passwordless)
 
 ```
-POST /api/v1/auth/passkey/start    {}                    → { challenge_id, publicKey: … }
+POST /api/v1/auth/passkey/start    {}                    → { challenge_id, options: { publicKey: … } }
 POST /api/v1/auth/passkey/finish   { challenge_id, credential, device, cookie } → 200 TokenPair
 ```
+
+Each challenge is answered once. A wrong answer, an unknown credential and a security key that
+is not a passkey count against the address like wrong passwords (`webauthn-failed`).
 
 The browser offers the passkeys it has for the RP id (or conditional UI: they appear in the
 username field's autofill). The server finds the user from the credential's user handle (a random
@@ -342,7 +365,10 @@ Per tenant, in the `tenants` table (no secrets, so it fits the database):
   (needs the admin's own re-confirmation, removes TOTP, keys and recovery codes, ends the user's
   sessions). The same from `homespace-ctl user reset-2fa <username>` for a locked-out admin.
 - Disabling `HOMESPACE_PASSWORD_LOGIN` keeps passkey sign-in unless `passkey_login` is also off;
-  passkeys are local accounts too. (Open question.)
+  passkeys are local accounts too (decided, open question 5). Done for step 4: the login page
+  offers the provider and the passkey; an app's browser sign-in goes straight to the provider
+  only when none of the tenant's passkeys was made for the host it was sent to, and otherwise
+  opens the page, which offers both.
 - WebAuthn needs a secure context: a server reached by IP address or plain HTTP on the LAN cannot
   use passkeys (only TOTP). `GET /auth/providers` says so, and the web client hides the button.
 
@@ -368,8 +394,8 @@ CREATE TABLE user_webauthn (
     tenant_id     INTEGER NOT NULL,
     user_id       UUID NOT NULL,
     credential_id BYTEA NOT NULL,
-    credential    JSONB NOT NULL,          -- webauthn-rs Passkey / SecurityKey
-    discoverable  BOOLEAN NOT NULL,
+    credential    JSONB NOT NULL,          -- webauthn-rs Credential
+    kind          TEXT NOT NULL,           -- passkey | security_key
     rp_id         TEXT NOT NULL,
     name          TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 64),
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -388,24 +414,29 @@ CREATE TABLE user_recovery_codes (
 );
 
 -- Random handle a passkey carries instead of the user's id or name.
-ALTER TABLE users ADD COLUMN webauthn_handle BYTEA UNIQUE;
+ALTER TABLE users ADD COLUMN webauthn_handle UUID UNIQUE;
 
--- A sign-in that passed the password and waits for the second factor, and the state of a
--- WebAuthn ceremony between its two requests.
-CREATE TABLE pending_logins (...);   -- token_hash, tenant_id, user_id NULL, kind, state JSONB, attempts, expires_at
+-- A sign-in that passed the password and waits for the second factor, with the security key
+-- challenge it was sent.
+CREATE TABLE pending_logins (...);   -- token_hash, tenant_id, user_id, attempts, expires_at,
+                                     -- webauthn_state JSONB, webauthn_origin
+-- Adding a key, a passkey sign-in and re-confirming between their two requests.
+CREATE TABLE webauthn_ceremonies (...);  -- id, tenant_id, user_id NULL, kind, origin, state, expires_at
 
 -- Done in 0029_session_auth.sql: sessions.auth_methods TEXT[], sessions.authenticated_at,
 -- both also on login_codes.
 -- Done in 0030_second_factors.sql: user_totp, user_recovery_codes, and pending_logins
--- (token_hash, tenant_id, user_id, attempts, expires_at). The WebAuthn tables, webauthn_handle
--- and the ceremony state of pending_logins come with step 4, the tenants columns with step 5.
+-- (token_hash, tenant_id, user_id, attempts, expires_at).
+-- Done in 0031_webauthn.sql: user_webauthn, users.webauthn_handle, the WebAuthn columns of
+-- pending_logins and webauthn_ceremonies. The tenants columns come with step 5.
 
 ALTER TABLE tenants ADD COLUMN mfa_policy TEXT NOT NULL DEFAULT 'optional'
     CHECK (mfa_policy IN ('optional', 'admins', 'everyone'));
 ALTER TABLE tenants ADD COLUMN passkey_login BOOLEAN NOT NULL DEFAULT true;
 ```
 
-The background job that already clears `oidc_pending` also clears expired `pending_logins`.
+The background job that already clears `oidc_pending` also clears expired `pending_logins` and
+`webauthn_ceremonies`.
 
 ### The TOTP secret key
 
@@ -431,16 +462,18 @@ database dump (backups) would hand out every second factor. So:
 | Method and path | Purpose |
 |---|---|
 | `POST /auth/login` | Unchanged request; may answer `second-factor-required` |
-| `POST /auth/login/verify` | Second step with TOTP or recovery code (done), WebAuthn assertion (step 4) |
-| `POST /auth/passkey/start`, `/finish` | Passwordless sign-in |
+| `POST /auth/login/webauthn` | The security key challenge of the second step (done) |
+| `POST /auth/login/verify` | Second step with TOTP, recovery code or WebAuthn answer (done) |
+| `POST /auth/passkey/start`, `/finish` | Passwordless sign-in (done) |
 | `GET /auth/browser/start`, `GET /auth/browser/flows/{id}`, `POST /auth/browser/approve`, `/deny`, `/exchange` | Browser sign-in for native apps (done: server and web) |
-| `GET /auth/providers` | Gains `passkeys: bool`, `browser_login: bool` |
-| `GET /me` | Gains `second_factors: { totp, recovery_codes_left }` (done); `webauthn: n` with step 4 |
-| `GET /me/security` | Factors, credentials with names and dates, the policy (with step 4) |
+| `GET /auth/providers` | Gains `passkeys: bool` (done: the request's host is a name), `browser_login: bool` (done) |
+| `GET /me` | Gains `second_factors: { totp, webauthn, recovery_codes_left }` (done) |
+| `GET /me/webauthn` | The credentials with names, kinds, RP ids and dates (done; instead of `GET /me/security`, the policy comes with step 5) |
 | `POST /me/totp`, `POST /me/totp/confirm`, `DELETE /me/totp` | Enrol, confirm, remove TOTP (done) |
-| `POST /me/webauthn/start`, `/finish`, `PATCH`/`DELETE /me/webauthn/{id}` | Add, rename, remove a key |
+| `POST /me/webauthn/start`, `/finish`, `PATCH`/`DELETE /me/webauthn/{id}` | Add, rename, remove a key (done) |
 | `POST /me/recovery-codes` | New set (voids the old) (done) |
-| `POST /me/reauthenticate` | Fresh proof for sensitive changes |
+| `POST /me/reauthenticate` | Fresh proof for sensitive changes (done: password, `code`, `webauthn`) |
+| `POST /me/reauthenticate/webauthn` | The challenge for re-confirming with a key (done) |
 | `DELETE /admin/users/{id}/second-factors` | Reset 2FA (done) |
 
 New problem types for `docs/api-errors.md`: `second-factor-required` (403),
@@ -518,9 +551,10 @@ client falls back to plain password sign-in on older servers.
 
 - `auth` unit tests: TOTP window and replay, recovery codes single use, policy states, login token
   expiry and attempt limit, session methods.
-- API tests against Postgres: both login steps, old-client 401 shape, passkey sign-in with
-  `webauthn-rs`'s software authenticator (`webauthn-authenticator-rs`), browser sign-in code flow,
-  re-confirmation, admin reset, tenant isolation of credentials.
+- API tests against Postgres: both login steps, old-client 401 shape, passkey sign-in, browser
+  sign-in code flow, re-confirmation, admin reset, tenant isolation of credentials. The keys are
+  a small ES256 authenticator in `api/tests/webauthn/authenticator.rs`: webauthn-rs's software
+  authenticators make no discoverable credentials, which passkey sign-in needs.
 - Web e2e (Playwright): Chrome DevTools virtual authenticator for passkey enrolment and sign-in;
   TOTP from a fixed clock.
 
@@ -563,6 +597,17 @@ client falls back to plain password sign-in on older servers.
    browser" button works; new clients skip it (`Providers::identity_provider`). A tenant with
    only its provider sends `browser/start` straight to the provider.
 4. WebAuthn: security keys as second factor, then passkey sign-in, in the web client.
+   Done (feature `passkeys`): `0031_webauthn.sql`; `/me/webauthn` (list, start, finish, rename,
+   remove), `/auth/login/webauthn` and `webauthn` in `/auth/login/verify`, `/auth/passkey/start`
+   and `finish`, `/me/reauthenticate/webauthn` and `webauthn` in `/me/reauthenticate`;
+   `Providers.passkeys`, `Me.second_factors.webauthn`, `Account.factors`; adding needs a
+   recent sign-in, at most 20 per account. Sessions record `["pwd", "hwk"]` (or `swk` for a
+   synced passkey) after a key, and `["hwk" | "swk", "user"]` after a passkey sign-in. The web
+   client has "Sign in with a passkey" and the passkeys in the username field's autofill, the
+   key as the first choice of the second step, a "Passkeys and security keys" part of the
+   settings card (add either kind, rename, remove), a key in the re-confirm dialog, and the
+   factors named in the admin's user panel. Not done: e-mail or device notices when a key is
+   added (step 7), and native apps, which sign in through the web page.
 5. Policy (`mfa_policy`), forced enrolment, `HOMESPACE_OIDC_REQUIRE_MFA`, and an administrator's
    security settings screen in the web client: who must use a second factor, how long sessions
    last, and how often the second factor is asked again.

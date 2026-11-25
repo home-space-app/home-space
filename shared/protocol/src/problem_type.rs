@@ -70,6 +70,14 @@ pub enum ProblemType {
     TotpExists,
     /// The server has no key to keep authenticator app secrets with, so none can be set up.
     SecretsKeyMissing,
+    /// The passkey or security key could not be verified: a wrong or replayed answer, or one
+    /// for another challenge.
+    WebAuthnFailed,
+    /// Passkeys and security keys cannot be used on this address: it is not https (or
+    /// `localhost`), is an IP address, or is not the server's own.
+    WebAuthnUnavailable,
+    /// The account has as many passkeys and security keys as it may.
+    TooManyKeys,
     /// A folder cannot be moved into itself or into one of its folders.
     MoveIntoItself,
     /// The item is a folder, and only a file can do this.
@@ -106,7 +114,7 @@ pub enum ProblemType {
 
 impl ProblemType {
     /// Every problem type, for documentation and tests.
-    pub const ALL: [Self; 44] = [
+    pub const ALL: [Self; 47] = [
         Self::BadRequest,
         Self::BodyInterrupted,
         Self::UnsupportedMediaType,
@@ -136,6 +144,9 @@ impl ProblemType {
         Self::InvalidCode,
         Self::TotpExists,
         Self::SecretsKeyMissing,
+        Self::WebAuthnFailed,
+        Self::WebAuthnUnavailable,
+        Self::TooManyKeys,
         Self::MoveIntoItself,
         Self::NotAFile,
         Self::InvalidName,
@@ -300,6 +311,24 @@ impl ProblemType {
                 "secrets-key-missing",
                 C::Internal,
                 "Two-factor sign-in is not set up on this server",
+            ),
+            Self::WebAuthnFailed => (
+                422,
+                "webauthn-failed",
+                C::BadRequest,
+                "The passkey or security key could not be verified",
+            ),
+            Self::WebAuthnUnavailable => (
+                400,
+                "webauthn-unavailable",
+                C::BadRequest,
+                "Passkeys cannot be used on this address",
+            ),
+            Self::TooManyKeys => (
+                409,
+                "too-many-keys",
+                C::Conflict,
+                "The account has too many passkeys and security keys",
             ),
             Self::MoveIntoItself => (
                 422,

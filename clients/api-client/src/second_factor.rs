@@ -2,8 +2,8 @@
 //! two steps, and the signed-in user's authenticator app and recovery codes.
 
 use protocol::{
-    LoginRequest, LoginVerifyRequest, Me, Problem, ProblemType, RecoveryCodes, TokenPair,
-    TotpConfirmRequest, TotpEnrolment, UserId, paths,
+    LoginRequest, LoginVerifyRequest, Me, Problem, ProblemType, PublicKeyCredential, RecoveryCodes,
+    TokenPair, TotpConfirmRequest, TotpEnrolment, UserId, paths,
 };
 use reqwest::StatusCode;
 
@@ -27,7 +27,7 @@ pub enum SignIn {
 pub struct SecondFactorStep {
     /// What [`login_verify`](Client::login_verify) takes; valid for a few minutes.
     pub login_token: String,
-    /// What the account can finish with, such as `totp` and `recovery`.
+    /// What the account can finish with: `totp`, `webauthn` and `recovery`.
     pub methods: Vec<String>,
 }
 
@@ -38,6 +38,10 @@ pub enum SecondFactor<'a> {
     Code(&'a str),
     /// One of the account's recovery codes, used up by this.
     RecoveryCode(&'a str),
+    /// A passkey's or security key's answer to the challenge of
+    /// [`login_webauthn_options`](Client::login_webauthn_options) (feature
+    /// [`PASSKEYS`](protocol::features::PASSKEYS)).
+    WebAuthn(&'a PublicKeyCredential),
 }
 
 impl Client {
@@ -88,14 +92,16 @@ impl Client {
         login_token: &str,
         factor: SecondFactor<'_>,
     ) -> Result<Me, ApiError> {
-        let (code, recovery_code) = match factor {
-            SecondFactor::Code(code) => (Some(code.to_owned()), None),
-            SecondFactor::RecoveryCode(code) => (None, Some(code.to_owned())),
+        let (code, recovery_code, webauthn) = match factor {
+            SecondFactor::Code(code) => (Some(code.to_owned()), None, None),
+            SecondFactor::RecoveryCode(code) => (None, Some(code.to_owned()), None),
+            SecondFactor::WebAuthn(answer) => (None, None, Some(answer.clone())),
         };
         let request = LoginVerifyRequest {
             login_token: login_token.to_owned(),
             code,
             recovery_code,
+            webauthn,
             device: self.device().cloned(),
             cookie: self.cookie_session(),
         };
@@ -119,7 +125,8 @@ impl Client {
     }
 
     /// Confirms the new authenticator app with its first `code`; returns the recovery codes,
-    /// which the user sees only now.
+    /// which the user sees only now. They are empty when the account had another second
+    /// factor already, and keeps its codes.
     pub async fn confirm_totp(&self, code: &str) -> Result<RecoveryCodes, ApiError> {
         let request = TotpConfirmRequest {
             code: code.to_owned(),
@@ -132,7 +139,8 @@ impl Client {
         .await
     }
 
-    /// Removes the authenticator app and the recovery codes; this session stays signed in.
+    /// Removes the authenticator app, and the recovery codes with the last second factor; this
+    /// session stays signed in.
     pub async fn remove_totp(&self) -> Result<(), ApiError> {
         let response = self
             .send(|| self.http().delete(self.url(paths::ME_TOTP)))

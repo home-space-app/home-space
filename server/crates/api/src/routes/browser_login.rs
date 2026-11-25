@@ -5,7 +5,10 @@
 use axum::{
     Json, Router,
     extract::State,
-    http::header::{CACHE_CONTROL, REFERRER_POLICY},
+    http::{
+        HeaderMap,
+        header::{CACHE_CONTROL, REFERRER_POLICY},
+    },
     response::{IntoResponse, Redirect},
     routing::{get, post},
 };
@@ -15,7 +18,7 @@ use protocol::{
 };
 
 use crate::{
-    ApiError, AppState,
+    ApiError, AppState, browser,
     extract::{ApiJson, ApiPath, ApiQuery, AuthUser, ClientIp, Tenant},
 };
 
@@ -33,6 +36,7 @@ async fn start(
     State(state): State<AppState>,
     tenant: Tenant,
     ClientIp(address): ClientIp,
+    headers: HeaderMap,
     ApiQuery(query): ApiQuery<BrowserLoginStartQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     if !state.serves_web {
@@ -44,6 +48,7 @@ async fn start(
             &query.redirect_uri,
             &query.code_challenge,
             query.device_name.as_deref(),
+            browser::host_name(&headers, &tenant),
             address,
         )
         .await?;
