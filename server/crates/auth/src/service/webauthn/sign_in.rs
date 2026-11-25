@@ -100,11 +100,15 @@ impl AuthService {
     }
 
     /// Starts a passkey sign-in from the page of `party`: the browser offers the passkeys it
-    /// has for the site, and the answer says whose it is.
+    /// has for the site, and the answer says whose it is. Anyone may start one, and each
+    /// leaves a row until it expires, so starts are counted against `address` like the other
+    /// sign-ins started without an account.
     pub async fn passkey_start(
         &self,
         party: &RelyingParty,
+        address: Option<IpAddr>,
     ) -> Result<AssertionChallenge, AuthError> {
+        self.count_sign_in_start(address).await?;
         let (mut options, state) = party
             .webauthn()?
             .start_discoverable_authentication()

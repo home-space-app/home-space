@@ -601,8 +601,10 @@ client falls back to plain password sign-in on older servers.
    remove), `/auth/login/webauthn` and `webauthn` in `/auth/login/verify`, `/auth/passkey/start`
    and `finish`, `/me/reauthenticate/webauthn` and `webauthn` in `/me/reauthenticate`;
    `Providers.passkeys`, `Me.second_factors.webauthn`, `Account.factors`; adding needs a
-   recent sign-in, at most 20 per account. Sessions record `["pwd", "hwk"]` (or `swk` for a
-   synced passkey) after a key, and `["hwk" | "swk", "user"]` after a passkey sign-in. The web
+   recent sign-in, at most 20 per account. A passkey start counts against the address like the
+   other sign-ins started without an account, and a key's counter is stored only while it goes
+   up, in one statement, so of two answers raced with one key the older is refused. Sessions
+   record `["pwd", "hwk"]` (or `swk` for a synced passkey) after a key, and `["hwk" | "swk", "user"]` after a passkey sign-in. The web
    client has "Sign in with a passkey" and the passkeys in the username field's autofill, the
    key as the first choice of the second step, a "Passkeys and security keys" part of the
    settings card (add either kind, rename, remove), a key in the re-confirm dialog, and the

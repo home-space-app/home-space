@@ -193,7 +193,7 @@ impl AuthService {
             return Err(AuthError::InvalidCode);
         }
         if opened.stale {
-            let sealed = keys.seal(self.tenant, user.id, &opened.plain);
+            let sealed = keys.seal(self.tenant, user.id, &opened.plain)?;
             self.db.reseal_totp(user.id, &sealed).await?;
         }
         Ok(())
@@ -216,7 +216,7 @@ impl AuthService {
         }
         let keys = self.secret_box()?;
         let secret = totp::new_secret();
-        let sealed = keys.seal(self.tenant, user_id, &secret);
+        let sealed = keys.seal(self.tenant, user_id, &secret)?;
         match self.db.start_totp(self.tenant, user_id, &sealed).await {
             Err(DbError::Conflict) => return Err(AuthError::TotpExists),
             other => other?,

@@ -249,22 +249,28 @@ impl Db {
         Ok(())
     }
 
-    /// Records a sign-in with credential `id`, with its new state (counter, backup flags) when
-    /// it changed.
+    /// Records that the credential `id` was used, with its new state `credential` (when it
+    /// changed) and the authenticator's `counter`. Only while the stored counter is below
+    /// `counter`, or both are 0 for an authenticator that keeps none, all in one statement:
+    /// otherwise `false`, since another sign-in got there first or the key was copied.
     pub async fn touch_webauthn_credential(
         &self,
         id: Uuid,
         credential: Option<&str>,
-    ) -> Result<(), DbError> {
-        sqlx::query(
+        counter: u32,
+    ) -> Result<bool, DbError> {
+        let touched = sqlx::query(
             "UPDATE user_webauthn SET last_used_at = now(), \
-             credential = COALESCE($2::JSONB, credential) WHERE id = $1",
+             credential = COALESCE($2::JSONB, credential) \
+             WHERE id = $1 AND ((credential->>'counter')::BIGINT < $3 \
+             OR ($3 = 0 AND (credential->>'counter')::BIGINT = 0))",
         )
         .bind(id)
         .bind(credential)
+        .bind(i64::from(counter))
         .execute(self.pool())
         .await?;
-        Ok(())
+        Ok(touched.rows_affected() == 1)
     }
 
     /// Stores a ceremony waiting for its answer.

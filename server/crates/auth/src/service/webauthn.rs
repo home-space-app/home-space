@@ -297,7 +297,10 @@ impl AuthService {
         Ok(key_method(&result))
     }
 
-    /// Records that `stored` was used, with its new counter and backup flags.
+    /// Records that `stored` was used, with its new counter and backup flags. Refused when
+    /// the counter is not above the stored one by then: two answers raced, or the key was
+    /// copied, and the library only compared it with the counter of when the challenge was
+    /// made.
     pub(super) async fn record_use(
         &self,
         stored: &StoredCredential,
@@ -307,9 +310,18 @@ impl AuthService {
         let mut key = passkey(credential);
         let changed = key.update_credential(result) == Some(true);
         let json = changed.then(|| credential_json(&key.into()));
-        self.db
-            .touch_webauthn_credential(stored.id, json.as_deref())
+        let touched = self
+            .db
+            .touch_webauthn_credential(stored.id, json.as_deref(), result.counter())
             .await?;
+        if !touched {
+            tracing::warn!(
+                user = %stored.user_id,
+                key = %stored.id,
+                "passkey or security key refused: its counter did not go up, so it may be copied"
+            );
+            return Err(AuthError::WebAuthnFailed);
+        }
         Ok(())
     }
 

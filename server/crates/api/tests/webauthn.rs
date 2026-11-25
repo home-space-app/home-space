@@ -489,3 +489,61 @@ async fn a_passkey_works_only_on_its_own_site(pool: PgPool) {
     .await;
     assert_eq!(problem(&refused), "webauthn-failed");
 }
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn of_two_answers_raced_with_one_key_only_the_higher_counter_signs_in(pool: PgPool) {
+    let app = setup(pool).await;
+    let token = app.user_token("alice").await;
+    let mut yubikey = Authenticator::new();
+    add_key(&app, &token, &mut yubikey, "passkey").await;
+
+    // Both challenges were made while the stored counter was 0, so each answer is newer than
+    // what its challenge knew; only the database still knows which came first.
+    let start = || post(&app, "/api/v1/auth/passkey/start", None, json!({}));
+    let earlier = start().await.json();
+    let later = start().await.json();
+    let first = yubikey.sign(ORIGIN, &earlier["options"]).expect("answer");
+    let second = yubikey.sign(ORIGIN, &later["options"]).expect("answer");
+    let finish = |challenge: &Value, answer: Value| {
+        post(
+            &app,
+            "/api/v1/auth/passkey/finish",
+            None,
+            json!({ "challenge_id": challenge["challenge_id"], "credential": answer }),
+        )
+    };
+    let newer = finish(&later, second).await;
+    assert_eq!(newer.status, StatusCode::OK, "{}", newer.json());
+    let older = finish(&earlier, first).await;
+    assert_eq!(problem(&older), "webauthn-failed");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn one_address_may_start_only_so_many_passkey_sign_ins(pool: PgPool) {
+    let app = setup(pool).await;
+    let start_from = |address: &'static str| {
+        let app = &app;
+        async move {
+            app.send_with(
+                Method::POST,
+                "/api/v1/auth/passkey/start",
+                None,
+                Body::from("{}"),
+                Some("application/json"),
+                &[
+                    ("host", HOST_A),
+                    ("origin", ORIGIN),
+                    ("x-forwarded-for", address),
+                ],
+            )
+            .await
+        }
+    };
+    for _ in 0..30 {
+        assert_eq!(start_from("198.51.100.7").await.status, StatusCode::OK);
+    }
+    let refused = start_from("198.51.100.7").await;
+    assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(problem(&refused), "too-many-attempts");
+    assert_eq!(start_from("203.0.113.9").await.status, StatusCode::OK);
+}

@@ -140,10 +140,11 @@ async fn login_options(
 /// The challenge for signing in with a passkey.
 async fn passkey_start(
     tenant: Tenant,
+    ClientIp(address): ClientIp,
     headers: HeaderMap,
 ) -> Result<Json<AssertionChallenge>, ApiError> {
     let party = relying_party(&headers, &tenant)?;
-    Ok(Json(tenant.auth.passkey_start(&party).await?))
+    Ok(Json(tenant.auth.passkey_start(&party, address).await?))
 }
 
 /// Signs in with a passkey's answer.

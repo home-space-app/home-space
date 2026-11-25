@@ -304,3 +304,38 @@ async fn a_tenant_has_passkeys_only_for_the_address_they_were_made_on(pool: PgPo
     assert!(!has(TenantId::DEFAULT, "other.example.com").await);
     assert!(!has(other, "files.example.com").await);
 }
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_use_is_recorded_only_while_the_counter_goes_up(pool: PgPool) {
+    let db = Db::from_pool(pool);
+    let alice = user(&db, TenantId::DEFAULT, "alice").await;
+    let id = Uuid::now_v7();
+    db.add_webauthn_credential(
+        TenantId::DEFAULT,
+        alice,
+        key(id, b"key", "passkey"),
+        &codes(),
+    )
+    .await
+    .expect("add");
+    let touch = |credential: Option<&'static str>, counter| {
+        let db = db.clone();
+        async move {
+            db.touch_webauthn_credential(id, credential, counter)
+                .await
+                .expect("db")
+        }
+    };
+
+    // An authenticator that keeps no counter answers 0 every time.
+    assert!(touch(None, 0).await);
+    assert!(touch(None, 0).await);
+    assert!(touch(Some(r#"{"counter":5}"#), 5).await);
+    assert!(!touch(Some(r#"{"counter":5}"#), 5).await);
+    assert!(!touch(Some(r#"{"counter":4}"#), 4).await);
+    assert!(!touch(None, 0).await);
+    assert!(touch(Some(r#"{"counter":6}"#), 6).await);
+    let stored = db.webauthn_credentials(alice).await.expect("db");
+    assert_eq!(stored[0].credential, r#"{"counter": 6}"#);
+    assert!(stored[0].last_used_at.is_some());
+}
