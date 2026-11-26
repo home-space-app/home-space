@@ -11,8 +11,9 @@ use uuid::Uuid;
 use axum::extract::State;
 use db::NodeId;
 use protocol::{
-    AddUnlocker, ChangeFolderPassword, FolderLock, FolderUnlocked, ProtectFolder, ProtectedFolder,
-    ProtectionState, RotateVault, UnlockFolder, Vault, VaultUnlocker,
+    AddUnlocker, ChangeFolderPassword, FolderLock, FolderPasswordChanged, FolderUnlocked,
+    ProtectFolder, ProtectedFolder, ProtectionState, RotateVault, UnlockFolder, Vault,
+    VaultUnlocker,
 };
 
 use crate::{
@@ -110,18 +111,20 @@ fn convert_now(state: &AppState, tenant: &Tenant) {
     });
 }
 
-/// Sets a new password for a password folder the caller's session unlocked.
+/// Sets a new password for a password folder, given its current password or recovery key.
 async fn change_password(
     tenant: Tenant,
     user: AuthUser,
+    ClientIp(address): ClientIp,
     ApiPath(id): ApiPath<NodeId>,
     ApiJson(request): ApiJson<ChangeFolderPassword>,
-) -> Result<StatusCode, ApiError> {
-    tenant
-        .vault
-        .change_password(user.id, user.session_id, id, &request.password)
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
+) -> Result<Json<FolderPasswordChanged>, ApiError> {
+    Ok(Json(
+        tenant
+            .vault
+            .change_password(user.id, user.session_id, id, &request, address)
+            .await?,
+    ))
 }
 
 /// Unlocks a password folder for the caller's session.

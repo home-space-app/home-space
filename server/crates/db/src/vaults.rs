@@ -87,6 +87,8 @@ pub struct KeyLock<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct PasswordLock<'a> {
     pub password_hash: &'a str,
+    /// The hash of the folder's recovery key.
+    pub recovery_hash: &'a str,
     pub sealed_key: &'a [u8],
     pub recipient: &'a str,
 }
@@ -102,6 +104,7 @@ pub enum NewProtection<'a> {
 #[derive(Clone, Debug, PartialEq, Eq, FromRow)]
 pub struct PasswordSecrets {
     pub password_hash: String,
+    pub recovery_hash: String,
     pub sealed_key: Vec<u8>,
 }
 
@@ -419,8 +422,9 @@ impl Db {
             .bind(state),
             NewProtection::Password(lock) => sqlx::query_as::<_, StoredProtection>(
                 "INSERT INTO protected_folders \
-                 (node_id, owner_id, lock, password_hash, sealed_key, recipient, state) \
-                 VALUES ($1, $2, 'password', $3, $4, $5, $6) \
+                 (node_id, owner_id, lock, password_hash, sealed_key, recipient, state, \
+                  recovery_hash) \
+                 VALUES ($1, $2, 'password', $3, $4, $5, $6, $7) \
                  RETURNING node_id, lock, wrapped_secret, epoch, recipient, format, state, \
                  created_at",
             )
@@ -429,7 +433,8 @@ impl Db {
             .bind(lock.password_hash)
             .bind(lock.sealed_key)
             .bind(lock.recipient)
-            .bind(state),
+            .bind(state)
+            .bind(lock.recovery_hash),
         };
         let stored = insert.fetch_one(&mut *tx).await?;
         tx.commit().await?;
@@ -502,7 +507,7 @@ impl Db {
         node: NodeId,
     ) -> Result<Option<PasswordSecrets>, DbError> {
         let secrets = sqlx::query_as::<_, PasswordSecrets>(
-            "SELECT password_hash, sealed_key FROM protected_folders \
+            "SELECT password_hash, recovery_hash, sealed_key FROM protected_folders \
              WHERE owner_id = $1 AND node_id = $2 AND lock = 'password'",
         )
         .bind(user)
@@ -687,23 +692,26 @@ impl Db {
         Ok(renamed == 1)
     }
 
-    /// Sets a new password hash for the user's password folder `node` and locks it for every
-    /// session but `keep`.
+    /// Sets a new password hash for the user's password folder `node`, and a new recovery key
+    /// hash when given, and locks it for every session but `keep`.
     pub async fn set_folder_password(
         &self,
         user: UserId,
         node: NodeId,
         password_hash: &str,
+        recovery_hash: Option<&str>,
         keep: Uuid,
     ) -> Result<(), DbError> {
         let mut tx = self.begin().await?;
         let changed = sqlx::query(
-            "UPDATE protected_folders SET password_hash = $3 \
+            "UPDATE protected_folders SET password_hash = $3, \
+             recovery_hash = COALESCE($4, recovery_hash) \
              WHERE owner_id = $1 AND node_id = $2 AND lock = 'password'",
         )
         .bind(user)
         .bind(node)
         .bind(password_hash)
+        .bind(recovery_hash)
         .execute(&mut *tx)
         .await?;
         if changed.rows_affected() != 1 {

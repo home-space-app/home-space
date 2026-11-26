@@ -200,6 +200,10 @@ pub struct ProtectedFolder {
     pub state: ProtectionState,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    /// Only in the answer to protecting with a password: the folder's recovery key, shown once.
+    /// It sets a new password when the old one is forgotten; the server keeps only its hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_key: Option<String>,
 }
 
 /// `POST /protected`: protects one of the caller's folders. A security key needs
@@ -234,11 +238,31 @@ impl std::fmt::Debug for UnlockFolder {
     }
 }
 
-/// `POST /protected/{id}/password`: a new password for a password folder, from a session that
-/// unlocked it and signed in recently. The folder's key stays; other sessions are locked out.
+/// `POST /protected/{id}/password`: a new password for a password folder, with exactly one
+/// proof: the current password, or the folder's recovery key when it is forgotten. Signing in to
+/// the account is not enough. The folder's key stays; other sessions are locked out.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ChangeFolderPassword {
     pub password: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_password: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_key: Option<String>,
+}
+
+/// The answer to `POST /protected/{id}/password`.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct FolderPasswordChanged {
+    /// A new recovery key, shown once, when the old one was used: it was typed in, so it is
+    /// replaced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_key: Option<String>,
+}
+
+impl std::fmt::Debug for FolderPasswordChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FolderPasswordChanged { .. }")
+    }
 }
 
 impl std::fmt::Debug for ChangeFolderPassword {

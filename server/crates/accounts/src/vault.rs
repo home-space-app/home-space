@@ -19,11 +19,12 @@ use db::{
     Rewrapped, StoredProtection, StoredUnlocker, StoredVault, UserId,
 };
 use protocol::{
-    AddUnlocker, FolderLock, FolderUnlocked, PRF_SALT_LEN, ProtectFolder, ProtectedFolder,
-    ProtectionState, RotateVault, UnlockerKind, Vault, VaultUnlocker, WRAPPED_LEN,
-    encoding::Base64Url, is_age_recipient, rules::password_problem,
+    AddUnlocker, ChangeFolderPassword, FolderLock, FolderPasswordChanged, FolderUnlocked,
+    PRF_SALT_LEN, ProtectFolder, ProtectedFolder, ProtectionState, RotateVault, UnlockerKind,
+    Vault, VaultUnlocker, WRAPPED_LEN, encoding::Base64Url, is_age_recipient,
+    rules::password_problem,
 };
-use vault_core::{FolderKeys, FolderSecret};
+use vault_core::{FolderKeys, FolderSecret, RecoveryKey};
 
 /// How long a password folder stays unlocked for a session that stopped using it.
 pub const FOLDER_UNLOCK_TTL: Duration = Duration::minutes(15);
@@ -302,12 +303,17 @@ impl VaultService {
             .seal_folder_key(user, secret.to_raw().as_slice())?;
         drop(secret);
         let hash = self.auth.hash_folder_password(password).await?;
+        let recovery = RecoveryKey::generate().to_display();
+        let recovery_hash = self.auth.hash_folder_password(&recovery).await?;
         let lock = NewProtection::Password(PasswordLock {
             password_hash: &hash,
+            recovery_hash: &recovery_hash,
             sealed_key: &sealed,
             recipient: &recipient,
         });
-        self.store_protection(user, request.node_id, lock).await
+        let mut folder = self.store_protection(user, request.node_id, lock).await?;
+        folder.recovery_key = Some(recovery.to_string());
+        Ok(folder)
     }
 
     /// Refuses a folder holding a name too long to be sealed, which the server would otherwise
@@ -655,34 +661,86 @@ impl VaultService {
         }
     }
 
-    /// Sets a new password for the password folder `node`, for a session that unlocked it with
-    /// the current one and signed in recently. The folder's key stays, so nothing is encrypted
-    /// again; every other session has to unlock it with the new password.
+    /// Sets a new password for the password folder `node`, proven by its current password or,
+    /// when that is forgotten, its recovery key, which is then replaced: signing in to the
+    /// account is never enough. The folder's key stays, so nothing is encrypted again; the
+    /// caller's session has the folder unlocked and every other one has to unlock it with the
+    /// new password. Wrong proofs are throttled like wrong unlocks.
     pub async fn change_password(
         &self,
         user: UserId,
         session: Uuid,
         node: NodeId,
-        password: &str,
-    ) -> Result<(), AccountError> {
+        request: &ChangeFolderPassword,
+        address: Option<IpAddr>,
+    ) -> Result<FolderPasswordChanged, AccountError> {
         self.auth.require_recent_sign_in(user, session).await?;
-        self.db
+        let secrets = self
+            .db
             .password_secrets(user, node)
             .await?
             .ok_or(AccountError::NotFound)?;
-        self.require_unlocked(session, node).await?;
-        if let Some(message) = password_problem(password) {
+        if let Some(message) = password_problem(&request.password) {
             return Err(AccountError::Invalid {
                 field: "/password",
                 message,
             });
         }
-        let hash = self.auth.hash_folder_password(password).await?;
+        let new_recovery = match (&request.current_password, &request.recovery_key) {
+            (Some(current), None) => {
+                self.check_folder_secret(node, secrets.password_hash, current, address)
+                    .await?;
+                None
+            }
+            (None, Some(typed)) => {
+                let key = RecoveryKey::parse(typed).map_err(|_| AccountError::Invalid {
+                    field: "/recovery_key",
+                    message: "That is not a recovery key: 55 letters and digits in 11 groups.",
+                })?;
+                self.check_folder_secret(node, secrets.recovery_hash, &key.to_display(), address)
+                    .await?;
+                Some(RecoveryKey::generate().to_display())
+            }
+            _ => {
+                return Err(AccountError::Invalid {
+                    field: "/current_password",
+                    message: "Give the folder's current password, or its recovery key.",
+                });
+            }
+        };
+        let hash = self.auth.hash_folder_password(&request.password).await?;
+        let recovery_hash = match &new_recovery {
+            Some(key) => Some(self.auth.hash_folder_password(key).await?),
+            None => None,
+        };
         self.db
-            .set_folder_password(user, node, &hash, session)
+            .set_folder_password(user, node, &hash, recovery_hash.as_deref(), session)
             .await?;
-        tracing::info!(user = %user, folder = %node, "password folder's password changed");
-        Ok(())
+        let expires_at = OffsetDateTime::now_utc() + FOLDER_UNLOCK_TTL;
+        self.db.unlock_folder(session, node, expires_at).await?;
+        tracing::info!(user = %user, folder = %node, recovered = new_recovery.is_some(), "password folder's password changed");
+        Ok(FolderPasswordChanged {
+            recovery_key: new_recovery.map(|key| key.to_string()),
+        })
+    }
+
+    /// Checks a folder's password, or recovery key, against its `hash`; `wrong-password` when
+    /// it does not match.
+    async fn check_folder_secret(
+        &self,
+        node: NodeId,
+        hash: String,
+        typed: &str,
+        address: Option<IpAddr>,
+    ) -> Result<(), AccountError> {
+        match self
+            .auth
+            .check_folder_password(node, hash, typed, address)
+            .await
+        {
+            Err(AuthError::InvalidCredentials) => Err(AccountError::Auth(AuthError::WrongPassword)),
+            other => Ok(other?),
+        }
     }
 
     /// Forgets a folder's protection once its content is plain again: after unprotecting, or to
@@ -807,5 +865,6 @@ fn folder_of(stored: StoredProtection) -> Result<ProtectedFolder, AccountError> 
         format: stored.format,
         state: ProtectionState::parse(&stored.state).ok_or_else(broken)?,
         created_at: stored.created_at,
+        recovery_key: None,
     })
 }

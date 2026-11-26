@@ -50,18 +50,22 @@ CREATE TABLE protected_folders (
     -- security_key: the folder secret wrapped with the vault key of `epoch`.
     wrapped_secret BYTEA CHECK (length(wrapped_secret) = 73),
     epoch          INTEGER,
-    -- password: the Argon2id hash (PHC string) the password is checked against, and the
-    -- folder secret sealed with the server's secrets key.
+    -- password: the Argon2id hash (PHC string) the password is checked against, the hash of the
+    -- folder's recovery key, which resets a forgotten password, and the folder secret sealed
+    -- with the server's secrets key.
     password_hash  TEXT,
+    recovery_hash  TEXT,
     sealed_key     BYTEA,
     format         INTEGER NOT NULL DEFAULT 1,
     -- 'protecting' and 'unprotecting' while an existing folder's content is replaced.
     state          TEXT NOT NULL CHECK (state IN ('protecting', 'protected', 'unprotecting')),
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     CHECK ((lock = 'security_key') = (wrapped_secret IS NOT NULL AND epoch IS NOT NULL)),
-    CHECK ((lock = 'password') = (password_hash IS NOT NULL AND sealed_key IS NOT NULL)),
+    CHECK ((lock = 'password') = (password_hash IS NOT NULL AND recovery_hash IS NOT NULL
+                                  AND sealed_key IS NOT NULL)),
     CHECK (lock = 'security_key' OR (wrapped_secret IS NULL AND epoch IS NULL)),
-    CHECK (lock = 'password' OR (password_hash IS NULL AND sealed_key IS NULL))
+    CHECK (lock = 'password'
+           OR (password_hash IS NULL AND recovery_hash IS NULL AND sealed_key IS NULL))
 );
 
 CREATE INDEX protected_folders_owner ON protected_folders (owner_id);

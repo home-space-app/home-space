@@ -999,16 +999,28 @@ async fn deleting_in_a_password_folder_skips_the_recycle_bin(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "../../migrations")]
-async fn a_password_folders_password_can_be_changed(pool: PgPool) {
+async fn a_password_folders_password_changes_with_the_old_one_or_the_recovery_key(pool: PgPool) {
     let app = setup(pool).await;
     let laptop = app.user_token("alice").await;
     let phone = app
         .sign_in_from("alice", uuid::Uuid::now_v7(), "Phone")
         .await;
     let notes = folder(&app, &laptop, "Notes").await;
-    protect_with_password(&app, &laptop, &notes).await;
+    let protected = protect_with_password(&app, &laptop, &notes).await;
+    let recovery = protected.json()["recovery_key"]
+        .as_str()
+        .expect("a recovery key, shown once")
+        .to_owned();
+    assert_eq!(recovery.split('-').count(), 11);
+    assert!(
+        app.get("/api/v1/protected", &laptop).await.json()[0]
+            .get("recovery_key")
+            .is_none()
+    );
     let unlock_uri = format!("/api/v1/protected/{notes}/unlock");
-    let unlock = |token: String, password: &'static str| {
+    let change = format!("/api/v1/protected/{notes}/password");
+    let listing = format!("/api/v1/nodes?parent_id={notes}");
+    let unlock = |token: String, password: String| {
         let uri = unlock_uri.clone();
         let app = &app;
         async move {
@@ -1023,56 +1035,100 @@ async fn a_password_folders_password_can_be_changed(pool: PgPool) {
         }
     };
     assert_eq!(
-        unlock(phone.clone(), FOLDER_PASSWORD).await.status,
-        StatusCode::OK
-    );
-    let listing = format!("/api/v1/nodes?parent_id={notes}");
-    assert_eq!(app.get(&listing, &phone).await.status, StatusCode::OK);
-
-    let change = format!("/api/v1/protected/{notes}/password");
-    let weak = send(
-        &app,
-        Method::POST,
-        &change,
-        &laptop,
-        json!({ "password": "short" }),
-    )
-    .await;
-    assert_eq!(weak.json()["errors"][0]["pointer"], "/password");
-    let changed = send(
-        &app,
-        Method::POST,
-        &change,
-        &laptop,
-        json!({ "password": "a brand new folder password" }),
-    )
-    .await;
-    assert_eq!(changed.status, StatusCode::NO_CONTENT, "{}", changed.json());
-    // The phone is locked out and needs the new password; the laptop keeps the folder open.
-    assert_eq!(problem(&app.get(&listing, &phone).await), "locked");
-    assert_eq!(app.get(&listing, &laptop).await.status, StatusCode::OK);
-    assert_eq!(
-        problem(&unlock(phone.clone(), FOLDER_PASSWORD).await),
-        "wrong-password"
-    );
-    assert_eq!(
-        unlock(phone.clone(), "a brand new folder password")
+        unlock(phone.clone(), FOLDER_PASSWORD.to_owned())
             .await
             .status,
         StatusCode::OK
     );
 
-    // Changing it needs the folder unlocked.
-    delete(&app, &unlock_uri, &phone).await;
-    let locked = send(
+    // Signing in is not enough: the old password or the recovery key is.
+    let bare = send(
+        &app,
+        Method::POST,
+        &change,
+        &laptop,
+        json!({ "password": "a brand new one" }),
+    )
+    .await;
+    assert_eq!(bare.json()["errors"][0]["pointer"], "/current_password");
+    let wrong = send(
+        &app,
+        Method::POST,
+        &change,
+        &laptop,
+        json!({ "password": "a brand new one", "current_password": "not it at all" }),
+    )
+    .await;
+    assert_eq!(problem(&wrong), "wrong-password");
+    let weak = send(
+        &app,
+        Method::POST,
+        &change,
+        &laptop,
+        json!({ "password": "short", "current_password": FOLDER_PASSWORD }),
+    )
+    .await;
+    assert_eq!(weak.json()["errors"][0]["pointer"], "/password");
+
+    let changed = send(
+        &app,
+        Method::POST,
+        &change,
+        &laptop,
+        json!({ "password": "a brand new one", "current_password": FOLDER_PASSWORD }),
+    )
+    .await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.json());
+    assert!(changed.json().get("recovery_key").is_none());
+    // The phone is locked out and needs the new password; the laptop has the folder open.
+    assert_eq!(problem(&app.get(&listing, &phone).await), "locked");
+    assert_eq!(app.get(&listing, &laptop).await.status, StatusCode::OK);
+    assert_eq!(
+        problem(&unlock(phone.clone(), FOLDER_PASSWORD.to_owned()).await),
+        "wrong-password"
+    );
+
+    // Forgotten: the recovery key sets a new password, and is replaced.
+    let not_a_key = send(
         &app,
         Method::POST,
         &change,
         &phone,
-        json!({ "password": FOLDER_PASSWORD }),
+        json!({ "password": "forgot it again", "recovery_key": "ABCDE" }),
     )
     .await;
-    assert_eq!(problem(&locked), "locked");
+    assert_eq!(not_a_key.json()["errors"][0]["pointer"], "/recovery_key");
+    let recovered = send(
+        &app,
+        Method::POST,
+        &change,
+        &phone,
+        json!({ "password": "forgot it again", "recovery_key": recovery.to_lowercase() }),
+    )
+    .await;
+    assert_eq!(recovered.status, StatusCode::OK, "{}", recovered.json());
+    let renewed = recovered.json()["recovery_key"]
+        .as_str()
+        .expect("a new recovery key")
+        .to_owned();
+    assert_ne!(renewed, recovery);
+    assert_eq!(app.get(&listing, &phone).await.status, StatusCode::OK);
+    assert_eq!(problem(&app.get(&listing, &laptop).await), "locked");
+    let reused = send(
+        &app,
+        Method::POST,
+        &change,
+        &laptop,
+        json!({ "password": "yet another one", "recovery_key": recovery }),
+    )
+    .await;
+    assert_eq!(problem(&reused), "wrong-password");
+    assert_eq!(
+        unlock(laptop.clone(), "forgot it again".to_owned())
+            .await
+            .status,
+        StatusCode::OK
+    );
 }
 
 #[sqlx::test(migrations = "../../migrations")]

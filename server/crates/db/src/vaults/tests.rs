@@ -75,6 +75,7 @@ fn with_key(epoch: i32) -> NewProtection<'static> {
 fn with_password() -> NewProtection<'static> {
     NewProtection::Password(PasswordLock {
         password_hash: "$argon2id$...",
+        recovery_hash: "$argon2id$...",
         sealed_key: &[1, 2, 3],
         recipient: RECIPIENT,
     })
