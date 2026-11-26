@@ -450,14 +450,14 @@ database dump (backups) would hand out every second factor. So:
   (`HOMESPACE_SECRETS_KEY_2`, tenant 1 falls back to the unsuffixed one), checked with
   `auth::secrets::check_secret`. AES-256-GCM, key from HKDF-SHA256 over it, the user id as
   associated data so a secret cannot be moved to another row.
-- `HOMESPACE_SECRETS_KEY_PREVIOUS` for rotation, like the JWT secret. A `homespace-ctl secrets
-  rotate` re-encrypts the rows.
+- Rotation only with `homespace-ctl secrets rotate` (see `docs/todo/secret-rotation.md`): no
+  `_PREVIOUS` key, as a rotated-out key must open nothing.
 - Without the key, TOTP enrolment is refused with a clear message; passkeys and recovery codes
   still work (they store nothing secret). `homespace-ctl install` generates it.
 - Done: `auth::SecretBox`, read per tenant like the JWT secret, refused when it equals the JWT
-  secret. A secret opened with `_PREVIOUS` is sealed again with the current key when its code is
-  accepted, so `homespace-ctl secrets rotate` is only needed to finish a rotation at once; it is
-  not written yet. Administrators see in the server settings whether the key is set.
+  secret. The database keeps a check sealed with the key (`secrets_key_checks`), and the server
+  refuses a key that does not open it. Administrators see in the server settings whether the key
+  is set.
 - Not derived from `HOMESPACE_JWT_SECRET`: rotating that one would then destroy every TOTP.
 
 ## API summary

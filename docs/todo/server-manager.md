@@ -230,8 +230,7 @@ First-time setup asks, in this order, with defaults so Enter-Enter-Enter gives a
 
 What compose secrets need from the server, since today only `HOMESPACE_JWT_SECRET_FILE` exists:
 
-- `_FILE` variants for every secret: `HOMESPACE_JWT_SECRET_PREVIOUS_FILE`,
-  `HOMESPACE_OIDC_CLIENT_SECRET_FILE`, and their per-tenant forms (`..._2_FILE`), read by the
+- `_FILE` variants for every secret: `HOMESPACE_OIDC_CLIENT_SECRET_FILE`, and their per-tenant forms (`..._2_FILE`), read by the
   same `TenantSecrets` seam the multi-tenancy work added.
 - The database password out of `DATABASE_URL`: a `HOMESPACE_DB_PASSWORD_FILE` (or
   `DATABASE_URL_FILE`) that the server combines with a password-less URL. Postgres reads
@@ -256,8 +255,9 @@ restart the server needs (the multi-tenancy plan: tenant changes need a restart)
 `app`). Settings that are dangerous to change are marked and need confirmation: the public URL
 or a domain (WebAuthn RP id of protected folders, OIDC callbacks, saved client URLs), the
 database password (Postgres keeps the old one, the tool runs `ALTER USER` through
-`compose exec db psql` first), and the JWT secret (offered as a rotation: the old value moves to
-`HOMESPACE_JWT_SECRET_PREVIOUS`).
+`compose exec db psql` first), and the JWT secret and secrets key, which change only through
+`homespace-ctl secrets rotate` (both together, everyone signed out; see
+`docs/todo/secret-rotation.md`).
 
 ### D6. Status
 

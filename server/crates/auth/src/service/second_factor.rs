@@ -185,16 +185,12 @@ impl AuthService {
             .filter(|stored| stored.confirmed_at.is_some())
             .ok_or(AuthError::InvalidCode)?;
         let keys = self.secret_box()?;
-        let opened = keys.open(self.tenant, user.id, &stored.secret)?;
-        let step = totp::matching_step(&opened.plain, code, OffsetDateTime::now_utc())
+        let secret = keys.open(self.tenant, user.id, &stored.secret)?;
+        let step = totp::matching_step(&secret, code, OffsetDateTime::now_utc())
             .filter(|&step| step > stored.last_step)
             .ok_or(AuthError::InvalidCode)?;
         if !self.db.accept_totp_step(user.id, step).await? {
             return Err(AuthError::InvalidCode);
-        }
-        if opened.stale {
-            let sealed = keys.seal(self.tenant, user.id, &opened.plain)?;
-            self.db.reseal_totp(user.id, &sealed).await?;
         }
         Ok(())
     }
@@ -241,10 +237,10 @@ impl AuthService {
         if stored.confirmed_at.is_some() {
             return Err(AuthError::TotpExists);
         }
-        let opened = self
+        let secret = self
             .secret_box()?
             .open(self.tenant, user_id, &stored.secret)?;
-        let step = totp::matching_step(&opened.plain, code, OffsetDateTime::now_utc())
+        let step = totp::matching_step(&secret, code, OffsetDateTime::now_utc())
             .ok_or(AuthError::InvalidCode)?;
         let codes = recovery_codes::new_set();
         let hashes = hashes(&codes);

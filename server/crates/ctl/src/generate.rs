@@ -13,8 +13,8 @@ pub fn jwt_secret() -> String {
     STANDARD.encode(bytes)
 }
 
-/// The key that seals authenticator app secrets: as strong as the signing secret, and
-/// generated apart from it so that rotating one keeps the other.
+/// The key that seals authenticator app secrets and password-folder keys: as strong as the
+/// signing secret, and generated apart from it.
 pub fn secrets_key() -> String {
     jwt_secret()
 }

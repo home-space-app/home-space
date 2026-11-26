@@ -130,16 +130,6 @@ impl Db {
         Ok(accepted.rows_affected() == 1)
     }
 
-    /// Replaces the sealed secret, after the secrets key changed.
-    pub async fn reseal_totp(&self, user: UserId, secret: &[u8]) -> Result<(), DbError> {
-        sqlx::query("UPDATE user_totp SET secret = $2 WHERE user_id = $1")
-            .bind(user)
-            .bind(secret)
-            .execute(self.pool())
-            .await?;
-        Ok(())
-    }
-
     /// Gives the user `codes` (hashes) in place of the recovery codes they had.
     pub async fn replace_recovery_codes(
         &self,

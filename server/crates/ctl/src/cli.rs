@@ -44,6 +44,9 @@ pub enum Command {
     /// Manage the search index.
     #[command(subcommand)]
     Search(SearchCommand),
+    /// Manage the server's secrets.
+    #[command(subcommand)]
+    Secrets(SecretsCommand),
 }
 
 #[derive(clap::Args)]
@@ -61,6 +64,29 @@ pub enum SearchCommand {
         all: bool,
         #[arg(long, env = "HOMESPACE_STORAGE_ROOT", default_value = "./data")]
         storage_root: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SecretsCommand {
+    /// Replace the token signing secret and the secrets key with new ones: everything the key
+    /// seals is sealed again with the new one, and every user is signed out on every device.
+    /// The only safe way to change them. Done for you on a server from `homespace-ctl
+    /// install`; with `DATABASE_URL` (or `--env-file`) it guides you through it instead.
+    Rotate {
+        /// Don't ask before signing everyone out and restarting the server.
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        tenant: TenantArg,
+    },
+    /// Run by `rotate` with the server stopped: seals everything again with the new secrets
+    /// key read from standard input (an empty line: the server has none) and signs everyone
+    /// out.
+    #[command(hide = true)]
+    Reseal {
+        #[command(flatten)]
+        tenant: TenantArg,
     },
 }
 

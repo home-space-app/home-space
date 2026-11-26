@@ -149,14 +149,13 @@ fn domain(domain: &str, tenant_id: TenantId) -> TenantDomain {
 }
 
 fn secrets_key() -> SecretBox {
-    SecretBox::new(SECRETS_KEY, &[])
+    SecretBox::new(SECRETS_KEY)
 }
 
 fn auth_config(tenant: TenantId) -> AuthConfig {
     AuthConfig {
         tenant,
         jwt_secret: JWT_SECRET.to_vec(),
-        previous_jwt_secrets: Vec::new(),
         access_ttl: time::Duration::minutes(15),
         refresh_ttl: time::Duration::days(30),
     }
@@ -223,7 +222,6 @@ async fn build(
                 oidc: None,
                 access_ttl_secs: 900,
                 refresh_ttl_secs: 30 * 24 * 3600,
-                previous_jwt_secret: false,
                 secrets_key: true,
                 public_url: None,
                 bind: "127.0.0.1:0".to_owned(),

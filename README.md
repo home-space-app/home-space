@@ -371,15 +371,28 @@ the current directory; `--env-file <path>` names one to read. The server image a
 The server does not start with a signing secret that is shorter than 32 characters, still a
 placeholder (`change-me...`) or made of only a few different characters.
 The signing secret can also come from a file (`HOMESPACE_JWT_SECRET_FILE`, e.g. a Docker/Podman
-secret). To rotate it, set the new value and move the old one to `HOMESPACE_JWT_SECRET_PREVIOUS`;
-sessions keep working, and the old value can be removed once access tokens (15 minutes by default)
-signed with it have expired.
+secret).
 
-Two-factor sign-in with an authenticator app needs `HOMESPACE_SECRETS_KEY` (or `_FILE`): it seals
-the apps' secrets in the database, so a backup does not hand them out. Generate it like the
-signing secret and keep it apart from it; it is rotated the same way with
-`HOMESPACE_SECRETS_KEY_PREVIOUS`. Without it nobody can add an app, and everything else works.
-`homespace-ctl install` generates one. A user who lost their app and recovery codes is reset by an
+Two-factor sign-in with an authenticator app, and password folders, need `HOMESPACE_SECRETS_KEY`
+(or `_FILE`): it seals the apps' secrets and the folders' keys in the database, so a backup does
+not hand them out. Generate it like the signing secret and keep it apart from it. Without it
+nobody can add an app or a password folder, and everything else works. `homespace-ctl install`
+generates one.
+
+**Rotate the secrets only with `homespace-ctl secrets rotate`.** It replaces the signing secret
+and the secrets key together (after a breach nobody can tell which one leaked), seals everything
+again with the new key in one transaction, and signs every user out on every device. The old
+values open nothing afterwards; there is no "previous" secret that keeps working, and the server
+refuses to start while `HOMESPACE_JWT_SECRET_PREVIOUS` or `HOMESPACE_SECRETS_KEY_PREVIOUS` of
+earlier versions is set. On a server from `homespace-ctl install` it does everything: stops the
+app, seals again, writes the new values where the old ones were and starts the app. Anywhere else
+(`--database-url` or `--env-file`) it guides you: stop the server, store the new values it shows
+wherever the server reads its secrets (a secret manager, say), and start the server when it is
+done. A run that was cut short is finished by running it again.
+
+**Changing `HOMESPACE_SECRETS_KEY` by hand loses data**: authenticator apps and password folders
+sealed with the old key open with no other. The database records which key they are sealed with,
+and the server refuses to start with any other key; put the old one back, then rotate. A user who lost their app and recovery codes is reset by an
 administrator in the user's panel, or with `homespace-ctl user reset-2fa <username>`.
 
 Passkeys and security keys need no setting, but they need the web client on the server's https

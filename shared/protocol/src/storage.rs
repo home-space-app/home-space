@@ -88,8 +88,6 @@ pub struct ServerConfig {
     pub oidc: Option<OidcStatus>,
     pub access_ttl_secs: i64,
     pub refresh_ttl_secs: i64,
-    /// A previous token signing secret is still accepted.
-    pub previous_jwt_secret: bool,
     /// `HOMESPACE_SECRETS_KEY` is set, so users can add an authenticator app; older servers
     /// leave it out.
     #[serde(default)]
@@ -193,7 +191,6 @@ mod tests {
                 oidc: None,
                 access_ttl_secs: 0,
                 refresh_ttl_secs: 0,
-                previous_jwt_secret: false,
                 secrets_key: false,
                 public_url: None,
                 bind: String::new(),

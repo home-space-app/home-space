@@ -18,11 +18,9 @@ const SECONDS_PER_HOUR: u64 = 3600;
 
 /// The auth service of the default tenant, from the server configuration.
 fn auth_service(db: &Db, config: &Config) -> Result<AuthService> {
-    let (jwt_secret, previous_jwt_secrets) = config.jwt_secrets()?;
     let auth_config = AuthConfig {
         tenant: TenantId::DEFAULT,
-        jwt_secret,
-        previous_jwt_secrets,
+        jwt_secret: config.jwt_secret()?,
         access_ttl: time::Duration::seconds(config.access_ttl_secs),
         refresh_ttl: time::Duration::seconds(config.refresh_ttl_secs),
     };

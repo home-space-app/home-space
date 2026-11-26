@@ -3,12 +3,12 @@ use super::*;
 const SECRET: &[u8] = b"test-secret";
 
 fn keys(secret: &[u8]) -> Keys {
-    Keys::new(TenantId::DEFAULT, secret.to_vec(), Vec::new())
+    Keys::new(TenantId::DEFAULT, secret.to_vec())
 }
 
 /// The keys of another tenant that was given the same secret.
 fn other_tenant(secret: &[u8]) -> Keys {
-    Keys::new(TenantId(2), secret.to_vec(), Vec::new())
+    Keys::new(TenantId(2), secret.to_vec())
 }
 
 #[test]
@@ -245,25 +245,7 @@ fn ticket_of_another_type_is_rejected() {
 }
 
 #[test]
-fn token_signed_with_a_previous_secret_is_accepted() {
-    let user = UserId::new();
-    let token = encode_access(
-        &keys(b"old-secret"),
-        user,
-        Uuid::now_v7(),
-        Duration::minutes(5),
-    )
-    .expect("encode");
-    let rotated = Keys::new(
-        TenantId::DEFAULT,
-        b"new-secret".to_vec(),
-        vec![b"old-secret".to_vec()],
-    );
-    assert_eq!(decode_access(&rotated, &token).expect("decode").sub, user);
-}
-
-#[test]
-fn token_signed_with_a_dropped_secret_is_rejected() {
+fn token_signed_with_a_rotated_out_secret_is_rejected() {
     let token = encode_access(
         &keys(b"old-secret"),
         UserId::new(),
@@ -272,24 +254,6 @@ fn token_signed_with_a_dropped_secret_is_rejected() {
     )
     .expect("encode");
     assert!(decode_access(&keys(b"new-secret"), &token).is_err());
-}
-
-#[test]
-fn new_tokens_use_the_current_secret() {
-    let rotated = Keys::new(
-        TenantId::DEFAULT,
-        b"new-secret".to_vec(),
-        vec![b"old-secret".to_vec()],
-    );
-    let token = encode_access(
-        &rotated,
-        UserId::new(),
-        Uuid::now_v7(),
-        Duration::minutes(5),
-    )
-    .expect("encode");
-    assert!(decode_access(&keys(b"new-secret"), &token).is_ok());
-    assert!(decode_access(&keys(b"old-secret"), &token).is_err());
 }
 
 #[test]

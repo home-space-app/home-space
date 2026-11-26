@@ -35,6 +35,7 @@ mod oidc;
 mod refresh_tokens;
 mod search;
 mod second_factors;
+mod secrets_keys;
 mod sessions;
 mod shares;
 mod storage;
@@ -61,6 +62,7 @@ pub use oidc::OidcPending;
 pub use protocol::{NodeId, NodeKind, OnConflict, Patch, SharePermission, UserId};
 pub use search::{ContentState, RankedNode};
 pub use second_factors::{PendingLogin, SecondFactorState, StoredTotp};
+pub use secrets_keys::{SealedFolderKey, SealedSecrets, SealedTotp, SecretsRotation};
 pub use sessions::{Authentication, LiveSession};
 pub use shares::{
     NewShareLink, NewUserShare, OwnedShare, ReceivedShare, ShareLink, ShareRecipient, ShareUpdate,

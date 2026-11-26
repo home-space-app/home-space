@@ -43,14 +43,20 @@ pub struct Config {
     #[arg(long, env = "HOMESPACE_JWT_SECRET_FILE")]
     pub jwt_secret_file: Option<PathBuf>,
 
-    /// Earlier signing secret that still verifies tokens, so the secret can be rotated
-    /// without ending sessions. Remove it once the access tokens it signed have expired.
-    #[arg(long, env = "HOMESPACE_JWT_SECRET_PREVIOUS", hide_env_values = true)]
+    /// No longer read: the server refuses to start while it is set. Rotate the secrets with
+    /// `homespace-ctl secrets rotate`.
+    #[arg(
+        long,
+        env = "HOMESPACE_JWT_SECRET_PREVIOUS",
+        hide_env_values = true,
+        hide = true
+    )]
     pub jwt_secret_previous: Option<String>,
 
-    /// Key that seals the secrets of authenticator apps (two-factor sign-in) in the database;
-    /// set this or `HOMESPACE_SECRETS_KEY_FILE`. Without it no authenticator app can be added.
-    /// Keep it apart from the JWT secret, and never lose it: the apps added with it stop working.
+    /// Key that seals the secrets of authenticator apps (two-factor sign-in) and the keys of
+    /// password folders in the database; set this or `HOMESPACE_SECRETS_KEY_FILE`. Without it
+    /// neither can be added. Keep it apart from the JWT secret, never lose it, and change it
+    /// only with `homespace-ctl secrets rotate`: what it sealed opens with no other key.
     #[arg(long, env = "HOMESPACE_SECRETS_KEY", hide_env_values = true)]
     pub secrets_key: Option<String>,
 
@@ -58,9 +64,14 @@ pub struct Config {
     #[arg(long, env = "HOMESPACE_SECRETS_KEY_FILE")]
     pub secrets_key_file: Option<PathBuf>,
 
-    /// Earlier secrets key that still opens what it sealed, for rotating the key. Each secret
-    /// is sealed again with the current key when its app's code is next accepted.
-    #[arg(long, env = "HOMESPACE_SECRETS_KEY_PREVIOUS", hide_env_values = true)]
+    /// No longer read: the server refuses to start while it is set. `homespace-ctl secrets
+    /// rotate` seals again what it sealed.
+    #[arg(
+        long,
+        env = "HOMESPACE_SECRETS_KEY_PREVIOUS",
+        hide_env_values = true,
+        hide = true
+    )]
     pub secrets_key_previous: Option<String>,
 
     /// Where file content is kept. Only `local` exists today; object storage is planned.
@@ -243,9 +254,9 @@ impl Config {
         self.tenant_settings().oidc()
     }
 
-    /// The current signing secret of tenant 1 followed by the previous one, if any.
-    pub fn jwt_secrets(&self) -> Result<(Vec<u8>, Vec<Vec<u8>>)> {
-        self.tenant_settings().jwt_secrets()
+    /// The token signing secret of tenant 1.
+    pub fn jwt_secret(&self) -> Result<Vec<u8>> {
+        self.tenant_settings().jwt_secret()
     }
 
     /// The settings shown to administrators, without secrets.
@@ -255,7 +266,6 @@ impl Config {
             issuer: oidc.issuer,
             required_group: oidc.required_group,
         });
-        let (_, previous) = self.jwt_secrets()?;
         Ok(protocol::ServerConfig {
             max_upload_bytes: self.max_upload_bytes,
             upload_chunk_bytes: self.upload_chunk_bytes,
@@ -268,7 +278,6 @@ impl Config {
             oidc,
             access_ttl_secs: self.access_ttl_secs,
             refresh_ttl_secs: self.refresh_ttl_secs,
-            previous_jwt_secret: !previous.is_empty(),
             secrets_key: self.tenant_settings().secrets_key()?.is_some(),
             public_url: non_empty(&self.public_url).map(str::to_owned),
             bind: self.bind.to_string(),

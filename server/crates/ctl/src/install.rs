@@ -5,7 +5,6 @@ mod admin;
 mod plan;
 mod render;
 mod runtime;
-mod secrets;
 pub mod system;
 mod wizard;
 
@@ -165,6 +164,10 @@ fn finish(plan: &InstallPlan) {
         );
     }
     println!("  Manage users: homespace-ctl user list | add | admin | passwd");
+    println!(
+        "  Rotate the secrets only with: homespace-ctl secrets rotate (changing them by hand \
+         loses authenticator apps and password folders)"
+    );
 }
 
 /// `--dry-run`: shows what would be written and run.
