@@ -1,23 +1,30 @@
 //! Sealed names: deterministic AES-SIV, so the server can still refuse two equal names in one
 //! folder without reading them.
 //!
-//! `sealed = AES-SIV-256(name key, ad = [parent id, kind], pad(NFC(name)))`. The padding is
-//! `0x80` and zeros up to a multiple of 32 bytes, so the server learns a name's length only to
-//! that granularity.
+//! `sealed = base64url(AES-SIV-256(name key, ad = [parent id, kind], pad(NFC(name))))`, without
+//! padding characters. The padding inside is `0x80` and zeros up to a multiple of 32 bytes, so
+//! the server learns a name's length only to that granularity. The server stores the text as
+//! the node's name like any other: it fits its 255-character limit and holds neither `/` nor
+//! `\`.
 
 use aes_siv::aead::KeyInit;
 use aes_siv::siv::Aes256Siv;
+use data_encoding::BASE64URL_NOPAD;
 use unicode_normalization::{UnicodeNormalization, is_nfc};
 use zeroize::Zeroizing;
 
 use crate::{Error, Result};
 
-/// Longest name, in characters, as the server's `nodes.name` check.
-pub const MAX_NAME_CHARS: usize = 255;
+/// The server's limit for a node name, in characters, which a sealed name must fit.
+pub const SERVER_NAME_CHARS: usize = 255;
 /// Names are padded to a multiple of this many bytes.
 pub const PAD_TO: usize = 32;
-/// Longest sealed name in bytes: 255 four-byte characters, padded, plus the 16-byte tag.
-pub const MAX_SEALED_LEN: usize = (MAX_NAME_CHARS * 4 / PAD_TO + 1) * PAD_TO + 16;
+/// Longest sealed name in bytes: the 16-byte tag and five padded blocks, which in base64url is
+/// 235 characters, the most that fits [`SERVER_NAME_CHARS`].
+pub const MAX_SEALED_LEN: usize = 5 * PAD_TO + 16;
+/// Longest name in a protected folder, in UTF-8 bytes after NFC: the padded blocks less the
+/// `0x80` that ends it. Shorter than elsewhere (255 characters), the price of hiding names.
+pub const MAX_NAME_BYTES: usize = 5 * PAD_TO - 1;
 
 /// File or folder; bound into the sealed name like the server's unique key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,13 +52,13 @@ pub(crate) fn seal(
     parent: &uuid::Uuid,
     kind: NodeKind,
     name: &str,
-) -> Result<Vec<u8>> {
+) -> Result<String> {
     let name: Zeroizing<String> = Zeroizing::new(name.nfc().collect());
     if name.is_empty() {
         return Err(Error::Name("empty"));
     }
-    if name.chars().count() > MAX_NAME_CHARS {
-        return Err(Error::Name("longer than 255 characters"));
+    if name.len() > MAX_NAME_BYTES {
+        return Err(Error::Name("longer than 159 bytes"));
     }
     let mut padded = Zeroizing::new(Vec::with_capacity(name.len() + PAD_TO));
     padded.extend_from_slice(name.as_bytes());
@@ -66,15 +73,18 @@ pub(crate) fn seal(
         )
         .map_err(|_| Error::Name("cannot be sealed"))?;
     debug_assert!(sealed.len() <= MAX_SEALED_LEN);
-    Ok(sealed)
+    Ok(BASE64URL_NOPAD.encode(&sealed))
 }
 
 pub(crate) fn open(
     key: &[u8; 64],
     parent: &uuid::Uuid,
     kind: NodeKind,
-    sealed: &[u8],
+    sealed: &str,
 ) -> Result<String> {
+    let sealed = BASE64URL_NOPAD
+        .decode(sealed.as_bytes())
+        .map_err(|_| Error::SealedName)?;
     if sealed.len() > MAX_SEALED_LEN {
         return Err(Error::SealedName);
     }
@@ -82,7 +92,7 @@ pub(crate) fn open(
         cipher(key)
             .decrypt(
                 [parent.as_bytes().as_slice(), kind.as_str().as_bytes()],
-                sealed,
+                sealed.as_slice(),
             )
             .map_err(|_| Error::SealedName)?,
     );
@@ -95,7 +105,7 @@ pub(crate) fn open(
     }
     let name = std::str::from_utf8(&padded[..end]).map_err(|_| Error::SealedName)?;
     // Another client wrote it; still refuse what this one would never seal.
-    if name.is_empty() || !is_nfc(name) || name.chars().count() > MAX_NAME_CHARS {
+    if name.is_empty() || !is_nfc(name) || name.len() > MAX_NAME_BYTES {
         return Err(Error::SealedName);
     }
     Ok(name.to_owned())
@@ -109,27 +119,27 @@ mod tests {
     const PARENT: uuid::Uuid = uuid::Uuid::from_bytes([1; 16]);
     const OTHER: uuid::Uuid = uuid::Uuid::from_bytes([2; 16]);
 
+    fn sealed_len(name: &str) -> usize {
+        let text = seal(&KEY, &PARENT, NodeKind::File, name).unwrap();
+        BASE64URL_NOPAD.decode(text.as_bytes()).unwrap().len()
+    }
+
     #[test]
     fn round_trip_and_padding() {
         let sealed = seal(&KEY, &PARENT, NodeKind::File, "tax 2025.pdf").unwrap();
-        assert_eq!(sealed.len(), PAD_TO + 16);
+        assert!(
+            sealed
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        );
         assert_eq!(
             open(&KEY, &PARENT, NodeKind::File, &sealed).unwrap(),
             "tax 2025.pdf"
         );
         // 31 bytes still fit one block with the 0x80; 32 need two.
-        assert_eq!(
-            seal(&KEY, &PARENT, NodeKind::File, &"a".repeat(31))
-                .unwrap()
-                .len(),
-            PAD_TO + 16
-        );
-        assert_eq!(
-            seal(&KEY, &PARENT, NodeKind::File, &"a".repeat(32))
-                .unwrap()
-                .len(),
-            2 * PAD_TO + 16
-        );
+        assert_eq!(sealed_len("tax 2025.pdf"), PAD_TO + 16);
+        assert_eq!(sealed_len(&"a".repeat(31)), PAD_TO + 16);
+        assert_eq!(sealed_len(&"a".repeat(32)), 2 * PAD_TO + 16);
     }
 
     #[test]
@@ -155,21 +165,25 @@ mod tests {
     }
 
     #[test]
-    fn limits() {
+    fn the_longest_name_fits_the_server() {
         assert!(seal(&KEY, &PARENT, NodeKind::File, "").is_err());
-        let longest = "😀".repeat(MAX_NAME_CHARS);
+        let longest = "a".repeat(MAX_NAME_BYTES);
         let sealed = seal(&KEY, &PARENT, NodeKind::File, &longest).unwrap();
-        assert_eq!(sealed.len(), MAX_SEALED_LEN);
+        assert_eq!(sealed.len(), 235);
+        assert!(sealed.len() <= SERVER_NAME_CHARS);
         assert_eq!(
             open(&KEY, &PARENT, NodeKind::File, &sealed).unwrap(),
             longest
         );
+        // 39 four-byte characters are 156 bytes; 40 are too many.
+        assert!(seal(&KEY, &PARENT, NodeKind::File, &"😀".repeat(39)).is_ok());
+        assert!(seal(&KEY, &PARENT, NodeKind::File, &"😀".repeat(40)).is_err());
         assert!(
             seal(
                 &KEY,
                 &PARENT,
                 NodeKind::File,
-                &"a".repeat(MAX_NAME_CHARS + 1)
+                &"a".repeat(MAX_NAME_BYTES + 1)
             )
             .is_err()
         );
@@ -177,9 +191,13 @@ mod tests {
 
     #[test]
     fn tampering_fails() {
-        let mut sealed = seal(&KEY, &PARENT, NodeKind::File, "a").unwrap();
-        sealed[0] ^= 1;
-        assert!(open(&KEY, &PARENT, NodeKind::File, &sealed).is_err());
-        assert!(open(&KEY, &PARENT, NodeKind::File, &[0; 4]).is_err());
+        let sealed = seal(&KEY, &PARENT, NodeKind::File, "a").unwrap();
+        let mut bytes = BASE64URL_NOPAD.decode(sealed.as_bytes()).unwrap();
+        bytes[0] ^= 1;
+        let tampered = BASE64URL_NOPAD.encode(&bytes);
+        assert!(open(&KEY, &PARENT, NodeKind::File, &tampered).is_err());
+        assert!(open(&KEY, &PARENT, NodeKind::File, "AAAA").is_err());
+        assert!(open(&KEY, &PARENT, NodeKind::File, "not base64!").is_err());
+        assert!(open(&KEY, &PARENT, NodeKind::File, "tax.pdf").is_err());
     }
 }

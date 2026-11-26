@@ -125,8 +125,32 @@ async fn folder(app: &TestApp, token: &str, name: &str) -> String {
     made.json()["id"].as_str().expect("id").to_owned()
 }
 
-fn password_kdf() -> Value {
-    json!({ "salt": b64(&[5; 16]), "memory_kib": 65536, "passes": 3, "lanes": 1 })
+/// Protects `node` with the vault at `epoch`.
+async fn protect(app: &TestApp, token: &str, node: &str, epoch: i32) -> common::Response {
+    send(
+        app,
+        Method::POST,
+        "/api/v1/protected",
+        token,
+        json!({
+            "node_id": node, "lock": "security_key", "wrapped_secret": wrapped(2),
+            "recipient": RECIPIENT, "epoch": epoch,
+        }),
+    )
+    .await
+}
+
+/// Gives the user of `token` a vault at epoch 1, unlocked by a recovery key.
+async fn recovery_vault(app: &TestApp, token: &str) {
+    let made = send(
+        app,
+        Method::POST,
+        "/api/v1/vault/unlockers",
+        token,
+        json!({ "kind": "recovery", "wrapped_vault_key": wrapped(4), "epoch": 1 }),
+    )
+    .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.json());
 }
 
 async fn sign_in_long_ago(pool: &PgPool) {
@@ -290,73 +314,82 @@ async fn rotation_needs_the_current_epoch_and_every_folder(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "../../migrations")]
-async fn a_password_folder_needs_sound_parameters(pool: PgPool) {
+async fn a_folder_needs_a_whole_lock_and_is_protected_once(pool: PgPool) {
     let app = setup(pool).await;
     let token = app.user_token("alice").await;
     let notes = folder(&app, &token, "Notes").await;
-    let protect = |body: Value| send(&app, Method::POST, "/api/v1/protected", &token, body);
+    let protect_with = |body: Value| send(&app, Method::POST, "/api/v1/protected", &token, body);
 
-    let weak = protect(json!({
-        "node_id": notes, "lock": "password", "wrapped_secret": wrapped(2),
-        "recipient": RECIPIENT,
-        "kdf": { "salt": b64(&[5; 16]), "memory_kib": 1024, "passes": 1, "lanes": 1 },
-    }))
-    .await;
-    assert_eq!(weak.status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(weak.json()["errors"][0]["pointer"], "/kdf");
-    let bad_recipient = protect(json!({
-        "node_id": notes, "lock": "password", "wrapped_secret": wrapped(2),
-        "recipient": "age1nope", "kdf": password_kdf(),
+    let password = protect_with(json!({ "node_id": notes, "lock": "password" })).await;
+    assert_eq!(password.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(password.json()["errors"][0]["pointer"], "/lock");
+    let bad_recipient = protect_with(json!({
+        "node_id": notes, "lock": "security_key", "wrapped_secret": wrapped(2),
+        "recipient": "age1nope", "epoch": 1,
     }))
     .await;
     assert_eq!(bad_recipient.json()["errors"][0]["pointer"], "/recipient");
-    let short = protect(json!({
-        "node_id": notes, "lock": "password", "wrapped_secret": b64(&[1; 40]),
-        "recipient": RECIPIENT, "kdf": password_kdf(),
-    }))
-    .await;
-    assert_eq!(short.json()["errors"][0]["pointer"], "/wrapped_secret");
-    let no_vault = protect(json!({
-        "node_id": notes, "lock": "security_key", "wrapped_secret": wrapped(2),
+    let short = protect_with(json!({
+        "node_id": notes, "lock": "security_key", "wrapped_secret": b64(&[1; 40]),
         "recipient": RECIPIENT, "epoch": 1,
     }))
     .await;
-    assert_eq!(problem(&no_vault), "vault-changed");
+    assert_eq!(short.json()["errors"][0]["pointer"], "/wrapped_secret");
+    assert_eq!(
+        problem(&protect(&app, &token, &notes, 1).await),
+        "vault-changed"
+    );
 
-    let protected = protect(json!({
-        "node_id": notes, "lock": "password", "wrapped_secret": wrapped(2),
-        "recipient": RECIPIENT, "kdf": password_kdf(),
-    }))
-    .await;
+    recovery_vault(&app, &token).await;
+    let protected = protect(&app, &token, &notes, 1).await;
     assert_eq!(
         protected.status,
         StatusCode::CREATED,
         "{}",
         protected.json()
     );
-    assert_eq!(protected.json()["kdf"], password_kdf());
-    assert!(protected.json().get("epoch").is_none());
-    let twice = protect(json!({
-        "node_id": notes, "lock": "password", "wrapped_secret": wrapped(2),
-        "recipient": RECIPIENT, "kdf": password_kdf(),
-    }))
-    .await;
-    assert_eq!(problem(&twice), "protected");
+    assert_eq!(protected.json()["state"], "protected");
+    assert_eq!(
+        problem(&protect(&app, &token, &notes, 1).await),
+        "protected"
+    );
 
     let bob = app.user_token("bob").await;
-    let foreign = send(
-        &app,
-        Method::POST,
-        "/api/v1/protected",
-        &bob,
-        json!({
-            "node_id": notes, "lock": "password", "wrapped_secret": wrapped(2),
-            "recipient": RECIPIENT, "kdf": password_kdf(),
-        }),
-    )
-    .await;
-    assert_eq!(foreign.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        protect(&app, &bob, &notes, 1).await.status,
+        StatusCode::NOT_FOUND
+    );
     assert_eq!(app.get("/api/v1/protected", &bob).await.json(), json!([]));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_folder_with_content_is_protecting_until_the_client_has_replaced_it(pool: PgPool) {
+    let app = setup(pool).await;
+    let token = app.user_token("alice").await;
+    recovery_vault(&app, &token).await;
+    let papers = folder(&app, &token, "Papers").await;
+    let uploaded = app
+        .upload(&token, &format!("parent_id={papers}&name=tax.pdf"), "plain")
+        .await;
+    assert_eq!(uploaded.status, StatusCode::CREATED, "{}", uploaded.json());
+
+    let protecting = protect(&app, &token, &papers, 1).await;
+    assert_eq!(protecting.json()["state"], "protecting");
+    let id = |action: &str| format!("/api/v1/protected/{papers}{action}");
+    let early = send(&app, Method::POST, &id("/unprotect"), &token, json!({})).await;
+    assert_eq!(problem(&early), "protected");
+    let finished = send(&app, Method::POST, &id("/finish"), &token, json!({})).await;
+    assert_eq!(finished.status, StatusCode::OK, "{}", finished.json());
+    assert_eq!(finished.json()["state"], "protected");
+
+    // A protected folder's record is never dropped while its files need its secret.
+    let removing = delete(&app, &id(""), &token).await;
+    assert_eq!(problem(&removing), "protected");
+    let unprotecting = send(&app, Method::POST, &id("/unprotect"), &token, json!({})).await;
+    assert_eq!(unprotecting.json()["state"], "unprotecting");
+    let removed = delete(&app, &id(""), &token).await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.json());
+    assert_eq!(app.get("/api/v1/protected", &token).await.json(), json!([]));
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -372,16 +405,8 @@ async fn changing_what_unlocks_needs_a_recent_sign_in(pool: PgPool) {
         problem(&enable(&app, &token, &credential, 1).await),
         "reauthentication-required"
     );
-    let protect = send(
-        &app,
-        Method::POST,
-        "/api/v1/protected",
-        &token,
-        json!({
-            "node_id": notes, "lock": "password", "wrapped_secret": wrapped(2),
-            "recipient": RECIPIENT, "kdf": password_kdf(),
-        }),
-    )
-    .await;
-    assert_eq!(problem(&protect), "reauthentication-required");
+    assert_eq!(
+        problem(&protect(&app, &token, &notes, 1).await),
+        "reauthentication-required"
+    );
 }

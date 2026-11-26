@@ -1,8 +1,10 @@
 //! Client-side cryptography of protected folders (`docs/todo/protected-folders.md`).
 //!
 //! No I/O and no UI: the desktop, web and mobile clients fetch the wrapped keys from the server,
-//! ask an [`Authenticator`] (a security key) or the user (a password) for the wrapping key, and
-//! call into this crate to unwrap, seal names and encrypt content.
+//! ask an [`Authenticator`] (a security key) or the user (the recovery key) for the wrapping key,
+//! and call into this crate to unwrap, seal names and encrypt content. This is for folders locked
+//! with a security key, which are end to end; folders locked with a password are encrypted by
+//! the server.
 //!
 //! Keys are short-lived by design. For security-key folders the client keeps no decryption key
 //! between actions, so the API hands keys to closures ([`vault::with_vault_key`],
@@ -25,7 +27,7 @@ pub mod wrap;
 pub use authenticator::{Authenticator, CredentialRef, PrfOutput, SoftAuthenticator};
 pub use error::Error;
 pub use folder::{FolderKeys, FolderSecret};
-pub use kdf::{Kek, PasswordKdf};
+pub use kdf::Kek;
 pub use names::NodeKind;
 pub use recovery::RecoveryKey;
 pub use vault::VaultKey;

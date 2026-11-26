@@ -16,7 +16,7 @@ Future improvements. Each item links to its write-up in [`todo/`](todo/).
 | Medium | L | [Administration panel: done on the web; groups and reset links left](todo/admin-panel.md) |
 | Medium | L | [Linux on-demand files: the whole Home tree as a FUSE folder in the file manager, downloaded when opened](todo/linux-on-demand-files.md) |
 | Medium | L | [Multi-tenancy: one server for several groups of users, each on its own domain with its own users, signing key and identity provider](todo/multi-tenancy.md) |
-| Medium | L | [Protected folders: end-to-end encrypted folders that open only with a security key (YubiKey) or, less securely, a password](todo/protected-folders.md) |
+| Medium | L | [Protected folders: end-to-end encrypted with a security key (YubiKey), or encrypted by the server behind a password](todo/protected-folders.md) |
 | Medium | L | [Object storage backends: S3 and Azure Blob next to the local file system](todo/object-storage.md) |
 | Medium | M | [Storage limits: usage done on the web; optional upload limit and free-space check left](todo/storage-limits.md) |
 | Medium | M | [Registered devices: done on every client; device management on mobile is under parity](todo/devices.md) |

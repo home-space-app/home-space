@@ -3,7 +3,7 @@
 
 use crate::authenticator::PrfOutput;
 use crate::folder::FolderSecret;
-use crate::kdf::{Kek, PasswordKdf, prf_salt_input};
+use crate::kdf::{Kek, prf_salt_input};
 use crate::names::NodeKind;
 use crate::recovery::RecoveryKey;
 
@@ -36,18 +36,6 @@ fn keks() {
         hex(Kek::from_recovery(&RecoveryKey::from_bytes([0x02; 32])).expose()),
         "1240aeb8c3667c9bffee4cc72d8bf6eda317fc843dddb26877aa3924ccb0fec5"
     );
-    let kdf = PasswordKdf {
-        salt: [0x03; 16],
-        memory_kib: 64,
-        passes: 1,
-        lanes: 1,
-    };
-    assert_eq!(
-        hex(Kek::from_password("correct horse battery staple", &kdf)
-            .unwrap()
-            .expose()),
-        "75ee01b0a2e88c9f04f721cae3bddc235184079f9feb759c7a3f01e0b74f38b1"
-    );
 }
 
 #[test]
@@ -58,10 +46,9 @@ fn folder_keys() {
         "age1fauk43xvke3myu0vg0syaflnwhlslwxd2504jfdjwejkjc50pcysgcf5gf"
     );
     assert_eq!(
-        hex(&keys
-            .seal_name(&PARENT, NodeKind::File, "Passport.pdf")
-            .unwrap()),
-        "b63ed51c188ada817e7839e9829db5e0fb98501316f4f03139e28694846441174f45bc5d6d4f845d50da9cbf9aa23513"
+        keys.seal_name(&PARENT, NodeKind::File, "Passport.pdf")
+            .unwrap(),
+        "tj7VHBiK2oF-eDnpgp214PuYUBMW9PAxOeKGlIRkQRdPRbxdbU-EXVDanL-aojUT"
     );
 }
 

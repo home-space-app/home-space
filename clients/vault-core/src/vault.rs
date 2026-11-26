@@ -2,14 +2,14 @@
 //!
 //! A security-key folder costs one touch per action: [`with_folder_keys`] asks the key, unwraps
 //! the vault key and the folder secret, runs the action, and drops every key before it returns.
-//! Password folders keep their keys until Lock ([`unlock_password_folder`]).
+//! Password folders are the server's: it encrypts them, and clients only send the password.
 
 use zeroize::Zeroize;
 
 use crate::Result;
 use crate::authenticator::{Authenticator, CredentialRef};
 use crate::folder::{FolderKeys, FolderSecret};
-use crate::kdf::{Kek, PasswordKdf};
+use crate::kdf::Kek;
 use crate::recovery::RecoveryKey;
 use crate::secret::secret32;
 use crate::wrap::{self, Purpose};
@@ -162,8 +162,6 @@ pub struct NewFolder {
     pub wrapped_secret: Vec<u8>,
     /// The folder's age recipient (`age1…`).
     pub recipient: String,
-    /// Password folders only: the Argon2id parameters to store.
-    pub kdf: Option<PasswordKdf>,
 }
 
 /// Protects `folder` with the vault: a new folder secret, wrapped by the vault key. `action`
@@ -178,49 +176,14 @@ pub fn protect_with_vault_key<T>(
     let new = NewFolder {
         wrapped_secret: secret.wrap(vault_key, folder),
         recipient: keys.recipient().to_string(),
-        kdf: None,
     };
     drop(secret);
     let result = action(&keys)?;
     Ok((new, result))
 }
 
-/// Protects `folder` with a password (checked with [`PasswordKdf::check_new_password`]).
-pub fn protect_with_password<T>(
-    password: &str,
-    folder: &uuid::Uuid,
-    action: impl FnOnce(&FolderKeys) -> Result<T>,
-) -> Result<(NewFolder, T)> {
-    PasswordKdf::check_new_password(password)?;
-    let kdf = PasswordKdf::generate();
-    let kek = Kek::from_password(password, &kdf)?;
-    let secret = FolderSecret::generate();
-    let keys = secret.keys();
-    let new = NewFolder {
-        wrapped_secret: secret.wrap(&kek, folder),
-        recipient: keys.recipient().to_string(),
-        kdf: Some(kdf),
-    };
-    drop((kek, secret));
-    let result = action(&keys)?;
-    Ok((new, result))
-}
-
-/// Unlocks a password folder. The caller keeps the keys until Lock (decided for password
-/// folders), then drops them.
-pub fn unlock_password_folder(
-    password: &str,
-    kdf: &PasswordKdf,
-    folder: ProtectedFolder<'_>,
-) -> Result<FolderKeys> {
-    let kek = Kek::from_password(password, kdf)?;
-    let keys = FolderSecret::unwrap(&kek, folder.node_id, folder.wrapped_secret)?.keys();
-    keys.check_recipient(folder.recipient)?;
-    Ok(keys)
-}
-
-/// Re-wraps a folder secret from one wrapping key to another: vault key rotation, and "change
-/// lock" between password and security key. No file is re-encrypted.
+/// Re-wraps a folder secret from one vault key to another, for a vault key rotation. No file is
+/// re-encrypted.
 pub fn rewrap_folder_secret(
     from: &impl crate::folder::FolderWrappingKey,
     to: &impl crate::folder::FolderWrappingKey,
@@ -319,44 +282,13 @@ mod tests {
     }
 
     #[test]
-    fn password_folder_and_change_lock() {
-        let fast = |password: &str| -> Result<(NewFolder, ())> {
-            // protect_with_password uses the real parameters; build the same with fast ones.
-            PasswordKdf::check_new_password(password)?;
-            let kdf = PasswordKdf {
-                salt: [7; 16],
-                memory_kib: 64,
-                passes: 1,
-                lanes: 1,
-            };
-            let kek = Kek::from_password(password, &kdf)?;
-            let secret = FolderSecret::generate();
-            Ok((
-                NewFolder {
-                    wrapped_secret: secret.wrap(&kek, &FOLDER),
-                    recipient: secret.recipient().to_string(),
-                    kdf: Some(kdf),
-                },
-                (),
-            ))
-        };
-        assert!(fast("short").is_err());
-        let (folder, ()) = fast("a long enough password").unwrap();
-        let kdf = folder.kdf.clone().unwrap();
-        let listed = ProtectedFolder {
-            node_id: &FOLDER,
-            wrapped_secret: &folder.wrapped_secret,
-            recipient: &folder.recipient,
-        };
-        assert!(unlock_password_folder("a long enough password", &kdf, listed).is_ok());
-        assert!(unlock_password_folder("a wrong password here", &kdf, listed).is_err());
-
-        // Password → security key: re-wrap under the vault key, same recipient.
-        let kek = Kek::from_password("a long enough password", &kdf).unwrap();
-        let vault_key = VaultKey::generate();
-        let rewrapped =
-            rewrap_folder_secret(&kek, &vault_key, &FOLDER, &folder.wrapped_secret).unwrap();
-        let secret = FolderSecret::unwrap(&vault_key, &FOLDER, &rewrapped).unwrap();
+    fn rotation_rewraps_without_changing_the_recipient() {
+        let old = VaultKey::generate();
+        let (folder, ()) = protect_with_vault_key(&old, &FOLDER, |_| Ok(())).unwrap();
+        let new = VaultKey::generate();
+        let rewrapped = rewrap_folder_secret(&old, &new, &FOLDER, &folder.wrapped_secret).unwrap();
+        let secret = FolderSecret::unwrap(&new, &FOLDER, &rewrapped).unwrap();
         assert_eq!(secret.recipient().to_string(), folder.recipient);
+        assert!(FolderSecret::unwrap(&old, &FOLDER, &rewrapped).is_err());
     }
 }

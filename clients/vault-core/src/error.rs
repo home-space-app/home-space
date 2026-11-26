@@ -2,8 +2,8 @@
 /// to their own texts.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// A wrapped key did not open: the wrong security key, recovery key or password, or the
-    /// stored value was changed.
+    /// A wrapped key did not open: the wrong security key or recovery key, or the stored value
+    /// was changed.
     #[error("the key does not match or the wrapped value was changed")]
     Unwrap,
     /// A wrapped key has a format this version does not know.
@@ -15,12 +15,6 @@ pub enum Error {
     /// A sealed name did not open: wrong folder, wrong parent, or changed.
     #[error("the sealed name does not open")]
     SealedName,
-    /// A folder password is too weak to be accepted.
-    #[error("the password must have at least {min} characters")]
-    PasswordTooShort { min: usize },
-    /// Argon2id refused its parameters.
-    #[error("invalid password parameters: {0}")]
-    Kdf(String),
     /// A recovery key was mistyped (bad characters, length or checksum).
     #[error("this is not a valid recovery key")]
     RecoveryKey,

@@ -5,7 +5,6 @@ use crate::{FOLDER_MIME, NewCredential, NewNode, NodeKind, TenantId};
 
 const RECIPIENT: &str = "age1fauk43xvke3myu0vg0syaflnwhlslwxd2504jfdjwejkjc50pcysgcf5gf";
 const WRAPPED: [u8; 73] = [7; 73];
-const KDF: &str = r#"{"salt":"AAAAAAAAAAAAAAAAAAAAAA","memory_kib":65536,"passes":3,"lanes":1}"#;
 
 async fn user(db: &Db, name: &str) -> UserId {
     db.create_user(TenantId::DEFAULT, name, "hash")
@@ -65,22 +64,32 @@ async fn folder(db: &Db, owner: UserId, parent: Option<NodeId>, name: &str) -> N
     db.create_node(owner, new).await.expect("folder").id
 }
 
-fn with_key(epoch: i32) -> NewLock<'static> {
-    NewLock {
-        lock: "security_key",
+fn with_key(epoch: i32) -> KeyLock<'static> {
+    KeyLock {
         wrapped_secret: &WRAPPED,
-        epoch: Some(epoch),
-        kdf: None,
+        epoch,
+        recipient: RECIPIENT,
     }
 }
 
-fn with_password() -> NewLock<'static> {
-    NewLock {
-        lock: "password",
-        wrapped_secret: &WRAPPED,
-        epoch: None,
-        kdf: Some(KDF),
-    }
+/// A folder locked with a password, as the server will store one.
+async fn password_folder(db: &Db, owner: UserId, node: NodeId) {
+    sqlx::query(
+        "INSERT INTO protected_folders (node_id, owner_id, lock, password_hash, sealed_key, state) \
+         VALUES ($1, $2, 'password', '$argon2id$...', '\\x00', 'protected')",
+    )
+    .bind(node)
+    .bind(owner)
+    .execute(db.pool())
+    .await
+    .expect("password folder");
+}
+
+/// Gives `user` a vault at epoch 1.
+async fn vault(db: &Db, user: UserId) {
+    db.add_vault_unlocker(user, recovery(1))
+        .await
+        .expect("vault");
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -143,7 +152,7 @@ async fn the_last_unlocker_of_locked_folders_stays(pool: PgPool) {
     let first = security_key(yubikey, 1);
     db.add_vault_unlocker(alice, first).await.expect("first");
     let papers = folder(&db, alice, None, "Papers").await;
-    db.protect_folder(alice, papers, with_key(1), RECIPIENT)
+    db.protect_folder(alice, papers, with_key(1))
         .await
         .expect("db")
         .expect("protected");
@@ -192,15 +201,12 @@ async fn rotation_rewraps_everything_or_nothing(pool: PgPool) {
     db.add_vault_unlocker(alice, kept).await.expect("kept");
     db.add_vault_unlocker(alice, lost).await.expect("lost");
     let papers = folder(&db, alice, None, "Papers").await;
-    db.protect_folder(alice, papers, with_key(1), RECIPIENT)
+    db.protect_folder(alice, papers, with_key(1))
         .await
         .expect("db")
         .expect("protected");
     let notes = folder(&db, alice, None, "Notes").await;
-    db.protect_folder(alice, notes, with_password(), RECIPIENT)
-        .await
-        .expect("db")
-        .expect("protected");
+    password_folder(&db, alice, notes).await;
 
     let rewrapped = |id: Uuid| Rewrapped {
         id,
@@ -262,7 +268,7 @@ async fn rotation_rewraps_everything_or_nothing(pool: PgPool) {
         .expect("db")
         .expect("some");
     assert_eq!(protected.epoch, Some(2));
-    assert_eq!(protected.wrapped_secret, vec![9; 73]);
+    assert_eq!(protected.wrapped_secret, Some(vec![9; 73]));
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -277,46 +283,39 @@ async fn protection_never_overlaps_or_takes_special_folders(pool: PgPool) {
     };
     // No vault yet.
     assert_eq!(
-        refused(
-            db.protect_folder(alice, inner, with_key(1), RECIPIENT)
-                .await
-        ),
+        refused(db.protect_folder(alice, inner, with_key(1)).await),
+        ProtectRefusal::VaultChanged
+    );
+    vault(&db, alice).await;
+    assert_eq!(
+        refused(db.protect_folder(alice, inner, with_key(2)).await),
         ProtectRefusal::VaultChanged
     );
     let stored = db
-        .protect_folder(alice, inner, with_password(), RECIPIENT)
+        .protect_folder(alice, inner, with_key(1))
         .await
         .expect("db")
         .expect("inner");
     assert_eq!(stored.state, "protected");
     assert_eq!(
-        refused(
-            db.protect_folder(alice, inner, with_password(), RECIPIENT)
-                .await
-        ),
+        refused(db.protect_folder(alice, inner, with_key(1)).await),
         ProtectRefusal::Overlaps
     );
     assert_eq!(
-        refused(
-            db.protect_folder(alice, outer, with_password(), RECIPIENT)
-                .await
-        ),
+        refused(db.protect_folder(alice, outer, with_key(1)).await),
         ProtectRefusal::Overlaps
     );
     let special = db.special_folders(alice).await.expect("special");
     assert_eq!(
         refused(
-            db.protect_folder(alice, special.lost_and_found_id, with_password(), RECIPIENT)
+            db.protect_folder(alice, special.lost_and_found_id, with_key(1))
                 .await
         ),
         ProtectRefusal::SpecialFolder
     );
     let bob = user(&db, "bob").await;
     assert_eq!(
-        refused(
-            db.protect_folder(bob, outer, with_password(), RECIPIENT)
-                .await
-        ),
+        refused(db.protect_folder(bob, outer, with_key(1)).await),
         ProtectRefusal::NotFound
     );
 
@@ -324,7 +323,7 @@ async fn protection_never_overlaps_or_takes_special_folders(pool: PgPool) {
     let other = folder(&db, alice, None, "Other").await;
     folder(&db, alice, Some(other), "Child").await;
     let stored = db
-        .protect_folder(alice, other, with_password(), RECIPIENT)
+        .protect_folder(alice, other, with_key(1))
         .await
         .expect("db")
         .expect("other");
@@ -333,32 +332,42 @@ async fn protection_never_overlaps_or_takes_special_folders(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "../../migrations")]
-async fn a_lock_change_keeps_the_recipient(pool: PgPool) {
+async fn a_conversion_finishes_or_is_cancelled_but_a_protected_folder_stays(pool: PgPool) {
     let db = Db::from_pool(pool);
     let alice = user(&db, "alice").await;
-    let yubikey = key(&db, alice, b"one").await;
-    db.add_vault_unlocker(alice, security_key(yubikey, 1))
-        .await
-        .expect("vault");
-    let notes = folder(&db, alice, None, "Notes").await;
-    db.protect_folder(alice, notes, with_password(), RECIPIENT)
+    vault(&db, alice).await;
+    let papers = folder(&db, alice, None, "Papers").await;
+    folder(&db, alice, Some(papers), "Old").await;
+    let stored = db
+        .protect_folder(alice, papers, with_key(1))
         .await
         .expect("db")
-        .expect("protected");
+        .expect("protecting");
+    assert_eq!(stored.state, "protecting");
+    let finished = db
+        .set_protection_state(alice, papers, &["protecting"], "protected")
+        .await
+        .expect("finished");
+    assert_eq!(finished.state, "protected");
     assert!(matches!(
-        db.change_folder_lock(alice, notes, with_key(2)).await,
+        db.set_protection_state(alice, papers, &["protecting"], "protected")
+            .await,
         Err(DbError::Stale)
     ));
-    let changed = db
-        .change_folder_lock(alice, notes, with_key(1))
-        .await
-        .expect("changed");
-    assert_eq!(changed.lock, "security_key");
-    assert_eq!(changed.kdf, None);
-    assert_eq!(changed.recipient, RECIPIENT);
-    let bob = user(&db, "bob").await;
+    // A protected folder is never just forgotten: its secret would be gone with it.
     assert!(matches!(
-        db.change_folder_lock(bob, notes, with_password()).await,
+        db.remove_protection(alice, papers, &["protecting", "unprotecting"])
+            .await,
+        Err(DbError::Stale)
+    ));
+    db.set_protection_state(alice, papers, &["protected"], "unprotecting")
+        .await
+        .expect("unprotecting");
+    db.remove_protection(alice, papers, &["protecting", "unprotecting"])
+        .await
+        .expect("removed");
+    assert!(matches!(
+        db.remove_protection(alice, papers, &["unprotecting"]).await,
         Err(DbError::NotFound)
     ));
 }

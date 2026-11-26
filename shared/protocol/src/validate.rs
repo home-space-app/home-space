@@ -286,7 +286,6 @@ macro_rules! shape_only {
 // The vault's requests are checked by the server's vault service, which reports each field.
 shape_only!(
     crate::AddUnlocker,
-    crate::ChangeLock,
     crate::ProtectFolder,
     crate::RotateVault,
     BrowserLoginDecision,
