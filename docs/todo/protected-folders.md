@@ -31,10 +31,11 @@ Decided 2026-11-26.
 | Who encrypts | The client (`shared/vault-core`) | The server |
 | What the server can read | Nothing: names and content are ciphertext it stores like any other bytes | Everything, while it has the key (always) |
 | Key | Folder secret wrapped by the user's vault, which each enabled security key (and an optional recovery key) unwraps through WebAuthn PRF / `hmac-secret` | Random folder key, kept sealed with the server's secrets key; the password is checked against an Argon2id hash |
-| Protecting an existing folder | The client downloads the files, removes them from the server and the recycle bin, and uploads them encrypted. **Their version history is lost**, and the user is warned first. | The server encrypts the content and every old version in place; history is kept. |
+| Protecting an existing folder | The client downloads the files, deletes them from the server (for good, see below), and uploads them encrypted. **Their version history is lost**, and the user is warned first. | The server encrypts the content and every old version in place; history is kept. |
 | Names | Sealed by the client (AES-SIV), stored as base64url text in the normal `name` | Encrypted by the server, shown to sessions that unlocked the folder |
 | Unlock | PIN and touch; decrypts the names only. Every open, upload or rename needs another touch: **no key stays in the client's memory**. | Password, sent to the server; the session sees the folder until Lock or a timeout |
 | Old clients and on-demand files | See meaningless names (base64url); new clients hide protected folders there | See nothing inside a locked folder (`423 locked`) |
+| Deleting | **For good**, versions included: nothing inside goes to the recycle bin | The same |
 
 ## Threat model
 
@@ -278,7 +279,7 @@ What follows for the other features, without special cases on the server:
 | Shares, transfers, archive downloads | Refused for a protected folder and what it holds (`409 protected`), for both locks, since they would hand out ciphertext. A shared folder or a folder sent to a device that holds a protected folder leaves it out, in listings, archives and copies. Sharing encrypted folders with other users is under [Later](#later). |
 | Moves and copies | Work as today. Within the folder the client sends the name sealed for the new parent. Into or out of it, the client copies with encryption (or decryption) and deletes the source; a plain move would leave plaintext inside or ciphertext outside. |
 | Versions | Kept from the moment of protection on. Each version is its own age file with its own file key. |
-| Recycle bin | Works as today, with the sealed names; the client shows them decrypted when the folder is unlocked. |
+| Recycle bin | Not used: deleting inside deletes for good (see [Deleting](#deleting-inside-a-protected-folder)). |
 | Duplicates, "unchanged" upload check | Never match: random file keys make equal files differ. |
 | Storage quota | Counts ciphertext size, which is slightly larger. |
 | On-demand files, folder sync, mobile auto-upload | The clients hide protected folders there (they know them from `GET /protected`), so the system file browser never shows meaningless names. A sync mapping cannot point at or contain one. |
@@ -295,10 +296,10 @@ happens: "The previous versions of the files in this folder will be deleted."
 2. The client downloads the current content of every file into a private temporary directory
    (`$XDG_RUNTIME_DIR` on Linux, the app's temp dir on macOS and Windows), keeping a journal there
    of what it has done, so it can resume after a crash or a closed laptop.
-3. It deletes the folder's content on the server (`DELETE /nodes/{id}` of each child) and purges
-   every deleted file from the recycle bin (`DELETE /trash/{id}`); their old versions go with
-   them. It also offers to purge files of this folder that were already in the bin (their
-   `original_path` is inside it).
+3. It deletes the folder's content on the server (`DELETE /nodes/{id}` of each child). The folder
+   is protected already, so they are deleted for good, old versions included, without passing
+   through the recycle bin. It also offers to purge files of this folder that were in the bin
+   before (their `original_path` is inside it).
 4. With one touch it seals every name, then encrypts each file to the folder's recipient and
    uploads it, recreating the folders. Progress shows in the transfers panel.
 5. `POST /protected/{id}/finish` marks the folder `protected`. The temporary directory is deleted.
@@ -315,7 +316,7 @@ happens: "The previous versions of the files in this folder will be deleted."
   plaintext. The client checks the folder against its journal before `finish` and encrypts
   anything new it finds.
 - **Unprotect** is the same in reverse: `POST /protected/{id}/unprotect` (`unprotecting`),
-  download and decrypt, delete and purge, upload plain, then `DELETE /protected/{id}`. A
+  download and decrypt, delete (for good), upload plain, then `DELETE /protected/{id}`. A
   `protected` folder's row is never deleted directly, since its secret would go with it.
 
 ## Password folders (server-side encryption)
@@ -392,13 +393,9 @@ Done (stage C, the rest):
   Sharing or sending a protected folder or anything in it is refused (`409 protected`); a shared
   folder that holds one does not show it through the share (listing, archive, copy), and sending
   such a folder leaves it out. The server has no previews.
-- **Recycle bin** (decided 2026-11-26): deleting inside a password folder deletes **for good**,
-  versions included; nothing goes to the bin. A binned file would keep its encrypted content and
-  sealed name outside the folder, restoring it into Lost & Found would need decrypting it there,
-  and deleting the folder would take the key its binned files need. Deleting a folder that holds
-  a password folder needs every such folder unlocked (`423`), and deletes their files for good
-  while the rest goes to the bin. Moves inside a password folder refuse `on_conflict: skip`,
-  which bins what it skips. Clients say "Deleted for good" before deleting there.
+- **Recycle bin:** deleting inside deletes for good, as in every protected folder (see
+  [Deleting](#deleting-inside-a-protected-folder)). Deleting a folder that holds a password
+  folder also needs every such folder unlocked (`423`).
 - **Change the password:** `POST /protected/{id}/password` `{ password }` for a session that
   unlocked the folder and signed in recently; the account password rules apply. The key stays,
   so nothing is re-encrypted; every other session is locked out until it unlocks with the new
@@ -421,6 +418,21 @@ To do:
 - **Forgotten password:** the server has the key, so the account owner could set a new folder
   password after confirming it is them (recent sign-in). **Open question:** allow that, or keep
   "forgotten password, lost data"?
+
+## Deleting inside a protected folder
+
+Decided 2026-11-26: deleting a file or folder inside a protected folder, of either lock, deletes
+it **for good**, with its old versions; nothing goes to the recycle bin. A binned file would keep
+its encrypted content and sealed name outside the folder, where nothing opens them (a sealed name
+is bound to its folder), restoring it into Lost & Found would need decrypting it there, and
+deleting the protected folder would take along the key its binned files need.
+
+- Deleting a folder that holds protected folders bins its other files as usual and deletes what
+  the protected folders hold for good.
+- A move whose `on_conflict: skip` would bin a file inside a protected folder is rolled back with
+  `409 protected`.
+- Clients say "Deleted for good" before deleting inside a protected folder, or a folder that
+  holds one.
 
 ## Unlock and lock
 
@@ -622,7 +634,7 @@ the web client like anywhere else, since the server decrypts them anyway. Phase 
    Authenticator spikes for Linux, macOS and Windows.
 2. **Desktop, security keys**: enabling keys, recovery key, the Protect dialog, protecting new and
    existing folders, Unlock / Lock / Lock all, auto-lock, browse, open, upload, download, move and
-   rename inside, recycle bin, hiding from on-demand files and sync.
+   rename inside, deleting for good, hiding from on-demand files and sync.
 3. **Password folders**: the server's encryption of content, unlock and lock (stage A, done);
    names and locked listings (stage B, done); search, shares, transfers, password change,
    unprotect (stage C, done); then the clients.

@@ -269,7 +269,7 @@ impl<'a> Placer<'a> {
             if !purged.files.is_empty() {
                 // Rolls the whole move back: a skipped file is never deleted for good.
                 return Err(FilesError::Protected(
-                    "Files in a password folder cannot be skipped into the recycle bin.",
+                    "Files in a protected folder cannot be skipped into the recycle bin.",
                 ));
             }
             self.effects.deleted.push(node.clone());

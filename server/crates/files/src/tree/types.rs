@@ -115,6 +115,6 @@ pub struct TrashOutcome {
     pub node: Node,
     /// The files now in the bin: the node itself or every file below it.
     pub trashed: Vec<Node>,
-    /// What was deleted for good, being inside a password folder; its content is removed.
+    /// What was deleted for good, being inside a protected folder; its content is removed.
     pub purged: db::DeletedNodes,
 }
