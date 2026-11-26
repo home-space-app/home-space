@@ -66,6 +66,24 @@ pub struct WebAuthnKey {
     pub created_at: OffsetDateTime,
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub last_used_at: Option<OffsetDateTime>,
+    /// The key made the credential with `hmac-secret` (WebAuthn PRF), as its signed
+    /// registration says, so it can derive the secret of protected folders. Keys added before
+    /// the web client asked for it usually cannot.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prf: bool,
+    /// Backed up by its provider and synced between devices (iCloud Keychain, Google Password
+    /// Manager), rather than kept on one hardware key.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub synced: bool,
+}
+
+impl WebAuthnKey {
+    /// Whether the key can lock protected folders: a hardware key with PRF. Synced passkeys
+    /// cannot, since the native apps cannot reach them. It still needs a PIN, which only
+    /// asking the key tells.
+    pub fn can_protect_folders(&self) -> bool {
+        self.prf && !self.synced
+    }
 }
 
 /// `POST /me/webauthn/start`: begins adding a passkey or security key.
