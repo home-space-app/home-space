@@ -87,14 +87,7 @@ pub fn config_groups(
         "HOMESPACE_ACCESS_TTL_SECS · _REFRESH_TTL_SECS",
     ));
     sign_in.push(ConfigRow {
-        note: Some(
-            if config.previous_jwt_secret {
-                "previous secret still accepted"
-            } else {
-                "no previous secret"
-            }
-            .to_owned(),
-        ),
+        note: Some("rotate with homespace-ctl secrets rotate".to_owned()),
         ..row("Token signing secret", "Set", "HOMESPACE_JWT_SECRET")
     });
     sign_in.push(row(
@@ -518,7 +511,6 @@ mod tests {
             oidc: None,
             access_ttl_secs: 900,
             refresh_ttl_secs: 30 * 24 * 3600,
-            previous_jwt_secret: false,
             secrets_key: false,
             public_url: None,
             bind: "0.0.0.0:8080".to_owned(),

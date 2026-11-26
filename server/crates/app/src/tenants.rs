@@ -5,7 +5,10 @@ use std::{collections::HashMap, future::Future, path::PathBuf};
 
 use anyhow::{Context, Result};
 use api::{SharedServices, TenantContext, TenantMode, Tenants};
-use auth::{AuthConfig, AuthService, OidcConfig, OidcService};
+use auth::{
+    AuthConfig, AuthService, OidcConfig, OidcService, SecretBox,
+    secrets_key::{self, KeyCheck, SecretsKeyError},
+};
 use db::{Db, Tenant, TenantDomain, TenantId};
 use tokio::task::JoinSet;
 
@@ -116,12 +119,13 @@ pub async fn load(
         .await
         .context("listing tenant domains")?;
     match config.tenant_mode {
-        TenantMode::Single => load_single(config, base, &tenants, &domains, shared).await,
-        TenantMode::Host => load_hosts(config, base, secrets, &tenants, &domains, shared).await,
+        TenantMode::Single => load_single(db, config, base, &tenants, &domains, shared).await,
+        TenantMode::Host => load_hosts(db, config, base, secrets, &tenants, &domains, shared).await,
     }
 }
 
 async fn load_single(
+    db: &Db,
     config: &Config,
     base: AuthService,
     tenants: &[Tenant],
@@ -131,6 +135,7 @@ async fn load_single(
     let tenant = single_tenant(tenants)?;
     let settings = config.tenant_settings();
     let tenant_config = settings.validate()?;
+    check_secrets_key(db, tenant.id, tenant_config.secrets_key.as_ref()).await?;
     let base = base.with_secrets_key(tenant_config.secrets_key.clone());
     let auth = match tenant_config.oidc.clone() {
         Some(oidc_config) => {
@@ -171,6 +176,7 @@ fn single_tenant(tenants: &[Tenant]) -> Result<&Tenant> {
 }
 
 async fn load_hosts(
+    db: &Db,
     config: &Config,
     base: AuthService,
     secrets: &impl TenantSecrets,
@@ -178,7 +184,7 @@ async fn load_hosts(
     domains: &[TenantDomain],
     shared: &SharedServices,
 ) -> Result<Tenants> {
-    let configured = validate_tenants(config, secrets, tenants, domains).await;
+    let configured = validate_tenants(db, config, secrets, tenants, domains).await;
     ensure_distinct_secrets(&configured)?;
     let providers = discover_all(&configured).await;
     let ready = contexts(config, &base, configured, providers, domains, shared);
@@ -188,6 +194,7 @@ async fn load_hosts(
 /// The active tenants whose settings are complete and valid, with those settings. A tenant
 /// left out is logged, so that one tenant's mistake does not take the others down.
 async fn validate_tenants<'a>(
+    db: &Db,
     config: &Config,
     secrets: &impl TenantSecrets,
     tenants: &'a [Tenant],
@@ -199,7 +206,7 @@ async fn validate_tenants<'a>(
             tracing::info!(tenant = %tenant.id, "tenant is disabled; it is not served");
             continue;
         }
-        match validate_tenant(config, secrets, tenant, domains).await {
+        match validate_tenant(db, config, secrets, tenant, domains).await {
             Ok(tenant_config) => configured.push((tenant, tenant_config)),
             Err(err) => tracing::error!(
                 tenant = %tenant.id,
@@ -213,7 +220,9 @@ async fn validate_tenants<'a>(
 
 /// The settings of `tenant`: tenant 1's from the server configuration, any other's from its
 /// stored settings and secrets. Without a public URL, it is reached at its primary domain.
+/// Its secrets key must be the one its secrets are sealed with.
 async fn validate_tenant(
+    db: &Db,
     config: &Config,
     secrets: &impl TenantSecrets,
     tenant: &Tenant,
@@ -233,7 +242,33 @@ async fn validate_tenant(
     if settings.public_url.as_deref().is_none_or(str::is_empty) {
         settings.public_url = primary.map(|domain| public_url(&domain.domain));
     }
-    settings.validate()
+    let tenant_config = settings.validate()?;
+    check_secrets_key(db, tenant.id, tenant_config.secrets_key.as_ref()).await?;
+    Ok(tenant_config)
+}
+
+/// Refuses a secrets key that is not the one `tenant`'s authenticator apps and password
+/// folders are sealed with, such as a key changed by hand: they would not open.
+async fn check_secrets_key(db: &Db, tenant: TenantId, key: Option<&SecretBox>) -> Result<()> {
+    let var = EnvSecrets::var_name(tenant, "HOMESPACE_SECRETS_KEY");
+    match secrets_key::check(db, tenant, key).await {
+        Ok(KeyCheck::Recorded) => {
+            tracing::info!(%tenant, "secrets key recorded; change it only with homespace-ctl secrets rotate");
+            Ok(())
+        }
+        Ok(KeyCheck::Matches | KeyCheck::Unused) => Ok(()),
+        Err(SecretsKeyError::Missing) => anyhow::bail!(
+            "{var} is not set, but authenticator apps or password folders are sealed with a \
+             secrets key: set {var} to that key again. Change the key only with \
+             `homespace-ctl secrets rotate`"
+        ),
+        Err(SecretsKeyError::Wrong) => anyhow::bail!(
+            "{var} is not the key the authenticator apps and password folders are sealed with, \
+             and they open with no other: set {var} to that key again. Change the key only with \
+             `homespace-ctl secrets rotate`"
+        ),
+        Err(err) => Err(err).context("checking the secrets key"),
+    }
 }
 
 /// The tenants ready to serve: each `configured` one whose identity provider, if it has one,
@@ -278,7 +313,6 @@ fn tenant_auth(
         .for_tenant(AuthConfig {
             tenant,
             jwt_secret: tenant_config.jwt_secret.clone(),
-            previous_jwt_secrets: tenant_config.previous_jwt_secrets.clone(),
             access_ttl: time::Duration::seconds(config.access_ttl_secs),
             refresh_ttl: time::Duration::seconds(config.refresh_ttl_secs),
         })
@@ -324,21 +358,15 @@ async fn discover(config: OidcConfig) -> Result<OidcService> {
     Ok(OidcService::discover(config).await?)
 }
 
-/// Refuses two tenants that share a signing secret, current or previous.
+/// Refuses two tenants that share a signing secret.
 fn ensure_distinct_secrets(configured: &[(&Tenant, TenantConfig)]) -> Result<()> {
     let mut seen = HashMap::new();
     for (tenant, tenant_config) in configured {
-        let secrets =
-            std::iter::once(&tenant_config.jwt_secret).chain(&tenant_config.previous_jwt_secrets);
-        for secret in secrets {
-            if let Some(other) = seen.insert(secret.as_slice(), tenant.id)
-                && other != tenant.id
-            {
-                anyhow::bail!(
-                    "tenants {other} and {} have the same JWT secret; give each its own",
-                    tenant.id
-                );
-            }
+        if let Some(other) = seen.insert(tenant_config.jwt_secret.as_slice(), tenant.id) {
+            anyhow::bail!(
+                "tenants {other} and {} have the same JWT secret; give each its own",
+                tenant.id
+            );
         }
     }
     Ok(())
@@ -406,12 +434,9 @@ mod tests {
         }
     }
 
-    fn checked(secret: &str, previous: Option<&str>) -> TenantConfig {
+    fn checked(secret: &str) -> TenantConfig {
         TenantConfig {
             jwt_secret: secret.as_bytes().to_vec(),
-            previous_jwt_secrets: previous
-                .map(|secret| vec![secret.as_bytes().to_vec()])
-                .unwrap_or_default(),
             secrets_key: None,
             public_url: None,
             oidc: None,
@@ -483,22 +508,12 @@ mod tests {
         let one = tenant(1);
         let two = tenant(2);
         assert!(
-            ensure_distinct_secrets(&[
-                (&one, checked(SECRET_1, None)),
-                (&two, checked(SECRET_2, None)),
-            ])
-            .is_ok()
+            ensure_distinct_secrets(&[(&one, checked(SECRET_1)), (&two, checked(SECRET_2))])
+                .is_ok()
         );
         assert!(
-            ensure_distinct_secrets(&[
-                (&one, checked(SECRET_1, None)),
-                (&two, checked(SECRET_2, Some(SECRET_1))),
-            ])
-            .is_err()
-        );
-        assert!(
-            ensure_distinct_secrets(&[(&one, checked(SECRET_1, Some(SECRET_1)))]).is_ok(),
-            "a tenant may repeat its own secret"
+            ensure_distinct_secrets(&[(&one, checked(SECRET_1)), (&two, checked(SECRET_1))])
+                .is_err()
         );
     }
 

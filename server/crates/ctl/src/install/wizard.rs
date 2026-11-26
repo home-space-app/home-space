@@ -11,9 +11,9 @@ use super::{
         defaults,
     },
     render::env_safe,
-    runtime, secrets, system,
+    runtime, system,
 };
-use crate::installation::Engine;
+use crate::{generate as secrets, installation::Engine};
 
 type Check = Result<Validation, inquire::CustomUserError>;
 

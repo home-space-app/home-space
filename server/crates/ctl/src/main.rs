@@ -1,5 +1,6 @@
 mod cli;
 mod commands;
+mod generate;
 #[cfg(target_os = "linux")]
 mod install;
 mod installation;
@@ -48,6 +49,7 @@ async fn main() -> Result<()> {
         Command::Install(args) => run_install(&args),
         Command::User(command) => commands::run_user(command, &database.connect().await?).await,
         Command::Search(command) => commands::run_search(command, database.connect().await?).await,
+        Command::Secrets(command) => commands::run_secrets(command, database).await,
     }
 }
 
@@ -62,7 +64,7 @@ fn run_install(_: &cli::InstallArgs) -> Result<()> {
 }
 
 /// Where the database commands work: the database given, or the installation on this machine.
-struct Database {
+pub struct Database {
     /// The `--env-file` read, if any.
     env_file: Option<PathBuf>,
     url: Option<String>,
@@ -71,6 +73,11 @@ struct Database {
 }
 
 impl Database {
+    /// Whether a database was given, or an `--env-file` that should name one.
+    fn is_given(&self) -> bool {
+        self.env_file.is_some() || self.url.as_deref().is_some_and(|url| !url.is_empty())
+    }
+
     /// Connects to the database given. Without one the command is run inside the installation's
     /// app container instead, and this process exits with its status.
     async fn connect(self) -> Result<Db> {

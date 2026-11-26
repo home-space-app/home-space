@@ -21,7 +21,6 @@ fn service(pool: PgPool) -> AuthService {
     let config = AuthConfig {
         tenant: TenantId::DEFAULT,
         jwt_secret: b"test-secret".to_vec(),
-        previous_jwt_secrets: Vec::new(),
         access_ttl: Duration::minutes(15),
         refresh_ttl: Duration::days(30),
     };

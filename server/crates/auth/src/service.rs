@@ -33,19 +33,13 @@ pub struct AuthConfig {
     /// The tenant this service signs users of that tenant in to.
     pub tenant: TenantId,
     pub jwt_secret: Vec<u8>,
-    /// Earlier secrets that still verify tokens, for rotating `jwt_secret`.
-    pub previous_jwt_secrets: Vec<Vec<u8>>,
     pub access_ttl: Duration,
     pub refresh_ttl: Duration,
 }
 
 impl AuthConfig {
     fn keys(&self) -> Keys {
-        Keys::new(
-            self.tenant,
-            self.jwt_secret.clone(),
-            self.previous_jwt_secrets.clone(),
-        )
+        Keys::new(self.tenant, self.jwt_secret.clone())
     }
 
     fn ttls(&self) -> (Duration, Duration) {

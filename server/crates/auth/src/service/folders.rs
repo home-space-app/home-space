@@ -69,7 +69,7 @@ impl AuthService {
         user: UserId,
         sealed: &[u8],
     ) -> Result<Zeroizing<Vec<u8>>, AuthError> {
-        let opened = self.secret_box()?.open(self.tenant, user, sealed)?;
-        Ok(Zeroizing::new(opened.plain))
+        let plain = self.secret_box()?.open(self.tenant, user, sealed)?;
+        Ok(Zeroizing::new(plain))
     }
 }

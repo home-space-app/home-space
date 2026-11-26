@@ -285,7 +285,7 @@ Per tenant (`{NAME}_{ID}`, also as `{NAME}_{ID}_FILE` where today's variable has
 
 | Setting | Variable |
 |---|---|
-| Signing secret, previous secret | `HOMESPACE_JWT_SECRET`, `HOMESPACE_JWT_SECRET_PREVIOUS` |
+| Signing secret | `HOMESPACE_JWT_SECRET` (rotated with `homespace-ctl secrets rotate --tenant`) |
 | OIDC | `HOMESPACE_OIDC_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_SCOPES`, `_REQUIRED_GROUP`, `_GROUPS_CLAIM`, `_NAME` |
 | Password sign-in on or off | `HOMESPACE_PASSWORD_LOGIN` |
 | Public URL override | `HOMESPACE_PUBLIC_URL` (otherwise `https://<primary domain>`; for `http://localhost` in development) |

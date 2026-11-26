@@ -12,6 +12,7 @@ mod password;
 mod recovery_codes;
 mod secret_box;
 pub mod secrets;
+pub mod secrets_key;
 mod service;
 mod sessions;
 mod share_passwords;
