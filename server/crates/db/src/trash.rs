@@ -84,14 +84,14 @@ impl Tx {
 
     /// Moves the files at or below `node` to the recycle bin `trash_id`, each remembering its
     /// path, and removes the folders they leave. Returns the binned files, and what was deleted
-    /// for good: files inside a password folder skip the bin, since they are stored encrypted
-    /// with a key that goes with the folder (see docs/todo/protected-folders.md).
+    /// for good: files inside a protected folder, of either lock, skip the bin, since they are
+    /// stored encrypted (see docs/todo/protected-folders.md).
     pub async fn bin(
         &mut self,
         node: &Node,
         trash_id: NodeId,
     ) -> Result<(Vec<Node>, DeletedNodes), DbError> {
-        let purged = purge_password_files(&mut self.conn, self.owner, node.id).await?;
+        let purged = purge_protected_files(&mut self.conn, self.owner, node.id).await?;
         let binned = bin_subtree(&mut self.conn, self.owner, node, trash_id).await?;
         // The files have left the folders, so removing them takes nothing else along.
         sqlx::query("DELETE FROM nodes WHERE id = $1 AND owner_id = $2 AND kind = 'folder'")
@@ -215,9 +215,9 @@ async fn special_folders(
     Ok(folders)
 }
 
-/// Deletes for good the files at or below `node` that are inside a password folder, with their
+/// Deletes for good the files at or below `node` that are inside a protected folder, with their
 /// versions.
-async fn purge_password_files(
+async fn purge_protected_files(
     conn: &mut PgConnection,
     owner: UserId,
     node: NodeId,
@@ -227,15 +227,8 @@ async fn purge_password_files(
              SELECT id, kind FROM nodes WHERE id = $1 AND owner_id = $2 \
              UNION ALL \
              SELECT n.id, n.kind FROM nodes n JOIN subtree s ON n.parent_id = s.id \
-         ), inside AS ( \
-             SELECT p.node_id FROM protected_folders p WHERE p.owner_id = $2 AND p.lock = 'password' \
-         ) SELECT s.id FROM subtree s WHERE s.kind = 'file' AND EXISTS ( \
-             WITH RECURSIVE up AS ( \
-                 SELECT parent_id AS id FROM nodes WHERE id = s.id \
-                 UNION ALL \
-                 SELECT n.parent_id FROM nodes n JOIN up ON n.id = up.id \
-                 WHERE n.parent_id IS NOT NULL \
-             ) SELECT 1 FROM up JOIN inside ON inside.node_id = up.id)",
+         ) SELECT s.id FROM subtree s \
+         WHERE s.kind = 'file' AND in_protected_folder(s.id)",
     )
     .bind(node)
     .bind(owner)

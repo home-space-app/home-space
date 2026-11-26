@@ -10,7 +10,7 @@ use crate::FilesError;
 /// Deletes node `id` by moving its files to the recycle bin.
 ///
 /// A file moves there itself. A folder's files all move there, each remembering its path,
-/// and the folders are removed. Files inside a password folder are deleted for good instead. Lost & Found, and folders containing it, cannot be deleted.
+/// and the folders are removed. Files inside a protected folder are deleted for good instead. Lost & Found, and folders containing it, cannot be deleted.
 pub(crate) async fn trash_node(
     db: &Db,
     owner: UserId,

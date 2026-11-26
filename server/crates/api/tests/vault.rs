@@ -1141,3 +1141,36 @@ async fn unprotecting_a_password_folder_decrypts_it_in_place(pool: PgPool) {
         .await;
     assert_eq!(old.body, b"first draft");
 }
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn deleting_in_a_security_key_folder_skips_the_recycle_bin(pool: PgPool) {
+    let app = setup(pool).await;
+    let token = app.user_token("alice").await;
+    let alice = app.user_id("alice").await.to_string();
+    recovery_vault(&app, &token).await;
+    let docs = folder(&app, &token, "Docs").await;
+    let keys = id_in(&app, &token, &docs, "Keys").await;
+    upload_into(&app, &token, &docs, "plain.txt", "outside").await;
+    let protected = protect(&app, &token, &keys, 1).await;
+    assert_eq!(
+        protected.json()["state"],
+        "protected",
+        "{}",
+        protected.json()
+    );
+    // The client uploads ciphertext under sealed names; the server stores it like any file.
+    let sealed = upload_into(&app, &token, &keys, "tj7VHBiK2oF", "age bytes").await;
+    upload_into(&app, &token, &keys, "eDnpgp214PuY", "more age bytes").await;
+
+    let deleted = delete(&app, &format!("/api/v1/nodes/{sealed}"), &token).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.json());
+    assert_eq!(app.get("/api/v1/trash", &token).await.json(), json!([]));
+    assert_eq!(stored_blobs(&app, &alice).len(), 2);
+
+    let deleted = delete(&app, &format!("/api/v1/nodes/{docs}"), &token).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.json());
+    let binned = app.get("/api/v1/trash", &token).await.json();
+    assert_eq!(binned.as_array().map(Vec::len), Some(1));
+    assert_eq!(binned[0]["node"]["name"], "plain.txt");
+    assert_eq!(stored_blobs(&app, &alice).len(), 1);
+}
