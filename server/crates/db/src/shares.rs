@@ -99,7 +99,10 @@ async fn insert_share(
 ) -> Result<(), DbError> {
     let found: i64 = sqlx::query_scalar(concat!(
         "SELECT count(*) FROM nodes WHERE owner_id = $1 AND id = ANY($2) AND ",
-        visible!("nodes")
+        visible!("nodes"),
+        " AND ",
+        unprotected!("nodes"),
+        " AND NOT EXISTS (SELECT 1 FROM protected_folders p WHERE p.node_id = nodes.id)"
     ))
     .bind(owner)
     .bind(node_ids)
@@ -391,14 +394,18 @@ impl Db {
     }
 
     /// A live node reachable through `share`: a shared item or something inside a shared
-    /// folder, with nothing on the way up in the recycle bin. `NotFound` for anything else.
+    /// folder, with nothing on the way up in the recycle bin. `NotFound` for anything else,
+    /// protected folders and what they hold included.
     pub async fn shared_node(&self, share: SharedRoot, id: NodeId) -> Result<Node, DbError> {
         let reachable: bool = sqlx::query_scalar(concat!(
             "WITH RECURSIVE chain AS ( \
                  SELECT n.id, n.parent_id, 0 AS depth FROM nodes n \
                  WHERE n.id = $2 AND n.owner_id = $3 AND ",
             visible!("n"),
-            " UNION ALL \
+            " AND ",
+            unprotected!("n"),
+            " AND NOT EXISTS (SELECT 1 FROM protected_folders p WHERE p.node_id = n.id) \
+                 UNION ALL \
                  SELECT p.id, p.parent_id, c.depth + 1 FROM nodes p \
                  JOIN chain c ON p.id = c.parent_id \
                  WHERE p.owner_id = $3 AND c.depth < $4 AND ",
@@ -431,7 +438,17 @@ impl Db {
     ) -> Result<Vec<Node>, DbError> {
         let parent = self.shared_node(share, parent_id).await?;
         if parent.kind == NodeKind::Folder {
-            self.list_children(share.owner_id, Some(parent_id)).await
+            let protected: Vec<NodeId> = sqlx::query_scalar(
+                "SELECT p.node_id FROM protected_folders p JOIN nodes n ON n.id = p.node_id \
+                 WHERE n.parent_id = $1 AND n.owner_id = $2",
+            )
+            .bind(parent_id)
+            .bind(share.owner_id)
+            .fetch_all(self.pool())
+            .await?;
+            let mut children = self.list_children(share.owner_id, Some(parent_id)).await?;
+            children.retain(|child| !protected.contains(&child.id));
+            Ok(children)
         } else {
             Err(DbError::NotFound)
         }

@@ -14,6 +14,13 @@ macro_rules! visible {
     };
 }
 
+/// A condition on the node `$alias` (its table or alias): not inside a protected folder.
+macro_rules! unprotected {
+    ($alias:literal) => {
+        concat!("NOT in_protected_folder(", $alias, ".id)")
+    };
+}
+
 mod accounts;
 mod browser_logins;
 mod changes;

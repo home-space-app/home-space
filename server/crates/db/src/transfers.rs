@@ -322,7 +322,9 @@ impl Db {
         Ok(ids)
     }
 
-    /// A live node of `owner` and everything live below it, the root first.
+    /// A live node of `owner` and everything live below it, the root first. Protected folders
+    /// and what they hold are left out, and a root that is one, or is inside one, is
+    /// `NotFound`: what is sent or shared from the tree never comes from them.
     pub async fn subtree(&self, owner: UserId, id: NodeId) -> Result<Vec<SubtreeNode>, DbError> {
         let nodes = sqlx::query_as::<_, SubtreeNode>(concat!(
             "WITH RECURSIVE tree AS ( \
@@ -330,12 +332,16 @@ impl Db {
                  created_at, updated_at, edited_on, ''::text AS rel FROM nodes \
                  WHERE id = $1 AND owner_id = $2 AND ",
             visible!("nodes"),
-            " UNION ALL \
+            " AND ",
+            unprotected!("nodes"),
+            " AND NOT EXISTS (SELECT 1 FROM protected_folders p WHERE p.node_id = nodes.id) \
+                 UNION ALL \
                  SELECT n.id, n.owner_id, n.parent_id, n.kind, n.name, n.size, n.sha256, \
                  n.mime, n.version, n.created_at, n.updated_at, n.edited_on, \
                  t.rel || '/' || n.name FROM nodes n \
                  JOIN tree t ON n.parent_id = t.id AND n.owner_id = $2 \
                  WHERE n.trashed_at IS NULL \
+                 AND NOT EXISTS (SELECT 1 FROM protected_folders p WHERE p.node_id = n.id) \
              ) SELECT * FROM tree ORDER BY rel"
         ))
         .bind(id)

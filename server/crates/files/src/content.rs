@@ -37,9 +37,11 @@ pub(crate) struct ContentStore {
     pub(crate) max_upload_bytes: u64,
     /// Where every change is published, for search and the user's devices.
     pub(crate) events: Events,
-    /// Held while a blob inside a password folder that is being encrypted is written, by the
-    /// conversion and by stores, so neither overwrites what the other just wrote.
-    pub(crate) sealing: std::sync::Arc<tokio::sync::Mutex<()>>,
+    /// Stores into a password folder hold it shared from reading the folder's state until the
+    /// blob is committed; the conversion that encrypts or decrypts a folder in place holds it
+    /// exclusively for each blob. So neither overwrites what the other just wrote, and a store
+    /// never lands in the form the folder had before its state changed.
+    pub(crate) sealing: std::sync::Arc<tokio::sync::RwLock<()>>,
 }
 
 impl ContentStore {
@@ -191,7 +193,19 @@ impl ContentStore {
         owner: UserId,
         node: NodeId,
         staged: StagedBlob,
-    ) -> Result<(StagedBlob, Option<tokio::sync::OwnedMutexGuard<()>>), FilesError> {
+    ) -> Result<(StagedBlob, Option<tokio::sync::OwnedRwLockReadGuard<()>>), FilesError> {
+        match self.db.enclosing_password_folder(owner, node).await {
+            Ok(Some(_)) => {}
+            Ok(None) => return Ok((staged, None)),
+            Err(err) => {
+                self.store.discard(staged).await;
+                return Err(err.into());
+            }
+        }
+        // Held until the blob is committed, and taken before the folder's state is read: a
+        // conversion takes it exclusively for each blob, so once it starts, every store that
+        // saw the state before has landed and every later one sees the new state.
+        let guard = self.sealing.clone().read_owned().await;
         let folder = match self.db.enclosing_password_folder(owner, node).await {
             Ok(Some(folder)) => folder,
             Ok(None) => return Ok((staged, None)),
@@ -207,11 +221,11 @@ impl ContentStore {
                 return Err(FilesError::Io(std::io::Error::other(err)));
             }
         };
-        let guard = if folder.state == "protected" {
-            None
-        } else {
-            Some(self.sealing.clone().lock_owned().await)
-        };
+        let guard = Some(guard);
+        // A folder being unprotected is decrypted in place; what arrives meanwhile stays plain.
+        if folder.state == "unprotecting" {
+            return Ok((staged, guard));
+        }
         let sealed = self.store.seal_staged(staged, recipient).await?;
         Ok((sealed, guard))
     }

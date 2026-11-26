@@ -234,6 +234,19 @@ impl std::fmt::Debug for UnlockFolder {
     }
 }
 
+/// `POST /protected/{id}/password`: a new password for a password folder, from a session that
+/// unlocked it and signed in recently. The folder's key stays; other sessions are locked out.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ChangeFolderPassword {
+    pub password: String,
+}
+
+impl std::fmt::Debug for ChangeFolderPassword {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ChangeFolderPassword { .. }")
+    }
+}
+
 /// The answer to `POST /protected/{id}/unlock`: the session can use the folder until
 /// `expires_at`, which moves on while it does.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

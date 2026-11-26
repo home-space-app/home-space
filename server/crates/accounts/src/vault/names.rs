@@ -65,7 +65,12 @@ impl VaultService {
         {
             return Err(AccountError::Locked);
         }
-        self.folder_names(user, folder.node_id).await
+        let keys = self.folder_keys(user, folder.node_id).await?;
+        Ok(if folder.state == "unprotecting" {
+            Names::unsealing(folder.node_id, keys)
+        } else {
+            Names::sealed(folder.node_id, keys)
+        })
     }
 
     /// The names inside the password folder `folder`, for the server's own work on it.

@@ -62,7 +62,10 @@ impl TrashService {
     }
 
     async fn delete_as(&self, owner: UserId, id: NodeId) -> Result<TrashOutcome, FilesError> {
-        let outcome = tree::trash_node(&self.content.db, owner, id).await?;
+        let mut outcome = tree::trash_node(&self.content.db, owner, id).await?;
+        self.content
+            .remove_content(owner, std::mem::take(&mut outcome.purged))
+            .await;
         self.content
             .events
             .publish(vec![

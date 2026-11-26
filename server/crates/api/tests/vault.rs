@@ -601,8 +601,9 @@ async fn a_password_folder_needs_a_good_password_and_finishes_on_the_server(pool
     let id = |action: &str| format!("/api/v1/protected/{notes}{action}");
     let finish = send(&app, Method::POST, &id("/finish"), &token, json!({})).await;
     assert_eq!(problem(&finish), "protected");
-    let unprotect = send(&app, Method::POST, &id("/unprotect"), &token, json!({})).await;
-    assert_eq!(problem(&unprotect), "protected");
+    // The server drops a password folder's protection itself, once it decrypted it.
+    let remove = delete(&app, &id(""), &token).await;
+    assert_eq!(problem(&remove), "protected");
 }
 
 /// Waits for the server to finish protecting the user's only password folder.
@@ -876,4 +877,267 @@ async fn a_resumable_upload_into_a_password_folder_is_sealed(pool: PgPool) {
         )
         .await;
     assert_eq!(problem(&refused), "locked");
+}
+
+async fn id_in(app: &TestApp, token: &str, parent: &str, name: &str) -> String {
+    let made = make_folder_in(app, token, parent, name).await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.json());
+    made.json()["id"].as_str().expect("id").to_owned()
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn password_folders_stay_out_of_search_duplicates_shares_and_transfers(pool: PgPool) {
+    let app = setup(pool).await;
+    let token = app.user_token("alice").await;
+    let alice = app.user_id("alice").await;
+    let docs = folder(&app, &token, "Docs").await;
+    let notes = id_in(&app, &token, &docs, "Notes").await;
+    upload_into(&app, &token, &docs, "copy.txt", "same words").await;
+    protect_with_password(&app, &token, &notes).await;
+    let inside = upload_into(&app, &token, &notes, "receipt.txt", "same words").await;
+
+    let hits = app.get("/api/v1/search?q=receipt", &token).await.json();
+    assert_eq!(hits, json!([]));
+    let report = app.get("/api/v1/duplicates", &token).await.json();
+    assert_eq!(report["groups"], json!([]));
+
+    for nodes in [json!([notes]), json!([inside])] {
+        let refused = app
+            .json(
+                Method::POST,
+                "/api/v1/shares",
+                Some(&token),
+                json!({ "node_ids": nodes }),
+            )
+            .await;
+        assert_eq!(problem(&refused), "protected", "{}", refused.json());
+    }
+    // A shared folder that holds a password folder does not show it.
+    let shared = app
+        .json(
+            Method::POST,
+            "/api/v1/shares",
+            Some(&token),
+            json!({ "node_ids": [docs] }),
+        )
+        .await;
+    assert_eq!(shared.status, StatusCode::CREATED, "{}", shared.json());
+    let link = shared.json()["token"].as_str().expect("token").to_owned();
+    let listed = app
+        .send(
+            Method::GET,
+            &format!("/api/v1/public/shares/{link}/nodes?parent_id={docs}"),
+            None,
+            Body::empty(),
+            None,
+        )
+        .await;
+    assert_eq!(names_of(&listed.json()), ["copy.txt"]);
+    let into = app
+        .send(
+            Method::GET,
+            &format!("/api/v1/public/shares/{link}/nodes?parent_id={notes}"),
+            None,
+            Body::empty(),
+            None,
+        )
+        .await;
+    assert_eq!(into.status, StatusCode::NOT_FOUND);
+
+    let sent = app
+        .json(
+            Method::POST,
+            "/api/v1/transfers",
+            Some(&token),
+            json!({
+                "recipient_id": alice,
+                "recipient_device": uuid::Uuid::now_v7(),
+                "items": [{ "path": "receipt.txt", "kind": "file", "size": 10, "node_id": inside }],
+            }),
+        )
+        .await;
+    assert_eq!(problem(&sent), "protected", "{}", sent.json());
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn deleting_in_a_password_folder_skips_the_recycle_bin(pool: PgPool) {
+    let app = setup(pool).await;
+    let token = app.user_token("alice").await;
+    let alice = app.user_id("alice").await.to_string();
+    let docs = folder(&app, &token, "Docs").await;
+    let notes = id_in(&app, &token, &docs, "Notes").await;
+    upload_into(&app, &token, &docs, "plain.txt", "outside").await;
+    protect_with_password(&app, &token, &notes).await;
+    let secret = upload_into(&app, &token, &notes, "secret.txt", "inside").await;
+    upload_into(&app, &token, &notes, "other.txt", "inside too").await;
+
+    let deleted = delete(&app, &format!("/api/v1/nodes/{secret}"), &token).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.json());
+    assert_eq!(app.get("/api/v1/trash", &token).await.json(), json!([]));
+    assert_eq!(stored_blobs(&app, &alice).len(), 2);
+
+    // A folder holding a locked password folder is deleted only once it is unlocked.
+    let unlock_uri = format!("/api/v1/protected/{notes}/unlock");
+    delete(&app, &unlock_uri, &token).await;
+    let refused = delete(&app, &format!("/api/v1/nodes/{docs}"), &token).await;
+    assert_eq!(problem(&refused), "locked");
+    send(
+        &app,
+        Method::POST,
+        &unlock_uri,
+        &token,
+        json!({ "password": FOLDER_PASSWORD }),
+    )
+    .await;
+    let deleted = delete(&app, &format!("/api/v1/nodes/{docs}"), &token).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.json());
+    let binned = app.get("/api/v1/trash", &token).await.json();
+    assert_eq!(binned.as_array().map(Vec::len), Some(1));
+    assert_eq!(binned[0]["node"]["name"], "plain.txt");
+    assert_eq!(stored_blobs(&app, &alice).len(), 1);
+    assert_eq!(app.get("/api/v1/protected", &token).await.json(), json!([]));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_password_folders_password_can_be_changed(pool: PgPool) {
+    let app = setup(pool).await;
+    let laptop = app.user_token("alice").await;
+    let phone = app
+        .sign_in_from("alice", uuid::Uuid::now_v7(), "Phone")
+        .await;
+    let notes = folder(&app, &laptop, "Notes").await;
+    protect_with_password(&app, &laptop, &notes).await;
+    let unlock_uri = format!("/api/v1/protected/{notes}/unlock");
+    let unlock = |token: String, password: &'static str| {
+        let uri = unlock_uri.clone();
+        let app = &app;
+        async move {
+            send(
+                app,
+                Method::POST,
+                &uri,
+                &token,
+                json!({ "password": password }),
+            )
+            .await
+        }
+    };
+    assert_eq!(
+        unlock(phone.clone(), FOLDER_PASSWORD).await.status,
+        StatusCode::OK
+    );
+    let listing = format!("/api/v1/nodes?parent_id={notes}");
+    assert_eq!(app.get(&listing, &phone).await.status, StatusCode::OK);
+
+    let change = format!("/api/v1/protected/{notes}/password");
+    let weak = send(
+        &app,
+        Method::POST,
+        &change,
+        &laptop,
+        json!({ "password": "short" }),
+    )
+    .await;
+    assert_eq!(weak.json()["errors"][0]["pointer"], "/password");
+    let changed = send(
+        &app,
+        Method::POST,
+        &change,
+        &laptop,
+        json!({ "password": "a brand new folder password" }),
+    )
+    .await;
+    assert_eq!(changed.status, StatusCode::NO_CONTENT, "{}", changed.json());
+    // The phone is locked out and needs the new password; the laptop keeps the folder open.
+    assert_eq!(problem(&app.get(&listing, &phone).await), "locked");
+    assert_eq!(app.get(&listing, &laptop).await.status, StatusCode::OK);
+    assert_eq!(
+        problem(&unlock(phone.clone(), FOLDER_PASSWORD).await),
+        "wrong-password"
+    );
+    assert_eq!(
+        unlock(phone.clone(), "a brand new folder password")
+            .await
+            .status,
+        StatusCode::OK
+    );
+
+    // Changing it needs the folder unlocked.
+    delete(&app, &unlock_uri, &phone).await;
+    let locked = send(
+        &app,
+        Method::POST,
+        &change,
+        &phone,
+        json!({ "password": FOLDER_PASSWORD }),
+    )
+    .await;
+    assert_eq!(problem(&locked), "locked");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn unprotecting_a_password_folder_decrypts_it_in_place(pool: PgPool) {
+    let app = setup(pool.clone()).await;
+    let token = app.user_token("alice").await;
+    let alice = app.user_id("alice").await.to_string();
+    let notes = folder(&app, &token, "Notes").await;
+    let file = upload_into(&app, &token, &notes, "plan.txt", "first draft").await;
+    upload_into(&app, &token, &notes, "plan.txt", "second draft").await;
+    id_in(&app, &token, &notes, "2025").await;
+    protect_with_password(&app, &token, &notes).await;
+    wait_protected(&app, &token).await;
+    assert!(
+        stored_blobs(&app, &alice)
+            .iter()
+            .all(|blob| blob.starts_with(AGE_HEADER))
+    );
+
+    let unlock_uri = format!("/api/v1/protected/{notes}/unlock");
+    let unprotect = format!("/api/v1/protected/{notes}/unprotect");
+    delete(&app, &unlock_uri, &token).await;
+    assert_eq!(
+        problem(&send(&app, Method::POST, &unprotect, &token, json!({})).await),
+        "locked"
+    );
+    send(
+        &app,
+        Method::POST,
+        &unlock_uri,
+        &token,
+        json!({ "password": FOLDER_PASSWORD }),
+    )
+    .await;
+    let started = send(&app, Method::POST, &unprotect, &token, json!({})).await;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.json());
+    assert_eq!(started.json()["state"], "unprotecting");
+
+    let mut gone = false;
+    for _ in 0..100 {
+        if app.get("/api/v1/protected", &token).await.json() == json!([]) {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(gone, "the protection was not dropped");
+    let blobs = stored_blobs(&app, &alice);
+    assert_eq!(blobs.len(), 2);
+    assert!(blobs.iter().all(|blob| !blob.starts_with(AGE_HEADER)));
+    let stored = stored_names(&pool, "alice").await;
+    for plain in ["plan.txt", "2025"] {
+        assert!(
+            stored.contains(&plain.to_owned()),
+            "{plain} is not plain again"
+        );
+    }
+    // An ordinary folder again: no unlock needed.
+    delete(&app, &unlock_uri, &token).await;
+    let listing = app
+        .get(&format!("/api/v1/nodes?parent_id={notes}"), &token)
+        .await;
+    assert_eq!(names_of(&listing.json()), ["plan.txt", "2025"]);
+    let old = app
+        .get(&format!("/api/v1/files/{file}/versions/1/content"), &token)
+        .await;
+    assert_eq!(old.body, b"first draft");
 }

@@ -11,8 +11,8 @@ use uuid::Uuid;
 use axum::extract::State;
 use db::NodeId;
 use protocol::{
-    AddUnlocker, FolderLock, FolderUnlocked, ProtectFolder, ProtectedFolder, ProtectionState,
-    RotateVault, UnlockFolder, Vault, VaultUnlocker,
+    AddUnlocker, ChangeFolderPassword, FolderLock, FolderUnlocked, ProtectFolder, ProtectedFolder,
+    ProtectionState, RotateVault, UnlockFolder, Vault, VaultUnlocker,
 };
 
 use crate::{
@@ -31,6 +31,7 @@ pub fn routes() -> Router<AppState> {
         .route("/protected/{id}/finish", post(finish))
         .route("/protected/{id}/unprotect", post(unprotect))
         .route("/protected/{id}/unlock", post(unlock).delete(lock))
+        .route("/protected/{id}/password", post(change_password))
 }
 
 /// The caller's vault: its epoch and unlockers, all useless without the keys.
@@ -92,16 +93,35 @@ async fn protect(
         .protect(user.id, user.session_id, &request)
         .await?;
     if folder.lock == FolderLock::Password && folder.state == ProtectionState::Protecting {
-        // The server encrypts what the folder holds; the regular job resumes it after a stop.
-        let vault = tenant.vault.clone();
-        let nodes = state.files.nodes.clone();
-        tokio::spawn(async move {
-            if let Err(err) = vault.convert_folders(&nodes).await {
-                tracing::error!(error = %err, "encrypting a password folder failed");
-            }
-        });
+        convert_now(&state, &tenant);
     }
     Ok((StatusCode::CREATED, Json(folder)))
+}
+
+/// Starts encrypting or decrypting the tenant's password folders that need it, rather than
+/// waiting for the regular job, which resumes it after a stop.
+fn convert_now(state: &AppState, tenant: &Tenant) {
+    let vault = tenant.vault.clone();
+    let nodes = state.files.nodes.clone();
+    tokio::spawn(async move {
+        if let Err(err) = vault.convert_folders(&nodes).await {
+            tracing::error!(error = %err, "converting a password folder failed");
+        }
+    });
+}
+
+/// Sets a new password for a password folder the caller's session unlocked.
+async fn change_password(
+    tenant: Tenant,
+    user: AuthUser,
+    ApiPath(id): ApiPath<NodeId>,
+    ApiJson(request): ApiJson<ChangeFolderPassword>,
+) -> Result<StatusCode, ApiError> {
+    tenant
+        .vault
+        .change_password(user.id, user.session_id, id, &request.password)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Unlocks a password folder for the caller's session.
@@ -139,15 +159,19 @@ async fn finish(
     Ok(Json(tenant.vault.finish(user.id, id).await?))
 }
 
-/// Starts replacing the folder's content with its decrypted form.
+/// Starts replacing the folder's content with its decrypted form: by the client for a
+/// security-key folder, by the server for a password folder, which then drops the protection.
 async fn unprotect(
+    State(state): State<AppState>,
     tenant: Tenant,
     user: AuthUser,
     ApiPath(id): ApiPath<NodeId>,
 ) -> Result<Json<ProtectedFolder>, ApiError> {
-    Ok(Json(
-        tenant.vault.unprotect(user.id, user.session_id, id).await?,
-    ))
+    let folder = tenant.vault.unprotect(user.id, user.session_id, id).await?;
+    if folder.lock == FolderLock::Password {
+        convert_now(&state, &tenant);
+    }
+    Ok(Json(folder))
 }
 
 /// Forgets the protection of a folder whose content is plain again.

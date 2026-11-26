@@ -12,7 +12,7 @@ use uuid::Uuid;
 use db::IncomingScope;
 use files::ArchiveEntry;
 use protocol::{
-    CreateTransfer, CreatedTransfer, CreatedTransferItem, IncomingQuery, Node, NodeKind,
+    CreateTransfer, CreatedTransfer, CreatedTransferItem, IncomingQuery, Node, NodeId, NodeKind,
     SaveTransfer, TicketRequest, Transfer, TransferSummary,
 };
 
@@ -43,9 +43,25 @@ pub fn routes() -> Router<AppState> {
 
 async fn create(
     State(state): State<AppState>,
+    tenant: Tenant,
     user: AuthUser,
     ApiJson(request): ApiJson<CreateTransfer>,
 ) -> Result<(StatusCode, Json<CreatedTransfer>), ApiError> {
+    let from_tree: Vec<NodeId> = request
+        .items
+        .iter()
+        .filter_map(|item| item.node_id)
+        .collect();
+    if !from_tree.is_empty() {
+        tenant
+            .vault
+            .refuse_protected(
+                user.id,
+                &from_tree,
+                "Files cannot be sent from a protected folder.",
+            )
+            .await?;
+    }
     let (transfer, items) = state
         .files
         .transfers

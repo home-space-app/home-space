@@ -34,6 +34,9 @@ pub enum FilesError {
     /// The name is empty, too long or contains forbidden characters.
     #[error("invalid name")]
     InvalidName,
+    /// Not allowed for what a protected folder holds; the text says why.
+    #[error("{0}")]
+    Protected(&'static str),
     /// The name is too long to be sealed inside a password folder.
     #[error("a name inside a password folder can be at most 159 bytes long")]
     NameTooLongToProtect,
@@ -101,6 +104,7 @@ impl AsProblem for FilesError {
             Self::Conflict => ProblemType::NameTaken,
             Self::InvalidName | Self::NameTooLongToProtect => ProblemType::InvalidName,
             Self::Cycle => ProblemType::MoveIntoItself,
+            Self::Protected(_) => ProblemType::Protected,
             Self::LostAndFound => ProblemType::LostAndFound,
             Self::NotAFile => ProblemType::NotAFile,
             Self::BodyInterrupted => ProblemType::BodyInterrupted,

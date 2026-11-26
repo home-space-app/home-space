@@ -76,6 +76,18 @@ CREATE TABLE protected_unlocks (
 
 CREATE INDEX protected_unlocks_expiry ON protected_unlocks (expires_at);
 
+-- Whether `node` is inside a protected folder of either lock (below one, not the folder
+-- itself). Search, duplicates, shares and transfers leave such nodes out.
+CREATE FUNCTION in_protected_folder(node UUID) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+    WITH RECURSIVE up AS (
+        SELECT parent_id AS id FROM nodes WHERE id = node
+        UNION ALL
+        SELECT n.parent_id FROM nodes n JOIN up ON n.id = up.id WHERE n.parent_id IS NOT NULL
+    )
+    SELECT EXISTS (SELECT 1 FROM up JOIN protected_folders p ON p.node_id = up.id)
+$$;
+
 -- In a security-key folder, names and content are ciphertext the client made: names are the
 -- base64url text of their AES-SIV sealing, content is age files. The server stores them like
 -- any other node and never tells them apart.

@@ -30,8 +30,9 @@ pub const PASSKEYS: &str = "passkeys";
 /// folders.
 pub const SECURITY_KEY_PRF: &str = "security_key_prf";
 
-/// Folders can be protected with end-to-end encryption, locked with a security key or a
-/// password: `/vault` (unlockers, rotation) and `/protected`. Clients without it hide Protect.
+/// Folders can be protected, locked with a security key (end to end) or a password (encrypted
+/// by the server): `/vault` (unlockers, rotation) and `/protected` (unlock, password, unprotect).
+/// Clients without it hide Protect.
 pub const PROTECTED_FOLDERS: &str = "protected_folders";
 
 /// Every feature this server provides, each added with the release that introduced it.
