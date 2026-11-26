@@ -25,14 +25,26 @@ pub const TWO_FACTOR: &str = "two_factor";
 /// `GET /auth/providers`); `/auth/login/verify` and `/me/reauthenticate` take `webauthn`.
 pub const PASSKEYS: &str = "passkeys";
 
+/// `GET /me/webauthn` says for each key whether it made a PRF (`hmac-secret`) secret and
+/// whether it is synced (`prf`, `synced`), so clients can tell which keys can lock protected
+/// folders.
+pub const SECURITY_KEY_PRF: &str = "security_key_prf";
+
 /// Every feature this server provides, each added with the release that introduced it.
-pub const ALL: &[&str] = &[BROWSER_LOGIN, PASSKEYS, REAUTHENTICATION, TWO_FACTOR];
+pub const ALL: &[&str] = &[
+    BROWSER_LOGIN,
+    PASSKEYS,
+    REAUTHENTICATION,
+    SECURITY_KEY_PRF,
+    TWO_FACTOR,
+];
 
 /// What the user reads for each feature, in hints such as "These won't work: …".
 const DISPLAY_NAMES: &[(&str, &str)] = &[
     (BROWSER_LOGIN, "Sign-in in the browser"),
     (PASSKEYS, "Passkeys"),
     (REAUTHENTICATION, "Confirming sensitive changes"),
+    (SECURITY_KEY_PRF, "Security keys for protected folders"),
     (TWO_FACTOR, "Two-factor sign-in"),
 ];
 

@@ -200,6 +200,34 @@ async fn the_first_key_brings_recovery_codes_and_each_key_is_listed(pool: PgPool
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn the_list_says_which_keys_can_protect_folders(pool: PgPool) {
+    let app = setup(pool).await;
+    let token = app.user_token("alice").await;
+    let mut yubikey = Authenticator::new();
+    yubikey.hmac_secret = true;
+    let mut old_yubikey = Authenticator::new();
+    let mut phone = Authenticator::new();
+    phone.synced = true;
+    phone.hmac_secret = true;
+
+    let added = add_key(&app, &token, &mut yubikey, "security_key").await;
+    assert_eq!(added["key"]["prf"], true);
+    assert!(added["key"].get("synced").is_none());
+    add_key(&app, &token, &mut old_yubikey, "passkey").await;
+    add_key(&app, &token, &mut phone, "passkey").await;
+
+    let listed = app.get("/api/v1/me/webauthn", &token).await.json();
+    let keys: Vec<protocol::WebAuthnKey> = serde_json::from_value(listed).expect("keys");
+    let can: Vec<bool> = keys
+        .iter()
+        .map(protocol::WebAuthnKey::can_protect_folders)
+        .collect();
+    assert_eq!(can, [true, false, false], "{keys:?}");
+    assert!(!keys[1].prf && !keys[1].synced);
+    assert!(keys[2].prf && keys[2].synced);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn a_key_is_the_second_step_after_the_password_and_answers_once(pool: PgPool) {
     let app = setup(pool.clone()).await;
     let token = app.user_token("alice").await;

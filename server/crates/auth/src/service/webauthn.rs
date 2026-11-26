@@ -359,6 +359,7 @@ pub(super) fn key_method(result: &AuthenticationResult) -> &'static str {
 }
 
 fn key_of(stored: StoredCredential) -> Option<WebAuthnKey> {
+    let (prf, synced) = prf_and_synced(&stored.credential);
     Some(WebAuthnKey {
         id: stored.id,
         kind: WebAuthnKind::parse(&stored.kind)?,
@@ -366,7 +367,27 @@ fn key_of(stored: StoredCredential) -> Option<WebAuthnKey> {
         rp_id: stored.rp_id,
         created_at: stored.created_at,
         last_used_at: stored.last_used_at,
+        prf,
+        synced,
     })
+}
+
+/// Whether a stored credential has `hmac-secret` and whether it syncs. Both come from the
+/// authenticator data the key signed at registration (the browser asks for `prf`, which a
+/// security key answers with `hmac-secret`; webauthn-rs keeps it as unsolicited), and the
+/// backup flag as last seen. An unreadable credential has neither.
+fn prf_and_synced(json: &str) -> (bool, bool) {
+    use webauthn_rs_proto::ExtnState;
+    match parse_credential(json) {
+        Ok(credential) => (
+            matches!(
+                credential.extensions.hmac_create_secret,
+                ExtnState::Set(true) | ExtnState::Unsolicited(true)
+            ),
+            credential.backup_eligible,
+        ),
+        Err(_) => (false, false),
+    }
 }
 
 /// A wrong or unusable answer; the details stay in the log.

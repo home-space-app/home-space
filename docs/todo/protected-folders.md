@@ -114,8 +114,9 @@ needs no key anyway, because every folder has a public age recipient.
 
 A `user_webauthn` row is **eligible** when:
 
-- it was created with PRF (`hmac-secret`) enabled: a new column `user_webauthn.prf`, set at
-  registration from `getClientExtensionResults().prf.enabled`;
+- it was created with `hmac-secret`: the key says so in the authenticator data it signs at
+  registration, which webauthn-rs keeps in the stored `Credential`
+  (`extensions.hmac_create_secret`, unsolicited);
 - it lives on a hardware key: `backup_eligible` is false in the stored `Credential` (synced
   passkeys are backup-eligible). Either `kind` is fine: a YubiKey registered as a passkey (with a
   PIN) works as well as one registered as a second factor;
@@ -126,10 +127,13 @@ A `user_webauthn` row is **eligible** when:
 
 Registration changes in the web client: `webauthn-rs-proto` 0.6.2 has no `prf` field, so
 `clients/web/src/webauthn.rs` adds `extensions.prf = {}` to the creation options through
-`Reflect` and reads the result back the same way, sending `prf: bool` with `/me/webauthn/finish`.
-Sign-in ceremonies never request PRF, so a PRF value never reaches the server. **Spike:** that
-webauthn-rs accepts the `hmac-secret` flag in the authenticator data; the fallback is setting
-`hmacCreateSecret: true` on the server's options, which the proto type has.
+`Reflect` (done). A security key then makes the credential with `hmac-secret`, and the server
+reads that from the signed data rather than from a flag the client sends, so no column is
+needed: `GET /me/webauthn` reports `prf` and `synced` for each key (feature
+`security_key_prf`), and `WebAuthnKey::can_protect_folders` combines them. Sign-in ceremonies
+never request PRF, so a PRF value never reaches the server. Still to verify with a real
+YubiKey in Chrome: that the browser sends `hmac-secret` on `makeCredential` for `prf` (the
+server tests sign it with a software key).
 
 Keys registered before this change were created without `hmac-secret` and usually cannot give a
 secret. "Use for protected folders" tries one PRF assertion; when no secret comes back, the
@@ -321,9 +325,6 @@ from features that would need plaintext.
 ### Schema
 
 ```sql
--- Credentials registered with PRF / hmac-secret enabled.
-ALTER TABLE user_webauthn ADD COLUMN prf BOOLEAN NOT NULL DEFAULT false;
-
 -- The user's vault for security-key folders, created when the first key is enabled.
 CREATE TABLE vaults (
     user_id    UUID PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
@@ -384,8 +385,8 @@ VFS, changes) can filter on one column instead of walking ancestors.
 - `DELETE /me/webauthn/{id}` learns about unlockers: it rotates the vault, or answers
   `409 last-unlocker` with the folders that would become unreadable, unless
   `delete_protected_folders: true` is sent.
-- `POST /me/webauthn/finish` takes `prf: bool`; `GET /me/webauthn` returns `prf` and
-  `backup_eligible`, so clients can tell which keys are eligible.
+- `GET /me/webauthn` returns `prf` and `synced` for each key, so clients can tell which keys
+  are eligible (done, feature `security_key_prf`).
 - `POST /protected` protects an empty or existing folder; `GET /protected` lists protected folders
   with their wrapped secrets; `PATCH /protected/{id}` changes the lock (new `wrapped_secret`,
   `epoch` or `kdf`). Conversion endpoints are below.
@@ -594,8 +595,8 @@ Phase 4, after desktop.
 
 ## Phases
 
-1. **Foundation** (server + `vault-core`): `user_webauthn.prf` and the PRF registration change in
-   the web client; schema, vault and protected folder API, `409 last-unlocker`; sealed names,
+1. **Foundation** (server + `vault-core`): the PRF registration change in the web client and
+   `prf` / `synced` in the key list (done); `vault-core` (done); schema, vault and protected folder API, `409 last-unlocker`; sealed names,
    refusing plaintext, hiding from search, shares, transfers, VFS and sync; in-place conversion
    endpoints; `vault-core` with tests against fixed vectors, including Argon2id; Authenticator
    spikes for Linux, macOS and Windows.
