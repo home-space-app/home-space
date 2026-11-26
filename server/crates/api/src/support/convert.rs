@@ -2,7 +2,8 @@
 //! docs/todo/server-refactoring.md). Numbers the database keeps signed are clamped here, and
 //! nowhere else.
 
-use files::MoveBatch;
+use db::NodeKind;
+use files::{MoveBatch, Names};
 use protocol::{
     Account, Conflict, MoveResponse, Node, PublicShare, ReceivedShare, Share, ShareRecipient,
     SharedNode, StorageUsage, TransferItem, TransferSummary, UserRef, encoding::to_hex,
@@ -21,21 +22,41 @@ pub(crate) fn shared_node(node: db::Node) -> SharedNode {
 }
 
 /// Converts the outcome of a move or restore to its wire form.
-pub(crate) fn move_response(batch: MoveBatch) -> MoveResponse {
+pub(crate) fn move_response(batch: MoveBatch, names: &Names) -> MoveResponse {
+    let show = |node: db::Node| Node::from(names.show_node(node));
     MoveResponse {
-        moved: batch.moved.into_iter().map(Node::from).collect(),
+        moved: batch.moved.into_iter().map(show).collect(),
         skipped: batch.skipped.into_iter().map(|node| node.id).collect(),
         conflicts: batch
             .conflicts
             .into_iter()
             .map(|conflict| Conflict {
-                source: conflict.source.into(),
-                path: conflict.path,
-                existing: conflict.existing.map(Node::from),
+                path: shown_path(names, &conflict.path),
+                source: show(conflict.source),
+                existing: conflict.existing.map(show),
             })
             .collect(),
-        target: batch.target.map(Node::from),
+        target: batch.target.map(show),
     }
+}
+
+/// A path of stored names relative to what moves, as `names` shows it: folders, then a file.
+fn shown_path(names: &Names, path: &str) -> String {
+    let parts: Vec<&str> = path.split('/').collect();
+    let last = parts.len().saturating_sub(1);
+    parts
+        .iter()
+        .enumerate()
+        .map(|(index, part)| {
+            let kind = if index == last {
+                NodeKind::File
+            } else {
+                NodeKind::Folder
+            };
+            names.show(kind, part)
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// Converts the database's sums, which are never negative.

@@ -30,6 +30,10 @@ pub const FOLDER_UNLOCK_TTL: Duration = Duration::minutes(15);
 
 use crate::AccountError;
 
+mod names;
+
+pub use names::Shown;
+
 /// The vault and protected folders of one tenant's users.
 #[derive(Clone, Debug)]
 pub struct VaultService {
@@ -229,7 +233,13 @@ impl VaultService {
     ) -> Result<ProtectedFolder, AccountError> {
         self.auth.require_recent_sign_in(user, session).await?;
         if request.lock == FolderLock::Password {
-            return self.protect_with_password(user, request).await;
+            let folder = self.protect_with_password(user, request).await?;
+            // Whoever just set the password has the folder open, as after an unlock.
+            let expires_at = OffsetDateTime::now_utc() + FOLDER_UNLOCK_TTL;
+            self.db
+                .unlock_folder(session, request.node_id, expires_at)
+                .await?;
+            return Ok(folder);
         }
         let wrapped = request
             .wrapped_secret
@@ -284,6 +294,8 @@ impl VaultService {
             });
         }
         let secret = FolderSecret::generate();
+        self.check_names_fit(user, request.node_id, secret.keys())
+            .await?;
         let recipient = secret.recipient().to_string();
         let sealed = self
             .auth
@@ -296,6 +308,27 @@ impl VaultService {
             recipient: &recipient,
         });
         self.store_protection(user, request.node_id, lock).await
+    }
+
+    /// Refuses a folder holding a name too long to be sealed, which the server would otherwise
+    /// have to shorten.
+    async fn check_names_fit(
+        &self,
+        user: UserId,
+        folder: NodeId,
+        keys: FolderKeys,
+    ) -> Result<(), AccountError> {
+        let names = files::Names::sealed(folder, keys);
+        for node in self.db.folder_nodes(user, folder).await? {
+            if names.store(node.kind, &node.name).is_err() {
+                return Err(AccountError::Invalid {
+                    field: "/node_id",
+                    message: "A name inside the folder is longer than 159 bytes, the most a \
+                              password folder holds. Rename it first.",
+                });
+            }
+        }
+        Ok(())
     }
 
     async fn store_protection(
@@ -471,8 +504,9 @@ impl VaultService {
             if state != ProtectionState::Protecting {
                 continue;
             }
-            nodes.encrypt_folder(user, node, &keys).await?;
-            drop(keys);
+            nodes
+                .encrypt_folder(user, node, &files::Names::sealed(node, keys))
+                .await?;
             match self.finish_encrypting(user, node).await {
                 Ok(()) => finished += 1,
                 // Another run finished it, or the folder went.

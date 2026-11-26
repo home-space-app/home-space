@@ -5,13 +5,21 @@ use uuid::Uuid;
 use db::{Db, NewContent, NewNode, Node, NodeId, NodeKind, OnConflict, Patch, TenantId, UserId};
 
 use super::{NodeUpdate, StoreOptions, move_nodes, store_file, update_node};
-use crate::FilesError;
+use crate::{FilesError, Names};
 
 async fn store(db: &Db, owner: UserId, name: &str, content: NewContent) -> Node {
-    store_file(db, owner, None, name, content, StoreOptions::default())
-        .await
-        .expect("store")
-        .into_node()
+    store_file(
+        db,
+        owner,
+        None,
+        name,
+        &Names::Plain,
+        content,
+        StoreOptions::default(),
+    )
+    .await
+    .expect("store")
+    .into_node()
 }
 
 async fn add(db: &Db, owner: UserId, parent: Option<NodeId>, kind: NodeKind, name: &str) -> Node {

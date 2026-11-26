@@ -14,15 +14,16 @@ use axum::{
 use uuid::Uuid;
 
 use files::StoreOptions;
-use files::{ChunkOutcome, FilesError, UploadStatus, UploadTarget};
+use files::{ChunkOutcome, FilesError, Names, UploadStatus, UploadTarget};
 use protocol::{
-    ChunkResult, CreateUpload, UploadInfo, UploadSession, UploadsQuery, paths::UPLOAD_OFFSET,
+    ChunkResult, CreateUpload, NodeId, UploadInfo, UploadSession, UploadsQuery,
+    paths::UPLOAD_OFFSET,
 };
 
 use crate::extract::{ApiJson, ApiPath, ApiQuery};
 use crate::{
     ApiError, AppState,
-    extract::AuthUser,
+    extract::{AuthUser, Tenant},
     support::{body::limited_body_stream, outcome::stored},
 };
 
@@ -88,11 +89,31 @@ fn upload_info(upload: db::Upload) -> UploadInfo {
     }
 }
 
+/// The names of the folder a file upload stores into, which the session must have unlocked
+/// when it is inside a password folder. A transfer's upload is not stored in the tree.
+async fn destination_names(
+    tenant: &Tenant,
+    user: &AuthUser,
+    destination: Option<Option<NodeId>>,
+) -> Result<Names, ApiError> {
+    match destination {
+        Some(parent) => Ok(tenant.vault.names(user.id, user.session_id, parent).await?),
+        None => Ok(Names::Plain),
+    }
+}
+
 async fn create(
     State(state): State<AppState>,
+    tenant: Tenant,
     user: AuthUser,
     ApiJson(request): ApiJson<CreateUpload>,
 ) -> Result<Response, ApiError> {
+    let destination = match (request.transfer_item_id, request.node_id) {
+        (Some(_), _) => None,
+        (None, Some(id)) => Some(state.files.nodes.get(user.id, id).await?.parent_id),
+        (None, None) => Some(request.parent_id),
+    };
+    let names = destination_names(&tenant, &user, destination).await?;
     let target = match (request.transfer_item_id, request.node_id) {
         (Some(item), _) => UploadTarget::TransferItem(item),
         (None, Some(id)) => UploadTarget::Replace(id),
@@ -113,6 +134,7 @@ async fn create(
             user.id,
             user.device_id,
             target,
+            &names,
             request.size,
             request.mime.as_deref(),
             request.modified_at,
@@ -134,6 +156,7 @@ async fn status(
 
 async fn append(
     State(state): State<AppState>,
+    tenant: Tenant,
     user: AuthUser,
     headers: HeaderMap,
     ApiPath(id): ApiPath<Uuid>,
@@ -154,11 +177,13 @@ async fn append(
     if declared_len.is_some_and(|len| len > limit) {
         return Err(FilesError::TooLarge { limit }.into());
     }
+    let destination = state.files.uploads.destination(user.id, id).await?;
+    let names = destination_names(&tenant, &user, destination).await?;
     let chunk = limited_body_stream(body, limit);
     match state
         .files
         .uploads
-        .append_chunk(user.actor(), id, offset, chunk)
+        .append_chunk(user.actor(), id, offset, &names, chunk)
         .await
     {
         Ok(ChunkOutcome::Partial { offset }) => Ok(with_offset(
@@ -167,7 +192,7 @@ async fn append(
             Json(ChunkResult { offset, node: None }),
         )),
         Ok(ChunkOutcome::Complete(outcome)) => {
-            let (status, Json(node)) = stored(outcome);
+            let (status, Json(node)) = stored(outcome, &names);
             let offset = u64::try_from(node.size).unwrap_or_default();
             let body = Json(ChunkResult {
                 offset,

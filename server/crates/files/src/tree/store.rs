@@ -9,9 +9,9 @@ use super::{
     StoreOptions, StoreOutcome,
     rules::{ContentFate, not_after, numbered_file_name, same_content},
 };
-use crate::FilesError;
+use crate::{FilesError, Names};
 
-/// Stores `content` as the file `name` in `parent`.
+/// Stores `content` as the file `name` in `parent`, whose names are stored as `names` says.
 ///
 /// A free name creates the file. A taken one gets the content as described for
 /// [`ContentFate`], or, with [`StoreOptions::keep_both`], a free numbered name instead, unless
@@ -21,18 +21,22 @@ pub(crate) async fn store_file(
     owner: UserId,
     parent: Option<NodeId>,
     name: &str,
+    names: &Names,
     content: NewContent,
     options: StoreOptions,
 ) -> Result<StoreOutcome, FilesError> {
     let content = not_after(content, OffsetDateTime::now_utc());
+    let stored = names.store(NodeKind::File, name)?;
     let mut tx = db.transaction(owner).await?;
     tx.require_folder(parent).await?;
-    let existing = tx.find_sibling(parent, NodeKind::File, name, None).await?;
+    let existing = tx
+        .find_sibling(parent, NodeKind::File, &stored, None)
+        .await?;
     let (existing, name) = match existing {
         Some(file) if options.keep_both && Some(file.id) != options.version_of => {
-            place_beside(&mut tx, parent, name, &content).await?
+            place_beside(&mut tx, parent, name, names, &content).await?
         }
-        existing => (existing, name.to_owned()),
+        existing => (existing, stored),
     };
     let outcome = match existing {
         Some(file) => apply_content(&mut tx, file, &content).await?,
@@ -68,14 +72,15 @@ pub(crate) async fn replace_content(
 /// Where a file goes that must not become a version of a different one: `name`, or else
 /// `name (1).ext`, `name (2).ext` and so on, up to the first free name. Identical content at any
 /// of them is that same file arriving again, such as a retry after a lost response, and is
-/// returned instead.
+/// returned instead. Returns the name as stored.
 async fn place_beside(
     tx: &mut Tx,
     parent: Option<NodeId>,
     name: &str,
+    names: &Names,
     content: &NewContent,
 ) -> Result<(Option<Node>, String), FilesError> {
-    let mut candidate = name.to_owned();
+    let mut candidate = names.store(NodeKind::File, name)?;
     for number in 1u32.. {
         match tx
             .find_sibling(parent, NodeKind::File, &candidate, None)
@@ -85,7 +90,9 @@ async fn place_beside(
             Some(file) if same_content(&file, content.size, Some(&content.sha256)) => {
                 return Ok((Some(file), candidate));
             }
-            Some(_) => candidate = numbered_file_name(name, number),
+            Some(_) => {
+                candidate = names.store(NodeKind::File, &numbered_file_name(name, number))?;
+            }
         }
     }
     Err(FilesError::Conflict)

@@ -6,7 +6,7 @@ use tokio::io::AsyncReadExt;
 use db::Db;
 
 use super::*;
-use crate::{Actor, BlobStore, FileServices, FilesConfig};
+use crate::{Actor, BlobStore, FileServices, FilesConfig, Names};
 use db::NodeId;
 use events::Events;
 
@@ -70,7 +70,15 @@ fn new_file(name: &str) -> UploadTarget {
 async fn start(fx: &Fixture, size: u64) -> Uuid {
     fx.files
         .uploads
-        .create_upload(fx.alice, None, new_file("a.txt"), size, None, None)
+        .create_upload(
+            fx.alice,
+            None,
+            new_file("a.txt"),
+            &Names::Plain,
+            size,
+            None,
+            None,
+        )
         .await
         .expect("create")
         .id
@@ -79,7 +87,13 @@ async fn start(fx: &Fixture, size: u64) -> Uuid {
 async fn append(fx: &Fixture, id: Uuid, offset: u64, text: &'static str) -> ChunkOutcome {
     fx.files
         .uploads
-        .append_chunk(Actor::user(fx.alice), id, offset, chunk(text))
+        .append_chunk(
+            Actor::user(fx.alice),
+            id,
+            offset,
+            &Names::Plain,
+            chunk(text),
+        )
         .await
         .expect("append")
 }
@@ -134,7 +148,7 @@ async fn a_wrong_offset_is_rejected_with_the_current_one(pool: PgPool) {
     let result = fx
         .files
         .uploads
-        .append_chunk(Actor::user(fx.alice), id, 1, chunk("x"))
+        .append_chunk(Actor::user(fx.alice), id, 1, &Names::Plain, chunk("x"))
         .await;
     assert!(matches!(
         result,
@@ -149,7 +163,7 @@ async fn an_interrupted_chunk_resumes_from_the_received_bytes(pool: PgPool) {
     let result = fx
         .files
         .uploads
-        .append_chunk(Actor::user(fx.alice), id, 0, broken("abc"))
+        .append_chunk(Actor::user(fx.alice), id, 0, &Names::Plain, broken("abc"))
         .await;
     assert!(result.is_err());
     let status = fx
@@ -180,14 +194,22 @@ async fn sizes_over_the_limit_are_rejected(pool: PgPool) {
     let result = fx
         .files
         .uploads
-        .create_upload(fx.alice, None, new_file("a.txt"), 1025, None, None)
+        .create_upload(
+            fx.alice,
+            None,
+            new_file("a.txt"),
+            &Names::Plain,
+            1025,
+            None,
+            None,
+        )
         .await;
     assert!(matches!(result, Err(FilesError::TooLarge { limit: 1024 })));
     let id = start(&fx, 2).await;
     let result = fx
         .files
         .uploads
-        .append_chunk(Actor::user(fx.alice), id, 0, chunk("abc"))
+        .append_chunk(Actor::user(fx.alice), id, 0, &Names::Plain, chunk("abc"))
         .await;
     assert!(matches!(result, Err(FilesError::TooLarge { limit: 2 })));
 }
@@ -203,7 +225,7 @@ async fn other_users_cannot_see_or_feed_an_upload(pool: PgPool) {
     assert!(matches!(
         fx.files
             .uploads
-            .append_chunk(Actor::user(fx.bob), id, 0, chunk("abcd"))
+            .append_chunk(Actor::user(fx.bob), id, 0, &Names::Plain, chunk("abcd"))
             .await,
         Err(FilesError::NotFound)
     ));
@@ -223,6 +245,7 @@ async fn a_replace_upload_versions_the_existing_file(pool: PgPool) {
             Actor::user(fx.alice),
             None,
             "a.txt",
+            &Names::Plain,
             None,
             None,
             chunk("old"),
@@ -237,6 +260,7 @@ async fn a_replace_upload_versions_the_existing_file(pool: PgPool) {
             fx.alice,
             None,
             UploadTarget::Replace(file.id),
+            &Names::Plain,
             5,
             None,
             None,
@@ -256,7 +280,15 @@ async fn invalid_names_are_rejected_up_front(pool: PgPool) {
     let result = fx
         .files
         .uploads
-        .create_upload(fx.alice, None, new_file("a/b"), 1, None, None)
+        .create_upload(
+            fx.alice,
+            None,
+            new_file("a/b"),
+            &Names::Plain,
+            1,
+            None,
+            None,
+        )
         .await;
     assert!(matches!(result, Err(FilesError::InvalidName)));
 }
@@ -268,7 +300,15 @@ async fn cancelling_a_devices_uploads_leaves_the_others(pool: PgPool) {
     let from_laptop = fx
         .files
         .uploads
-        .create_upload(fx.alice, Some(laptop), new_file("a.txt"), 4, None, None)
+        .create_upload(
+            fx.alice,
+            Some(laptop),
+            new_file("a.txt"),
+            &Names::Plain,
+            4,
+            None,
+            None,
+        )
         .await
         .expect("laptop")
         .id;

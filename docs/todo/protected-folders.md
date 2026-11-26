@@ -330,13 +330,13 @@ Done (stage A, content):
   stores it sealed with its secrets key (`secret_box`, as for authenticator app secrets; without
   `HOMESPACE_SECRETS_KEY` password folders are refused), the folder's age recipient derived from
   it, and an Argon2id hash of the password to check it against. The key is not derived from the
-  password, so changing the password will re-encrypt nothing.
+  password, so changing the password will re-encrypt nothing. The session that protects the
+  folder has it unlocked, as after an unlock.
 - **Format:** the same as security-key folders: content is age files to the recipient
   (`shared/vault-core`, which the server uses with its `server` feature). The listed size and
   SHA-256 stay those of the plain content, since that is what clients receive.
 - **Writes:** whatever is stored inside a password folder (uploads, new versions, copies) is
-  encrypted to the recipient before it lands in place. That needs no key, so it works while the
-  folder is locked.
+  encrypted to the recipient before it lands in place.
 - **Existing content:** with content, the folder is `protecting` and the server encrypts the
   current content and **every old version in place**, so history is kept. It runs right after
   protecting and then every minute until done (resuming after a restart), and marks the folder
@@ -358,16 +358,41 @@ Done (stage A, content):
 - Protecting removes the folder's search entries; new content is indexed from ciphertext, which
   yields no text.
 
+Done (stage B, names and access):
+
+- **Names at rest:** every name inside a password folder (not the folder's own, which its parent
+  lists) is stored sealed: the same AES-SIV as security-key folders (`vault-core`), with the
+  folder's name key, as base64url text. The associated data is the **protected folder's id**, not
+  the direct parent's as for security-key folders, so moving within the folder keeps a sealed
+  name valid and folder merges still meet same-named folders. Sealing is deterministic, so the
+  unique index still refuses two equal names. The server seals at the edge of its tree logic
+  (`files::Names`): numbering a taken name (`plan (1).txt`) and guessing a type from an extension
+  work on the plain name.
+- **Name length:** the same 159 bytes as in security-key folders, `422 invalid-name` beyond.
+  Protecting a folder that holds a longer name is refused (`/node_id`: rename it first); one that
+  appears while the folder is being converted is shortened, keeping its extension, and a name
+  whose sealed form is taken (equal after Unicode normalization) is numbered.
+- **Existing names** are sealed by the same conversion as the content, before it, and skipped
+  when they already open.
+- **Access:** reading or writing inside a password folder needs the session to have unlocked it,
+  else `423 locked`: listing, a node, its ancestors, properties and versions, downloads,
+  creating folders, uploads (single and resumable, at every chunk), replacing content, renaming,
+  moving, deleting (also the folder itself, with all it holds), and saving a transfer or a copy of
+  a shared item into it. The folder's own entry and the listing of its parent stay readable.
+  Every such use extends the unlock.
+- **Feeds:** the changes journal and the websocket's events leave out nodes inside a folder the
+  session has not unlocked, and carry plain names for one it has. Checking does not extend the
+  unlock, so a client that only listens lets it expire. A client lists the folder again after
+  unlocking it, since the journal went on without it.
+
 To do:
 
-- **Stage B, names and listing:** encrypt names at rest (AES-SIV with the folder secret, up to
-  the full 255 characters, which needs the `nodes.name` length check raised for them), decrypt
-  them for unlocked sessions, and answer `423 locked` for listing and writing inside a locked
-  folder, including the changes feed and websocket events.
 - **Stage C, the rest:** leave password folders out of search, previews, duplicates, shares,
   transfers and archive downloads; changing the folder password; unprotecting (decrypting in
-  place); the recycle bin (a file deleted from a password folder stays encrypted in the bin, so
-  restoring it into Lost & Found must be refused or decrypt it).
+  place); the recycle bin (a file deleted from a password folder stays encrypted in the bin with
+  its sealed name, shown as stored; restoring it into its folder works, into Lost & Found it must
+  be refused or decrypted); the list of unfinished uploads, which shows sealed names; the name
+  search index, which indexes sealed names.
 - **Forgotten password:** the server has the key, so the account owner could set a new folder
   password after confirming it is them (recent sign-in). **Open question:** allow that, or keep
   "forgotten password, lost data"?
@@ -462,7 +487,8 @@ Done (feature `protected_folders`):
 - Clients do not put `protected_folders` in `REQUIRES`: without it they hide Protect.
 
 Done for password folders: `lock: "password"` in `POST /protected`, `POST` and `DELETE
-/protected/{id}/unlock`, `423 locked` on downloads, and `409 protected` on moves across the
+/protected/{id}/unlock`, `423 locked` on every read and write inside a locked folder, the
+changes journal and events filtered per session, and `409 protected` on moves across the
 folder's edge (see [Password folders](#password-folders-server-side-encryption)).
 
 ## Desktop client (phase 2)
@@ -571,8 +597,8 @@ the web client like anywhere else, since the server decrypts them anyway. Phase 
    existing folders, Unlock / Lock / Lock all, auto-lock, browse, open, upload, download, move and
    rename inside, recycle bin, hiding from on-demand files and sync.
 3. **Password folders**: the server's encryption of content, unlock and lock (stage A, done);
-   names and locked listings (stage B); search, shares, transfers, password change, unprotect
-   (stage C); then the clients.
+   names and locked listings (stage B, done); search, shares, transfers, password change,
+   unprotect (stage C); then the clients.
 4. **Desktop polish**: external-app save-back, unprotect.
 5. **Web** (opt-in), with Chrome, Edge and Firefox in the e2e tests (a virtual authenticator with
    PRF in Chrome DevTools Protocol / Playwright).
@@ -591,8 +617,10 @@ the web client like anywhere else, since the server decrypts them anyway. Phase 
 - Server tests (done for phase 1): unlockers only for keys with PRF, `409 last-unlocker`,
   rotation needing every folder and the current epoch, protection never overlapping, the states
   of a conversion, recent sign-in for every change of what unlocks.
-- Password folders: no plaintext blob or search entry left after the encryption job, every
-  version still downloadable, `423` while locked, access ending on Lock and after the timeout.
+- Password folders: no plaintext blob, name or search entry left after the encryption job, every
+  version still downloadable, `423` for every read and write while locked, access ending on Lock
+  and after the timeout, the changes journal and events leaving out what a session has not
+  unlocked (done for stages A and B).
 
 ## Later
 
@@ -617,5 +645,5 @@ the web client like anywhere else, since the server decrypts them anyway. Phase 
 4. Password folders: may the owner reset a forgotten folder password after confirming it is
    them, since the server has the key anyway?
 5. Minimum hardware: any FIDO2 key with `hmac-secret` and a PIN (proposed), or YubiKey only?
-6. Names in security-key folders are limited to 159 bytes. Enough, or should the server allow
-   longer names (which some file systems on the desktop could not hold anyway)?
+6. Names in protected folders, of both locks, are limited to 159 bytes. Enough, or should the
+   server allow longer names (which some file systems on the desktop could not hold anyway)?
