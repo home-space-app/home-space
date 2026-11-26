@@ -1,0 +1,31 @@
+[package]
+name = "vault-core"
+description = "Client-side encryption of protected folders: key wrapping, sealed names, age content."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+age = "0.12.1"
+age-core = "0.12.0"
+bech32 = "0.11.1"
+aes-siv = "0.8.0"
+argon2 = "0.6.0"
+chacha20poly1305 = "0.11.0"
+data-encoding = "2.11.1"
+hkdf = "0.13.0"
+hmac = "0.13.0"
+rand = "0.10.3"
+sha2.workspace = true
+thiserror.workspace = true
+unicode-normalization = "0.1.26"
+uuid = "1.29.0"
+zeroize = { version = "1.9.1", features = ["derive"] }
+
+
+# The web client: age's dependencies use getrandom 0.2, rand 0.10 uses 0.4; both need the
+# browser's crypto.getRandomValues on wasm32-unknown-unknown.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom_02 = { package = "getrandom", version = "0.2.17", features = ["js"] }
+getrandom = { version = "0.4.3", features = ["wasm_js"] }
