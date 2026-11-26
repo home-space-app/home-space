@@ -65,6 +65,9 @@ type, a bad id in the path, a missing header), **415** for a body in the wrong f
 | `username-taken` | 409 | `conflict` | The username is taken. |
 | `totp-exists` | 409 | `conflict` | An authenticator app is already set up; remove it before adding another. |
 | `too-many-keys` | 409 | `conflict` | The account has 20 passkeys and security keys, the most it may; remove one first. |
+| `last-unlocker` | 409 | `conflict` | The key is the last that unlocks the account's protected folders; add another key or a recovery key first. |
+| `vault-changed` | 409 | `conflict` | The vault was created or rotated meanwhile (`epoch` is not its current one); read `GET /vault` again. |
+| `protected` | 409 | `conflict` | The item is a protected folder, is inside one, or holds one, and this is not possible with it. |
 | `lost-and-found` | 409 | `conflict` | Lost & Found, or a folder holding it, cannot be deleted. |
 | `offset-mismatch` | 409 | `conflict` | A chunk does not start at `current_offset`, where the upload ends. |
 | `transfer-not-ready` | 409 | `conflict` | The transfer's files are still being uploaded. |

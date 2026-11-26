@@ -30,10 +30,15 @@ pub const PASSKEYS: &str = "passkeys";
 /// folders.
 pub const SECURITY_KEY_PRF: &str = "security_key_prf";
 
+/// Folders can be protected with end-to-end encryption, locked with a security key or a
+/// password: `/vault` (unlockers, rotation) and `/protected`. Clients without it hide Protect.
+pub const PROTECTED_FOLDERS: &str = "protected_folders";
+
 /// Every feature this server provides, each added with the release that introduced it.
 pub const ALL: &[&str] = &[
     BROWSER_LOGIN,
     PASSKEYS,
+    PROTECTED_FOLDERS,
     REAUTHENTICATION,
     SECURITY_KEY_PRF,
     TWO_FACTOR,
@@ -43,6 +48,7 @@ pub const ALL: &[&str] = &[
 const DISPLAY_NAMES: &[(&str, &str)] = &[
     (BROWSER_LOGIN, "Sign-in in the browser"),
     (PASSKEYS, "Passkeys"),
+    (PROTECTED_FOLDERS, "Protected folders"),
     (REAUTHENTICATION, "Confirming sensitive changes"),
     (SECURITY_KEY_PRF, "Security keys for protected folders"),
     (TWO_FACTOR, "Two-factor sign-in"),

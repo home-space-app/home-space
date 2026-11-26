@@ -7,6 +7,9 @@ pub enum DbError {
     /// A uniqueness constraint was violated (e.g. duplicate name in a folder).
     #[error("conflict")]
     Conflict,
+    /// What the change was made against is no longer current, such as a vault epoch.
+    #[error("stale")]
+    Stale,
     /// A value violated a check constraint (e.g. invalid node name).
     #[error("invalid value")]
     Invalid,

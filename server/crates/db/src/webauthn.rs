@@ -11,6 +11,7 @@ use uuid::Uuid;
 #[cfg(test)]
 use crate::SecondFactorState;
 use crate::second_factors::{has_totp, has_webauthn, remove_factors, replace_codes};
+use crate::vaults::drop_vault_if_unused;
 use crate::{Db, DbError, TenantId, UserId};
 
 /// The most passkeys and security keys one user may have.
@@ -231,9 +232,20 @@ impl Db {
     }
 
     /// Removes the user's credential `id`, and with it the recovery codes when it was their
-    /// last second factor. `NotFound` if they have no such credential.
+    /// last second factor, and the vault unlocker it was. `NotFound` if they have no such
+    /// credential, `Conflict` when it is the last unlocker of a vault that folders are locked
+    /// with.
     pub async fn remove_webauthn_credential(&self, user: UserId, id: Uuid) -> Result<(), DbError> {
         let mut tx = self.pool().begin().await?;
+        let unlocked =
+            sqlx::query("DELETE FROM vault_unlockers WHERE user_id = $1 AND credential = $2")
+                .bind(user)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        if unlocked.rows_affected() > 0 {
+            drop_vault_if_unused(&mut tx, user).await?;
+        }
         let removed = sqlx::query("DELETE FROM user_webauthn WHERE user_id = $1 AND id = $2")
             .bind(user)
             .bind(id)

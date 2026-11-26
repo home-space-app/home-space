@@ -78,6 +78,14 @@ pub enum ProblemType {
     WebAuthnUnavailable,
     /// The account has as many passkeys and security keys as it may.
     TooManyKeys,
+    /// The key is the last that unlocks the account's protected folders; removing it would
+    /// make them unreadable.
+    LastUnlocker,
+    /// The vault was rotated or created meanwhile; read it again and wrap with its key.
+    VaultChanged,
+    /// The item is a protected folder or inside one (or holds one), which this cannot be done
+    /// with.
+    Protected,
     /// A folder cannot be moved into itself or into one of its folders.
     MoveIntoItself,
     /// The item is a folder, and only a file can do this.
@@ -114,7 +122,7 @@ pub enum ProblemType {
 
 impl ProblemType {
     /// Every problem type, for documentation and tests.
-    pub const ALL: [Self; 47] = [
+    pub const ALL: [Self; 50] = [
         Self::BadRequest,
         Self::BodyInterrupted,
         Self::UnsupportedMediaType,
@@ -147,6 +155,9 @@ impl ProblemType {
         Self::WebAuthnFailed,
         Self::WebAuthnUnavailable,
         Self::TooManyKeys,
+        Self::LastUnlocker,
+        Self::VaultChanged,
+        Self::Protected,
         Self::MoveIntoItself,
         Self::NotAFile,
         Self::InvalidName,
@@ -329,6 +340,24 @@ impl ProblemType {
                 "too-many-keys",
                 C::Conflict,
                 "The account has too many passkeys and security keys",
+            ),
+            Self::LastUnlocker => (
+                409,
+                "last-unlocker",
+                C::Conflict,
+                "This is the last key that unlocks the protected folders",
+            ),
+            Self::VaultChanged => (
+                409,
+                "vault-changed",
+                C::Conflict,
+                "The vault changed meanwhile",
+            ),
+            Self::Protected => (
+                409,
+                "protected",
+                C::Conflict,
+                "Not possible with a protected folder",
             ),
             Self::MoveIntoItself => (
                 422,

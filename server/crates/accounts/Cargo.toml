@@ -12,6 +12,7 @@ events.workspace = true
 files.workspace = true
 notifications.workspace = true
 protocol.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 time.workspace = true
 tracing.workspace = true

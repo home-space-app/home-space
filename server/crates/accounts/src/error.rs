@@ -25,6 +25,23 @@ pub enum AccountError {
     /// A device can be shown only to other users of the tenant.
     #[error("unknown user, or the device's owner")]
     InvalidViewer,
+    /// A field of the request is not acceptable; `field` is its JSON Pointer.
+    #[error("{message}")]
+    Invalid {
+        field: &'static str,
+        message: &'static str,
+    },
+    /// The key is the last that unlocks the user's protected folders.
+    #[error(
+        "This is the last key that unlocks your protected folders. Add another key or a recovery key first."
+    )]
+    LastUnlocker,
+    /// The vault was created or rotated meanwhile.
+    #[error("The vault changed meanwhile. Read it again and try once more.")]
+    VaultChanged,
+    /// Not possible with a protected folder; says why.
+    #[error("{0}")]
+    Protected(&'static str),
     #[error(transparent)]
     Auth(#[from] AuthError),
     #[error(transparent)]
@@ -51,6 +68,10 @@ impl AsProblem for AccountError {
             Self::Forbidden => ProblemType::Forbidden,
             Self::NotYourself { .. } | Self::InvalidViewer => ProblemType::ValidationFailed,
             Self::MarkedForDeletion => ProblemType::MarkedForDeletion,
+            Self::Invalid { .. } => ProblemType::ValidationFailed,
+            Self::LastUnlocker => ProblemType::LastUnlocker,
+            Self::VaultChanged => ProblemType::VaultChanged,
+            Self::Protected(_) => ProblemType::Protected,
             Self::Auth(err) => err.problem_type(),
             Self::Files(err) => err.problem_type(),
             Self::Db(_) => ProblemType::Internal,
@@ -64,6 +85,9 @@ impl AsProblem for AccountError {
             }
             Self::InvalidViewer => {
                 problem.errors = vec![FieldError::new("/users", self.to_string())];
+            }
+            Self::Invalid { field, message } => {
+                problem.errors = vec![FieldError::new(*field, *message)];
             }
             Self::Auth(err) => err.extend(problem),
             Self::Files(err) => err.extend(problem),

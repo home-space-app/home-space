@@ -227,7 +227,8 @@ impl AuthService {
 
     /// Removes the passkey or security key `id` of the user of `session_id`, who must have
     /// signed in or confirmed it is them recently; with the last second factor the recovery
-    /// codes go too. Their sessions stay.
+    /// codes go too, and the vault unlocker it was. Refused while it is the last unlocker of
+    /// protected folders. Their sessions stay.
     pub async fn remove_webauthn(
         &self,
         user_id: UserId,
@@ -237,6 +238,7 @@ impl AuthService {
         self.require_recent_sign_in(user_id, session_id).await?;
         match self.db.remove_webauthn_credential(user_id, id).await {
             Err(DbError::NotFound) => return Err(AuthError::UnknownKey),
+            Err(DbError::Conflict) => return Err(AuthError::LastUnlocker),
             other => other?,
         }
         tracing::info!(user = %user_id, "passkey or security key removed");

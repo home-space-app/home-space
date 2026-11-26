@@ -15,6 +15,7 @@ mod transfers;
 mod trash;
 mod uploads;
 mod users;
+mod vault;
 mod webauthn;
 mod ws;
 
@@ -38,6 +39,7 @@ pub fn routes() -> Router<AppState> {
         .merge(transfers::routes())
         .merge(uploads::routes())
         .merge(users::routes())
+        .merge(vault::routes())
         .merge(search::routes())
         .merge(second_factor::routes())
         .merge(webauthn::routes())
