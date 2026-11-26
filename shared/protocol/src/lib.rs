@@ -27,6 +27,7 @@ mod transfer;
 mod trash;
 mod upload;
 mod validate;
+mod vault;
 pub mod version;
 mod webauthn;
 
@@ -76,6 +77,11 @@ pub use transfer::{
 pub use trash::{RestoreRequest, TrashItem};
 pub use upload::{ChunkResult, CreateUpload, UploadInfo, UploadSession, UploadsQuery};
 pub use validate::Validate;
+pub use vault::{
+    AddUnlocker, ChangeLock, FolderLock, KDF_SALT_LEN, PRF_SALT_LEN, PasswordKdf, ProtectFolder,
+    ProtectedFolder, ProtectionState, RewrappedFolder, RewrappedUnlocker, RotateVault,
+    UnlockerKind, Vault, VaultUnlocker, WRAPPED_LEN, is_age_recipient,
+};
 pub use version::Version;
 pub use webauthn::{
     AssertionChallenge, CreationChallengeResponse, LoginWebAuthnRequest, MAX_KEY_NAME_LEN,

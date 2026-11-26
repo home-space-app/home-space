@@ -219,14 +219,16 @@ Nothing is forced (decided 2026-11-26):
   security-key lock against the server.
 - **Password folders** have no recovery: a forgotten password means the data is lost, and the
   dialog says so.
-- **Key management** (desktop settings, as above): enabled keys with names and last use, disable
-  a key, create or replace the recovery key.
+- **Key management** (desktop settings, as above): enabled keys with their names, disable a key,
+  create or replace the recovery key.
 - **Removing a credential** on the web security page, or disabling it on the desktop, deletes its
   wrapped vault key. When it is the **last unlocker** of a vault that still has folders, the
-  server refuses (`409 last-unlocker`) unless the request confirms deleting those folders; the
-  page names them. Otherwise the vault key **rotates** (re-wrap every folder secret with a new
-  vault key, a few KB of work, not re-encrypting files), so someone who copied the old wrapped
-  vault key and has the removed key and its PIN cannot unlock any more.
+  server refuses (`409 last-unlocker`) and the page names the folders; the user adds another key
+  or a recovery key first, or unprotects or deletes the folders. Otherwise the desktop offers to
+  **rotate** the vault key (`POST /vault/rotate`: re-wrap every folder secret with a new vault
+  key, a few KB of work, not re-encrypting files), so someone who copied the old wrapped vault key
+  and has the removed key and its PIN cannot unlock any more. The server cannot rotate on its own,
+  since it never has the vault key; disabling a key on the desktop does both in one step.
 
 ## What is encrypted where
 
@@ -324,52 +326,27 @@ from features that would need plaintext.
 
 ### Schema
 
-```sql
--- The user's vault for security-key folders, created when the first key is enabled.
-CREATE TABLE vaults (
-    user_id    UUID PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
-    -- Bumped by "rotate vault key"; folder secrets carry the epoch they are wrapped under.
-    epoch      INT NOT NULL DEFAULT 1,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
+In `server/migrations/0032_protected_folders.sql` (done):
 
--- What can unlock the vault: enabled security keys and the recovery key.
-CREATE TABLE vault_unlockers (
-    id            UUID PRIMARY KEY,
-    user_id       UUID NOT NULL REFERENCES vaults (user_id) ON DELETE CASCADE,
-    kind          TEXT NOT NULL CHECK (kind IN ('fido2', 'recovery')),
-    -- fido2 only: the sign-in credential; its credential id and RP id come from there.
-    credential    UUID UNIQUE REFERENCES user_webauthn (id),
-    prf_salt      BYTEA,         -- fido2 only, 32 bytes
-    wrapped_vault_key BYTEA NOT NULL,
-    epoch         INT NOT NULL,
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_used_at  TIMESTAMPTZ,
-    CHECK ((kind = 'fido2') = (credential IS NOT NULL AND prf_salt IS NOT NULL))
-);
+- `vaults (user_id, epoch, created_at)`: one per user, created with the first unlocker. The
+  epoch is bumped by every rotation; unlockers and security-key folder secrets are always
+  wrapped under the current one.
+- `vault_unlockers (id, user_id, kind, credential, prf_salt, wrapped_vault_key, created_at)`:
+  `kind` is `security_key` (with `credential → user_webauthn(id)` and a 32-byte `prf_salt`) or
+  `recovery` (at most one per user). `credential` has no `ON DELETE`: removing a credential
+  that is an unlocker removes the unlocker in the same transaction, or is refused when it is the
+  last one of a vault that folders are locked with.
+- `protected_folders (node_id, owner_id, lock, wrapped_secret, epoch, kdf, recipient, format,
+  state, created_at)`: `lock` is `security_key` (with `epoch`) or `password` (with `kdf`, the
+  Argon2id salt and parameters as JSON); `recipient` is checked to look like `age1` and 58
+  bech32 characters; `state` is `protecting`, `protected` or `unprotecting`.
+- `nodes.sealed` and `nodes.sealed_name` (48 to 1040 bytes, 16 more than a multiple of 32: the
+  AES-SIV tag and the padded name). A sealed node's `name` holds the base64url SHA-256 of its
+  sealed name, so the unique index on names keeps working without the server knowing them:
+  sealing is deterministic for a parent, kind and name.
 
--- One row per protected folder (the folder the user clicked Protect on).
-CREATE TABLE protected_folders (
-    node_id        UUID PRIMARY KEY REFERENCES nodes (id) ON DELETE CASCADE,
-    owner_id       UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-    lock           TEXT NOT NULL CHECK (lock IN ('security_key', 'password')),
-    wrapped_secret BYTEA NOT NULL,
-    epoch          INT,                -- security_key only: the vault epoch
-    kdf            JSONB,              -- password only: Argon2id salt and parameters
-    recipient      TEXT NOT NULL,      -- age X25519 public key, "age1..."
-    format         INT NOT NULL DEFAULT 1,
-    -- 'protecting' / 'unprotecting' while an existing folder is being converted, see below.
-    state          TEXT NOT NULL CHECK (state IN ('protecting', 'protected', 'unprotecting')),
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CHECK ((lock = 'security_key') = (epoch IS NOT NULL AND kdf IS NULL))
-);
-
-ALTER TABLE nodes ADD COLUMN sealed BOOLEAN NOT NULL DEFAULT false;  -- inside a protected folder
-ALTER TABLE nodes ADD COLUMN sealed_name BYTEA CHECK (length(sealed_name) <= 1040);
-```
-
-`vault_unlockers.credential` has no `ON DELETE`: deleting a `user_webauthn` row that is an
-unlocker goes through the vault service (rotate, or `409 last-unlocker`), never a cascade.
+Wrapped keys and secrets are 73 bytes. A vault whose last unlocker goes while no folder is
+locked with it is removed, so the next key starts a new vault at epoch 1.
 
 `sealed` is set on every node below a protected folder (not on the folder itself). It is
 denormalized so that every query that has to skip protected data (search, shares, listings for
@@ -377,26 +354,40 @@ VFS, changes) can filter on one column instead of walking ancestors.
 
 ### API
 
-- `GET /vault`, `POST/DELETE /vault/unlockers`, `/vault/unlockers/{id}`: read the vault (salts,
-  wrapped keys, the credential each unlocker belongs to; all useless without the key), enable a
-  credential or add the recovery key, remove one, rotate. Changes need a recent sign-in
-  (`require_recent_sign_in`, like adding a WebAuthn key) so a stolen access token cannot add an
-  attacker's unlocker.
-- `DELETE /me/webauthn/{id}` learns about unlockers: it rotates the vault, or answers
-  `409 last-unlocker` with the folders that would become unreadable, unless
-  `delete_protected_folders: true` is sent.
-- `GET /me/webauthn` returns `prf` and `synced` for each key, so clients can tell which keys
-  are eligible (done, feature `security_key_prf`).
-- `POST /protected` protects an empty or existing folder; `GET /protected` lists protected folders
-  with their wrapped secrets; `PATCH /protected/{id}` changes the lock (new `wrapped_secret`,
-  `epoch` or `kdf`). Conversion endpoints are below.
+Done (feature `protected_folders`):
+
+- `GET /vault`: the epoch and the unlockers, each security key with its `credential`,
+  `credential_id`, `rp_id` and `prf_salt` (all useless without the key); `404` before the first.
+- `POST /vault/unlockers` `{ kind, credential?, prf_salt?, wrapped_vault_key, epoch }`: enables
+  a security key (which must have `prf` and not be `synced`) or sets the recovery key (replacing
+  the one before). The first creates the vault and must say epoch 1; later ones the vault's
+  current epoch, else `409 vault-changed`.
+- `DELETE /vault/unlockers/{id}` and `DELETE /me/webauthn/{id}` of a credential that is an
+  unlocker: refused with `409 last-unlocker` while it is the last unlocker and folders are
+  locked with the vault. Clients should rotate after removing a key that may be lost.
+- `POST /vault/rotate` `{ epoch, unlockers: [{ id, wrapped_vault_key, prf_salt? }], folders:
+  [{ node_id, wrapped_secret }], remove: [id] }`: one transaction; every unlocker that stays and
+  every security-key folder must be listed exactly once (`422` otherwise).
+- `GET /protected`, `POST /protected` `{ node_id, lock, wrapped_secret, recipient, epoch | kdf }`
+  and `PATCH /protected/{id}` `{ lock, wrapped_secret, epoch | kdf }`. Protecting refuses the
+  recycle bin, Lost & Found and anything overlapping another protected folder (`409 protected`),
+  and ends the sharing of the folder and everything in it. An empty folder is `protected` at
+  once, one with content `protecting` until it is converted (below). Argon2id parameters must be
+  a 16-byte salt, 19 MiB to 4 GiB, 1 to 16 passes and lanes.
+- Everything that changes what unlocks a folder needs a recent sign-in
+  (`require_recent_sign_in`): adding or removing unlockers, rotating, protecting and changing a
+  lock. With a stolen access token alone, nobody can add their own unlocker, lock the user's
+  files with their own key, or replace a wrapped secret with garbage.
+- `GET /me/webauthn` returns `prf` and `synced` for each key (feature `security_key_prf`).
+
+Still to do:
+
 - `POST /folders`, `POST /files`, `POST /uploads`, `PATCH /nodes/{id}` and `POST /nodes/move` take
   `sealed_name` instead of `name` for nodes inside a protected folder. The server **rejects plaintext
   names and plaintext uploads** into a protected folder (`422 sealed_required`), so a client bug or
   an old client cannot leak data into it. It cannot check that content is encrypted, but it checks
   that it starts with the age header line.
-- A new feature `protected_folders` in `shared/protocol/src/features.rs` (`ALL` and a display
-  name). Clients do not put it in `REQUIRES`: without it they hide Protect.
+- Clients do not put `protected_folders` in `REQUIRES`: without it they hide Protect.
 
 ### Moves
 
@@ -596,7 +587,7 @@ Phase 4, after desktop.
 ## Phases
 
 1. **Foundation** (server + `vault-core`): the PRF registration change in the web client and
-   `prf` / `synced` in the key list (done); `vault-core` (done); schema, vault and protected folder API, `409 last-unlocker`; sealed names,
+   `prf` / `synced` in the key list (done); `vault-core` (done); schema, vault and protected folder API, `409 last-unlocker` (done); sealed names,
    refusing plaintext, hiding from search, shares, transfers, VFS and sync; in-place conversion
    endpoints; `vault-core` with tests against fixed vectors, including Argon2id; Authenticator
    spikes for Linux, macOS and Windows.

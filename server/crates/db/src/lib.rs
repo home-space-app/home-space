@@ -37,6 +37,7 @@ mod trash;
 mod tx;
 mod uploads;
 mod users;
+mod vaults;
 mod versions;
 mod webauthn;
 
@@ -67,6 +68,9 @@ pub use transfers::{
 pub use trash::{LOST_AND_FOUND, SpecialFolders, TrashedNode};
 pub use tx::Tx;
 pub use uploads::{NewUpload, Upload};
+pub use vaults::{
+    NewLock, NewUnlocker, ProtectRefusal, Rewrapped, StoredProtection, StoredUnlocker, StoredVault,
+};
 pub use webauthn::{
     Ceremony, MAX_WEBAUTHN_CREDENTIALS, NewCeremony, NewCredential, StoredCredential,
 };

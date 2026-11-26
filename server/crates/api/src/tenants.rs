@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, fmt, str::FromStr, sync::Arc};
 
-use accounts::{AccountService, DeviceService};
+use accounts::{AccountService, DeviceService, VaultService};
 use auth::AuthService;
 use db::{Db, TenantDomain, TenantId};
 use events::Events;
@@ -57,6 +57,8 @@ pub struct TenantContext {
     pub accounts: AccountService,
     pub devices: DeviceService,
     pub shares: ShareService,
+    /// The vault and protected folders of its users.
+    pub vault: VaultService,
 }
 
 /// The services of the whole server that each tenant's own services are built on.
@@ -96,6 +98,7 @@ impl TenantContext {
             public_url,
             accounts: AccountService::new(db.clone(), auth.clone(), deletion_delay),
             devices: DeviceService::new(db.clone(), auth.clone(), uploads, hub, events),
+            vault: VaultService::new(db.clone(), auth.clone()),
             shares: ShareService::new(db, id, auth.share_passwords(), nodes),
             auth,
         }

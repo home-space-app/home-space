@@ -1,0 +1,103 @@
+//! The vault that unlocks the caller's protected folders, and the folders themselves (feature
+//! `protected_folders`).
+
+use axum::{
+    Json, Router,
+    http::StatusCode,
+    routing::{delete, get, patch, post},
+};
+use uuid::Uuid;
+
+use db::NodeId;
+use protocol::{
+    AddUnlocker, ChangeLock, ProtectFolder, ProtectedFolder, RotateVault, Vault, VaultUnlocker,
+};
+
+use crate::{
+    ApiError, AppState,
+    extract::{ApiJson, ApiPath, AuthUser, Tenant},
+};
+
+pub fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/vault", get(vault))
+        .route("/vault/unlockers", post(add_unlocker))
+        .route("/vault/unlockers/{id}", delete(remove_unlocker))
+        .route("/vault/rotate", post(rotate))
+        .route("/protected", get(folders).post(protect))
+        .route("/protected/{id}", patch(change_lock))
+}
+
+/// The caller's vault: its epoch and unlockers, all useless without the keys.
+async fn vault(tenant: Tenant, user: AuthUser) -> Result<Json<Vault>, ApiError> {
+    Ok(Json(tenant.vault.vault(user.id).await?))
+}
+
+/// Enables a security key, or sets the recovery key.
+async fn add_unlocker(
+    tenant: Tenant,
+    user: AuthUser,
+    ApiJson(request): ApiJson<AddUnlocker>,
+) -> Result<(StatusCode, Json<VaultUnlocker>), ApiError> {
+    let added = tenant
+        .vault
+        .add_unlocker(user.id, user.session_id, &request)
+        .await?;
+    Ok((StatusCode::CREATED, Json(added)))
+}
+
+async fn remove_unlocker(
+    tenant: Tenant,
+    user: AuthUser,
+    ApiPath(id): ApiPath<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    tenant
+        .vault
+        .remove_unlocker(user.id, user.session_id, id)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Replaces the vault key, such as after losing a security key.
+async fn rotate(
+    tenant: Tenant,
+    user: AuthUser,
+    ApiJson(request): ApiJson<RotateVault>,
+) -> Result<Json<Vault>, ApiError> {
+    Ok(Json(
+        tenant
+            .vault
+            .rotate(user.id, user.session_id, &request)
+            .await?,
+    ))
+}
+
+async fn folders(tenant: Tenant, user: AuthUser) -> Result<Json<Vec<ProtectedFolder>>, ApiError> {
+    Ok(Json(tenant.vault.folders(user.id).await?))
+}
+
+async fn protect(
+    tenant: Tenant,
+    user: AuthUser,
+    ApiJson(request): ApiJson<ProtectFolder>,
+) -> Result<(StatusCode, Json<ProtectedFolder>), ApiError> {
+    let folder = tenant
+        .vault
+        .protect(user.id, user.session_id, &request)
+        .await?;
+    Ok((StatusCode::CREATED, Json(folder)))
+}
+
+async fn change_lock(
+    tenant: Tenant,
+    user: AuthUser,
+    ApiPath(id): ApiPath<NodeId>,
+    ApiJson(request): ApiJson<ChangeLock>,
+) -> Result<Json<ProtectedFolder>, ApiError> {
+    Ok(Json(
+        tenant
+            .vault
+            .change_lock(user.id, user.session_id, id, &request)
+            .await?,
+    ))
+}

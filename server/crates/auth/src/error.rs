@@ -94,6 +94,11 @@ pub enum AuthError {
     /// A passkey or security key of the account that does not exist.
     #[error("There is no such passkey or security key.")]
     UnknownKey,
+    /// The key is the last that unlocks the account's protected folders.
+    #[error(
+        "This is the last key that unlocks your protected folders. Add another key or a recovery key first."
+    )]
+    LastUnlocker,
     /// A sealed secret opens with none of the configured keys.
     #[error(
         "an authenticator app secret could not be opened; is HOMESPACE_SECRETS_KEY the key it was sealed with?"
@@ -131,6 +136,7 @@ impl AsProblem for AuthError {
             Self::WebAuthnUnavailable(_) => ProblemType::WebAuthnUnavailable,
             Self::TooManyKeys => ProblemType::TooManyKeys,
             Self::UnknownKey => ProblemType::NotFound,
+            Self::LastUnlocker => ProblemType::LastUnlocker,
             Self::AccountDisabled => ProblemType::AccountDisabled,
             Self::UsernameTaken => ProblemType::UsernameTaken,
             Self::InvalidInput(_) => ProblemType::ValidationFailed,
