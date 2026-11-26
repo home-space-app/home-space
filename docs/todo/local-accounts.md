@@ -131,12 +131,13 @@ replaces the TOTP code.
 - A user may have up to 20 credentials.
 
 **Same key as protected folders?** Yes (changed 2026-11-26). A credential on a hardware key,
-registered with PRF (`hmac-secret` in its signed registration, reported as `prf`) and a PIN, can also be enabled as a vault unlocker
-(`vault_unlockers.credential` → `user_webauthn.id`, with its own `prf_salt`). Synced passkeys are
-not offered, since the native apps cannot reach them. Registration requests the `prf` extension;
-sign-in never does, so no PRF value reaches the server. Removing a credential that is the last
-unlocker of a vault with folders is refused (`409 last-unlocker`) unless the user confirms
-deleting those folders; otherwise the vault key rotates. See `docs/todo/protected-folders.md`.
+registered with PRF (`hmac-secret` in its signed registration, reported as `prf`) and a PIN,
+can also be enabled as a vault unlocker (`vault_unlockers.credential` → `user_webauthn.id`, with
+its own `prf_salt`). Synced passkeys are not offered, since the native apps cannot reach them.
+Registration requests the `prf` extension; sign-in never does, so no PRF value reaches the
+server. Removing a credential that is the last unlocker of a vault with folders is refused
+(`409 last-unlocker`); removing another one removes its unlocker, and the desktop offers to
+rotate the vault key. See `docs/todo/protected-folders.md`.
 
 ### Recovery codes
 

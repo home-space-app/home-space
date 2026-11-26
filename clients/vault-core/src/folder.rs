@@ -3,7 +3,7 @@
 use age::x25519::{Identity, Recipient};
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::kdf::{Kek, hkdf32};
+use crate::kdf::hkdf32;
 use crate::names::{self, NodeKind};
 use crate::secret::secret32;
 use crate::vault::VaultKey;
@@ -11,24 +11,18 @@ use crate::wrap::{self, Purpose};
 use crate::{Error, Result};
 
 secret32! {
-    /// The random secret of one protected folder. Wrapped by the vault key (security-key
-    /// folders) or by a password KEK (password folders), bound to the folder's node id.
+    /// The random secret of one protected folder, wrapped by the vault key and bound to the
+    /// folder's node id.
     pub struct FolderSecret;
 }
 
-/// What can wrap a folder secret: the vault key or a password folder's KEK.
+/// What can wrap a folder secret: the vault key.
 pub trait FolderWrappingKey {
     #[doc(hidden)]
     fn wrapping_bytes(&self) -> &[u8; 32];
 }
 
 impl FolderWrappingKey for VaultKey {
-    fn wrapping_bytes(&self) -> &[u8; 32] {
-        self.expose()
-    }
-}
-
-impl FolderWrappingKey for Kek {
     fn wrapping_bytes(&self) -> &[u8; 32] {
         self.expose()
     }
@@ -102,12 +96,13 @@ impl std::fmt::Debug for FolderKeys {
 
 impl FolderKeys {
     /// Seals a name for a node of `kind` in the folder `parent` (its direct parent, which may be
-    /// a subfolder of the protected folder).
-    pub fn seal_name(&self, parent: &uuid::Uuid, kind: NodeKind, name: &str) -> Result<Vec<u8>> {
+    /// a subfolder of the protected folder): the text to send as the node's name.
+    pub fn seal_name(&self, parent: &uuid::Uuid, kind: NodeKind, name: &str) -> Result<String> {
         names::seal(&self.name_key, parent, kind, name)
     }
 
-    pub fn open_name(&self, parent: &uuid::Uuid, kind: NodeKind, sealed: &[u8]) -> Result<String> {
+    /// The name a node of `kind` in `parent` was sealed from, given the name the server lists.
+    pub fn open_name(&self, parent: &uuid::Uuid, kind: NodeKind, sealed: &str) -> Result<String> {
         names::open(&self.name_key, parent, kind, sealed)
     }
 

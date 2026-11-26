@@ -4,14 +4,12 @@
 use axum::{
     Json, Router,
     http::StatusCode,
-    routing::{delete, get, patch, post},
+    routing::{delete, get, post},
 };
 use uuid::Uuid;
 
 use db::NodeId;
-use protocol::{
-    AddUnlocker, ChangeLock, ProtectFolder, ProtectedFolder, RotateVault, Vault, VaultUnlocker,
-};
+use protocol::{AddUnlocker, ProtectFolder, ProtectedFolder, RotateVault, Vault, VaultUnlocker};
 
 use crate::{
     ApiError, AppState,
@@ -25,7 +23,9 @@ pub fn routes() -> Router<AppState> {
         .route("/vault/unlockers/{id}", delete(remove_unlocker))
         .route("/vault/rotate", post(rotate))
         .route("/protected", get(folders).post(protect))
-        .route("/protected/{id}", patch(change_lock))
+        .route("/protected/{id}", delete(remove))
+        .route("/protected/{id}/finish", post(finish))
+        .route("/protected/{id}/unprotect", post(unprotect))
 }
 
 /// The caller's vault: its epoch and unlockers, all useless without the keys.
@@ -88,16 +88,32 @@ async fn protect(
     Ok((StatusCode::CREATED, Json(folder)))
 }
 
-async fn change_lock(
+/// The client has replaced the folder's content with its encrypted form.
+async fn finish(
     tenant: Tenant,
     user: AuthUser,
     ApiPath(id): ApiPath<NodeId>,
-    ApiJson(request): ApiJson<ChangeLock>,
+) -> Result<Json<ProtectedFolder>, ApiError> {
+    Ok(Json(tenant.vault.finish(user.id, id).await?))
+}
+
+/// Starts replacing the folder's content with its decrypted form.
+async fn unprotect(
+    tenant: Tenant,
+    user: AuthUser,
+    ApiPath(id): ApiPath<NodeId>,
 ) -> Result<Json<ProtectedFolder>, ApiError> {
     Ok(Json(
-        tenant
-            .vault
-            .change_lock(user.id, user.session_id, id, &request)
-            .await?,
+        tenant.vault.unprotect(user.id, user.session_id, id).await?,
     ))
+}
+
+/// Forgets the protection of a folder whose content is plain again.
+async fn remove(
+    tenant: Tenant,
+    user: AuthUser,
+    ApiPath(id): ApiPath<NodeId>,
+) -> Result<StatusCode, ApiError> {
+    tenant.vault.remove(user.id, user.session_id, id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }

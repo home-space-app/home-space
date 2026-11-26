@@ -9,13 +9,13 @@ use uuid::Uuid;
 
 use auth::AuthService;
 use db::{
-    Db, DbError, NewLock, NewUnlocker, NodeId, ProtectRefusal, Rewrapped, StoredProtection,
+    Db, DbError, KeyLock, NewUnlocker, NodeId, ProtectRefusal, Rewrapped, StoredProtection,
     StoredUnlocker, StoredVault, UserId,
 };
 use protocol::{
-    AddUnlocker, ChangeLock, FolderLock, KDF_SALT_LEN, PRF_SALT_LEN, PasswordKdf, ProtectFolder,
-    ProtectedFolder, ProtectionState, RotateVault, UnlockerKind, Vault, VaultUnlocker, WRAPPED_LEN,
-    encoding::Base64Url, is_age_recipient,
+    AddUnlocker, FolderLock, PRF_SALT_LEN, ProtectFolder, ProtectedFolder, ProtectionState,
+    RotateVault, UnlockerKind, Vault, VaultUnlocker, WRAPPED_LEN, encoding::Base64Url,
+    is_age_recipient,
 };
 
 use crate::AccountError;
@@ -206,8 +206,10 @@ impl VaultService {
             .collect()
     }
 
-    /// Protects one of the user's folders. An empty one is protected at once; one with content
-    /// stays `protecting` until a client has converted it. Needs a recent sign-in: with a
+    /// Protects one of the user's folders. An empty one is protected at once. One with
+    /// content stays `protecting` while the client replaces it: it downloads the files,
+    /// deletes them and purges them from the recycle bin (their history goes with them), and
+    /// uploads them encrypted, then calls [`Self::finish`]. Needs a recent sign-in: with a
     /// stolen token alone, nobody may lock the user's files with their own key.
     pub async fn protect(
         &self,
@@ -216,27 +218,40 @@ impl VaultService {
         request: &ProtectFolder,
     ) -> Result<ProtectedFolder, AccountError> {
         self.auth.require_recent_sign_in(user, session).await?;
-        if !is_age_recipient(&request.recipient) {
+        if request.lock == FolderLock::Password {
             return Err(AccountError::Invalid {
-                field: "/recipient",
-                message: "The recipient must be an age X25519 recipient (age1…).",
+                field: "/lock",
+                message: "Folders cannot be protected with a password on this server yet.",
             });
         }
-        let kdf = lock_kdf(
-            request.lock,
-            &request.wrapped_secret,
-            request.epoch,
-            request.kdf.as_ref(),
-        )?;
-        let lock = NewLock {
-            lock: request.lock.as_str(),
-            wrapped_secret: request.wrapped_secret.as_bytes(),
-            epoch: request.epoch,
-            kdf: kdf.as_deref(),
+        let wrapped = request
+            .wrapped_secret
+            .as_ref()
+            .ok_or(AccountError::Invalid {
+                field: "/wrapped_secret",
+                message: "A security-key lock needs the wrapped folder secret.",
+            })?;
+        check_wrapped("/wrapped_secret", wrapped)?;
+        let epoch = request.epoch.ok_or(AccountError::Invalid {
+            field: "/epoch",
+            message: "A security-key lock needs the vault epoch.",
+        })?;
+        let recipient = request
+            .recipient
+            .as_deref()
+            .filter(|recipient| is_age_recipient(recipient))
+            .ok_or(AccountError::Invalid {
+                field: "/recipient",
+                message: "The recipient must be an age X25519 recipient (age1…).",
+            })?;
+        let lock = KeyLock {
+            wrapped_secret: wrapped.as_bytes(),
+            epoch,
+            recipient,
         };
         let stored = self
             .db
-            .protect_folder(user, request.node_id, lock, &request.recipient)
+            .protect_folder(user, request.node_id, lock)
             .await?
             .map_err(|refusal| match refusal {
                 ProtectRefusal::NotFound => AccountError::NotFound,
@@ -248,37 +263,92 @@ impl VaultService {
                 ),
                 ProtectRefusal::VaultChanged => AccountError::VaultChanged,
             })?;
-        tracing::info!(user = %user, folder = %request.node_id, lock = request.lock.as_str(), "folder protected");
+        tracing::info!(user = %user, folder = %request.node_id, "folder protected");
         folder_of(stored)
     }
 
-    /// Locks a protected folder with something else, its secret and recipient unchanged.
-    /// Needs a recent sign-in, since a wrong wrapped secret would lock the user out.
-    pub async fn change_lock(
+    /// Records that the client has replaced the content of a `protecting` folder with its
+    /// encrypted form.
+    pub async fn finish(
+        &self,
+        user: UserId,
+        node: NodeId,
+    ) -> Result<ProtectedFolder, AccountError> {
+        self.change_state(
+            user,
+            node,
+            ProtectionState::Protecting,
+            ProtectionState::Protected,
+        )
+        .await
+    }
+
+    /// Starts unprotecting: the client replaces the content with its decrypted form, then
+    /// calls [`Self::remove`]. Needs a recent sign-in, since the folder's secret goes at the
+    /// end.
+    pub async fn unprotect(
         &self,
         user: UserId,
         session: Uuid,
         node: NodeId,
-        request: &ChangeLock,
     ) -> Result<ProtectedFolder, AccountError> {
         self.auth.require_recent_sign_in(user, session).await?;
-        let kdf = lock_kdf(
-            request.lock,
-            &request.wrapped_secret,
-            request.epoch,
-            request.kdf.as_ref(),
-        )?;
-        let lock = NewLock {
-            lock: request.lock.as_str(),
-            wrapped_secret: request.wrapped_secret.as_bytes(),
-            epoch: request.epoch,
-            kdf: kdf.as_deref(),
-        };
-        let stored = match self.db.change_folder_lock(user, node, lock).await {
-            Err(DbError::Stale) => return Err(AccountError::VaultChanged),
+        self.change_state(
+            user,
+            node,
+            ProtectionState::Protected,
+            ProtectionState::Unprotecting,
+        )
+        .await
+    }
+
+    /// Forgets a folder's protection once its content is plain again: after unprotecting, or to
+    /// cancel protecting. A `protected` folder is refused, since its secret would go and its
+    /// files could not be read any more. Needs a recent sign-in.
+    pub async fn remove(
+        &self,
+        user: UserId,
+        session: Uuid,
+        node: NodeId,
+    ) -> Result<(), AccountError> {
+        self.auth.require_recent_sign_in(user, session).await?;
+        let states = [
+            ProtectionState::Protecting.as_str(),
+            ProtectionState::Unprotecting.as_str(),
+        ];
+        match self.db.remove_protection(user, node, &states).await {
+            Err(DbError::Stale) => {
+                return Err(AccountError::Protected(
+                    "Unprotect the folder first, so that its files are readable without the key.",
+                ));
+            }
+            other => other?,
+        }
+        tracing::info!(user = %user, folder = %node, "folder protection removed");
+        Ok(())
+    }
+
+    async fn change_state(
+        &self,
+        user: UserId,
+        node: NodeId,
+        from: ProtectionState,
+        to: ProtectionState,
+    ) -> Result<ProtectedFolder, AccountError> {
+        let changed = self
+            .db
+            .set_protection_state(user, node, &[from.as_str()], to.as_str())
+            .await;
+        let stored = match changed {
+            Err(DbError::Stale) => {
+                return Err(AccountError::Protected(match from {
+                    ProtectionState::Protecting => "The folder is not being protected.",
+                    _ => "The folder is not protected.",
+                }));
+            }
             other => other?,
         };
-        tracing::info!(user = %user, folder = %node, lock = request.lock.as_str(), "folder lock changed");
+        tracing::info!(user = %user, folder = %node, state = to.as_str(), "folder protection changed");
         folder_of(stored)
     }
 }
@@ -291,40 +361,6 @@ fn check_wrapped(field: &'static str, wrapped: &Base64Url) -> Result<(), Account
             field,
             message: "A wrapped key must be 73 bytes.",
         })
-    }
-}
-
-/// Checks that a lock carries what its kind needs; the Argon2id parameters as JSON for a
-/// password.
-fn lock_kdf(
-    lock: FolderLock,
-    wrapped: &Base64Url,
-    epoch: Option<i32>,
-    kdf: Option<&PasswordKdf>,
-) -> Result<Option<String>, AccountError> {
-    check_wrapped("/wrapped_secret", wrapped)?;
-    match (lock, epoch, kdf) {
-        (FolderLock::SecurityKey, Some(_), None) => Ok(None),
-        (FolderLock::SecurityKey, _, _) => Err(AccountError::Invalid {
-            field: "/epoch",
-            message: "A security-key lock needs the vault epoch and no password parameters.",
-        }),
-        (FolderLock::Password, None, Some(kdf)) => match kdf.problem() {
-            Some(message) => Err(AccountError::Invalid {
-                field: "/kdf",
-                message,
-            }),
-            None => Ok(Some(serde_json::to_string(kdf).map_err(|_| {
-                AccountError::Invalid {
-                    field: "/kdf",
-                    message: "The password parameters cannot be stored.",
-                }
-            })?)),
-        },
-        (FolderLock::Password, _, _) => Err(AccountError::Invalid {
-            field: "/kdf",
-            message: "A password lock needs its parameters and no vault epoch.",
-        }),
     }
 }
 
@@ -354,21 +390,11 @@ fn unlocker_of(stored: StoredUnlocker) -> Option<VaultUnlocker> {
 
 fn folder_of(stored: StoredProtection) -> Result<ProtectedFolder, AccountError> {
     let broken = || AccountError::Db(DbError::Invalid);
-    let kdf = stored
-        .kdf
-        .map(|json| serde_json::from_str::<PasswordKdf>(&json))
-        .transpose()
-        .map_err(|_| broken())?;
-    debug_assert!(
-        kdf.as_ref()
-            .is_none_or(|kdf| kdf.salt.len() == KDF_SALT_LEN)
-    );
     Ok(ProtectedFolder {
         node_id: stored.node_id,
         lock: FolderLock::parse(&stored.lock).ok_or_else(broken)?,
-        wrapped_secret: Base64Url(stored.wrapped_secret),
+        wrapped_secret: stored.wrapped_secret.map(Base64Url),
         epoch: stored.epoch,
-        kdf,
         recipient: stored.recipient,
         format: stored.format,
         state: ProtectionState::parse(&stored.state).ok_or_else(broken)?,

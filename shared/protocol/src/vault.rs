@@ -1,8 +1,9 @@
 //! Protected folders and the vault that unlocks them (feature `protected_folders`).
 //!
-//! The server keeps only what is useless without the user's security key or password: wrapped
-//! keys, PRF salts, Argon2id parameters and the folders' public age recipients. Clients do all
-//! the cryptography (`clients/vault-core`); see `docs/todo/protected-folders.md`.
+//! A folder locked with a security key is end to end: the server keeps only what is useless
+//! without the key (wrapped keys, PRF salts, the folders' public age recipients) and clients do
+//! all the cryptography (`clients/vault-core`). A folder locked with a password is encrypted by
+//! the server, which keeps its key. See `docs/todo/protected-folders.md`.
 
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -14,18 +15,6 @@ use crate::{NodeId, encoding::Base64Url};
 pub const WRAPPED_LEN: usize = 73;
 /// Length of the PRF input of a security key unlocker.
 pub const PRF_SALT_LEN: usize = 32;
-/// Length of the Argon2id salt of a password folder.
-pub const KDF_SALT_LEN: usize = 16;
-/// The least Argon2id memory the server accepts for a password folder, in KiB (19 MiB, the
-/// OWASP minimum). Clients use more (64 MiB).
-pub const MIN_KDF_MEMORY_KIB: u32 = 19 * 1024;
-/// The most, in KiB (4 GiB), so a folder cannot ask clients for more than they can give.
-pub const MAX_KDF_MEMORY_KIB: u32 = 4 * 1024 * 1024;
-/// The most Argon2id passes.
-pub const MAX_KDF_PASSES: u32 = 16;
-/// The most Argon2id lanes.
-pub const MAX_KDF_LANES: u32 = 16;
-
 /// What opens the vault.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -111,7 +100,7 @@ pub struct RewrappedUnlocker {
     pub wrapped_vault_key: Base64Url,
 }
 
-/// A folder secret wrapped with a new key, in a [`RotateVault`] or a [`ChangeLock`].
+/// A folder secret wrapped with a new vault key, in a [`RotateVault`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RewrappedFolder {
     pub node_id: NodeId,
@@ -136,9 +125,11 @@ pub struct RotateVault {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FolderLock {
-    /// The vault, so any of the user's enabled security keys.
+    /// End to end: the client encrypts to the folder's recipient, and any of the user's
+    /// enabled security keys opens it through the vault.
     SecurityKey,
-    /// A password of this folder; anyone with the server's data can try to guess it.
+    /// The server encrypts with a key it keeps and opens it to whoever gives the folder's
+    /// password. Not end to end.
     Password,
 }
 
@@ -159,40 +150,16 @@ impl FolderLock {
     }
 }
 
-/// The Argon2id salt and parameters of a password folder.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PasswordKdf {
-    pub salt: Base64Url,
-    pub memory_kib: u32,
-    pub passes: u32,
-    pub lanes: u32,
-}
-
-impl PasswordKdf {
-    /// Why the server refuses these parameters; `None` when they are acceptable.
-    pub fn problem(&self) -> Option<&'static str> {
-        if self.salt.len() != KDF_SALT_LEN {
-            Some("The salt must be 16 bytes.")
-        } else if !(MIN_KDF_MEMORY_KIB..=MAX_KDF_MEMORY_KIB).contains(&self.memory_kib) {
-            Some("The memory must be between 19 MiB and 4 GiB.")
-        } else if !(1..=MAX_KDF_PASSES).contains(&self.passes) {
-            Some("The passes must be between 1 and 16.")
-        } else if !(1..=MAX_KDF_LANES).contains(&self.lanes) {
-            Some("The lanes must be between 1 and 16.")
-        } else {
-            None
-        }
-    }
-}
-
 /// Where a protected folder stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProtectionState {
-    /// A client is encrypting the existing content; nothing else may change it meanwhile.
+    /// The existing content is being replaced with its encrypted form: by the client, which
+    /// downloaded it, removed it from the server and uploads it encrypted (security key), or
+    /// by the server (password).
     Protecting,
     Protected,
-    /// A client is decrypting the content back.
+    /// The content is being replaced with its decrypted form.
     Unprotecting,
 }
 
@@ -220,47 +187,36 @@ impl ProtectionState {
 pub struct ProtectedFolder {
     pub node_id: NodeId,
     pub lock: FolderLock,
-    pub wrapped_secret: Base64Url,
-    /// Security keys: the vault epoch the secret is wrapped under.
+    /// Security keys: the folder secret, wrapped with the vault key of `epoch`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrapped_secret: Option<Base64Url>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub epoch: Option<i32>,
-    /// Passwords: how the key is derived from it.
+    /// Security keys: the age recipient uploads encrypt to. Clients check it against the one
+    /// their key derives before they encrypt anything to it, so a server cannot swap in its
+    /// own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kdf: Option<PasswordKdf>,
-    /// The age recipient uploads encrypt to. Clients check it against the one their key
-    /// derives before they encrypt anything to it, so a server cannot swap in its own.
-    pub recipient: String,
+    pub recipient: Option<String>,
     pub format: i32,
     pub state: ProtectionState,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
 
-/// `POST /protected`: protects one of the caller's folders.
+/// `POST /protected`: protects one of the caller's folders. A security key needs
+/// `wrapped_secret`, `recipient` and the vault's `epoch`. An empty folder is protected at once;
+/// one with content stays `protecting` until the client has replaced it and calls
+/// `POST /protected/{id}/finish`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProtectFolder {
     pub node_id: NodeId,
     pub lock: FolderLock,
-    pub wrapped_secret: Base64Url,
-    pub recipient: String,
-    /// Security keys: the vault's current epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrapped_secret: Option<Base64Url>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub epoch: Option<i32>,
-    /// Passwords.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kdf: Option<PasswordKdf>,
-}
-
-/// `PATCH /protected/{id}`: locks the folder with something else (or a new password). The
-/// secret and recipient stay, so no file is encrypted again.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ChangeLock {
-    pub lock: FolderLock,
-    pub wrapped_secret: Base64Url,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub epoch: Option<i32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kdf: Option<PasswordKdf>,
 }
 
 /// Whether `recipient` looks like an age X25519 recipient: `age1` and 58 bech32 characters.
@@ -289,28 +245,5 @@ mod tests {
         assert!(!is_age_recipient(
             "AGE1FAUK43XVKE3MYU0VG0SYAFLNWHLSLWXD2504JFDJWEJKJC50PCYSGCF5GF"
         ));
-    }
-
-    #[test]
-    fn weak_or_huge_kdf_parameters_are_refused() {
-        let good = PasswordKdf {
-            salt: Base64Url(vec![0; KDF_SALT_LEN]),
-            memory_kib: 64 * 1024,
-            passes: 3,
-            lanes: 1,
-        };
-        assert_eq!(good.problem(), None);
-        let weak = PasswordKdf {
-            memory_kib: 1024,
-            ..good.clone()
-        };
-        assert!(weak.problem().is_some());
-        let short_salt = PasswordKdf {
-            salt: Base64Url(vec![0; 8]),
-            ..good.clone()
-        };
-        assert!(short_salt.problem().is_some());
-        let no_passes = PasswordKdf { passes: 0, ..good };
-        assert!(no_passes.problem().is_some());
     }
 }
