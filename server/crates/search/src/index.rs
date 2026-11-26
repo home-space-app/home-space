@@ -55,6 +55,10 @@ impl Inner {
     }
 
     async fn index_content(&self, job: Job) -> Result<(), SearchError> {
+        // What a protected folder holds is never indexed: its content is stored encrypted.
+        if self.db.in_protected_folder(job.owner, job.node).await? {
+            return Ok(());
+        }
         let node = self.db.get_node(job.owner, job.node).await?;
         match self.provider_for(&node) {
             None => {

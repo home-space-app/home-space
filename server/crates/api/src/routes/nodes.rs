@@ -326,6 +326,12 @@ async fn move_nodes(
         .check_move(user.id, &request.ids, request.parent_id)
         .await?;
     let names = names(&tenant, &user, request.parent_id).await?;
+    if names.folder().is_some() && request.on_conflict == db::OnConflict::Skip {
+        return Err(files::FilesError::Protected(
+            "Files in a password folder cannot be skipped into the recycle bin.",
+        )
+        .into());
+    }
     let batch = state
         .files
         .nodes
@@ -345,9 +351,14 @@ async fn delete(
     user: AuthUser,
     ApiPath(id): ApiPath<NodeId>,
 ) -> Result<StatusCode, ApiError> {
-    // What is inside a password folder, and the folder with all it holds, only once unlocked.
+    // What is inside a password folder, and a folder holding one, only once unlocked: what is
+    // inside one is deleted for good rather than kept in the recycle bin.
     names(&tenant, &user, Some(id)).await?;
     open_node(&state, &tenant, &user, id).await?;
+    tenant
+        .vault
+        .require_unlocked_below(user.id, user.session_id, id)
+        .await?;
     state.files.trash.delete(user.actor(), id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

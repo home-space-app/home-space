@@ -33,12 +33,28 @@ pub enum Names {
 pub struct SealedNames {
     folder: NodeId,
     keys: FolderKeys,
+    /// The folder is being unprotected: names are opened, none are stored any more.
+    read_only: bool,
 }
 
 impl Names {
     /// The names inside the password folder `folder`, with its keys.
     pub fn sealed(folder: NodeId, keys: FolderKeys) -> Self {
-        Self::Sealed(Arc::new(SealedNames { folder, keys }))
+        Self::Sealed(Arc::new(SealedNames {
+            folder,
+            keys,
+            read_only: false,
+        }))
+    }
+
+    /// The names inside the password folder `folder` while it is being unprotected: they still
+    /// open, but nothing new may be named there until it is done.
+    pub fn unsealing(folder: NodeId, keys: FolderKeys) -> Self {
+        Self::Sealed(Arc::new(SealedNames {
+            folder,
+            keys,
+            read_only: true,
+        }))
     }
 
     /// The password folder the names are sealed for, if any.
@@ -61,6 +77,9 @@ impl Names {
     pub fn store(&self, kind: NodeKind, name: &str) -> Result<String, FilesError> {
         match self {
             Self::Plain => Ok(name.to_owned()),
+            Self::Sealed(sealed) if sealed.read_only => Err(FilesError::Protected(
+                "The folder is being unprotected. Try again once it is done.",
+            )),
             Self::Sealed(sealed) => sealed
                 .keys
                 .seal_name(&sealed.folder.0, sealing_kind(kind), name)

@@ -96,6 +96,64 @@ impl BlobStore {
         .await
         .map_err(io::Error::other)?
     }
+
+    /// Decrypts the current content of `node` in place when `identity` opens it. Whether it
+    /// did; a blob that is gone or not encrypted to the folder is left alone.
+    pub(crate) async fn unseal_blob(
+        &self,
+        owner: UserId,
+        node: NodeId,
+        identity: &Identity,
+    ) -> io::Result<bool> {
+        self.open_in_place(self.blob_path(owner, node), identity)
+            .await
+    }
+
+    /// Decrypts the stored content of a version in place, as [`Self::unseal_blob`].
+    pub(crate) async fn unseal_version(
+        &self,
+        owner: UserId,
+        version: Uuid,
+        identity: &Identity,
+    ) -> io::Result<bool> {
+        self.open_in_place(self.version_path(owner, version), identity)
+            .await
+    }
+
+    async fn open_in_place(&self, path: PathBuf, identity: &Identity) -> io::Result<bool> {
+        let temp = self.root.join(TMP_DIR).join(NodeId::new().to_string());
+        let identity = identity.clone();
+        tokio::task::spawn_blocking(move || {
+            let current = match fs::File::open(&path) {
+                Ok(file) => file,
+                Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+                Err(err) => return Err(err),
+            };
+            if !content::opens_with(&identity, io::BufReader::new(current)) {
+                return Ok(false);
+            }
+            if let Err(err) = decrypt_file(&path, &temp, &identity) {
+                let _ = fs::remove_file(&temp);
+                return Err(err);
+            }
+            fs::rename(&temp, &path)?;
+            Ok(true)
+        })
+        .await
+        .map_err(io::Error::other)?
+    }
+}
+
+/// Writes `source`, encrypted to `identity`, decrypted into `target`, flushed to disk.
+fn decrypt_file(source: &Path, target: &Path, identity: &Identity) -> io::Result<()> {
+    let input = io::BufReader::new(fs::File::open(source)?);
+    let mut reader = content::decrypt(identity, input).map_err(io::Error::other)?;
+    let mut output = io::BufWriter::new(fs::File::create(target)?);
+    io::copy(&mut reader, &mut output)?;
+    let file = output
+        .into_inner()
+        .map_err(io::IntoInnerError::into_error)?;
+    file.sync_all()
 }
 
 /// Writes `source` encrypted to `recipient` into `target`, flushed to disk.

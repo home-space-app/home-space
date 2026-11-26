@@ -687,6 +687,74 @@ impl Db {
         Ok(renamed == 1)
     }
 
+    /// Sets a new password hash for the user's password folder `node` and locks it for every
+    /// session but `keep`.
+    pub async fn set_folder_password(
+        &self,
+        user: UserId,
+        node: NodeId,
+        password_hash: &str,
+        keep: Uuid,
+    ) -> Result<(), DbError> {
+        let mut tx = self.begin().await?;
+        let changed = sqlx::query(
+            "UPDATE protected_folders SET password_hash = $3 \
+             WHERE owner_id = $1 AND node_id = $2 AND lock = 'password'",
+        )
+        .bind(user)
+        .bind(node)
+        .bind(password_hash)
+        .execute(&mut *tx)
+        .await?;
+        if changed.rows_affected() != 1 {
+            return Err(DbError::NotFound);
+        }
+        sqlx::query("DELETE FROM protected_unlocks WHERE node_id = $1 AND session_id <> $2")
+            .bind(node)
+            .bind(keep)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The user's password folders that are `node` or below it.
+    pub async fn password_folders_under(
+        &self,
+        user: UserId,
+        node: NodeId,
+    ) -> Result<Vec<NodeId>, DbError> {
+        let folders = sqlx::query_scalar(
+            "WITH RECURSIVE subtree AS ( \
+                 SELECT id FROM nodes WHERE id = $1 AND owner_id = $2 \
+                 UNION ALL \
+                 SELECT n.id FROM nodes n JOIN subtree s ON n.parent_id = s.id \
+                 WHERE n.kind = 'folder' \
+             ) SELECT p.node_id FROM protected_folders p JOIN subtree s ON s.id = p.node_id \
+             WHERE p.lock = 'password'",
+        )
+        .bind(node)
+        .bind(user)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(folders)
+    }
+
+    /// Whether any of the user's `nodes` is a protected folder or inside one.
+    pub async fn any_protected(&self, user: UserId, nodes: &[NodeId]) -> Result<bool, DbError> {
+        let ids: Vec<Uuid> = nodes.iter().map(|node| node.0).collect();
+        let found = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM nodes n WHERE n.owner_id = $1 AND n.id = ANY($2) \
+             AND (in_protected_folder(n.id) \
+                  OR EXISTS (SELECT 1 FROM protected_folders p WHERE p.node_id = n.id)))",
+        )
+        .bind(user)
+        .bind(&ids)
+        .fetch_one(self.pool())
+        .await?;
+        Ok(found)
+    }
+
     /// The user's password folders.
     pub async fn password_folders(&self, user: UserId) -> Result<Vec<NodeId>, DbError> {
         let folders = sqlx::query_scalar(

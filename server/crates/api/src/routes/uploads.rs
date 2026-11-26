@@ -13,6 +13,7 @@ use axum::{
 };
 use uuid::Uuid;
 
+use db::NodeKind;
 use files::StoreOptions;
 use files::{ChunkOutcome, FilesError, Names, UploadStatus, UploadTarget};
 use protocol::{
@@ -62,9 +63,11 @@ fn session(status: UploadStatus, chunk_size: u64) -> UploadSession {
 }
 
 /// The user's unfinished uploads, or only this device's. A session without a device has none
-/// of its own.
+/// of its own. A new file going into a password folder is listed under its plain name when
+/// this session unlocked the folder, and left out when it did not.
 async fn list(
     State(state): State<AppState>,
+    tenant: Tenant,
     user: AuthUser,
     ApiQuery(query): ApiQuery<UploadsQuery>,
 ) -> Result<Json<Vec<UploadInfo>>, ApiError> {
@@ -73,7 +76,25 @@ async fn list(
         (true, Some(device)) => state.files.uploads.uploads(user.id, Some(device)).await?,
         (true, None) => Vec::new(),
     };
-    Ok(Json(uploads.into_iter().map(upload_info).collect()))
+    let parents: Vec<NodeId> = uploads
+        .iter()
+        .filter_map(|upload| upload.parent_id)
+        .collect();
+    let shown = tenant
+        .vault
+        .shown(user.id, user.session_id, &parents)
+        .await?;
+    Ok(Json(
+        uploads
+            .into_iter()
+            .filter_map(|mut upload| {
+                if upload.node_id.is_none() && upload.transfer_item_id.is_none() {
+                    upload.name = shown.name(upload.parent_id, NodeKind::File, &upload.name)?;
+                }
+                Some(upload_info(upload))
+            })
+            .collect(),
+    ))
 }
 
 fn upload_info(upload: db::Upload) -> UploadInfo {

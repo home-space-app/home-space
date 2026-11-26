@@ -53,6 +53,14 @@ async fn create(
     user: AuthUser,
     ApiJson(request): ApiJson<CreateShare>,
 ) -> Result<(StatusCode, Json<Share>), ApiError> {
+    tenant
+        .vault
+        .refuse_protected(
+            user.id,
+            &request.node_ids,
+            "Protected folders and what they hold cannot be shared.",
+        )
+        .await?;
     let share = tenant.shares.create(user.id, &request).await?;
     Ok((StatusCode::CREATED, Json(owner_share(share))))
 }

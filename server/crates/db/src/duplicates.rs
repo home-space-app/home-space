@@ -35,11 +35,15 @@ impl Db {
              WHERE n.owner_id = $1 AND n.kind = 'file' AND n.sha256 IS NOT NULL AND n.size > 0 \
              AND ",
             visible!("n"),
+            " AND ",
+            unprotected!("n"),
             " AND n.sha256 IN ( \
                  SELECT d.sha256 FROM nodes d \
                  WHERE d.owner_id = $1 AND d.kind = 'file' AND d.sha256 IS NOT NULL \
                  AND d.size > 0 AND ",
             visible!("d"),
+            " AND ",
+            unprotected!("d"),
             " GROUP BY d.sha256 HAVING count(*) > 1) \
              ORDER BY n.sha256, n.created_at, n.id"
         ))
@@ -64,6 +68,10 @@ impl Db {
             visible!("n"),
             " AND ",
             visible!("src"),
+            " AND ",
+            unprotected!("n"),
+            " AND ",
+            unprotected!("src"),
             " ORDER BY n.id, src.id, fv.version DESC"
         ))
         .bind(owner)

@@ -1,7 +1,7 @@
 //! Encrypting what a password folder already held, in place: the names of everything inside,
-//! the current content of every file and every older version, so the version history is kept.
-//! Safe to run again after a stop: a name or blob the folder's keys already open is left as it
-//! is.
+//! the current content of every file and every older version, so the version history is kept;
+//! and decrypting it all again when the folder is unprotected. Safe to run again after a stop:
+//! a name or blob already in the wanted form is left as it is.
 
 use db::{DbError, FolderNode, NodeId, NodeKind, UserId};
 
@@ -33,7 +33,7 @@ impl NodeService {
         let mut sealed = 0;
         for file in self.content.db.folder_files(owner, folder).await? {
             {
-                let _writing = self.content.sealing.lock().await;
+                let _writing = self.content.sealing.write().await;
                 if store
                     .seal_blob(owner, file.node_id, &recipient, identity)
                     .await?
@@ -42,7 +42,7 @@ impl NodeService {
                 }
             }
             for version in file.versions {
-                let _writing = self.content.sealing.lock().await;
+                let _writing = self.content.sealing.write().await;
                 if store
                     .seal_version(owner, version, &recipient, identity)
                     .await?
@@ -104,6 +104,99 @@ impl NodeService {
                     }
                     return Ok(renamed);
                 }
+                Err(DbError::Conflict) => {}
+                Err(err) => return Err(err.into()),
+            }
+        }
+        Err(FilesError::Conflict)
+    }
+}
+
+impl NodeService {
+    /// Decrypts every blob and opens every name in `folder` that `names` still opens; returns
+    /// how many it changed. A run that changed nothing has left the folder plain.
+    pub async fn decrypt_folder(
+        &self,
+        owner: UserId,
+        folder: NodeId,
+        names: &Names,
+    ) -> Result<usize, FilesError> {
+        let Some(keys) = names.keys() else {
+            return Ok(0);
+        };
+        let opened = self.unseal_blobs(owner, folder, keys.identity()).await?
+            + self.open_names(owner, folder, names).await?;
+        if opened > 0 {
+            tracing::info!(user = %owner, folder = %folder, changed = opened, "password folder decrypted");
+        }
+        Ok(opened)
+    }
+
+    /// Decrypts in place every blob of the files in `folder` that `identity` opens.
+    async fn unseal_blobs(
+        &self,
+        owner: UserId,
+        folder: NodeId,
+        identity: &vault_core::content::Identity,
+    ) -> Result<usize, FilesError> {
+        let store = &self.content.store;
+        let mut opened = 0;
+        for file in self.content.db.folder_files(owner, folder).await? {
+            {
+                let _writing = self.content.sealing.write().await;
+                if store.unseal_blob(owner, file.node_id, identity).await? {
+                    opened += 1;
+                }
+            }
+            for version in file.versions {
+                let _writing = self.content.sealing.write().await;
+                if store.unseal_version(owner, version, identity).await? {
+                    opened += 1;
+                }
+            }
+        }
+        Ok(opened)
+    }
+
+    /// Opens every name in `folder` that `names` still opens.
+    async fn open_names(
+        &self,
+        owner: UserId,
+        folder: NodeId,
+        names: &Names,
+    ) -> Result<usize, FilesError> {
+        let mut opened = 0;
+        for node in self.content.db.folder_nodes(owner, folder).await? {
+            if names.is_stored(node.kind, &node.name) && self.open_name(owner, &node, names).await?
+            {
+                opened += 1;
+            }
+        }
+        Ok(opened)
+    }
+
+    /// Replaces the sealed name of `node` with its plain form, numbered when that is taken by
+    /// something stored meanwhile. `false` when the name changed meanwhile.
+    async fn open_name(
+        &self,
+        owner: UserId,
+        node: &FolderNode,
+        names: &Names,
+    ) -> Result<bool, FilesError> {
+        let plain = names.show(node.kind, &node.name);
+        for number in 0..=MAX_NUMBERED_NAMES {
+            let candidate = match (node.kind, number) {
+                (_, 0) => plain.clone(),
+                (NodeKind::File, n) => numbered_file_name(&plain, n),
+                (NodeKind::Folder, n) => numbered_folder_name(&plain, n as usize + 1),
+            };
+            match self
+                .content
+                .db
+                .rename_node_from(owner, node.id, &node.name, &candidate)
+                .await
+            {
+                Ok(renamed) => return Ok(renamed),
                 Err(DbError::Conflict) => {}
                 Err(err) => return Err(err.into()),
             }

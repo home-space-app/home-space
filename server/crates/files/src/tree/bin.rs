@@ -10,7 +10,7 @@ use crate::FilesError;
 /// Deletes node `id` by moving its files to the recycle bin.
 ///
 /// A file moves there itself. A folder's files all move there, each remembering its path,
-/// and the folders are removed. Lost & Found, and folders containing it, cannot be deleted.
+/// and the folders are removed. Files inside a password folder are deleted for good instead. Lost & Found, and folders containing it, cannot be deleted.
 pub(crate) async fn trash_node(
     db: &Db,
     owner: UserId,
@@ -22,9 +22,13 @@ pub(crate) async fn trash_node(
     if tx.is_within(folders.lost_and_found_id, id).await? {
         return Err(FilesError::LostAndFound);
     }
-    let trashed = tx.bin(&node, folders.trash_id).await?;
+    let (trashed, purged) = tx.bin(&node, folders.trash_id).await?;
     tx.commit().await?;
-    Ok(TrashOutcome { node, trashed })
+    Ok(TrashOutcome {
+        node,
+        trashed,
+        purged,
+    })
 }
 
 /// Moves binned files to Lost & Found.

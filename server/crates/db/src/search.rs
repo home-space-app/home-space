@@ -42,6 +42,8 @@ impl Db {
              SELECT n.id, n.owner_id, to_tsvector('simple', $3) \
              FROM nodes n WHERE n.id = $1 AND n.owner_id = $2 AND ",
             visible!("n"),
+            " AND ",
+            unprotected!("n"),
             " ON CONFLICT (node_id) DO UPDATE \
              SET name_tsv = EXCLUDED.name_tsv, indexed_at = now()"
         ))
@@ -100,6 +102,8 @@ impl Db {
              CROSS JOIN to_tsquery('simple', $2) AS q(query) \
              WHERE e.owner_id = $1 AND n.owner_id = $1 AND e.tsv @@ q.query AND ",
             visible!("n"),
+            " AND ",
+            unprotected!("n"),
             " ORDER BY rank DESC, n.kind, n.name \
              LIMIT $3"
         ))
@@ -149,6 +153,8 @@ impl Db {
              LEFT JOIN search_entries e ON e.node_id = n.id \
              WHERE e.node_id IS NULL AND ",
             visible!("n"),
+            " AND ",
+            unprotected!("n"),
             " LIMIT $1"
         ))
         .bind(limit)
@@ -171,6 +177,8 @@ impl Db {
              JOIN search_entries e ON e.node_id = n.id \
              WHERE n.kind = 'file' AND ($1::uuid IS NULL OR n.id > $1) AND ",
             visible!("n"),
+            " AND ",
+            unprotected!("n"),
             " ORDER BY n.id \
              LIMIT $2"
         ))
@@ -179,6 +187,18 @@ impl Db {
         .fetch_all(self.pool())
         .await?;
         Ok(states)
+    }
+
+    /// Whether the user's node `id` is inside a protected folder, which is never indexed.
+    pub async fn in_protected_folder(&self, owner: UserId, id: NodeId) -> Result<bool, DbError> {
+        let inside = sqlx::query_scalar(
+            "SELECT in_protected_folder(id) FROM nodes WHERE id = $1 AND owner_id = $2",
+        )
+        .bind(id)
+        .bind(owner)
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(inside.unwrap_or(false))
     }
 
     /// Removes every index entry so the index can be rebuilt.

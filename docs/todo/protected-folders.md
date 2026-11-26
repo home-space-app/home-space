@@ -273,9 +273,9 @@ What follows for the other features, without special cases on the server:
 
 | Feature | In a security-key folder |
 |---|---|
-| Search | Indexes meaningless names; content extraction finds no text in `application/octet-stream`. Inside an unlocked folder the client searches the decrypted names in memory. |
+| Search | The server indexes nothing inside a protected folder of either lock. Inside an unlocked folder the client searches the decrypted names in memory. |
 | Previews, gallery, viewers | Only in the client, after decryption; a gallery of many images is one touch for the visible page. |
-| Shares, transfers, archive downloads | Possible, but they hand out ciphertext; clients do not offer them for a protected folder. Sharing encrypted folders with other users is under [Later](#later). |
+| Shares, transfers, archive downloads | Refused for a protected folder and what it holds (`409 protected`), for both locks, since they would hand out ciphertext. A shared folder or a folder sent to a device that holds a protected folder leaves it out, in listings, archives and copies. Sharing encrypted folders with other users is under [Later](#later). |
 | Moves and copies | Work as today. Within the folder the client sends the name sealed for the new parent. Into or out of it, the client copies with encryption (or decryption) and deletes the source; a plain move would leave plaintext inside or ciphertext outside. |
 | Versions | Kept from the moment of protection on. Each version is its own age file with its own file key. |
 | Recycle bin | Works as today, with the sealed names; the client shows them decrypted when the folder is unlocked. |
@@ -385,14 +385,39 @@ Done (stage B, names and access):
   unlock, so a client that only listens lets it expire. A client lists the folder again after
   unlocking it, since the journal went on without it.
 
+Done (stage C, the rest):
+
+- **Left out:** nothing inside a protected folder, of either lock, is indexed for search (names
+  or content) or listed among duplicates, which would tell that a plain file has a copy inside.
+  Sharing or sending a protected folder or anything in it is refused (`409 protected`); a shared
+  folder that holds one does not show it through the share (listing, archive, copy), and sending
+  such a folder leaves it out. The server has no previews.
+- **Recycle bin** (decided 2026-11-26): deleting inside a password folder deletes **for good**,
+  versions included; nothing goes to the bin. A binned file would keep its encrypted content and
+  sealed name outside the folder, restoring it into Lost & Found would need decrypting it there,
+  and deleting the folder would take the key its binned files need. Deleting a folder that holds
+  a password folder needs every such folder unlocked (`423`), and deletes their files for good
+  while the rest goes to the bin. Moves inside a password folder refuse `on_conflict: skip`,
+  which bins what it skips. Clients say "Deleted for good" before deleting there.
+- **Change the password:** `POST /protected/{id}/password` `{ password }` for a session that
+  unlocked the folder and signed in recently; the account password rules apply. The key stays,
+  so nothing is re-encrypted; every other session is locked out until it unlocks with the new
+  one.
+- **Unprotect:** `POST /protected/{id}/unprotect` for a session that unlocked the folder and
+  signed in recently. The folder is `unprotecting`: the server decrypts every blob and opens
+  every name in place (same job and lock as protecting), and once a pass finds nothing left it
+  drops the protection, the key and the unlocks with it. Meanwhile the folder still needs the
+  unlock, new names are refused (`409 protected`, "try again once it is done") and new content
+  is stored plain. `DELETE /protected/{id}` stays refused for password folders.
+- **Unfinished uploads** into a password folder are listed under their plain names for a session
+  that unlocked it, and left out for one that did not.
+- **Stores and conversions** take one read-write lock: stores into a password folder hold it
+  shared from reading the folder's state until the blob is committed, the conversion exclusively
+  per blob. So a store never lands in the form the folder had before protecting or unprotecting
+  began.
+
 To do:
 
-- **Stage C, the rest:** leave password folders out of search, previews, duplicates, shares,
-  transfers and archive downloads; changing the folder password; unprotecting (decrypting in
-  place); the recycle bin (a file deleted from a password folder stays encrypted in the bin with
-  its sealed name, shown as stored; restoring it into its folder works, into Lost & Found it must
-  be refused or decrypted); the list of unfinished uploads, which shows sealed names; the name
-  search index, which indexes sealed names.
 - **Forgotten password:** the server has the key, so the account owner could set a new folder
   password after confirming it is them (recent sign-in). **Open question:** allow that, or keep
   "forgotten password, lost data"?
@@ -487,9 +512,11 @@ Done (feature `protected_folders`):
 - Clients do not put `protected_folders` in `REQUIRES`: without it they hide Protect.
 
 Done for password folders: `lock: "password"` in `POST /protected`, `POST` and `DELETE
-/protected/{id}/unlock`, `423 locked` on every read and write inside a locked folder, the
+/protected/{id}/unlock`, `POST /protected/{id}/password`, `POST /protected/{id}/unprotect`
+(decrypted by the server), `423 locked` on every read and write inside a locked folder, the
 changes journal and events filtered per session, and `409 protected` on moves across the
-folder's edge (see [Password folders](#password-folders-server-side-encryption)).
+folder's edge and on sharing or sending from a protected folder (see
+[Password folders](#password-folders-server-side-encryption)).
 
 ## Desktop client (phase 2)
 
@@ -598,7 +625,7 @@ the web client like anywhere else, since the server decrypts them anyway. Phase 
    rename inside, recycle bin, hiding from on-demand files and sync.
 3. **Password folders**: the server's encryption of content, unlock and lock (stage A, done);
    names and locked listings (stage B, done); search, shares, transfers, password change,
-   unprotect (stage C); then the clients.
+   unprotect (stage C, done); then the clients.
 4. **Desktop polish**: external-app save-back, unprotect.
 5. **Web** (opt-in), with Chrome, Edge and Firefox in the e2e tests (a virtual authenticator with
    PRF in Chrome DevTools Protocol / Playwright).
@@ -620,7 +647,8 @@ the web client like anywhere else, since the server decrypts them anyway. Phase 
 - Password folders: no plaintext blob, name or search entry left after the encryption job, every
   version still downloadable, `423` for every read and write while locked, access ending on Lock
   and after the timeout, the changes journal and events leaving out what a session has not
-  unlocked (done for stages A and B).
+  unlocked, nothing indexed, shared or sent from inside, deletes skipping the bin, a password
+  change locking other sessions out, and unprotecting leaving plain blobs and names (done).
 
 ## Later
 

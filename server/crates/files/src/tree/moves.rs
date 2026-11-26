@@ -265,7 +265,13 @@ impl<'a> Placer<'a> {
     /// Leaves a skipped file where it is, or bins it.
     async fn leave(&mut self, node: Node) -> Result<(), FilesError> {
         if let Some(trash_id) = self.bin {
-            self.tx.bin(&node, trash_id).await?;
+            let (_, purged) = self.tx.bin(&node, trash_id).await?;
+            if !purged.files.is_empty() {
+                // Rolls the whole move back: a skipped file is never deleted for good.
+                return Err(FilesError::Protected(
+                    "Files in a password folder cannot be skipped into the recycle bin.",
+                ));
+            }
             self.effects.deleted.push(node.clone());
             self.effects.binned = true;
         }

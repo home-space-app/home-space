@@ -501,7 +501,13 @@ impl VaultService {
     pub async fn convert_folders(&self, nodes: &files::NodeService) -> Result<usize, AccountError> {
         let mut finished = 0;
         for (user, node, state, keys) in self.converting().await? {
-            if state != ProtectionState::Protecting {
+            if state == ProtectionState::Unprotecting {
+                if self
+                    .decrypt_folder(nodes, user, node, files::Names::unsealing(node, keys))
+                    .await?
+                {
+                    finished += 1;
+                }
                 continue;
             }
             nodes
@@ -515,6 +521,34 @@ impl VaultService {
             }
         }
         Ok(finished)
+    }
+
+    /// Decrypts an `unprotecting` password folder and, once a pass finds nothing left to
+    /// decrypt, drops its protection with its key. Whether it did.
+    async fn decrypt_folder(
+        &self,
+        nodes: &files::NodeService,
+        user: UserId,
+        node: NodeId,
+        names: files::Names,
+    ) -> Result<bool, AccountError> {
+        nodes.decrypt_folder(user, node, &names).await?;
+        if nodes.decrypt_folder(user, node, &names).await? > 0 {
+            return Ok(false);
+        }
+        match self
+            .db
+            .remove_protection(user, node, &[ProtectionState::Unprotecting.as_str()])
+            .await
+        {
+            Ok(()) => {
+                tracing::info!(user = %user, folder = %node, "password folder unprotected");
+                Ok(true)
+            }
+            // Another run finished it, or the folder went.
+            Err(DbError::Stale | DbError::NotFound) => Ok(false),
+            Err(err) => Err(err.into()),
+        }
     }
 
     /// Records that the server encrypted everything in a `protecting` password folder.
@@ -561,8 +595,15 @@ impl VaultService {
         node: NodeId,
     ) -> Result<ProtectedFolder, AccountError> {
         self.auth.require_recent_sign_in(user, session).await?;
-        self.require_key_lock(user, node, "Password folders cannot be unprotected yet.")
-            .await?;
+        let folder = self
+            .db
+            .protected_folder(user, node)
+            .await?
+            .ok_or(AccountError::NotFound)?;
+        if folder.lock == FolderLock::Password.as_str() {
+            // The server decrypts it, for a session that knows the password.
+            self.require_unlocked(session, node).await?;
+        }
         self.change_state(
             user,
             node,
@@ -570,6 +611,78 @@ impl VaultService {
             ProtectionState::Unprotecting,
         )
         .await
+    }
+
+    /// `Locked` unless `session` has the password folder `node` unlocked; using it keeps it so.
+    async fn require_unlocked(&self, session: Uuid, node: NodeId) -> Result<(), AccountError> {
+        let extend_to = OffsetDateTime::now_utc() + FOLDER_UNLOCK_TTL;
+        if self
+            .db
+            .use_unlocked_folder(session, node, extend_to)
+            .await?
+        {
+            Ok(())
+        } else {
+            Err(AccountError::Locked)
+        }
+    }
+
+    /// `Locked` unless `session` has unlocked every password folder that is `node` or below it:
+    /// for changes that take a whole subtree along, such as deleting it.
+    pub async fn require_unlocked_below(
+        &self,
+        user: UserId,
+        session: Uuid,
+        node: NodeId,
+    ) -> Result<(), AccountError> {
+        for folder in self.db.password_folders_under(user, node).await? {
+            self.require_unlocked(session, folder).await?;
+        }
+        Ok(())
+    }
+
+    /// Refuses with `refusal` when any of `nodes` is a protected folder or inside one.
+    pub async fn refuse_protected(
+        &self,
+        user: UserId,
+        nodes: &[NodeId],
+        refusal: &'static str,
+    ) -> Result<(), AccountError> {
+        if self.db.any_protected(user, nodes).await? {
+            Err(AccountError::Protected(refusal))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Sets a new password for the password folder `node`, for a session that unlocked it with
+    /// the current one and signed in recently. The folder's key stays, so nothing is encrypted
+    /// again; every other session has to unlock it with the new password.
+    pub async fn change_password(
+        &self,
+        user: UserId,
+        session: Uuid,
+        node: NodeId,
+        password: &str,
+    ) -> Result<(), AccountError> {
+        self.auth.require_recent_sign_in(user, session).await?;
+        self.db
+            .password_secrets(user, node)
+            .await?
+            .ok_or(AccountError::NotFound)?;
+        self.require_unlocked(session, node).await?;
+        if let Some(message) = password_problem(password) {
+            return Err(AccountError::Invalid {
+                field: "/password",
+                message,
+            });
+        }
+        let hash = self.auth.hash_folder_password(password).await?;
+        self.db
+            .set_folder_password(user, node, &hash, session)
+            .await?;
+        tracing::info!(user = %user, folder = %node, "password folder's password changed");
+        Ok(())
     }
 
     /// Forgets a folder's protection once its content is plain again: after unprotecting, or to
@@ -582,8 +695,12 @@ impl VaultService {
         node: NodeId,
     ) -> Result<(), AccountError> {
         self.auth.require_recent_sign_in(user, session).await?;
-        self.require_key_lock(user, node, "Password folders cannot be unprotected yet.")
-            .await?;
+        self.require_key_lock(
+            user,
+            node,
+            "The server drops a password folder's protection itself once it is decrypted.",
+        )
+        .await?;
         let states = [
             ProtectionState::Protecting.as_str(),
             ProtectionState::Unprotecting.as_str(),
