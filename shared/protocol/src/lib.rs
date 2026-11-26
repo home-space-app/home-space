@@ -78,9 +78,9 @@ pub use trash::{RestoreRequest, TrashItem};
 pub use upload::{ChunkResult, CreateUpload, UploadInfo, UploadSession, UploadsQuery};
 pub use validate::Validate;
 pub use vault::{
-    AddUnlocker, FolderLock, PRF_SALT_LEN, ProtectFolder, ProtectedFolder, ProtectionState,
-    RewrappedFolder, RewrappedUnlocker, RotateVault, UnlockerKind, Vault, VaultUnlocker,
-    WRAPPED_LEN, is_age_recipient,
+    AddUnlocker, FolderLock, FolderUnlocked, PRF_SALT_LEN, ProtectFolder, ProtectedFolder,
+    ProtectionState, RewrappedFolder, RewrappedUnlocker, RotateVault, UnlockFolder, UnlockerKind,
+    Vault, VaultUnlocker, WRAPPED_LEN, is_age_recipient,
 };
 pub use version::Version;
 pub use webauthn::{

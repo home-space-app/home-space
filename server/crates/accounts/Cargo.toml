@@ -16,6 +16,7 @@ thiserror.workspace = true
 time.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+vault-core.workspace = true
 
 [lints]
 workspace = true

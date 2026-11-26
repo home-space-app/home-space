@@ -10,7 +10,7 @@ use axum::{
 use files::NodeUpdate;
 use protocol::{
     ContentQuery, CreateFolderRequest, FileVersion, ListQuery, MoveRequest, MoveResponse, Node,
-    NodeId, NodeProperties, TicketRequest, UpdateRequest, UploadQuery,
+    NodeId, NodeProperties, Patch, TicketRequest, UpdateRequest, UploadQuery,
 };
 
 use crate::extract::{ApiJson, ApiPath, ApiQuery};
@@ -20,7 +20,7 @@ use crate::{
     support::{
         body::{body_stream, declared_type},
         convert::move_response,
-        download::{Download, ranged},
+        download::{Download, ranged_in_folder},
         outcome::stored,
     },
 };
@@ -152,15 +152,16 @@ async fn download(
     ApiQuery(query): ApiQuery<TicketQuery>,
     ApiPath(id): ApiPath<NodeId>,
 ) -> Result<Response, ApiError> {
-    let owner = tenant
-        .caller(
+    let (owner, session) = tenant
+        .caller_session(
             &headers,
             query.ticket.as_deref(),
             &TicketRequest::Download { node_id: id },
         )
         .await?;
+    let keys = tenant.vault.read_keys(owner, session, id).await?;
     let (node, file) = state.files.nodes.download(owner, id).await?;
-    ranged(&headers, Download::of(&node), file).await
+    ranged_in_folder(&headers, Download::of(&node), file, keys).await
 }
 
 async fn download_version(
@@ -170,8 +171,8 @@ async fn download_version(
     ApiQuery(query): ApiQuery<TicketQuery>,
     ApiPath((id, version)): ApiPath<(NodeId, i32)>,
 ) -> Result<Response, ApiError> {
-    let owner = tenant
-        .caller(
+    let (owner, session) = tenant
+        .caller_session(
             &headers,
             query.ticket.as_deref(),
             &TicketRequest::DownloadVersion {
@@ -180,6 +181,7 @@ async fn download_version(
             },
         )
         .await?;
+    let keys = tenant.vault.read_keys(owner, session, id).await?;
     let (node, meta, file) = state
         .files
         .versions
@@ -190,7 +192,7 @@ async fn download_version(
         mime: Some(&meta.mime),
         size: u64::try_from(meta.size).unwrap_or_default(),
     };
-    ranged(&headers, download, file).await
+    ranged_in_folder(&headers, download, file, keys).await
 }
 
 async fn list_versions(
@@ -217,10 +219,21 @@ async fn delete_version(
 
 async fn update(
     State(state): State<AppState>,
+    tenant: Tenant,
     user: AuthUser,
     ApiPath(id): ApiPath<NodeId>,
     ApiJson(request): ApiJson<UpdateRequest>,
 ) -> Result<Json<Node>, ApiError> {
+    match request.parent_id {
+        Patch::Set(parent) => {
+            tenant
+                .vault
+                .check_move(user.id, &[id], Some(parent))
+                .await?
+        }
+        Patch::Clear => tenant.vault.check_move(user.id, &[id], None).await?,
+        Patch::Keep => {}
+    }
     let changes = NodeUpdate {
         name: request.name,
         parent_id: request.parent_id,
@@ -231,9 +244,14 @@ async fn update(
 
 async fn move_nodes(
     State(state): State<AppState>,
+    tenant: Tenant,
     user: AuthUser,
     ApiJson(request): ApiJson<MoveRequest>,
 ) -> Result<Json<MoveResponse>, ApiError> {
+    tenant
+        .vault
+        .check_move(user.id, &request.ids, request.parent_id)
+        .await?;
     let batch = state
         .files
         .nodes

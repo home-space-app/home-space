@@ -466,6 +466,7 @@ impl AuthService {
 }
 
 mod browser;
+mod folders;
 mod reauth;
 mod second_factor;
 mod webauthn;

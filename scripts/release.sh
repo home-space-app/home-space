@@ -5,7 +5,7 @@
 #   scripts/release.sh 1.0.0-rc.1
 #
 # - Cargo: [workspace.package] version in clients/ and server/, [package] version in
-#   shared/protocol, and the workspace entries in each Cargo.lock
+#   shared/protocol and shared/vault-core, and the workspace entries in each Cargo.lock
 # - iOS (clients/mobile/iosApp/project.yml): MARKETING_VERSION = <version> without any
 #   pre-release suffix (App Store versions must be numeric), CURRENT_PROJECT_VERSION + 1
 # - Android (clients/mobile/androidApp/build.gradle.kts): versionName = <version>,
@@ -100,7 +100,8 @@ echo "Cargo:"
 set_toml_version clients/Cargo.toml workspace.package
 set_toml_version server/Cargo.toml workspace.package
 set_toml_version shared/protocol/Cargo.toml package
-for dir in clients server shared/protocol; do
+set_toml_version shared/vault-core/Cargo.toml package
+for dir in clients server shared/protocol shared/vault-core; do
     # Refresh only the workspace's own entries in the lock file; dependencies stay as they are.
     (cd "$dir" && cargo update --workspace --offline --quiet) ||
         echo "  warning: could not update $dir/Cargo.lock; run 'cargo update --workspace' there" >&2

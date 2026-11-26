@@ -1,22 +1,32 @@
 //! The vault and protected folders of a user (feature `protected_folders`).
 //!
-//! The server checks shapes (lengths, the recipient's form, Argon2id bounds) and consistency,
-//! never keys: everything it keeps is wrapped by a security key or a password it never sees.
-//! Changes to what unlocks the vault need a recent sign-in, so a stolen access token cannot add
+//! For security-key folders the server checks shapes (lengths, the recipient's form) and
+//! consistency, never keys: everything it keeps is wrapped by a security key it never sees.
+//! Password folders are the server's own: it keeps their key sealed with its secrets key and
+//! opens it to sessions that gave the password.
+//!
+//! Changes to what unlocks a folder need a recent sign-in, so a stolen access token cannot add
 //! an attacker's unlocker or take the user's away.
 
+use std::net::IpAddr;
+
+use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
-use auth::AuthService;
+use auth::{AuthError, AuthService};
 use db::{
-    Db, DbError, KeyLock, NewUnlocker, NodeId, ProtectRefusal, Rewrapped, StoredProtection,
-    StoredUnlocker, StoredVault, UserId,
+    Db, DbError, KeyLock, NewProtection, NewUnlocker, NodeId, PasswordLock, ProtectRefusal,
+    Rewrapped, StoredProtection, StoredUnlocker, StoredVault, UserId,
 };
 use protocol::{
-    AddUnlocker, FolderLock, PRF_SALT_LEN, ProtectFolder, ProtectedFolder, ProtectionState,
-    RotateVault, UnlockerKind, Vault, VaultUnlocker, WRAPPED_LEN, encoding::Base64Url,
-    is_age_recipient,
+    AddUnlocker, FolderLock, FolderUnlocked, PRF_SALT_LEN, ProtectFolder, ProtectedFolder,
+    ProtectionState, RotateVault, UnlockerKind, Vault, VaultUnlocker, WRAPPED_LEN,
+    encoding::Base64Url, is_age_recipient, rules::password_problem,
 };
+use vault_core::{FolderKeys, FolderSecret};
+
+/// How long a password folder stays unlocked for a session that stopped using it.
+pub const FOLDER_UNLOCK_TTL: Duration = Duration::minutes(15);
 
 use crate::AccountError;
 
@@ -219,10 +229,7 @@ impl VaultService {
     ) -> Result<ProtectedFolder, AccountError> {
         self.auth.require_recent_sign_in(user, session).await?;
         if request.lock == FolderLock::Password {
-            return Err(AccountError::Invalid {
-                field: "/lock",
-                message: "Folders cannot be protected with a password on this server yet.",
-            });
+            return self.protect_with_password(user, request).await;
         }
         let wrapped = request
             .wrapped_secret
@@ -244,14 +251,62 @@ impl VaultService {
                 field: "/recipient",
                 message: "The recipient must be an age X25519 recipient (age1…).",
             })?;
-        let lock = KeyLock {
+        let lock = NewProtection::SecurityKey(KeyLock {
             wrapped_secret: wrapped.as_bytes(),
             epoch,
             recipient,
-        };
+        });
+        self.store_protection(user, request.node_id, lock).await
+    }
+
+    /// Protects a folder with a password: a new random key, sealed with the server's secrets
+    /// key, and the password's hash. The server encrypts what the folder holds.
+    async fn protect_with_password(
+        &self,
+        user: UserId,
+        request: &ProtectFolder,
+    ) -> Result<ProtectedFolder, AccountError> {
+        if !self.auth.keeps_folder_keys() {
+            return Err(AccountError::Invalid {
+                field: "/lock",
+                message: "This server has no secrets key, so it cannot keep the key of a \
+                          password folder.",
+            });
+        }
+        let password = request.password.as_deref().ok_or(AccountError::Invalid {
+            field: "/password",
+            message: "A password lock needs the password.",
+        })?;
+        if let Some(message) = password_problem(password) {
+            return Err(AccountError::Invalid {
+                field: "/password",
+                message,
+            });
+        }
+        let secret = FolderSecret::generate();
+        let recipient = secret.recipient().to_string();
+        let sealed = self
+            .auth
+            .seal_folder_key(user, secret.to_raw().as_slice())?;
+        drop(secret);
+        let hash = self.auth.hash_folder_password(password).await?;
+        let lock = NewProtection::Password(PasswordLock {
+            password_hash: &hash,
+            sealed_key: &sealed,
+            recipient: &recipient,
+        });
+        self.store_protection(user, request.node_id, lock).await
+    }
+
+    async fn store_protection(
+        &self,
+        user: UserId,
+        node: NodeId,
+        lock: NewProtection<'_>,
+    ) -> Result<ProtectedFolder, AccountError> {
         let stored = self
             .db
-            .protect_folder(user, request.node_id, lock)
+            .protect_folder(user, node, lock)
             .await?
             .map_err(|refusal| match refusal {
                 ProtectRefusal::NotFound => AccountError::NotFound,
@@ -263,17 +318,196 @@ impl VaultService {
                 ),
                 ProtectRefusal::VaultChanged => AccountError::VaultChanged,
             })?;
-        tracing::info!(user = %user, folder = %request.node_id, "folder protected");
+        tracing::info!(user = %user, folder = %node, lock = %stored.lock, "folder protected");
         folder_of(stored)
     }
 
-    /// Records that the client has replaced the content of a `protecting` folder with its
-    /// encrypted form.
+    /// Unlocks the password folder `node` for `session` with its `password`.
+    pub async fn unlock(
+        &self,
+        user: UserId,
+        session: Uuid,
+        node: NodeId,
+        password: &str,
+        address: Option<IpAddr>,
+    ) -> Result<FolderUnlocked, AccountError> {
+        let secrets = self
+            .db
+            .password_secrets(user, node)
+            .await?
+            .ok_or(AccountError::NotFound)?;
+        match self
+            .auth
+            .check_folder_password(node, secrets.password_hash, password, address)
+            .await
+        {
+            Err(AuthError::InvalidCredentials) => {
+                return Err(AccountError::Auth(AuthError::WrongPassword));
+            }
+            other => other?,
+        }
+        let expires_at = OffsetDateTime::now_utc() + FOLDER_UNLOCK_TTL;
+        self.db.unlock_folder(session, node, expires_at).await?;
+        tracing::info!(user = %user, folder = %node, "password folder unlocked");
+        Ok(FolderUnlocked { expires_at })
+    }
+
+    /// Locks the password folder `node` for `session` again.
+    pub async fn lock(
+        &self,
+        user: UserId,
+        session: Uuid,
+        node: NodeId,
+    ) -> Result<(), AccountError> {
+        if self.db.password_secrets(user, node).await?.is_none() {
+            return Err(AccountError::NotFound);
+        }
+        self.db.lock_folder(session, node).await?;
+        Ok(())
+    }
+
+    /// The keys to read `node` through `session`: `None` outside password folders, `Locked`
+    /// in one the session has not unlocked. Using the folder keeps it unlocked.
+    pub async fn read_keys(
+        &self,
+        user: UserId,
+        session: Uuid,
+        node: NodeId,
+    ) -> Result<Option<FolderKeys>, AccountError> {
+        let Some(folder) = self.db.enclosing_password_folder(user, node).await? else {
+            return Ok(None);
+        };
+        let extend_to = OffsetDateTime::now_utc() + FOLDER_UNLOCK_TTL;
+        if !self
+            .db
+            .use_unlocked_folder(session, folder.node_id, extend_to)
+            .await?
+        {
+            return Err(AccountError::Locked);
+        }
+        self.folder_keys(user, folder.node_id).await.map(Some)
+    }
+
+    /// The keys of the password folder `node`, for the server's own work on it.
+    pub async fn folder_keys(
+        &self,
+        user: UserId,
+        node: NodeId,
+    ) -> Result<FolderKeys, AccountError> {
+        let secrets = self
+            .db
+            .password_secrets(user, node)
+            .await?
+            .ok_or(AccountError::NotFound)?;
+        let raw = self.auth.open_folder_key(user, &secrets.sealed_key)?;
+        let bytes: [u8; 32] = raw
+            .as_slice()
+            .try_into()
+            .map_err(|_| AccountError::Auth(AuthError::Unsealing))?;
+        Ok(FolderSecret::from_raw(bytes).keys())
+    }
+
+    /// Refuses to move `sources` into `target` (or the root) across the edge of a password
+    /// folder: what is inside one is stored encrypted and everything else is not.
+    pub async fn check_move(
+        &self,
+        user: UserId,
+        sources: &[NodeId],
+        target: Option<NodeId>,
+    ) -> Result<(), AccountError> {
+        let to = match target {
+            Some(target) => self
+                .db
+                .enclosing_password_folder(user, target)
+                .await?
+                .map(|folder| folder.node_id),
+            None => None,
+        };
+        for &source in sources {
+            let from = match self.db.enclosing_password_folder(user, source).await? {
+                // The folder itself moves with what it holds.
+                Some(folder) if folder.node_id == source => to.map(|_| source),
+                found => found.map(|folder| folder.node_id),
+            };
+            if from != to {
+                return Err(AccountError::Protected(
+                    "Items cannot be moved into or out of a password folder. Copy them instead.",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The password folders of this tenant the server still has to encrypt or decrypt, with
+    /// their keys.
+    pub async fn converting(
+        &self,
+    ) -> Result<Vec<(UserId, NodeId, ProtectionState, FolderKeys)>, AccountError> {
+        let mut found = Vec::new();
+        for (user, node, state) in self
+            .db
+            .converting_password_folders(self.auth.tenant())
+            .await?
+        {
+            let Some(state) = ProtectionState::parse(&state) else {
+                continue;
+            };
+            match self.folder_keys(user, node).await {
+                Ok(keys) => found.push((user, node, state, keys)),
+                Err(err) => {
+                    tracing::error!(user = %user, folder = %node, error = %err, "password folder key cannot be opened");
+                }
+            }
+        }
+        Ok(found)
+    }
+
+    /// Encrypts what this tenant's `protecting` password folders still hold in plain, with
+    /// `nodes`, and marks each `protected` once it is done; returns how many it finished.
+    /// Safe to run again, and at the same time as another run.
+    pub async fn convert_folders(&self, nodes: &files::NodeService) -> Result<usize, AccountError> {
+        let mut finished = 0;
+        for (user, node, state, keys) in self.converting().await? {
+            if state != ProtectionState::Protecting {
+                continue;
+            }
+            nodes.encrypt_folder(user, node, &keys).await?;
+            drop(keys);
+            match self.finish_encrypting(user, node).await {
+                Ok(()) => finished += 1,
+                // Another run finished it, or the folder went.
+                Err(AccountError::Protected(_) | AccountError::NotFound) => {}
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(finished)
+    }
+
+    /// Records that the server encrypted everything in a `protecting` password folder.
+    pub async fn finish_encrypting(&self, user: UserId, node: NodeId) -> Result<(), AccountError> {
+        self.change_state(
+            user,
+            node,
+            ProtectionState::Protecting,
+            ProtectionState::Protected,
+        )
+        .await
+        .map(drop)
+    }
+
+    /// Records that the client has replaced the content of a `protecting` security-key folder
+    /// with its encrypted form. The server finishes password folders itself.
     pub async fn finish(
         &self,
         user: UserId,
         node: NodeId,
     ) -> Result<ProtectedFolder, AccountError> {
+        self.require_key_lock(
+            user,
+            node,
+            "The server finishes protecting a password folder itself.",
+        )
+        .await?;
         self.change_state(
             user,
             node,
@@ -293,6 +527,8 @@ impl VaultService {
         node: NodeId,
     ) -> Result<ProtectedFolder, AccountError> {
         self.auth.require_recent_sign_in(user, session).await?;
+        self.require_key_lock(user, node, "Password folders cannot be unprotected yet.")
+            .await?;
         self.change_state(
             user,
             node,
@@ -312,6 +548,8 @@ impl VaultService {
         node: NodeId,
     ) -> Result<(), AccountError> {
         self.auth.require_recent_sign_in(user, session).await?;
+        self.require_key_lock(user, node, "Password folders cannot be unprotected yet.")
+            .await?;
         let states = [
             ProtectionState::Protecting.as_str(),
             ProtectionState::Unprotecting.as_str(),
@@ -325,6 +563,25 @@ impl VaultService {
             other => other?,
         }
         tracing::info!(user = %user, folder = %node, "folder protection removed");
+        Ok(())
+    }
+
+    /// Refuses with `refusal` unless `node` is a security-key folder of the user; `NotFound`
+    /// when it is not protected.
+    async fn require_key_lock(
+        &self,
+        user: UserId,
+        node: NodeId,
+        refusal: &'static str,
+    ) -> Result<(), AccountError> {
+        let folder = self
+            .db
+            .protected_folder(user, node)
+            .await?
+            .ok_or(AccountError::NotFound)?;
+        if folder.lock == FolderLock::Password.as_str() {
+            return Err(AccountError::Protected(refusal));
+        }
         Ok(())
     }
 

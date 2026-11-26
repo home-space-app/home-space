@@ -9,6 +9,7 @@ mod duplicates;
 mod emitted;
 mod error;
 mod nodes;
+mod protection;
 mod services;
 mod store;
 mod transfers;

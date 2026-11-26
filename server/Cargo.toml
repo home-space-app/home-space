@@ -19,6 +19,8 @@ search = { path = "crates/search" }
 shares = { path = "crates/shares" }
 api = { path = "crates/api" }
 protocol = { path = "../shared/protocol", features = ["server"] }
+vault-core = { path = "../shared/vault-core", features = ["server"] }
+zeroize = "1.9.1"
 
 aes-gcm = "0.11.1"
 anyhow = "1.0.104"

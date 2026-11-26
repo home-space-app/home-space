@@ -7,7 +7,7 @@
 use std::io::{self, Read, Write};
 
 use age::stream::{StreamReader, StreamWriter};
-use age::x25519::{Identity, Recipient};
+pub use age::x25519::{Identity, Recipient};
 
 use crate::{Error, Result};
 
@@ -18,6 +18,13 @@ pub const AGE_HEADER_PREFIX: &[u8] = b"age-encryption.org/v1\n";
 /// Whether `prefix` (the first bytes of a blob) starts like an age v1 file.
 pub fn looks_like_age(prefix: &[u8]) -> bool {
     prefix.starts_with(AGE_HEADER_PREFIX)
+}
+
+/// A folder's recipient from its text form (`age1…`).
+pub fn parse_recipient(text: &str) -> Result<Recipient> {
+    text.trim()
+        .parse()
+        .map_err(|e: &str| Error::Content(e.to_owned()))
 }
 
 /// A writer that encrypts into `output`. Call [`StreamWriter::finish`] at the end, or the last
@@ -60,12 +67,31 @@ pub fn decrypt_bytes(identity: &Identity, encrypted: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Whether `input` is an age file this identity opens: its header unwraps with it. Reads only
+/// the header. A plain file, or one encrypted to someone else, is not.
+pub fn opens_with<R: Read>(identity: &Identity, input: R) -> bool {
+    age::Decryptor::new(input)
+        .and_then(|decryptor| decryptor.decrypt(std::iter::once(identity as &dyn age::Identity)))
+        .is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::{Cursor, Seek, SeekFrom};
 
     use super::*;
     use crate::FolderSecret;
+
+    #[test]
+    fn only_its_own_files_open_with_an_identity() {
+        let ours = FolderSecret::generate().keys();
+        let theirs = FolderSecret::generate().keys();
+        let sealed = encrypt_bytes(&ours.recipient(), b"scan").unwrap();
+        assert!(opens_with(ours.identity(), sealed.as_slice()));
+        assert!(!opens_with(theirs.identity(), sealed.as_slice()));
+        assert!(!opens_with(ours.identity(), &b"plain text"[..]));
+        assert!(!opens_with(ours.identity(), &b""[..]));
+    }
 
     #[test]
     fn round_trip_with_only_the_recipient_to_encrypt() {

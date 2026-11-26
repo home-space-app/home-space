@@ -29,6 +29,8 @@ uuid.workspace = true
 webauthn-rs.workspace = true
 webauthn-rs-proto.workspace = true
 
+zeroize.workspace = true
+
 [dev-dependencies]
 sqlx.workspace = true
 tempfile.workspace = true

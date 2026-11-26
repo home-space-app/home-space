@@ -72,6 +72,21 @@ impl FolderSecret {
     }
 }
 
+/// For the server, which encrypts password folders itself and keeps their secret sealed with its
+/// own key. Clients never hold a folder secret outside one action.
+#[cfg(feature = "server")]
+impl FolderSecret {
+    /// A secret the server unsealed.
+    pub fn from_raw(bytes: [u8; 32]) -> Self {
+        Self::from_bytes(bytes)
+    }
+
+    /// The bytes to seal and store.
+    pub fn to_raw(&self) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(*self.expose())
+    }
+}
+
 /// age has no constructor from raw bytes, only its Bech32 text form.
 fn identity_from_bytes(bytes: &[u8; 32]) -> Identity {
     let hrp = bech32::Hrp::parse_unchecked("AGE-SECRET-KEY-");

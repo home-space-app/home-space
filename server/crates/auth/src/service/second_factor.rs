@@ -303,7 +303,7 @@ impl AuthService {
         Ok(())
     }
 
-    fn secret_box(&self) -> Result<&SecretBox, AuthError> {
+    pub(super) fn secret_box(&self) -> Result<&SecretBox, AuthError> {
         self.secret_box.as_ref().ok_or(AuthError::SecretsKeyMissing)
     }
 

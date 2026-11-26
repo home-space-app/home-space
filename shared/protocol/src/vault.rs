@@ -2,7 +2,7 @@
 //!
 //! A folder locked with a security key is end to end: the server keeps only what is useless
 //! without the key (wrapped keys, PRF salts, the folders' public age recipients) and clients do
-//! all the cryptography (`clients/vault-core`). A folder locked with a password is encrypted by
+//! all the cryptography (`shared/vault-core`). A folder locked with a password is encrypted by
 //! the server, which keeps its key. See `docs/todo/protected-folders.md`.
 
 use serde::{Deserialize, Serialize};
@@ -192,11 +192,10 @@ pub struct ProtectedFolder {
     pub wrapped_secret: Option<Base64Url>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub epoch: Option<i32>,
-    /// Security keys: the age recipient uploads encrypt to. Clients check it against the one
-    /// their key derives before they encrypt anything to it, so a server cannot swap in its
-    /// own.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recipient: Option<String>,
+    /// The age recipient content is encrypted to. For a security key, clients check it against
+    /// the one their key derives before they encrypt anything to it, so a server cannot swap
+    /// in its own.
+    pub recipient: String,
     pub format: i32,
     pub state: ProtectionState,
     #[serde(with = "time::serde::rfc3339")]
@@ -204,9 +203,10 @@ pub struct ProtectedFolder {
 }
 
 /// `POST /protected`: protects one of the caller's folders. A security key needs
-/// `wrapped_secret`, `recipient` and the vault's `epoch`. An empty folder is protected at once;
-/// one with content stays `protecting` until the client has replaced it and calls
-/// `POST /protected/{id}/finish`.
+/// `wrapped_secret`, `recipient` and the vault's `epoch`; a password needs `password`. An empty
+/// folder is protected at once. One with content stays `protecting` until it is replaced with
+/// its encrypted form: by the client, which then calls `POST /protected/{id}/finish` (security
+/// key), or by the server (password).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProtectFolder {
     pub node_id: NodeId,
@@ -217,6 +217,29 @@ pub struct ProtectFolder {
     pub recipient: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub epoch: Option<i32>,
+    /// The folder's password, for a password lock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+}
+
+/// `POST /protected/{id}/unlock`: the password of a password folder.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct UnlockFolder {
+    pub password: String,
+}
+
+impl std::fmt::Debug for UnlockFolder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("UnlockFolder { .. }")
+    }
+}
+
+/// The answer to `POST /protected/{id}/unlock`: the session can use the folder until
+/// `expires_at`, which moves on while it does.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderUnlocked {
+    #[serde(with = "time::serde::rfc3339")]
+    pub expires_at: OffsetDateTime,
 }
 
 /// Whether `recipient` looks like an age X25519 recipient: `age1` and 58 bech32 characters.
