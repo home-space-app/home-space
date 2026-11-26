@@ -1,36 +1,49 @@
-# Protected folders: end-to-end encryption with a security key
+# Protected folders: end-to-end encryption with a security key or a password
 
 ## Problem
 
 Everything a user stores is readable by whoever runs, backs up or breaks into the server: file
 content on disk (or in object storage, see `object-storage.md`), names in `nodes`, and extracted
 text in `search_entries`. Some folders (identity documents, tax papers, medical records, keys)
-should be readable only on the user's own devices, and only while the user has their hardware key
-with them.
+should be readable only on the user's own devices.
 
-The user picks a folder and clicks **Protect**. From then on:
+The user picks a folder and clicks **Protect**, choosing one of two locks:
 
-- The server never sees the content or the names of anything inside it. Encryption and decryption
-  happen in the client; the server stores ciphertext.
-- The folder can be browsed, and its files opened or downloaded, only from a client with one of
-  the user's security keys (a YubiKey) inserted and unlocked with its PIN.
-- Losing a key does not mean losing the data: a **backup key is required**.
+- **Security key** (recommended): one of the security keys (a YubiKey or any FIDO2 key) the user
+  already enrolled for signing in (`local-accounts.md`). Someone with the server and all its data
+  still cannot decrypt the folder: the secret is on the key, behind its PIN.
+- **Password** (less secure): a password chosen for the folder. It works without a key, but
+  someone with the server's data can try to guess it offline.
+
+From then on:
+
+- The server never sees the content or the names of anything inside the folder, current or past.
+  Encryption and decryption happen in the client; the server stores ciphertext. Protecting an
+  existing folder encrypts its files **and all their old versions** in place.
+- The folder has two new operations, **Unlock** and **Lock**. Unlock shows the names. For a
+  security-key folder **no decryption key stays in the client's memory**: opening, downloading or
+  uploading a file needs another touch of the key. Folders lock themselves after inactivity and
+  when the app closes.
+- Nothing is forced: one security key is enough, with a plain warning that losing it loses the
+  data.
 - Protected files are **not visible in the on-demand files** (Windows Cloud Files, macOS File
   Provider, Linux FUSE, the mobile file providers) nor in folder sync.
-- Desktop first, mobile later. The user asked whether the **web client in Chrome** could work too
-  (talk to the key, decrypt in memory, hand files out through the File API). It can, with a trust
+- Desktop first, mobile later. The web client in Chrome can work too, opt-in and with a trust
   caveat; see [Web client](#web-client).
 
 ## Summary of the proposal
 
 | Question | Proposal |
 |---|---|
-| What the hardware key does | Derive a secret with the **FIDO2 `hmac-secret` extension** (WebAuthn **PRF** in browsers). One mechanism for desktop, web, Android and iOS. |
-| Why not RSA (PIV / OpenPGP) | Browsers cannot reach PIV or OpenPGP applets. PRF works in Chrome, Edge and Firefox, and through raw CTAP2 on every native platform. |
-| Key hierarchy | Security key → **vault key** (one per user) → **folder key** (one per protected folder) → per-file keys and the name key. |
-| Backup | At least **two security keys** are required before the first folder can be protected; a printed **recovery key** is offered too. Each one wraps the same vault key. |
+| Locks | Per folder: **security key** or **password**. The security-key choice is disabled until the account has an eligible key. |
+| Which security keys | The account's existing WebAuthn credentials (`user_webauthn`) that live on a hardware key and support **PRF / `hmac-secret`**. Synced passkeys (iCloud Keychain, Google Password Manager) are not offered: native apps cannot reach them. |
+| What the key does | Derives a secret with the **FIDO2 `hmac-secret` extension** (WebAuthn **PRF** in browsers). One mechanism for desktop, web, Android and iOS. |
+| Key hierarchy | Security key → **vault key** (one per user) → **folder secret** (one per folder) → name key and age identity → file keys. Password → Argon2id → folder secret, with no vault in between. |
+| Backup | Not required. One key gets a warning; a second key and a printed **recovery key** are offered. |
+| What stays in memory | Security-key folders: the decrypted names and the key's PIN token, never a decryption key. Password folders: the derived key, until Lock. |
 | Content format | [age](https://age-encryption.org/v1) v1 (ChaCha20-Poly1305 STREAM, 64 KiB chunks, random file key per file and per version), via the `age` crate. |
 | Names | Deterministic AES-SIV with the parent folder id as associated data, so the server can still enforce unique names per folder without reading them. |
+| Protecting an existing folder | In place: every version of every file is downloaded, encrypted and swapped on the server; node ids, version numbers and dates stay. |
 | Where the server is involved | Stores ciphertext and wrapped keys, marks protected subtrees, refuses plaintext into them, and leaves them out of search, sharing, previews, on-demand files and sync. |
 | Clients | Desktop (iced) first, then web (Leptos/WASM, opt-in), then Android and iOS. All share one Rust crate, `clients/vault-core`. |
 
@@ -38,112 +51,176 @@ The user picks a folder and clicks **Protect**. From then on:
 
 Protects against:
 
-- Someone who reads the server's disk, database, object storage bucket or backups.
-- A server operator, or an attacker with the server, who reads data passively.
-- Someone who steals a laptop with the desktop app signed in: without the security key and its
-  PIN the protected folders cannot be opened.
+- Someone who reads the server's disk, database, object storage bucket or backups, and a server
+  operator or attacker with the server who reads data passively:
+  - **Security-key folders:** fully. What the server holds (credential ids, salts, wrapped keys,
+    ciphertext) is useless without the physical key and its PIN.
+  - **Password folders:** only as far as the password resists guessing. The wrapped folder secret
+    is on the server, so an attacker can try passwords offline as fast as their hardware runs
+    Argon2id. A minimum length and a strength meter help; a security key is still the real
+    protection, and the UI says so.
+- Someone who steals a laptop with the desktop app signed in: a security-key folder cannot be
+  opened without the key and its PIN; a password folder not without its password.
 - Someone who steals the security key: without its PIN the key does not answer (FIDO2 user
   verification is required, and the key locks itself after 8 wrong PINs).
+- Malware that reads the app's memory **while a security-key folder is unlocked but no file is
+  being opened**: it finds names, not keys (see [Unlock and lock](#unlock-and-lock)).
 
 Does **not** protect against:
 
-- An attacker controlling a client while it is unlocked (malware on the desktop, a malicious
-  browser extension). They can read what the user can read.
+- An attacker controlling a client while the user works in it (malware on the desktop, a
+  malicious browser extension). They can see what the user opens, can wait for the next touch,
+  and can read a password folder's key while it is unlocked.
 - A server that serves a **modified web client**. This only affects the web client; see
   [Web client](#web-client).
-- Metadata. The server still sees: which folder is protected, how many files and folders it has
-  and how they nest, file sizes (rounded only by the 64 KiB chunks plus a small header), when
-  files are created and changed, which device changed them, and which files have equal names
-  only in the narrow sense below. It does not see names, MIME types or content.
+- Metadata. The server still sees: which folder is protected and with which lock, how many files
+  and folders it has and how they nest, file sizes (rounded only by the 64 KiB chunks plus a
+  small header), how many versions each file has, when files are created and changed, which
+  device changed them, and which files have equal names only in the narrow sense below. It does
+  not see names, MIME types or content.
 - Deletion. The server can still delete or roll back ciphertext. Tampering is detected (AEAD), but
   the server can withhold a file or serve an older version of it. Rollback detection is listed
   under [Later](#later).
+- Plaintext from before protection that the server cannot erase: backups, snapshots, object
+  storage versioning and freed disk blocks (see
+  [Protecting an existing folder](#protecting-an-existing-folder)).
 
-## The hardware key: PRF instead of RSA
+## Security keys: reusing the sign-in credentials
 
-The original ask said "RSA". There are three ways a YubiKey can protect a key:
+Passkeys and security keys for signing in already exist (`local-accounts.md`,
+`server/migrations/0031_webauthn.sql`): one `user_webauthn` table, registered in the web
+client, used by the native apps through browser sign-in. Protected folders reuse those
+credentials instead of enrolling separate ones (decided 2026-11-26).
+
+### Why PRF and not RSA
+
+There are three ways a YubiKey can protect a key:
 
 | | FIDO2 `hmac-secret` / WebAuthn PRF | PIV (RSA / ECC, slot 9d) | OpenPGP card |
 |---|---|---|---|
 | Browser (Chrome, Edge, Firefox) | **Yes**, WebAuthn PRF | No | No |
 | Desktop (Linux, macOS, Windows) | Yes: CTAP2 over HID; on Windows through `webauthn.dll` | Yes, PC/SC | Yes, PC/SC or gpg-agent |
 | Android, iOS | Yes, Yubico's yubikit SDKs (USB-C, NFC) | Yes, yubikit | Partly |
-| YubiKey models | YubiKey 5, Security Key series (all FIDO2 keys from Yubico), and keys from other vendors | YubiKey 5 only | YubiKey 5 only |
-| Operation | Symmetric: key returns HMAC(secret on key, salt). Needs the key to **read and to write**. | Asymmetric: anyone can encrypt to the public key; decrypting needs the key. | Asymmetric |
-| Setup on the key | Nothing; a non-discoverable credential uses no slot | Generate a key in a slot, management key | Generate keys, admin PIN |
+| YubiKey models | Every FIDO2 key from Yubico and other vendors | YubiKey 5 only | YubiKey 5 only |
+| Same credential as sign-in | **Yes** | No | No |
+| Setup on the key | Nothing | Generate a key in a slot, management key | Generate keys, admin PIN |
 
-**Recommendation: PRF (`hmac-secret`) as the only mechanism.** It is the only one that works in a
-browser, it needs no setup on the key, it works with any FIDO2 key (not only YubiKey 5), and the
-same credential gives the same secret on every client. PIV's real advantage, writing without the
-key present, is recovered by giving every folder its own X25519 key pair (see below), so new files
-could later be encrypted to a folder from a client that is not unlocked.
+PRF is the only mechanism that works in a browser, needs no setup, works with any FIDO2 key, and
+lets the sign-in credential also guard the folders. It is symmetric (the key is needed to read
+**and to write** names), which fits the "touch for every action" model below; writing content
+needs no key anyway, because every folder has a public age recipient.
 
-How a PRF secret is produced:
+### Which credentials can lock folders
 
-1. On enrolment the client creates a WebAuthn credential (`residentKey: discouraged`, so the key
-   stores nothing; `userVerification: required`). The server stores the credential id, the RP id
-   and a random 32-byte salt.
-2. To unlock, the client runs an assertion with that credential id and salt. The user enters the
-   PIN and touches the key. The key returns a 32-byte secret.
+A `user_webauthn` row is **eligible** when:
+
+- it was created with PRF (`hmac-secret`) enabled: a new column `user_webauthn.prf`, set at
+  registration from `getClientExtensionResults().prf.enabled`;
+- it lives on a hardware key: `backup_eligible` is false in the stored `Credential` (synced
+  passkeys are backup-eligible). Either `kind` is fine: a YubiKey registered as a passkey (with a
+  PIN) works as well as one registered as a second factor;
+- the key has a PIN (or fingerprint): unlocking always requires user verification, because
+  `hmac-secret` returns a different secret with and without it. A second-factor key without a
+  PIN can sign in but cannot lock folders; the settings say "Set a PIN on this key to use it for
+  protected folders".
+
+Registration changes in the web client: `webauthn-rs-proto` 0.6.2 has no `prf` field, so
+`clients/web/src/webauthn.rs` adds `extensions.prf = {}` to the creation options through
+`Reflect` and reads the result back the same way, sending `prf: bool` with `/me/webauthn/finish`.
+Sign-in ceremonies never request PRF, so a PRF value never reaches the server. **Spike:** that
+webauthn-rs accepts the `hmac-secret` flag in the authenticator data; the fallback is setting
+`hmacCreateSecret: true` on the server's options, which the proto type has.
+
+Keys registered before this change were created without `hmac-secret` and usually cannot give a
+secret. "Use for protected folders" tries one PRF assertion; when no secret comes back, the
+settings ask to register the key again (remove and add, a minute's work).
+
+### Enabling a key on the desktop
+
+Registration stays in the web client, like sign-in. The desktop settings get "Security keys for
+protected folders": it lists the account's credentials (`GET /me/webauthn`) with, for each one,
+"Enabled", "Enable", or why it cannot be used (synced passkey, no PRF, no PIN). **Enable** runs a
+native PRF assertion with that credential and wraps the vault key for it. With no eligible key,
+the list shows "Add a security key" and opens the web security page in the browser.
+
+### How a PRF secret is produced
+
+1. Enabling a credential stores a random 32-byte salt with it on the server (the unlocker row).
+2. To unlock, the client runs an assertion with that credential id, its stored RP id and the salt,
+   using a challenge it generates itself: the server takes no part and never sees the answer. The
+   user enters the PIN and touches the key. The key returns a 32-byte secret.
 3. The client derives a wrapping key from it: `kek = HKDF-SHA256(secret, info="home-space vault kek v1")`.
 
 Rules that every client has to get exactly right, or one client cannot open what another wrote:
 
-- **Same RP id everywhere.** A credential is bound to its RP id. The RP id is the host of the
-  server's public URL (the `public_url` the server already has for OIDC), fixed when the vault is
-  created and stored with each credential. Native clients pass it as a plain string over CTAP2;
-  browsers can only use it when the web client is served from that host over HTTPS. Opening the
-  web client by IP address or another host name cannot unlock (WebAuthn does not allow IP RP ids).
+- **The credential's own RP id.** A credential is bound to the RP id it was registered under
+  (the host of the page, stored in `user_webauthn.rp_id`). Native clients pass that stored value
+  as a plain string over CTAP2, so they work whatever address the app is configured with. The web
+  client can use a credential only on the page of that host.
 - **The PRF salt transform.** Browsers do not hand the PRF input to the key as is: they send
   `SHA-256("WebAuthn PRF" || 0x00 || input)`. Native clients that speak `hmac-secret` directly
-  must apply the same transform, so the PRF value matches the browser's.
-- **Always user verification.** `hmac-secret` returns a different secret with and without UV. Every
-  client always requires UV (PIN, or fingerprint on YubiKey Bio).
+  must apply the same transform, so the value matches the browser's.
+- **Always user verification**, as above.
 
 ## Key hierarchy
 
 ```
-security key A ─┐
-security key B ─┼─ each wraps ──▶ vault key (32 bytes, one per user, random)
-recovery key  ─┘                         │
-                                          ├─ wraps ──▶ folder secret (32 bytes, one per protected folder)
-                                          │                 ├─ HKDF ─▶ name key (AES-SIV-256)
-                                          │                 └─ HKDF ─▶ X25519 identity (age); public key stored on the server
-                                          │                                  │
-                                          │                                  └─ age recipient ─▶ file key per file version
+security-key folders                                password folders
+
+security key A ─┐                                   folder password
+security key B ─┼─ each wraps ──▶ vault key              │
+recovery key  ─┘                  (one per user)          ▼ Argon2id (salt, params per folder)
+                                       │                  │
+                                       └── wraps ──▶ folder secret ◀── wraps ──┘
+                                                     (32 bytes, one per protected folder)
+                                                         ├─ HKDF ─▶ name key (AES-SIV-256)
+                                                         └─ HKDF ─▶ X25519 identity (age); public key on the server
+                                                                           │
+                                                                           └─ age recipient ─▶ file key per file version
 ```
 
-- **Vault key**: random, generated on the client when the user sets up protection. It never leaves
-  a client unwrapped. Each unlocker (security key or recovery key) stores its own copy of it,
-  wrapped with XChaCha20-Poly1305 under the unlocker's `kek`. Adding a backup key while unlocked
-  wraps the vault key once more; nothing else is re-encrypted.
-- **Folder secret**: random per protected folder, wrapped by the vault key. A separate key per
-  folder lets a folder be re-keyed or (later) shared with another user without touching the rest.
+- **Vault key**: random, generated on the client the first time a key is enabled. It never
+  leaves a client unwrapped and is never kept: it is unwrapped for one action and wiped. Each
+  unlocker (security key or recovery key) stores its own copy, wrapped with XChaCha20-Poly1305
+  under its `kek`. Enabling another key wraps the vault key once more; nothing else changes.
+- **Password folders have no vault.** Their folder secret is wrapped directly by
+  `Argon2id(password, salt)`, so a password can never open a security-key folder, and guessing
+  one folder's password gains nothing elsewhere.
+- **Folder secret**: random per protected folder. A separate secret per folder lets a folder be
+  re-keyed, change its lock or (later) be shared without touching the rest.
 - **Name key** and **X25519 identity**: derived from the folder secret with HKDF and distinct
   `info` strings. The X25519 public key (the folder's age recipient) is stored in clear on the
   server.
 - **File key**: age generates a random one for every file it encrypts, so every version of every
   file has its own. It is wrapped to the folder's recipient in the age header, inside the blob.
+- **Change lock** (password → security key or back): unlock, re-wrap the folder secret under the
+  other lock. No file is re-encrypted.
 
-### Backup key and recovery
+### Lost keys and recovery
 
-"Losing the key means losing the data" is true for a single key, so:
+Nothing is forced (decided 2026-11-26):
 
-- Setting up protection asks for **two security keys** (the second one can be inserted right
-  after the first). Protect stays disabled until two are enrolled. The UI says plainly that the
-  backup key should be stored somewhere else.
-- A **recovery key** is offered at setup and can be created later: 32 random bytes shown once as
-  a grouped Base32 string (and a QR code) for printing. It is a third unlocker, with
-  `kek = HKDF(recovery bytes)`; no PRF. It is optional: a user who wants hardware only can skip it.
-  **Open question:** make it required instead of optional.
-- **Key management** (desktop settings, "Security keys"): list unlockers with names and last use,
-  add a key, remove a key (never the last two security keys; removing needs an unlock with
-  another unlocker), replace the recovery key.
-- Removing a lost key deletes its wrapped vault key on the server, so the lost key cannot unlock
-  any more. Because the vault key itself does not change, someone who copied the wrapped vault key
-  and has the lost key and its PIN could still unlock. **Rotate vault key** (re-wrap every folder
-  secret with a new vault key, a few KB of work, not re-encrypting files) runs automatically when
-  a key is removed.
+- The Protect dialog offers **Security key (recommended)** and **Password (less secure)**.
+  - No eligible key: the security-key choice is shown but disabled, with "This folder cannot be
+    protected securely without a security key. Add one in your account's security settings." and
+    a button that opens them.
+  - Exactly one enabled key: a warning, "If you lose this key, the files in this folder are lost.
+    Add a second key or create a recovery key.", with both actions next to it. Protect still
+    works.
+- A **recovery key** can be created at any time: 32 random bytes shown once as a grouped Base32
+  string (and a QR code) for printing. It is another unlocker of the vault, with
+  `kek = HKDF(recovery bytes)`; no PRF. Being random and not on the server, it does not weaken the
+  security-key lock against the server.
+- **Password folders** have no recovery: a forgotten password means the data is lost, and the
+  dialog says so.
+- **Key management** (desktop settings, as above): enabled keys with names and last use, disable
+  a key, create or replace the recovery key.
+- **Removing a credential** on the web security page, or disabling it on the desktop, deletes its
+  wrapped vault key. When it is the **last unlocker** of a vault that still has folders, the
+  server refuses (`409 last-unlocker`) unless the request confirms deleting those folders; the
+  page names them. Otherwise the vault key **rotates** (re-wrap every folder secret with a new
+  vault key, a few KB of work, not re-encrypting files), so someone who copied the old wrapped
+  vault key and has the removed key and its PIN cannot unlock any more.
 
 ## What is encrypted where
 
@@ -162,6 +239,9 @@ implementations (`age`/`rage` in Rust, `age` in Go), and is already chunked and 
 WASM and on phones without AES instructions; AES-256-GCM brings nothing here. It also means a
 user can decrypt an exported file with the standard `age` tool once they export the folder's
 identity (an emergency "export keys" action, behind an unlock).
+
+Encrypting needs only the public recipient, so uploading content never needs the key; only its
+name does.
 
 The server sees the blob's ciphertext size and its SHA-256 (it still hashes uploads to verify
 them). Because file keys are random, equal files have different ciphertexts, so the server learns
@@ -193,6 +273,43 @@ gives the same ciphertext, so the existing uniqueness check keeps working.
 without the key. Everything inside it is sealed. **Open question:** offer to seal the root name
 too (it would show as "Protected folder" until unlocked).
 
+## Unlock and lock
+
+Decided 2026-11-26: for security-key folders the client keeps **no decryption key** between
+actions. Each action that needs one asks the security key, derives what it needs, does that one
+action and wipes every key (`zeroize`) before it returns.
+
+| Action | Security-key folder | Password folder |
+|---|---|---|
+| **Unlock** (context menu, toolbar, or the "Locked" placeholder when the folder is opened) | PIN and touch. Decrypts the **names** of the folder's subtree, then wipes the keys. | Password. Derives the key and keeps it until Lock. |
+| Browse, sort, search names | No key: the names are in memory. | Same. |
+| Open, download, export | One touch for the whole selection: unwraps the age file keys of the selected files, then wipes the folder identity. | No prompt. |
+| Upload, new folder, rename, move | One touch per action, to seal the names. Content is encrypted to the public recipient without a key. | No prompt. |
+| **Lock**, **Lock all** | Wipes the names and the PIN token. | Wipes the names and the key. |
+
+- **PIN once, touch each time** (decided 2026-11-26). Unlock asks for the PIN; the client keeps
+  the key's CTAP2 `pinUvAuthToken` until Lock, so later actions need only a touch. The token is
+  not a decryption key: it is useless without the physical key plugged in and touched, and user
+  verification stays on, so `hmac-secret` gives the same secret. A CTAP 2.1 key limits how long a
+  token may be used (about 10 minutes); after that, or after the key is unplugged, the next action
+  asks for the PIN again. On Windows, `webauthn.dll` shows its own dialog and may ask for the PIN
+  every time; the app cannot change that.
+- **Viewer:** while a file is open in a viewer, its age file key (not the folder secret) stays in
+  memory so a video can seek and a PDF can load pages; it is wiped when the viewer closes. The
+  decrypted bytes on screen are in memory too, which cannot be avoided.
+- **Password folders** keep their derived key in memory until Lock (decided 2026-11-26, for
+  convenience). That is one more way the password lock is weaker, and the Protect dialog says it.
+- **Lock** also revokes viewer buffers and deletes the folder's temporary decrypted files.
+  Encrypting uploads in progress finish first: they need only the public recipient.
+- **Auto-lock**, per folder:
+  - after 15 minutes without activity in that folder (a setting);
+  - on sleep and screen lock;
+  - when the security key that unlocked it is unplugged (security-key folders);
+  - on sign-out;
+  - when the app closes.
+  On a crash the names and the PIN token die with the process; temporary files are swept at the
+  next start.
+
 ## Server changes
 
 The server does no cryptography. It stores what clients give it and keeps protected data away
@@ -201,7 +318,10 @@ from features that would need plaintext.
 ### Schema
 
 ```sql
--- The user's vault: one per user, created by the first "Set up protection".
+-- Credentials registered with PRF / hmac-secret enabled.
+ALTER TABLE user_webauthn ADD COLUMN prf BOOLEAN NOT NULL DEFAULT false;
+
+-- The user's vault for security-key folders, created when the first key is enabled.
 CREATE TABLE vaults (
     user_id    UUID PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
     -- Bumped by "rotate vault key"; folder secrets carry the epoch they are wrapped under.
@@ -209,38 +329,43 @@ CREATE TABLE vaults (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- What can unlock the vault: security keys and the recovery key.
+-- What can unlock the vault: enabled security keys and the recovery key.
 CREATE TABLE vault_unlockers (
     id            UUID PRIMARY KEY,
     user_id       UUID NOT NULL REFERENCES vaults (user_id) ON DELETE CASCADE,
     kind          TEXT NOT NULL CHECK (kind IN ('fido2', 'recovery')),
-    label         TEXT NOT NULL CHECK (length(label) BETWEEN 1 AND 64),
-    credential_id BYTEA,         -- fido2 only
-    rp_id         TEXT,          -- fido2 only
+    -- fido2 only: the sign-in credential; its credential id and RP id come from there.
+    credential    UUID UNIQUE REFERENCES user_webauthn (id),
     prf_salt      BYTEA,         -- fido2 only, 32 bytes
     wrapped_vault_key BYTEA NOT NULL,
     epoch         INT NOT NULL,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_used_at  TIMESTAMPTZ,
-    CHECK ((kind = 'fido2') = (credential_id IS NOT NULL AND rp_id IS NOT NULL AND prf_salt IS NOT NULL))
+    CHECK ((kind = 'fido2') = (credential IS NOT NULL AND prf_salt IS NOT NULL))
 );
 
 -- One row per protected folder (the folder the user clicked Protect on).
 CREATE TABLE protected_folders (
     node_id        UUID PRIMARY KEY REFERENCES nodes (id) ON DELETE CASCADE,
     owner_id       UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    lock           TEXT NOT NULL CHECK (lock IN ('security_key', 'password')),
     wrapped_secret BYTEA NOT NULL,
-    epoch          INT NOT NULL,
+    epoch          INT,                -- security_key only: the vault epoch
+    kdf            JSONB,              -- password only: Argon2id salt and parameters
     recipient      TEXT NOT NULL,      -- age X25519 public key, "age1..."
     format         INT NOT NULL DEFAULT 1,
-    -- 'protecting' while an existing folder is being converted, see below.
-    state          TEXT NOT NULL CHECK (state IN ('protecting', 'protected')),
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+    -- 'protecting' / 'unprotecting' while an existing folder is being converted, see below.
+    state          TEXT NOT NULL CHECK (state IN ('protecting', 'protected', 'unprotecting')),
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK ((lock = 'security_key') = (epoch IS NOT NULL AND kdf IS NULL))
 );
 
 ALTER TABLE nodes ADD COLUMN sealed BOOLEAN NOT NULL DEFAULT false;  -- inside a protected folder
 ALTER TABLE nodes ADD COLUMN sealed_name BYTEA CHECK (length(sealed_name) <= 1024);
 ```
+
+`vault_unlockers.credential` has no `ON DELETE`: deleting a `user_webauthn` row that is an
+unlocker goes through the vault service (rotate, or `409 last-unlocker`), never a cascade.
 
 `sealed` is set on every node below a protected folder (not on the folder itself). It is
 denormalized so that every query that has to skip protected data (search, shares, listings for
@@ -248,18 +373,26 @@ VFS, changes) can filter on one column instead of walking ancestors.
 
 ### API
 
-- `GET/POST/DELETE /vault`, `/vault/unlockers`, `/vault/unlockers/{id}`: read the vault (credential
-  ids, salts, wrapped keys; all useless without a security key), add and remove unlockers, rotate.
-  Removing refuses to go below two `fido2` unlockers. Changing unlockers requires a fresh sign-in
-  (like `/me/password`) so a stolen access token cannot add an attacker's unlocker.
-- `POST /protected` creates a protected folder (new, or for an existing folder; see below).
-  `GET /protected` lists them with their wrapped secrets.
+- `GET /vault`, `POST/DELETE /vault/unlockers`, `/vault/unlockers/{id}`: read the vault (salts,
+  wrapped keys, the credential each unlocker belongs to; all useless without the key), enable a
+  credential or add the recovery key, remove one, rotate. Changes need a recent sign-in
+  (`require_recent_sign_in`, like adding a WebAuthn key) so a stolen access token cannot add an
+  attacker's unlocker.
+- `DELETE /me/webauthn/{id}` learns about unlockers: it rotates the vault, or answers
+  `409 last-unlocker` with the folders that would become unreadable, unless
+  `delete_protected_folders: true` is sent.
+- `POST /me/webauthn/finish` takes `prf: bool`; `GET /me/webauthn` returns `prf` and
+  `backup_eligible`, so clients can tell which keys are eligible.
+- `POST /protected` protects an empty or existing folder; `GET /protected` lists protected folders
+  with their wrapped secrets; `PATCH /protected/{id}` changes the lock (new `wrapped_secret`,
+  `epoch` or `kdf`). Conversion endpoints are below.
 - `POST /folders`, `POST /files`, `POST /uploads`, `PATCH /nodes/{id}` and `POST /nodes/move` take
   `sealed_name` instead of `name` for nodes inside a protected folder. The server **rejects plaintext
   names and plaintext uploads** into a protected folder (`422 sealed_required`), so a client bug or
   an old client cannot leak data into it. It cannot check that content is encrypted, but it checks
   that it starts with the age header line.
-- `capabilities` gains `protected_folders: true`.
+- A new feature `protected_folders` in `shared/protocol/src/features.rs` (`ALL` and a display
+  name). Clients do not put it in `REQUIRES`: without it they hide Protect.
 
 ### Moves
 
@@ -270,18 +403,19 @@ change. Merging on conflict works as today, on sealed names.
 
 Moving **into or out of** a protected folder, or between two protected folders, is refused by the
 server (`409 protection_boundary`). The client offers it as a copy that encrypts (or decrypts),
-followed by a purge of the source, the same steps as Protect below.
+followed by deleting the source.
 
 ### Features that need plaintext
 
 | Feature | For sealed nodes |
 |---|---|
-| Search (`search_entries`, content providers) | Not indexed; existing entries deleted on protect. Client-side search inside an unlocked folder, over the decrypted names in memory, comes in phase 2. |
-| Previews, gallery, viewers | Only in the client, after decryption. |
+| Search (`search_entries`, content providers) | Not indexed; existing entries deleted on protect. Inside an unlocked folder the client searches the decrypted names in memory. |
+| Previews, gallery, viewers | Only in the client, after decryption; a gallery of many images is one touch for the visible page. |
 | Share links, shared folders, `archive` downloads | Refused (`409 protected`) for a protected folder or anything inside it. Sharing encrypted folders with other users is under [Later](#later). |
 | Send to device (transfers) | Refused in phase 1. A sealed file can later be sent as ciphertext to the user's own devices. |
 | Copy (`/shared/{id}/copy`, server-side copy) | Within one protected folder: allowed (copies ciphertext; the client sends the new sealed name). Elsewhere: refused. |
-| Dedup by hash | Not possible (random file keys); there is none today anyway. |
+| Duplicates (`files/src/duplicates.rs`) | Sealed nodes are left out; random file keys make equal files differ anyway. |
+| "Unchanged" upload check (`tree/rules.rs`) | Never matches for sealed files (every encryption differs); harmless, a re-upload is a new version. |
 | Versions | Kept. Each version is its own age file with its own file key. |
 | Recycle bin | Trashed sealed nodes keep `sealed` and their sealed name. The bin shows them as "Protected item" until the user unlocks; restore puts them back where they were (restoring to Lost & Found is refused, since that would move them out of protection). |
 | Storage quota | Counts ciphertext size, which is slightly larger. |
@@ -305,94 +439,123 @@ web and mobile apps ask for them.
 
 ## Protecting an existing folder
 
-The server never sees plaintext after protection, but before it, it did. So protecting an existing
-folder is a conversion done by the client:
+The server never sees plaintext after protection, but before it, it did. Protecting an existing
+folder is a conversion done by the client, **in place** (decided 2026-11-26): every file keeps its
+node id, every version keeps its number and dates, and only the content and names are swapped for
+ciphertext. Old versions are always converted; there is no "current version only" choice.
 
-1. The user clicks **Protect** on a folder and unlocks with a security key. If the user has no
-   vault yet, the setup (two keys, optional recovery key) runs first.
-2. The client generates a folder secret and calls `POST /protected` with `source = folder id`. The
-   server creates a **new hidden folder** next to it (`.protecting-{id}`, not shown in listings) in
-   state `protecting`, and blocks changes to the source folder (uploads, renames, moves, deletes
-   return `423 locked`) so it cannot change during the copy. It also checks the quota: the copy
-   temporarily needs the folder's size again.
-3. The client walks the source tree. For every folder it creates the sealed folder; for every file
-   it downloads the **current version**, encrypts it with age while streaming, and uploads it with
-   its sealed name (chunked uploads for large files, as today). Progress shows in the transfers
-   panel. A local journal (in the app's data dir) records what is done, so a crash or a closed
-   laptop resumes where it stopped.
-4. Old versions: the user chooses **keep versions** (each version is downloaded, encrypted and
-   uploaded as a version of the new file, in order) or **current version only** (default, faster).
-5. When every file is uploaded, the client calls `POST /protected/{id}/finish`. In one transaction
-   the server:
-   - moves the new folder into the source's place and name and marks it `protected`;
-   - **hard-deletes** the source tree: nodes, `file_versions`, `search_entries`, share items,
-     transfers that reference it, and any of its files that were already in the recycle bin
-     (found through the hash of each node the conversion copied; the client lists them for the
-     user to include or not);
-   - queues the blobs for deletion and deletes them right after commit (with object storage,
-     through `blob_journal`).
-6. The client tells the user what the server cannot erase: **server backups and snapshots, and
-   object storage versioning**, may still hold the old plaintext until they expire.
+1. The user clicks **Protect**, picks the lock and unlocks (touch, or the new password). With a
+   security key and no vault yet, enabling the key runs first.
+2. The client generates a folder secret and calls `POST /protected` with
+   `{ node_id, lock, wrapped_secret, recipient, epoch | kdf }`. The server, in one transaction:
+   - marks the folder `protecting`;
+   - blocks changes to its subtree from every client (uploads, renames, moves, deletes return
+     `423 locked`), so it cannot change during the conversion;
+   - hides the subtree from VFS listings and sync at once;
+   - deletes its search entries, share items and pending transfers.
+3. The client asks `GET /protected/{id}/pending`: every node of the subtree not sealed yet,
+   trashed ones included, with its versions (number, size, SHA-256). This list is the journal:
+   after a crash, a closed laptop or a pause, the client simply asks again.
+4. **One touch seals every name.** The client seals the names of all pending nodes at the start
+   and wipes the key; encrypting content needs only the public recipient, and downloading the
+   plaintext needs no key. A large tree is sealed in batches of names kept on the client until
+   sent, never the key.
+5. For each file, the client downloads each version (the current content and every
+   `file_versions` row), encrypts it with age while streaming, and stages it with
+   `POST /uploads` and `purpose: seal` (chunked as today; no node is created). Progress shows in
+   the transfers panel.
+6. `POST /protected/{id}/seal` with
+   `{ node_id, sealed_name, versions: [{ version, source_sha256, upload_id }] }`. In one
+   transaction the server:
+   - checks that every version of the node is listed and that `source_sha256` matches what it
+     holds (a version that changed or appeared is refused, and the client starts the node again);
+   - moves each staged blob over the node blob or version blob (`store/blobs.rs`, like `commit`
+     and `commit_version`), which removes the plaintext blob;
+   - sets `size`, `sha256` and `mime = 'application/octet-stream'` on `nodes` and
+     `file_versions`, and `sealed` and `sealed_name` on the node;
+   - keeps `version`, `modified_at` and `edited_on`: the `edited_on` trigger from
+     `0012_edited_on.sql` must not fire for a seal.
+   A folder is sealed with `sealed_name` alone. Sealed names are bound to the parent id, which
+   does not change, so the order does not matter.
+7. `POST /protected/{id}/finish` checks that nothing in the subtree is left unsealed, marks the
+   folder `protected` and lifts the lock.
+8. The client tells the user what the server cannot erase: **server backups and snapshots,
+   object storage versioning, and freed disk blocks** may still hold the old plaintext until they
+   expire or are overwritten.
 
-Cancelling deletes the hidden folder and unlocks the source. Unprotecting is the same in reverse
-(decrypt and upload into a plain folder, then purge the ciphertext), behind an unlock.
+- **Quota:** only the versions of the file being converted are staged at a time, so the
+  conversion needs at most that file's size again, not the folder's.
+- **Pause and cancel:** the conversion can be paused and resumed. Cancel turns it into an
+  unprotect of the nodes already sealed.
+- **Unprotect** is the same in reverse: state `unprotecting`, one touch to open all names,
+  every version decrypted and swapped back, then the `protected_folders` row is removed.
 
-**Open question:** step 2 locks the source folder for the whole conversion, which can take hours
-for a large folder. The alternative (allow changes, then a second pass over what changed) is more
-work and can wait.
+**Open question:** step 2 locks the subtree for the whole conversion, which can take hours for a
+large folder. The alternative (allow changes, convert them in a second pass) is more work and can
+wait.
 
-## Desktop client (phase 1)
+## Desktop client (phase 2)
 
 New crate `clients/vault-core` (no I/O to the server, no UI) used by desktop, web and mobile-core:
 
 - types for the vault, unlockers and protected folders; wrapping and unwrapping (`chacha20poly1305`,
-  `hkdf`, `sha2`), recovery key encoding;
+  `hkdf`, `sha2`), Argon2id for password folders (`argon2`), recovery key encoding;
 - `seal_name` / `open_name` (`aes-siv`, `unicode-normalization`);
 - streaming encrypt and decrypt, and range decrypt, on top of `age`;
-- an `Authenticator` trait (`create_credential`, `prf(credential, salt)`), implemented by each
-  platform; a software fake for tests;
-- all secrets in `zeroize`/`secrecy` types.
+- an `Authenticator` trait (`prf(credential, rp_id, salt)`, keeping the PIN token between calls),
+  implemented by each platform; a software fake for tests;
+- all secrets in `zeroize`/`secrecy` types, with the API shaped so a key lives only inside one
+  call (`with_folder_secret(|s| …)`), not in a struct that outlives the action.
 
 Desktop `Authenticator`:
 
 - **Linux and macOS:** CTAP2 over USB HID with `hmac-secret`. Candidates: `ctap-hid-fido2` and
   `ctap-fido2` (both MIT; the latter documents `hmac-secret` and was tested on a YubiKey 5C), or
-  `libfido2` through FFI. **Spike:** pick one, verify the PRF value matches Chrome's for the same
-  credential and salt. Linux needs the usual udev rule for FIDO devices (shipped by `libfido2` and
-  most distributions). The Flatpak build needs `--device=all` for hidraw access.
+  `libfido2` through FFI. **Spike:** pick one; verify the PRF value matches Chrome's for the same
+  credential and salt, that a credential registered in the browser works, and that the PIN token
+  can be reused for several assertions. Linux needs the usual udev rule for FIDO devices (shipped
+  by `libfido2` and most distributions). The Flatpak build needs `--device=all` for hidraw access.
 - **Windows:** apps without admin rights cannot open FIDO devices directly, so the client must go
-  through the Windows WebAuthn API (`webauthn.dll`, `windows` crate, `Win32::Networking::WindowsWebServices`),
-  which shows the system PIN and touch prompt and supports `hmac-secret` for security keys. **Spike:**
-  confirm the minimum Windows version and that the output matches the browser's PRF.
+  through the Windows WebAuthn API (`webauthn.dll`, `windows` crate,
+  `Win32::Networking::WindowsWebServices`), which shows the system PIN and touch prompt and
+  supports `hmac-secret` for security keys. **Spike:** confirm the minimum Windows version, that
+  the output matches the browser's PRF, and how often it asks for the PIN.
+- Only security keys: platform authenticators and synced passkeys are not offered, even where the
+  OS could reach them.
 
 UI:
 
-- "Protect…" in a folder's context menu; a setup wizard on first use (insert key A, PIN, touch;
-  insert key B, PIN, touch; recovery key shown with "I have printed or saved it").
-- A protected folder shows a lock icon. Opening it while locked shows "Insert your security key"
-  with an Unlock button. PIN entry is the app's own dialog on Linux and macOS, the system's on
-  Windows.
-- **Unlock scope:** one unlock opens the vault (all protected folders) for this app session.
-  Auto-lock after 15 minutes without activity in a protected folder (setting), on sleep and screen
-  lock, and on sign-out. Locking drops all keys and decrypted names from memory.
+- "Protect…" in a folder's context menu (`browser/context_menu.rs`), opening the Protect dialog
+  described under [Lost keys and recovery](#lost-keys-and-recovery).
+- A protected folder shows a lock icon, open or closed. Opening it while locked shows "Locked"
+  with an Unlock button. "Unlock" and "Lock" are in the context menu and the toolbar, and
+  "Lock all" in the app menu. PIN entry is the app's own dialog on Linux and macOS, the system's
+  on Windows. Every action that needs a touch says "Touch your security key" with the action's
+  name, so a touch is never asked without a reason the user can see.
+- Auto-lock needs two things the desktop does not have today: an inactivity timer (a new iced
+  subscription in `browser/mod.rs`) and window close handling (`window::close_requests`; today
+  `browser/input.rs` has none).
 - **Open:** viewers (images, text, PDF, video) decrypt into memory. "Open with…" an external app
   needs a file on disk: it is decrypted into a private temporary directory (`$XDG_RUNTIME_DIR` on
   Linux, which is RAM; the app's temp dir on macOS and Windows), deleted on lock and on app exit,
-  with a warning the first time. Saving back from an external app comes in phase 2 (watch the
+  with a warning the first time. Saving back from an external app comes in phase 3 (watch the
   file, re-encrypt, upload as a new version).
 - **Download** is an explicit export to a place the user picks; the app warns that the copy is
   not protected.
-- **Upload** into an unlocked protected folder encrypts on the fly (drag and drop, file picker).
+- **Upload** into an unlocked protected folder (drag and drop, file picker) asks one touch to seal
+  the names, then encrypts while uploading.
 
 ## Web client
 
-The user asked whether Chrome could reach the key, decrypt in memory and hand the files out. It
-can:
+Chrome can reach the key, decrypt in memory and hand the files out:
 
 - **Key access:** `navigator.credentials.get` with the `prf` extension and the stored credential
   id. Works with security keys in Chrome and Edge (since 116), and in recent Firefox. Safari
   supports PRF for its own passkeys; for USB and NFC security keys it had a bug returning
-  unusable output as of early 2026, so Safari is treated as unsupported until verified.
+  unusable output as of early 2026, so Safari is treated as unsupported until verified. The
+  credential works only on the host it was registered on (its RP id).
+- **Prompts:** the browser asks for the PIN on every assertion, so on the web each action is PIN
+  and touch.
 - **Decrypt:** `vault-core` compiles to WASM with the Leptos app; nothing needs WebCrypto.
 - **Hand out:** viewers get `Blob` URLs (revoked on lock). Downloads stream through the File
   System Access API (`showSaveFilePicker`, Chrome and Edge) so a large file is never fully in
@@ -409,49 +572,58 @@ Proposal: support the web client, but as an **opt-in per vault** ("Allow unlocki
 browser", off by default, explained in one sentence). The web client checks the vault setting and
 offers unlocking only when it is on. It does not stop a malicious server (which could ignore the
 flag), but it makes the trade-off a decision the user takes, and an honest server respects it.
-Phase 3, after desktop.
+Phase 4, after desktop.
 
-## Mobile (phase 4)
+## Mobile (phase 5)
 
 - **Android:** `yubikit-android` (FIDO2 over USB-C and NFC, with `hmac-secret`) through mobile-core.
   Using the raw CTAP2 session instead of Android Credential Manager avoids needing a Digital
   Asset Links file on every self-hosted server. Implemented in Kotlin, behind the same
-  `Authenticator` trait exposed through UniFFI.
+  `Authenticator` trait exposed through UniFFI. Over NFC every action is a tap of the key on the
+  phone.
 - **iOS:** Yubico's `yubikit-ios` (NFC, Lightning, USB-C). `ASAuthorization` security key APIs need
   an associated domain for the RP id, which cannot be listed at build time for self-hosted
   servers, so the raw CTAP2 path is the only one that works. **Spike** needed.
+- Password folders work on both without extra hardware.
 - Files open in the in-app viewers only; sharing a decrypted file to another app writes a
   temporary copy that is deleted when the share sheet closes.
 - The mobile file providers never show protected folders (same `sealed=include` rule).
 
 ## Phases
 
-1. **Foundation** (server + `vault-core`): schema, vault and protected folder API, sealed names,
-   refusing plaintext, hiding from search, shares, transfers, VFS and sync; `vault-core` with tests
-   against fixed vectors; Authenticator spikes for Linux and Windows.
-2. **Desktop**: setup wizard, key management, Protect (new and existing folders), browse, open,
-   upload, download, move and rename inside, auto-lock, recycle bin.
-3. **Desktop polish**: external-app save-back, client-side search in an unlocked folder, keep
-   versions on protect, unprotect.
+1. **Foundation** (server + `vault-core`): `user_webauthn.prf` and the PRF registration change in
+   the web client; schema, vault and protected folder API, `409 last-unlocker`; sealed names,
+   refusing plaintext, hiding from search, shares, transfers, VFS and sync; in-place conversion
+   endpoints; `vault-core` with tests against fixed vectors, including Argon2id; Authenticator
+   spikes for Linux, macOS and Windows.
+2. **Desktop**: enabling keys, recovery key, the Protect dialog with both locks, conversion of new
+   and existing folders with all versions, Unlock / Lock / Lock all, auto-lock, browse, open,
+   upload, download, move and rename inside, recycle bin.
+3. **Desktop polish**: external-app save-back, change lock, unprotect.
 4. **Web** (opt-in), with Chrome, Edge and Firefox in the e2e tests (a virtual authenticator with
    PRF in Chrome DevTools Protocol / Playwright).
 5. **Android**, then **iOS**.
 
 ## Testing
 
-- `vault-core`: fixed test vectors for the KEK derivation, PRF salt transform, name sealing and age
-  files; property tests that seal/open and encrypt/decrypt round-trip, including range reads.
-- A software authenticator (`soft-fido2` or our own fake) implements `hmac-secret` for tests and
-  CI, so the server e2e tests (`e2e/`) can drive the whole flow without hardware.
-- Cross-client check: a file protected by the desktop opens in Chrome with the same key, and the
-  other way round (manual, with a real YubiKey, before each phase ships).
-- Server tests: plaintext rejected inside protected folders, sealed nodes absent from search,
-  shares, VFS listings and changes without `sealed=include`, purge removes every trace of the
-  source tree (nodes, versions, search entries, bin, blobs).
+- `vault-core`: fixed test vectors for the KEK derivation, PRF salt transform, Argon2id, name
+  sealing and age files; property tests that seal/open and encrypt/decrypt round-trip, including
+  range reads; a test that no key type outlives the call that made it.
+- The software authenticator of the server tests (`server/crates/api/tests/webauthn/authenticator.rs`)
+  gains `hmac-secret` and `prf` results, and a `vault-core` fake `Authenticator` uses the same
+  keys, so the e2e tests (`e2e/`) can drive the whole flow without hardware.
+- Cross-client check: a key registered in Chrome locks a folder on the desktop, and a file
+  protected by the desktop opens in Chrome with the same key (manual, with a real YubiKey, before
+  each phase ships).
+- Server tests: plaintext rejected inside protected folders; sealed nodes absent from search,
+  shares, VFS listings and changes without `sealed=include`; the seal swap keeps node ids, version
+  numbers and dates, refuses a stale `source_sha256`, and leaves no plaintext blob or search entry
+  behind; `423` on the subtree while protecting; `409 last-unlocker` and rotation when a
+  credential is removed.
 
 ## Later
 
-- **Write without unlocking:** the folder's X25519 recipient is public, so a client could encrypt
+- **Write without a touch:** the folder's X25519 recipient is public, so a client could encrypt
   new files into a protected folder without the key (for example mobile auto-upload into a
   protected "Scans" folder). Names would be sealed to the recipient instead of with AES-SIV and
   re-sealed on the next unlock.
@@ -460,18 +632,19 @@ Phase 3, after desktop.
 - **Rollback detection:** a signed, versioned manifest per folder so a client notices when the
   server withholds or rolls back files.
 - **Seal the root name** (see open questions).
-- **Synced passkeys** (Google Password Manager, iCloud Keychain, Windows Hello) as unlockers: PRF
-  works with them too, but they are not hardware keys, and losing the account loses the
-  passkey. Not offered in phase 1.
+- **Synced passkeys** (Google Password Manager, iCloud Keychain, Windows Hello) as unlockers in
+  the web client: PRF works with them, but they are not hardware keys, native apps cannot reach
+  them, and losing the account loses the passkey.
 
 ## Open questions
 
-1. Recovery key: optional (proposed) or required?
-2. Root folder name: stays in clear (proposed), or sealed too?
-3. Unlock scope: whole vault for the session (proposed), or per folder?
-4. Auto-lock timeout default: 15 minutes (proposed)?
-5. Web client: opt-in per vault (proposed), or not at all?
-6. Protecting an existing folder: lock the source during conversion (proposed), or allow changes
+1. Root folder name: stays in clear (proposed), or sealed too?
+2. Auto-lock timeout default: 15 minutes (proposed)?
+3. Web client: opt-in per vault (proposed), or not at all?
+4. Protecting an existing folder: lock the subtree during conversion (proposed), or allow changes
    and do a second pass?
-7. Keep old versions when protecting: off by default (proposed)?
-8. Minimum hardware: any FIDO2 key with `hmac-secret` (proposed), or YubiKey only?
+5. Argon2id parameters for password folders: 64 MiB, 3 passes, 1 lane (proposed, so the web and
+   phones can run it in about a second), and a 12-character minimum?
+6. Password folders: offer a recovery key too, or keep "forgotten password, lost data"
+   (proposed)?
+7. Minimum hardware: any FIDO2 key with `hmac-secret` and a PIN (proposed), or YubiKey only?
