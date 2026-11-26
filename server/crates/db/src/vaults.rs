@@ -65,8 +65,8 @@ pub struct StoredProtection {
     /// Security keys: the folder secret wrapped with the vault key of `epoch`.
     pub wrapped_secret: Option<Vec<u8>>,
     pub epoch: Option<i32>,
-    /// Security keys: the age recipient.
-    pub recipient: Option<String>,
+    /// The age recipient content is encrypted to.
+    pub recipient: String,
     pub format: i32,
     /// `protecting`, `protected` or `unprotecting`.
     pub state: String,
@@ -80,6 +80,45 @@ pub struct KeyLock<'a> {
     pub wrapped_secret: &'a [u8],
     pub epoch: i32,
     pub recipient: &'a str,
+}
+
+/// The lock of a folder the server encrypts: the hash its password is checked against, its
+/// secret sealed with the server's key, and the recipient derived from that secret.
+#[derive(Clone, Copy, Debug)]
+pub struct PasswordLock<'a> {
+    pub password_hash: &'a str,
+    pub sealed_key: &'a [u8],
+    pub recipient: &'a str,
+}
+
+/// How a folder is protected.
+#[derive(Clone, Copy, Debug)]
+pub enum NewProtection<'a> {
+    SecurityKey(KeyLock<'a>),
+    Password(PasswordLock<'a>),
+}
+
+/// A password folder's secrets, to check a password and open its key.
+#[derive(Clone, Debug, PartialEq, Eq, FromRow)]
+pub struct PasswordSecrets {
+    pub password_hash: String,
+    pub sealed_key: Vec<u8>,
+}
+
+/// The password folder that holds a node.
+#[derive(Clone, Debug, PartialEq, Eq, FromRow)]
+pub struct EnclosingPasswordFolder {
+    pub node_id: NodeId,
+    pub recipient: String,
+    /// `protecting`, `protected` or `unprotecting`.
+    pub state: String,
+}
+
+/// A stored file to convert: its node and the ids of its older versions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FolderFile {
+    pub node_id: NodeId,
+    pub versions: Vec<Uuid>,
 }
 
 /// Why a folder cannot be protected.
@@ -319,50 +358,23 @@ impl Db {
         Ok(folder)
     }
 
-    /// Protects the user's folder `node` with a security key. An empty folder is protected at
-    /// once; one with content waits in `protecting` until the client has replaced it with its
-    /// encrypted form. The folder and everything in it stop being shared.
+    /// Protects the user's folder `node`. An empty folder is protected at once; one with
+    /// content waits in `protecting` until it is replaced with its encrypted form, by the client
+    /// (security key) or the server (password). The folder and everything in it stop being
+    /// shared and leave the search index.
     pub async fn protect_folder(
         &self,
         user: UserId,
         node: NodeId,
-        lock: KeyLock<'_>,
+        protection: NewProtection<'_>,
     ) -> Result<Result<StoredProtection, ProtectRefusal>, DbError> {
         let mut tx = self.begin().await?;
-        let found: Option<NodeId> = sqlx::query_scalar(concat!(
-            "SELECT id FROM nodes WHERE id = $1 AND owner_id = $2 AND kind = 'folder' AND ",
-            visible!("nodes"),
-            " FOR UPDATE"
-        ))
-        .bind(node)
-        .bind(user)
-        .fetch_optional(&mut *tx)
-        .await?;
-        if found.is_none() {
-            return Ok(Err(ProtectRefusal::NotFound));
+        if let Some(refusal) = protection_refusal(&mut tx, user, node).await? {
+            return Ok(Err(refusal));
         }
-        if enclosing_protection(&mut tx, user, node).await?.is_some() {
-            return Ok(Err(ProtectRefusal::Overlaps));
-        }
-        let special: bool = sqlx::query_scalar(
-            "WITH RECURSIVE subtree AS ( \
-                 SELECT id FROM nodes WHERE id = $1 \
-                 UNION ALL \
-                 SELECT n.id FROM nodes n JOIN subtree s ON n.parent_id = s.id \
-             ) SELECT EXISTS (SELECT 1 FROM user_folders uf, subtree s \
-                 WHERE uf.user_id = $2 AND (uf.trash_id = s.id OR uf.lost_and_found_id = s.id))",
-        )
-        .bind(node)
-        .bind(user)
-        .fetch_one(&mut *tx)
-        .await?;
-        if special {
-            return Ok(Err(ProtectRefusal::SpecialFolder));
-        }
-        if overlaps_protection(&mut tx, node).await? {
-            return Ok(Err(ProtectRefusal::Overlaps));
-        }
-        if lock_vault(&mut tx, user).await? != Some(lock.epoch) {
+        if let NewProtection::SecurityKey(lock) = protection
+            && lock_vault(&mut tx, user).await? != Some(lock.epoch)
+        {
             return Ok(Err(ProtectRefusal::VaultChanged));
         }
         let empty: bool =
@@ -371,20 +383,46 @@ impl Db {
                 .fetch_one(&mut *tx)
                 .await?;
         unshare_subtree(&mut tx, user, node).await?;
-        let stored = sqlx::query_as::<_, StoredProtection>(
-            "INSERT INTO protected_folders \
-             (node_id, owner_id, lock, wrapped_secret, epoch, recipient, state) \
-             VALUES ($1, $2, 'security_key', $3, $4, $5, $6) \
-             RETURNING node_id, lock, wrapped_secret, epoch, recipient, format, state, created_at",
+        sqlx::query(
+            "WITH RECURSIVE subtree AS ( \
+                 SELECT id FROM nodes WHERE id = $1 \
+                 UNION ALL \
+                 SELECT n.id FROM nodes n JOIN subtree s ON n.parent_id = s.id \
+             ) DELETE FROM search_entries WHERE node_id IN (SELECT id FROM subtree)",
         )
         .bind(node)
-        .bind(user)
-        .bind(lock.wrapped_secret)
-        .bind(lock.epoch)
-        .bind(lock.recipient)
-        .bind(if empty { "protected" } else { "protecting" })
-        .fetch_one(&mut *tx)
+        .execute(&mut *tx)
         .await?;
+        let state = if empty { "protected" } else { "protecting" };
+        let insert = match protection {
+            NewProtection::SecurityKey(lock) => sqlx::query_as::<_, StoredProtection>(
+                "INSERT INTO protected_folders \
+                 (node_id, owner_id, lock, wrapped_secret, epoch, recipient, state) \
+                 VALUES ($1, $2, 'security_key', $3, $4, $5, $6) \
+                 RETURNING node_id, lock, wrapped_secret, epoch, recipient, format, state, \
+                 created_at",
+            )
+            .bind(node)
+            .bind(user)
+            .bind(lock.wrapped_secret)
+            .bind(lock.epoch)
+            .bind(lock.recipient)
+            .bind(state),
+            NewProtection::Password(lock) => sqlx::query_as::<_, StoredProtection>(
+                "INSERT INTO protected_folders \
+                 (node_id, owner_id, lock, password_hash, sealed_key, recipient, state) \
+                 VALUES ($1, $2, 'password', $3, $4, $5, $6) \
+                 RETURNING node_id, lock, wrapped_secret, epoch, recipient, format, state, \
+                 created_at",
+            )
+            .bind(node)
+            .bind(user)
+            .bind(lock.password_hash)
+            .bind(lock.sealed_key)
+            .bind(lock.recipient)
+            .bind(state),
+        };
+        let stored = insert.fetch_one(&mut *tx).await?;
         tx.commit().await?;
         Ok(Ok(stored))
     }
@@ -447,6 +485,153 @@ impl Db {
             None => Err(DbError::NotFound),
         }
     }
+
+    /// The password hash and sealed key of the user's password folder `node`.
+    pub async fn password_secrets(
+        &self,
+        user: UserId,
+        node: NodeId,
+    ) -> Result<Option<PasswordSecrets>, DbError> {
+        let secrets = sqlx::query_as::<_, PasswordSecrets>(
+            "SELECT password_hash, sealed_key FROM protected_folders \
+             WHERE owner_id = $1 AND node_id = $2 AND lock = 'password'",
+        )
+        .bind(user)
+        .bind(node)
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(secrets)
+    }
+
+    /// The password folder that is `node` or holds it, if any.
+    pub async fn enclosing_password_folder(
+        &self,
+        user: UserId,
+        node: NodeId,
+    ) -> Result<Option<EnclosingPasswordFolder>, DbError> {
+        let found = sqlx::query_as::<_, EnclosingPasswordFolder>(
+            "WITH RECURSIVE up AS ( \
+                 SELECT id, parent_id FROM nodes WHERE id = $1 AND owner_id = $2 \
+                 UNION ALL \
+                 SELECT n.id, n.parent_id FROM nodes n JOIN up ON n.id = up.parent_id \
+             ) SELECT p.node_id, p.recipient, p.state FROM protected_folders p \
+             JOIN up ON p.node_id = up.id WHERE p.lock = 'password' LIMIT 1",
+        )
+        .bind(node)
+        .bind(user)
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(found)
+    }
+
+    /// Lets `session` use the password folder `node` until `expires_at`.
+    pub async fn unlock_folder(
+        &self,
+        session: Uuid,
+        node: NodeId,
+        expires_at: OffsetDateTime,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO protected_unlocks (session_id, node_id, expires_at) VALUES ($1, $2, $3) \
+             ON CONFLICT (session_id, node_id) DO UPDATE SET expires_at = EXCLUDED.expires_at",
+        )
+        .bind(session)
+        .bind(node)
+        .bind(expires_at)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
+    /// Ends `session`'s use of the password folder `node`.
+    pub async fn lock_folder(&self, session: Uuid, node: NodeId) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM protected_unlocks WHERE session_id = $1 AND node_id = $2")
+            .bind(session)
+            .bind(node)
+            .execute(self.pool())
+            .await?;
+        Ok(())
+    }
+
+    /// Whether `session` has the password folder `node` unlocked; if so, it stays unlocked
+    /// until `extend_to`, since it is being used.
+    pub async fn use_unlocked_folder(
+        &self,
+        session: Uuid,
+        node: NodeId,
+        extend_to: OffsetDateTime,
+    ) -> Result<bool, DbError> {
+        let used = sqlx::query(
+            "UPDATE protected_unlocks SET expires_at = GREATEST(expires_at, $3) \
+             WHERE session_id = $1 AND node_id = $2 AND expires_at > now()",
+        )
+        .bind(session)
+        .bind(node)
+        .bind(extend_to)
+        .execute(self.pool())
+        .await?;
+        Ok(used.rows_affected() == 1)
+    }
+
+    /// Forgets unlocks that have expired; returns how many.
+    pub async fn expire_folder_unlocks(&self) -> Result<u64, DbError> {
+        let expired = sqlx::query("DELETE FROM protected_unlocks WHERE expires_at <= now()")
+            .execute(self.pool())
+            .await?;
+        Ok(expired.rows_affected())
+    }
+
+    /// The password folders of `tenant`'s users whose content the server is still encrypting
+    /// or decrypting, with their state.
+    pub async fn converting_password_folders(
+        &self,
+        tenant: crate::TenantId,
+    ) -> Result<Vec<(UserId, NodeId, String)>, DbError> {
+        let folders = sqlx::query_as(
+            "SELECT p.owner_id, p.node_id, p.state FROM protected_folders p \
+             JOIN users u ON u.id = p.owner_id \
+             WHERE u.tenant_id = $1 AND p.lock = 'password' AND p.state <> 'protected' \
+             ORDER BY p.created_at",
+        )
+        .bind(tenant)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(folders)
+    }
+
+    /// The files inside the user's folder `node`, with the ids of their older versions.
+    pub async fn folder_files(
+        &self,
+        user: UserId,
+        node: NodeId,
+    ) -> Result<Vec<FolderFile>, DbError> {
+        let rows: Vec<(NodeId, Option<Uuid>)> = sqlx::query_as(
+            "WITH RECURSIVE subtree AS ( \
+                 SELECT id, kind FROM nodes WHERE id = $1 AND owner_id = $2 \
+                 UNION ALL \
+                 SELECT n.id, n.kind FROM nodes n JOIN subtree s ON n.parent_id = s.id \
+             ) SELECT s.id, v.id FROM subtree s \
+             LEFT JOIN file_versions v ON v.node_id = s.id \
+             WHERE s.kind = 'file' ORDER BY s.id, v.version",
+        )
+        .bind(node)
+        .bind(user)
+        .fetch_all(self.pool())
+        .await?;
+        let mut files: Vec<FolderFile> = Vec::new();
+        for (id, version) in rows {
+            if files.last().is_none_or(|file| file.node_id != id) {
+                files.push(FolderFile {
+                    node_id: id,
+                    versions: Vec::new(),
+                });
+            }
+            if let (Some(file), Some(version)) = (files.last_mut(), version) {
+                file.versions.push(version);
+            }
+        }
+        Ok(files)
+    }
 }
 
 /// Takes the user's vault row for the transaction; its epoch, or `None` without a vault.
@@ -481,6 +666,49 @@ pub(crate) async fn drop_vault_if_unused(
         (0, _) => Err(DbError::Conflict),
         _ => Ok(()),
     }
+}
+
+/// Why `node` cannot be protected, if it cannot: not a live folder of the user, a special
+/// folder or one holding one, or protection overlapping. Locks the folder's row.
+async fn protection_refusal(
+    tx: &mut PgConnection,
+    user: UserId,
+    node: NodeId,
+) -> Result<Option<ProtectRefusal>, DbError> {
+    let found: Option<NodeId> = sqlx::query_scalar(concat!(
+        "SELECT id FROM nodes WHERE id = $1 AND owner_id = $2 AND kind = 'folder' AND ",
+        visible!("nodes"),
+        " FOR UPDATE"
+    ))
+    .bind(node)
+    .bind(user)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if found.is_none() {
+        return Ok(Some(ProtectRefusal::NotFound));
+    }
+    if enclosing_protection(tx, user, node).await?.is_some() {
+        return Ok(Some(ProtectRefusal::Overlaps));
+    }
+    let special: bool = sqlx::query_scalar(
+        "WITH RECURSIVE subtree AS ( \
+                 SELECT id FROM nodes WHERE id = $1 \
+                 UNION ALL \
+                 SELECT n.id FROM nodes n JOIN subtree s ON n.parent_id = s.id \
+             ) SELECT EXISTS (SELECT 1 FROM user_folders uf, subtree s \
+                 WHERE uf.user_id = $2 AND (uf.trash_id = s.id OR uf.lost_and_found_id = s.id))",
+    )
+    .bind(node)
+    .bind(user)
+    .fetch_one(&mut *tx)
+    .await?;
+    if special {
+        return Ok(Some(ProtectRefusal::SpecialFolder));
+    }
+    if overlaps_protection(tx, node).await? {
+        return Ok(Some(ProtectRefusal::Overlaps));
+    }
+    Ok(None)
 }
 
 /// The protected folder that is `node` or holds it, with its state.

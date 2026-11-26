@@ -86,6 +86,8 @@ pub enum ProblemType {
     /// The item is a protected folder or inside one (or holds one), which this cannot be done
     /// with.
     Protected,
+    /// The item is in a password folder that this session has not unlocked.
+    Locked,
     /// A folder cannot be moved into itself or into one of its folders.
     MoveIntoItself,
     /// The item is a folder, and only a file can do this.
@@ -122,7 +124,7 @@ pub enum ProblemType {
 
 impl ProblemType {
     /// Every problem type, for documentation and tests.
-    pub const ALL: [Self; 50] = [
+    pub const ALL: [Self; 51] = [
         Self::BadRequest,
         Self::BodyInterrupted,
         Self::UnsupportedMediaType,
@@ -158,6 +160,7 @@ impl ProblemType {
         Self::LastUnlocker,
         Self::VaultChanged,
         Self::Protected,
+        Self::Locked,
         Self::MoveIntoItself,
         Self::NotAFile,
         Self::InvalidName,
@@ -359,6 +362,7 @@ impl ProblemType {
                 C::Conflict,
                 "Not possible with a protected folder",
             ),
+            Self::Locked => (423, "locked", C::Forbidden, "The folder is locked"),
             Self::MoveIntoItself => (
                 422,
                 "move-into-itself",

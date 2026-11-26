@@ -245,6 +245,11 @@ async fn build(
 }
 
 impl TestApp {
+    /// Where the server keeps its blobs, for checking what is stored on disk.
+    pub fn storage(&self) -> &std::path::Path {
+        self._storage.path()
+    }
+
     /// The same server serving the web client from `dir`, which gets an `index.html`.
     pub fn with_web(&self, dir: &tempfile::TempDir) -> Self {
         std::fs::write(dir.path().join("index.html"), "<html>home-space</html>").expect("index");

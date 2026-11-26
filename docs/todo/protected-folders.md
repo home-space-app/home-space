@@ -28,7 +28,7 @@ Decided 2026-11-26.
 
 | | Security key | Password |
 |---|---|---|
-| Who encrypts | The client (`clients/vault-core`) | The server |
+| Who encrypts | The client (`shared/vault-core`) | The server |
 | What the server can read | Nothing: names and content are ciphertext it stores like any other bytes | Everything, while it has the key (always) |
 | Key | Folder secret wrapped by the user's vault, which each enabled security key (and an optional recovery key) unwraps through WebAuthn PRF / `hmac-secret` | Random folder key, kept sealed with the server's secrets key; the password is checked against an Argon2id hash |
 | Protecting an existing folder | The client downloads the files, removes them from the server and the recycle bin, and uploads them encrypted. **Their version history is lost**, and the user is warned first. | The server encrypts the content and every old version in place; history is kept. |
@@ -323,31 +323,54 @@ happens: "The previous versions of the files in this folder will be deleted."
 Decided 2026-11-26: a password folder is the server's. Clients send the password and receive
 plaintext over TLS, like any other folder once it is unlocked.
 
-- **Protect:** `POST /protected` `{ node_id, lock: "password", password }` (recent sign-in). The
-  server generates a random folder key, stores it sealed with its secrets key (`secret_box`, as
-  for authenticator app secrets; without `HOMESPACE_SECRETS_KEY` password folders are not
-  offered), and stores an Argon2id hash of the password to check it against. The key is not
-  derived from the password, so changing the password re-encrypts nothing.
-- **Existing content:** the server encrypts the current content and **every old version in
-  place**, in a background job, while the folder is `protecting`; history is kept. Names are
-  encrypted too. Nothing needs the client, and the folder can be used once it is `protected`.
-- **Format:** the same as security-key folders, so one implementation serves both: names sealed
-  with AES-SIV, content as age files to an identity derived from the folder key
-  (`clients/vault-core` moves to `shared/` and the server uses it too). Range downloads decrypt
-  only the chunks they need.
-- **Unlock:** `POST /protected/{id}/unlock` `{ password }`, throttled like share passwords. It
-  grants the caller's session access to the folder until Lock (`DELETE /protected/{id}/unlock`),
-  15 minutes without use, or sign-out. While the session has it, listings show the decrypted
-  names, downloads are decrypted and uploads encrypted on the fly.
-- **Locked:** listing, downloading or writing inside the folder answers `423 locked`, so old
-  clients see nothing inside it. The folder itself shows with a lock.
-- **Search, previews, duplicates, shares, transfers:** the server leaves password folders out
-  (it would otherwise index or serve plaintext): their names and content are not indexed, and
-  shares and transfers of anything inside are refused (`409 protected`).
-- **Forgotten password:** the server has the key, so the account owner can set a new folder
+Done (stage A, content):
+
+- **Protect:** `POST /protected` `{ node_id, lock: "password", password }` (recent sign-in; the
+  password follows the account password rules). The server generates a random folder secret,
+  stores it sealed with its secrets key (`secret_box`, as for authenticator app secrets; without
+  `HOMESPACE_SECRETS_KEY` password folders are refused), the folder's age recipient derived from
+  it, and an Argon2id hash of the password to check it against. The key is not derived from the
+  password, so changing the password will re-encrypt nothing.
+- **Format:** the same as security-key folders: content is age files to the recipient
+  (`shared/vault-core`, which the server uses with its `server` feature). The listed size and
+  SHA-256 stay those of the plain content, since that is what clients receive.
+- **Writes:** whatever is stored inside a password folder (uploads, new versions, copies) is
+  encrypted to the recipient before it lands in place. That needs no key, so it works while the
+  folder is locked.
+- **Existing content:** with content, the folder is `protecting` and the server encrypts the
+  current content and **every old version in place**, so history is kept. It runs right after
+  protecting and then every minute until done (resuming after a restart), and marks the folder
+  `protected`. A blob the folder's identity already opens is skipped, so a run that stopped
+  half-way just runs again. The conversion and stores into the folder take turns on one lock, so
+  neither overwrites what the other just wrote. Clients cannot `finish` or `unprotect` a password
+  folder.
+- **Unlock:** `POST /protected/{id}/unlock` `{ password }`, throttled per folder and source like
+  share passwords (`422 wrong-password` when wrong). It grants the caller's session the folder
+  (`protected_unlocks`) for 15 minutes, extended while it is used; `DELETE
+  /protected/{id}/unlock` locks it again, and expired unlocks are swept every minute. Other
+  sessions of the same user stay locked out.
+- **Reads:** downloads of a file or a version inside answer `423 locked` unless the session (or
+  the ticket's session) unlocked the folder; then they are decrypted as they stream, range
+  requests included, decrypting only the chunks they need. Blobs not converted yet are sent as
+  they are.
+- **Moves** into or out of a password folder are refused (`409 protected`): what is inside is
+  stored encrypted and what is outside is not. The client copies instead.
+- Protecting removes the folder's search entries; new content is indexed from ciphertext, which
+  yields no text.
+
+To do:
+
+- **Stage B, names and listing:** encrypt names at rest (AES-SIV with the folder secret, up to
+  the full 255 characters, which needs the `nodes.name` length check raised for them), decrypt
+  them for unlocked sessions, and answer `423 locked` for listing and writing inside a locked
+  folder, including the changes feed and websocket events.
+- **Stage C, the rest:** leave password folders out of search, previews, duplicates, shares,
+  transfers and archive downloads; changing the folder password; unprotecting (decrypting in
+  place); the recycle bin (a file deleted from a password folder stays encrypted in the bin, so
+  restoring it into Lost & Found must be refused or decrypt it).
+- **Forgotten password:** the server has the key, so the account owner could set a new folder
   password after confirming it is them (recent sign-in). **Open question:** allow that, or keep
   "forgotten password, lost data"?
-- **Unprotect:** the server decrypts in place, as it encrypted.
 
 ## Unlock and lock
 
@@ -438,13 +461,14 @@ Done (feature `protected_folders`):
 - `GET /me/webauthn` returns `prf` and `synced` for each key (feature `security_key_prf`).
 - Clients do not put `protected_folders` in `REQUIRES`: without it they hide Protect.
 
-To do, for password folders: `lock: "password"` in `POST /protected` (refused with `422` until
-then), the encryption job, unlock and lock, `423 locked`, decrypting listings and downloads,
-encrypting uploads, and leaving them out of search, shares and transfers.
+Done for password folders: `lock: "password"` in `POST /protected`, `POST` and `DELETE
+/protected/{id}/unlock`, `423 locked` on downloads, and `409 protected` on moves across the
+folder's edge (see [Password folders](#password-folders-server-side-encryption)).
 
 ## Desktop client (phase 2)
 
-`clients/vault-core` (done: no I/O to the server, no UI) is used by desktop, web and mobile-core:
+`shared/vault-core` (done: no I/O, no UI) is used by desktop, web and mobile-core, and by the
+server for password folders:
 
 - wrapping and unwrapping the vault key and folder secrets (`chacha20poly1305`, `hkdf`, `sha2`),
   recovery key encoding;
@@ -546,7 +570,9 @@ the web client like anywhere else, since the server decrypts them anyway. Phase 
 2. **Desktop, security keys**: enabling keys, recovery key, the Protect dialog, protecting new and
    existing folders, Unlock / Lock / Lock all, auto-lock, browse, open, upload, download, move and
    rename inside, recycle bin, hiding from on-demand files and sync.
-3. **Password folders**: the server's encryption, unlock and `423 locked`, in every client.
+3. **Password folders**: the server's encryption of content, unlock and lock (stage A, done);
+   names and locked listings (stage B); search, shares, transfers, password change, unprotect
+   (stage C); then the clients.
 4. **Desktop polish**: external-app save-back, unprotect.
 5. **Web** (opt-in), with Chrome, Edge and Firefox in the e2e tests (a virtual authenticator with
    PRF in Chrome DevTools Protocol / Playwright).

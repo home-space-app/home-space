@@ -1,7 +1,7 @@
 use sqlx::PgPool;
 
 use super::*;
-use crate::{FOLDER_MIME, NewCredential, NewNode, NodeKind, TenantId};
+use crate::{FOLDER_MIME, NewContent, NewCredential, NewNode, NodeKind, TenantId};
 
 const RECIPIENT: &str = "age1fauk43xvke3myu0vg0syaflnwhlslwxd2504jfdjwejkjc50pcysgcf5gf";
 const WRAPPED: [u8; 73] = [7; 73];
@@ -64,25 +64,28 @@ async fn folder(db: &Db, owner: UserId, parent: Option<NodeId>, name: &str) -> N
     db.create_node(owner, new).await.expect("folder").id
 }
 
-fn with_key(epoch: i32) -> KeyLock<'static> {
-    KeyLock {
+fn with_key(epoch: i32) -> NewProtection<'static> {
+    NewProtection::SecurityKey(KeyLock {
         wrapped_secret: &WRAPPED,
         epoch,
         recipient: RECIPIENT,
-    }
+    })
 }
 
-/// A folder locked with a password, as the server will store one.
+fn with_password() -> NewProtection<'static> {
+    NewProtection::Password(PasswordLock {
+        password_hash: "$argon2id$...",
+        sealed_key: &[1, 2, 3],
+        recipient: RECIPIENT,
+    })
+}
+
+/// A folder locked with a password.
 async fn password_folder(db: &Db, owner: UserId, node: NodeId) {
-    sqlx::query(
-        "INSERT INTO protected_folders (node_id, owner_id, lock, password_hash, sealed_key, state) \
-         VALUES ($1, $2, 'password', '$argon2id$...', '\\x00', 'protected')",
-    )
-    .bind(node)
-    .bind(owner)
-    .execute(db.pool())
-    .await
-    .expect("password folder");
+    db.protect_folder(owner, node, with_password())
+        .await
+        .expect("db")
+        .expect("password folder");
 }
 
 /// Gives `user` a vault at epoch 1.
@@ -370,4 +373,110 @@ async fn a_conversion_finishes_or_is_cancelled_but_a_protected_folder_stays(pool
         db.remove_protection(alice, papers, &["unprotecting"]).await,
         Err(DbError::NotFound)
     ));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_password_folder_is_found_from_inside_and_lists_its_files(pool: PgPool) {
+    let db = Db::from_pool(pool);
+    let alice = user(&db, "alice").await;
+    let notes = folder(&db, alice, None, "Notes").await;
+    let inner = folder(&db, alice, Some(notes), "2026").await;
+    let content = |byte: u8| NewContent {
+        size: 1,
+        sha256: vec![byte],
+        mime: "text/plain".to_owned(),
+        modified_at: None,
+    };
+    let mut tx = db.transaction(alice).await.expect("tx");
+    let file = tx
+        .insert_file(Some(inner), "a.txt", &content(1))
+        .await
+        .expect("file");
+    tx.commit().await.expect("commit");
+    assert!(
+        db.enclosing_password_folder(alice, file.id)
+            .await
+            .expect("db")
+            .is_none()
+    );
+
+    password_folder(&db, alice, notes).await;
+    let found = db
+        .enclosing_password_folder(alice, file.id)
+        .await
+        .expect("db")
+        .expect("inside");
+    assert_eq!(found.node_id, notes);
+    assert_eq!(found.state, "protecting");
+    assert_eq!(found.recipient, RECIPIENT);
+    let files = db.folder_files(alice, notes).await.expect("files");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].node_id, file.id);
+    assert!(files[0].versions.is_empty());
+    let converting = db
+        .converting_password_folders(TenantId::DEFAULT)
+        .await
+        .expect("converting");
+    assert_eq!(converting, vec![(alice, notes, "protecting".to_owned())]);
+    let secrets = db
+        .password_secrets(alice, notes)
+        .await
+        .expect("db")
+        .expect("secrets");
+    assert_eq!(secrets.sealed_key, vec![1, 2, 3]);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn an_unlock_belongs_to_one_session_and_expires(pool: PgPool) {
+    let db = Db::from_pool(pool.clone());
+    let alice = user(&db, "alice").await;
+    let notes = folder(&db, alice, None, "Notes").await;
+    password_folder(&db, alice, notes).await;
+    let session = |id: Uuid| {
+        sqlx::query(
+            "INSERT INTO sessions (id, user_id, expires_at, auth_methods, authenticated_at) \
+             VALUES ($1, $2, now() + interval '1 day', '{pwd}', now())",
+        )
+        .bind(id)
+        .bind(alice)
+        .execute(&pool)
+    };
+    let laptop = Uuid::now_v7();
+    let phone = Uuid::now_v7();
+    session(laptop).await.expect("laptop");
+    session(phone).await.expect("phone");
+    let later = OffsetDateTime::now_utc() + time::Duration::minutes(15);
+    assert!(
+        !db.use_unlocked_folder(laptop, notes, later)
+            .await
+            .expect("db")
+    );
+    db.unlock_folder(laptop, notes, later)
+        .await
+        .expect("unlock");
+    assert!(
+        db.use_unlocked_folder(laptop, notes, later)
+            .await
+            .expect("db")
+    );
+    assert!(
+        !db.use_unlocked_folder(phone, notes, later)
+            .await
+            .expect("db")
+    );
+    db.lock_folder(laptop, notes).await.expect("lock");
+    assert!(
+        !db.use_unlocked_folder(laptop, notes, later)
+            .await
+            .expect("db")
+    );
+
+    let past = OffsetDateTime::now_utc() - time::Duration::minutes(1);
+    db.unlock_folder(phone, notes, past).await.expect("unlock");
+    assert!(
+        !db.use_unlocked_folder(phone, notes, later)
+            .await
+            .expect("db")
+    );
+    assert_eq!(db.expire_folder_unlocks().await.expect("expire"), 1);
 }

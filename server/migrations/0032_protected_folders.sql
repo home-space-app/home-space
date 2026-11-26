@@ -44,28 +44,37 @@ CREATE TABLE protected_folders (
     node_id        UUID PRIMARY KEY REFERENCES nodes (id) ON DELETE CASCADE,
     owner_id       UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
     lock           TEXT NOT NULL CHECK (lock IN ('security_key', 'password')),
-    -- security_key: the folder secret wrapped with the vault key of `epoch`, and the age
-    -- X25519 recipient ("age1...") uploads encrypt to without a key.
+    -- The age X25519 recipient ("age1..."): what content is encrypted to without a key, by the
+    -- client (security_key) or the server (password).
+    recipient      TEXT NOT NULL CHECK (recipient ~ '^age1[02-9ac-hj-np-z]{58}$'),
+    -- security_key: the folder secret wrapped with the vault key of `epoch`.
     wrapped_secret BYTEA CHECK (length(wrapped_secret) = 73),
     epoch          INTEGER,
-    recipient      TEXT CHECK (recipient ~ '^age1[02-9ac-hj-np-z]{58}$'),
     -- password: the Argon2id hash (PHC string) the password is checked against, and the
-    -- folder key sealed with the server's secrets key.
+    -- folder secret sealed with the server's secrets key.
     password_hash  TEXT,
     sealed_key     BYTEA,
     format         INTEGER NOT NULL DEFAULT 1,
     -- 'protecting' and 'unprotecting' while an existing folder's content is replaced.
     state          TEXT NOT NULL CHECK (state IN ('protecting', 'protected', 'unprotecting')),
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CHECK ((lock = 'security_key') =
-        (wrapped_secret IS NOT NULL AND epoch IS NOT NULL AND recipient IS NOT NULL)),
+    CHECK ((lock = 'security_key') = (wrapped_secret IS NOT NULL AND epoch IS NOT NULL)),
     CHECK ((lock = 'password') = (password_hash IS NOT NULL AND sealed_key IS NOT NULL)),
-    CHECK (lock = 'security_key' OR
-        (wrapped_secret IS NULL AND epoch IS NULL AND recipient IS NULL)),
+    CHECK (lock = 'security_key' OR (wrapped_secret IS NULL AND epoch IS NULL)),
     CHECK (lock = 'password' OR (password_hash IS NULL AND sealed_key IS NULL))
 );
 
 CREATE INDEX protected_folders_owner ON protected_folders (owner_id);
+
+-- The sessions that gave a password folder's password, until they lock it or stop using it.
+CREATE TABLE protected_unlocks (
+    session_id UUID NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+    node_id    UUID NOT NULL REFERENCES protected_folders (node_id) ON DELETE CASCADE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (session_id, node_id)
+);
+
+CREATE INDEX protected_unlocks_expiry ON protected_unlocks (expires_at);
 
 -- In a security-key folder, names and content are ciphertext the client made: names are the
 -- base64url text of their AES-SIV sealing, content is age files. The server stores them like

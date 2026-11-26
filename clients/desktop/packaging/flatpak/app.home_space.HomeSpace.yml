@@ -64,4 +64,5 @@ modules:
           - clients/target
           - server/target
           - shared/protocol/target
+          - shared/vault-core/target
       - cargo-sources.json

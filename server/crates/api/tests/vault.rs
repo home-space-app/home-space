@@ -322,7 +322,7 @@ async fn a_folder_needs_a_whole_lock_and_is_protected_once(pool: PgPool) {
 
     let password = protect_with(json!({ "node_id": notes, "lock": "password" })).await;
     assert_eq!(password.status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(password.json()["errors"][0]["pointer"], "/lock");
+    assert_eq!(password.json()["errors"][0]["pointer"], "/password");
     let bad_recipient = protect_with(json!({
         "node_id": notes, "lock": "security_key", "wrapped_secret": wrapped(2),
         "recipient": "age1nope", "epoch": 1,
@@ -409,4 +409,194 @@ async fn changing_what_unlocks_needs_a_recent_sign_in(pool: PgPool) {
         problem(&protect(&app, &token, &notes, 1).await),
         "reauthentication-required"
     );
+}
+
+const FOLDER_PASSWORD: &str = "correct horse battery";
+const AGE_HEADER: &[u8] = b"age-encryption.org/v1\n";
+
+async fn protect_with_password(app: &TestApp, token: &str, node: &str) -> common::Response {
+    send(
+        app,
+        Method::POST,
+        "/api/v1/protected",
+        token,
+        json!({ "node_id": node, "lock": "password", "password": FOLDER_PASSWORD }),
+    )
+    .await
+}
+
+async fn upload_into(
+    app: &TestApp,
+    token: &str,
+    folder: &str,
+    name: &str,
+    content: &'static str,
+) -> String {
+    let uploaded = app
+        .upload(token, &format!("parent_id={folder}&name={name}"), content)
+        .await;
+    assert!(uploaded.status.is_success(), "{}", uploaded.json());
+    uploaded.json()["id"].as_str().expect("id").to_owned()
+}
+
+/// Every blob stored for `user`, current content and versions.
+fn stored_blobs(app: &TestApp, user: &str) -> Vec<Vec<u8>> {
+    ["blobs", "versions"]
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(app.storage().join(dir).join(user)).ok())
+        .flatten()
+        .map(|entry| std::fs::read(entry.expect("entry").path()).expect("blob"))
+        .collect()
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_password_folder_is_encrypted_on_disk_and_opens_with_its_password(pool: PgPool) {
+    let app = setup(pool).await;
+    let token = app.user_token("alice").await;
+    let alice = app.user_id("alice").await.to_string();
+    let notes = folder(&app, &token, "Notes").await;
+    let file = upload_into(&app, &token, &notes, "plan.txt", "first draft").await;
+    upload_into(&app, &token, &notes, "plan.txt", "second draft").await;
+
+    let protecting = protect_with_password(&app, &token, &notes).await;
+    assert_eq!(
+        protecting.status,
+        StatusCode::CREATED,
+        "{}",
+        protecting.json()
+    );
+    assert_eq!(protecting.json()["state"], "protecting");
+    assert!(protecting.json().get("wrapped_secret").is_none());
+    let mut state = String::new();
+    for _ in 0..100 {
+        let listed = app.get("/api/v1/protected", &token).await.json();
+        state = listed[0]["state"].as_str().unwrap_or_default().to_owned();
+        if state == "protected" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(state, "protected");
+    // The current content and the older version are both age files now.
+    let blobs = stored_blobs(&app, &alice);
+    assert_eq!(blobs.len(), 2);
+    assert!(blobs.iter().all(|blob| blob.starts_with(AGE_HEADER)));
+    assert!(
+        !blobs
+            .iter()
+            .any(|blob| blob.windows(5).any(|w| w == b"draft"))
+    );
+
+    let content = format!("/api/v1/files/{file}/content");
+    let old = format!("/api/v1/files/{file}/versions/1/content");
+    assert_eq!(problem(&app.get(&content, &token).await), "locked");
+    let unlock_uri = format!("/api/v1/protected/{notes}/unlock");
+    let unlock = |password: &str| {
+        send(
+            &app,
+            Method::POST,
+            &unlock_uri,
+            &token,
+            json!({ "password": password }),
+        )
+    };
+    assert_eq!(problem(&unlock("not the password").await), "wrong-password");
+    let unlocked = unlock(FOLDER_PASSWORD).await;
+    assert_eq!(unlocked.status, StatusCode::OK, "{}", unlocked.json());
+
+    let current = app.get(&content, &token).await;
+    assert_eq!(current.status, StatusCode::OK);
+    assert_eq!(current.body, b"second draft");
+    assert_eq!(app.get(&old, &token).await.body, b"first draft");
+    let range = app
+        .send_with(
+            Method::GET,
+            &content,
+            Some(&token),
+            Body::empty(),
+            None,
+            &[("range", "bytes=7-11")],
+        )
+        .await;
+    assert_eq!(range.status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(range.body, b"draft");
+
+    // A new file is encrypted as it is stored, and reads back plain.
+    let new = upload_into(&app, &token, &notes, "todo.txt", "buy milk").await;
+    assert_eq!(stored_blobs(&app, &alice).len(), 3);
+    assert!(
+        stored_blobs(&app, &alice)
+            .iter()
+            .all(|blob| blob.starts_with(AGE_HEADER))
+    );
+    assert_eq!(
+        app.get(&format!("/api/v1/files/{new}/content"), &token)
+            .await
+            .body,
+        b"buy milk"
+    );
+
+    // Nothing moves in or out: what is inside is encrypted and what is outside is not.
+    let moved = send(
+        &app,
+        Method::POST,
+        "/api/v1/nodes/move",
+        &token,
+        json!({ "ids": [new], "parent_id": null }),
+    )
+    .await;
+    assert_eq!(problem(&moved), "protected");
+
+    let locked = delete(&app, &format!("/api/v1/protected/{notes}/unlock"), &token).await;
+    assert_eq!(locked.status, StatusCode::NO_CONTENT);
+    assert_eq!(problem(&app.get(&content, &token).await), "locked");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn an_unlock_is_for_one_session_only(pool: PgPool) {
+    let app = setup(pool).await;
+    let laptop = app.user_token("alice").await;
+    let phone = app
+        .sign_in_from("alice", uuid::Uuid::now_v7(), "Phone")
+        .await;
+    let notes = folder(&app, &laptop, "Notes").await;
+    let protected = protect_with_password(&app, &laptop, &notes).await;
+    assert_eq!(protected.json()["state"], "protected");
+    let file = upload_into(&app, &laptop, &notes, "a.txt", "secret").await;
+    let content = format!("/api/v1/files/{file}/content");
+    send(
+        &app,
+        Method::POST,
+        &format!("/api/v1/protected/{notes}/unlock"),
+        &laptop,
+        json!({ "password": FOLDER_PASSWORD }),
+    )
+    .await;
+    assert_eq!(app.get(&content, &laptop).await.body, b"secret");
+    assert_eq!(problem(&app.get(&content, &phone).await), "locked");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_password_folder_needs_a_good_password_and_finishes_on_the_server(pool: PgPool) {
+    let app = setup(pool).await;
+    let token = app.user_token("alice").await;
+    let notes = folder(&app, &token, "Notes").await;
+    let weak = send(
+        &app,
+        Method::POST,
+        "/api/v1/protected",
+        &token,
+        json!({ "node_id": notes, "lock": "password", "password": "short" }),
+    )
+    .await;
+    assert_eq!(weak.json()["errors"][0]["pointer"], "/password");
+    assert_eq!(
+        protect_with_password(&app, &token, &notes).await.status,
+        StatusCode::CREATED
+    );
+    let id = |action: &str| format!("/api/v1/protected/{notes}{action}");
+    let finish = send(&app, Method::POST, &id("/finish"), &token, json!({})).await;
+    assert_eq!(problem(&finish), "protected");
+    let unprotect = send(&app, Method::POST, &id("/unprotect"), &token, json!({})).await;
+    assert_eq!(problem(&unprotect), "protected");
 }

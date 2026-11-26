@@ -288,6 +288,7 @@ shape_only!(
     crate::AddUnlocker,
     crate::ProtectFolder,
     crate::RotateVault,
+    crate::UnlockFolder,
     BrowserLoginDecision,
     BrowserLoginExchangeRequest,
     BrowserLoginStartQuery,

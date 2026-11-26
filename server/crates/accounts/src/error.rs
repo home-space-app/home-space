@@ -39,6 +39,9 @@ pub enum AccountError {
     /// The vault was created or rotated meanwhile.
     #[error("The vault changed meanwhile. Read it again and try once more.")]
     VaultChanged,
+    /// The item is in a password folder the session has not unlocked.
+    #[error("The folder is locked. Unlock it with its password first.")]
+    Locked,
     /// Not possible with a protected folder; says why.
     #[error("{0}")]
     Protected(&'static str),
@@ -72,6 +75,7 @@ impl AsProblem for AccountError {
             Self::LastUnlocker => ProblemType::LastUnlocker,
             Self::VaultChanged => ProblemType::VaultChanged,
             Self::Protected(_) => ProblemType::Protected,
+            Self::Locked => ProblemType::Locked,
             Self::Auth(err) => err.problem_type(),
             Self::Files(err) => err.problem_type(),
             Self::Db(_) => ProblemType::Internal,

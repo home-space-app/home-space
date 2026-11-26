@@ -37,6 +37,9 @@ pub(crate) struct ContentStore {
     pub(crate) max_upload_bytes: u64,
     /// Where every change is published, for search and the user's devices.
     pub(crate) events: Events,
+    /// Held while a blob inside a password folder that is being encrypted is written, by the
+    /// conversion and by stores, so neither overwrites what the other just wrote.
+    pub(crate) sealing: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 impl ContentStore {
@@ -46,6 +49,7 @@ impl ContentStore {
             store,
             max_upload_bytes,
             events,
+            sealing: std::sync::Arc::default(),
         }
     }
 
@@ -134,11 +138,26 @@ impl ContentStore {
                 return Err(err);
             }
         };
-        let committed = match &outcome {
+        let node = match &outcome {
             StoreOutcome::Unchanged(_) => {
                 self.store.discard(staged).await;
                 return Ok(outcome);
             }
+            StoreOutcome::Created(node)
+            | StoreOutcome::Versioned { node, .. }
+            | StoreOutcome::Archived { node, .. } => node.id,
+        };
+        let (staged, _sealing) = match self.seal_for(owner, node, staged).await {
+            Ok(sealed) => sealed,
+            Err(err) => {
+                if let StoreOutcome::Created(node) = &outcome {
+                    self.rollback_node(owner, node.id).await;
+                }
+                return Err(err);
+            }
+        };
+        let committed = match &outcome {
+            StoreOutcome::Unchanged(_) => Ok(()),
             StoreOutcome::Created(node) => {
                 let committed = self.store.commit(&staged, owner, node.id).await;
                 if committed.is_err() {
@@ -161,6 +180,40 @@ impl ContentStore {
             return Err(err.into());
         }
         Ok(outcome)
+    }
+
+    /// The blob to store for `node`: `staged` encrypted to its folder's recipient when it is
+    /// inside a password folder, as it is otherwise. While that folder's existing content is
+    /// still being encrypted, also the guard that keeps the conversion from writing the same
+    /// blobs meanwhile; it is held until the blob is in place.
+    async fn seal_for(
+        &self,
+        owner: UserId,
+        node: NodeId,
+        staged: StagedBlob,
+    ) -> Result<(StagedBlob, Option<tokio::sync::OwnedMutexGuard<()>>), FilesError> {
+        let folder = match self.db.enclosing_password_folder(owner, node).await {
+            Ok(Some(folder)) => folder,
+            Ok(None) => return Ok((staged, None)),
+            Err(err) => {
+                self.store.discard(staged).await;
+                return Err(err.into());
+            }
+        };
+        let recipient = match vault_core::content::parse_recipient(&folder.recipient) {
+            Ok(recipient) => recipient,
+            Err(err) => {
+                self.store.discard(staged).await;
+                return Err(FilesError::Io(std::io::Error::other(err)));
+            }
+        };
+        let guard = if folder.state == "protected" {
+            None
+        } else {
+            Some(self.sealing.clone().lock_owned().await)
+        };
+        let sealed = self.store.seal_staged(staged, recipient).await?;
+        Ok((sealed, guard))
     }
 
     pub(crate) async fn apply_blob_ops(&self, owner: UserId, ops: &[BlobOp]) {
