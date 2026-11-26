@@ -47,7 +47,9 @@ async fn restore(
         .trash
         .restore(user.actor(), &request.ids, request.on_conflict)
         .await?;
-    Ok(Json(move_response(batch)))
+    // What goes back into a password folder keeps its sealed name; see the recycle bin in
+    // docs/todo/protected-folders.md.
+    Ok(Json(move_response(batch, &files::Names::Plain)))
 }
 
 async fn empty(State(state): State<AppState>, user: AuthUser) -> Result<StatusCode, ApiError> {

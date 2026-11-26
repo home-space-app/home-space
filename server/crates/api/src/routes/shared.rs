@@ -97,6 +97,10 @@ async fn copy(
     ApiPath(id): ApiPath<Uuid>,
     ApiJson(request): ApiJson<CopyShared>,
 ) -> Result<Json<Vec<Node>>, ApiError> {
+    let names = tenant
+        .vault
+        .names(user.id, user.session_id, request.parent_id)
+        .await?;
     let saved = tenant
         .shares
         .copy_received(
@@ -105,10 +109,12 @@ async fn copy(
             id,
             &request.node_ids,
             request.parent_id,
+            &names,
         )
         .await?;
     Ok(Json(saved_at_top(
         request.parent_id,
+        &names,
         saved.folders,
         saved.files,
     )))

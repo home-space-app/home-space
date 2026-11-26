@@ -12,7 +12,7 @@ use db::{
 use events::Events;
 
 use crate::{
-    BlobOp, BlobStore, BodyError, FilesError, StoreOutcome, emitted, store::StagedBlob,
+    BlobOp, BlobStore, BodyError, FilesError, Names, StoreOutcome, emitted, store::StagedBlob,
     tree::rules::numbered_folder_name,
 };
 
@@ -257,14 +257,17 @@ impl ContentStore {
         }
     }
 
+    /// Creates the folder `name` in `parent`, or `name (2)` and so on when it is taken, with
+    /// the name stored as `names` says.
     pub(crate) async fn save_folder(
         &self,
         owner: UserId,
         parent: Option<NodeId>,
         name: &str,
+        names: &Names,
     ) -> Result<Node, FilesError> {
         for n in 0..MAX_NUMBERED_NAMES {
-            let candidate = numbered_folder_name(name, n);
+            let candidate = names.store(NodeKind::Folder, &numbered_folder_name(name, n))?;
             match self.insert_folder(owner, parent, &candidate).await {
                 Err(FilesError::Conflict) => {}
                 other => return other,

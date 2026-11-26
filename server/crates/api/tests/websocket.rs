@@ -501,3 +501,64 @@ async fn a_message_larger_than_a_hello_closes_the_socket(pool: PgPool) {
     .await;
     assert!(closed.is_ok(), "the socket stayed open");
 }
+
+/// The next `node_created` event, skipping others.
+async fn next_created(socket: &mut Socket) -> Value {
+    loop {
+        let event = next_text(socket).await;
+        if event["type"] == "node_created" {
+            return event;
+        }
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn events_inside_a_password_folder_reach_only_sessions_that_unlocked_it(pool: PgPool) {
+    let app = setup(pool).await;
+    let laptop = app.user_token("alice").await;
+    let phone = app.sign_in_from("alice", Uuid::now_v7(), "Phone").await;
+    let addr = serve(&app).await;
+    let made = app
+        .json(
+            Method::POST,
+            "/api/v1/folders",
+            Some(&laptop),
+            json!({ "name": "Notes" }),
+        )
+        .await;
+    let notes = made.json()["id"].as_str().expect("id").to_owned();
+    // Setting the password unlocks the folder for the laptop's session only.
+    let protected = app
+        .json(
+            Method::POST,
+            "/api/v1/protected",
+            Some(&laptop),
+            json!({ "node_id": notes, "lock": "password", "password": "correct horse battery" }),
+        )
+        .await;
+    assert_eq!(
+        protected.status,
+        StatusCode::CREATED,
+        "{}",
+        protected.json()
+    );
+
+    let mut laptop_ws = connect(addr, &laptop).await;
+    let mut phone_ws = connect(addr, &phone).await;
+    app.upload(&laptop, &format!("parent_id={notes}&name=secret.txt"), "x")
+        .await;
+    app.upload(&laptop, "name=public.txt", "y").await;
+
+    assert_eq!(
+        next_created(&mut laptop_ws).await["node"]["name"],
+        "secret.txt"
+    );
+    assert_eq!(
+        next_created(&mut laptop_ws).await["node"]["name"],
+        "public.txt"
+    );
+    assert_eq!(
+        next_created(&mut phone_ws).await["node"]["name"],
+        "public.txt"
+    );
+}

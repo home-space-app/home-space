@@ -10,7 +10,8 @@ use db::{ChangeBatch, ChangesSince, Node, NodeId, NodeKind, NodeProperties, OnCo
 use events::DomainEvent;
 
 use crate::{
-    Actor, BodyError, FilesError, MoveBatch, MoveOutcome, NodeUpdate, StoreOptions, StoreOutcome,
+    Actor, BodyError, FilesError, MoveBatch, MoveOutcome, Names, NodeUpdate, StoreOptions,
+    StoreOutcome,
     content::{ContentStore, new_content},
     emitted, tree,
 };
@@ -52,15 +53,17 @@ impl NodeService {
         self.content.max_upload_bytes
     }
 
-    /// Creates a folder under `parent` (or at the root).
+    /// Creates a folder under `parent` (or at the root), whose names are stored as `names`
+    /// says. The node returned carries the stored name, like everything this service returns.
     pub async fn create_folder(
         &self,
         actor: Actor,
         parent: Option<NodeId>,
         name: &str,
+        names: &Names,
     ) -> Result<Node, FilesError> {
         self.acting(actor.device)
-            .create_folder_as(actor.user, parent, name)
+            .create_folder_as(actor.user, parent, &names.store(NodeKind::Folder, name)?)
             .await
     }
 
@@ -69,11 +72,13 @@ impl NodeService {
     /// A new name creates the file, identical content under an existing name changes nothing,
     /// and different content becomes a new version of the existing file. Content last changed
     /// at `modified_at`, before the existing file, is kept as one of its versions instead.
+    #[allow(clippy::too_many_arguments)]
     pub async fn upload<S>(
         &self,
         actor: Actor,
         parent: Option<NodeId>,
         name: &str,
+        names: &Names,
         content_type: Option<&str>,
         modified_at: Option<OffsetDateTime>,
         body: S,
@@ -82,16 +87,26 @@ impl NodeService {
         S: Stream<Item = Result<Bytes, BodyError>>,
     {
         self.acting(actor.device)
-            .upload_as(actor.user, parent, name, content_type, modified_at, body)
+            .upload_as(
+                actor.user,
+                parent,
+                name,
+                names,
+                content_type,
+                modified_at,
+                body,
+            )
             .await
     }
 
     /// Replaces the content of an existing file; different content becomes a new version, or
-    /// an older one when it was last changed before the current content.
+    /// an older one when it was last changed before the current content. `names` opens the
+    /// file's name, which a missing content type is guessed from.
     pub async fn replace_content<S>(
         &self,
         actor: Actor,
         id: NodeId,
+        names: &Names,
         content_type: Option<&str>,
         modified_at: Option<OffsetDateTime>,
         body: S,
@@ -100,7 +115,7 @@ impl NodeService {
         S: Stream<Item = Result<Bytes, BodyError>>,
     {
         self.acting(actor.device)
-            .replace_content_as(actor.user, id, content_type, modified_at, body)
+            .replace_content_as(actor.user, id, names, content_type, modified_at, body)
             .await
     }
 
@@ -147,13 +162,19 @@ impl NodeService {
         Ok(self.content.db.list_children(owner, parent).await?)
     }
 
-    /// Renames and/or moves a node.
+    /// Renames and/or moves a node; a new name is stored as `names` says, which must be the
+    /// names of the node's folder and of its destination alike.
     pub async fn update(
         &self,
         actor: Actor,
         id: NodeId,
-        update: NodeUpdate,
+        mut update: NodeUpdate,
+        names: &Names,
     ) -> Result<MoveOutcome, FilesError> {
+        if let Some(name) = update.name.take() {
+            let kind = self.content.db.get_node(actor.user, id).await?.kind;
+            update.name = Some(names.store(kind, &name)?);
+        }
         self.acting(actor.device)
             .update_as(actor.user, id, update)
             .await
@@ -187,11 +208,13 @@ impl NodeService {
         Ok(folder)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn upload_as<S>(
         &self,
         owner: UserId,
         parent: Option<NodeId>,
         name: &str,
+        names: &Names,
         content_type: Option<&str>,
         modified_at: Option<OffsetDateTime>,
         body: S,
@@ -208,6 +231,7 @@ impl NodeService {
             owner,
             parent,
             name,
+            names,
             new_content(&staged, content_type, name, modified_at),
             StoreOptions::default(),
         )
@@ -221,6 +245,7 @@ impl NodeService {
         &self,
         owner: UserId,
         id: NodeId,
+        names: &Names,
         content_type: Option<&str>,
         modified_at: Option<OffsetDateTime>,
         body: S,
@@ -237,7 +262,12 @@ impl NodeService {
             &self.content.db,
             owner,
             id,
-            new_content(&staged, content_type, &current.name, modified_at),
+            new_content(
+                &staged,
+                content_type,
+                &names.show(NodeKind::File, &current.name),
+                modified_at,
+            ),
         )
         .await;
         self.content

@@ -9,4 +9,4 @@ mod vault;
 pub use accounts::{AccountService, StorageReport};
 pub use devices::{DeviceService, SERVER_VERSION};
 pub use error::AccountError;
-pub use vault::VaultService;
+pub use vault::{Shown, VaultService};

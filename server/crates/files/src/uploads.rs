@@ -19,7 +19,7 @@ use protocol::TransferState;
 use events::DomainEvent;
 
 use crate::{
-    Actor, BodyError, FilesError, StoreOptions, StoreOutcome,
+    Actor, BodyError, FilesError, Names, StoreOptions, StoreOutcome,
     content::{ContentStore, new_content},
     tree,
 };
@@ -77,12 +77,15 @@ impl UploadService {
         self.uploads.remove(id);
     }
 
-    /// Starts a resumable upload of `size` bytes from `device`, when the client named one.
+    /// Starts a resumable upload of `size` bytes from `device`, when the client named one. A new
+    /// file's name is kept as `names` stores it, the names of the folder it goes to.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_upload(
         &self,
         owner: UserId,
         device: Option<Uuid>,
         target: UploadTarget,
+        names: &Names,
         size: u64,
         content_type: Option<&str>,
         modified_at: Option<OffsetDateTime>,
@@ -92,7 +95,12 @@ impl UploadService {
                 limit: self.content.max_upload_bytes,
             });
         }
-        let place = self.resolve_target(owner, target, size).await?;
+        let mut place = self.resolve_target(owner, target, size).await?;
+        // A new file's name; a replaced file's is stored already, and a transfer's items are
+        // not in the tree.
+        if place.node_id.is_none() && place.transfer_item_id.is_none() {
+            place.name = names.store(NodeKind::File, &place.name)?;
+        }
         if place.transfer_item_id.is_none() {
             self.content.check_quota(owner, None, size).await?;
         }
@@ -207,20 +215,39 @@ impl UploadService {
     }
 
     /// Appends a chunk that starts at `offset`; the chunk that completes the upload stores the
-    /// file and ends the upload, whether storing succeeds or not.
+    /// file and ends the upload, whether storing succeeds or not. `names` are those of the folder
+    /// the file goes to (see [`UploadService::destination`]).
     pub async fn append_chunk<S>(
         &self,
         actor: Actor,
         id: Uuid,
         offset: u64,
+        names: &Names,
         body: S,
     ) -> Result<ChunkOutcome, FilesError>
     where
         S: Stream<Item = Result<Bytes, BodyError>>,
     {
         self.acting(actor.device)
-            .append_chunk_as(actor.user, id, offset, body)
+            .append_chunk_as(actor.user, id, offset, names, body)
             .await
+    }
+
+    /// The folder a file upload `id` stores into (`None` for the root), so the caller can tell
+    /// whose names it needs; `None` for an upload of a transfer.
+    pub async fn destination(
+        &self,
+        owner: UserId,
+        id: Uuid,
+    ) -> Result<Option<Option<NodeId>>, FilesError> {
+        let upload = self.content.db.get_upload(owner, id).await?;
+        if upload.transfer_item_id.is_some() {
+            return Ok(None);
+        }
+        match upload.node_id {
+            Some(node) => Ok(Some(self.content.db.get_node(owner, node).await?.parent_id)),
+            None => Ok(Some(upload.parent_id)),
+        }
     }
 
     /// Abandons an upload and the bytes it has received.
@@ -284,6 +311,7 @@ impl UploadService {
         &self,
         owner: UserId,
         upload: &Upload,
+        names: &Names,
         size: u64,
         sha256: Vec<u8>,
     ) -> Result<StoreOutcome, FilesError> {
@@ -293,12 +321,13 @@ impl UploadService {
             .check_quota(owner, Some(upload.id), size)
             .await?;
         let staged = self.content.store.adopt_partial(upload.id, size, sha256);
+        let name = names.show(NodeKind::File, &upload.name);
         let content = |name: &str| -> NewContent {
             new_content(&staged, upload.mime.as_deref(), name, upload.modified_at)
         };
         let stored = match upload.node_id {
             Some(node) => {
-                tree::replace_content(&self.content.db, owner, node, content(&upload.name)).await
+                tree::replace_content(&self.content.db, owner, node, content(&name)).await
             }
             None => {
                 if let Some(parent) = upload.parent_id
@@ -316,8 +345,9 @@ impl UploadService {
                     &self.content.db,
                     owner,
                     upload.parent_id,
-                    &upload.name,
-                    content(&upload.name),
+                    &name,
+                    names,
+                    content(&name),
                     options,
                 )
                 .await
@@ -382,6 +412,7 @@ impl UploadService {
         owner: UserId,
         id: Uuid,
         offset: u64,
+        names: &Names,
         body: S,
     ) -> Result<ChunkOutcome, FilesError>
     where
@@ -398,7 +429,9 @@ impl UploadService {
             return Ok(ChunkOutcome::Partial { offset: len });
         }
         let sha256 = self.received_sha256(hashing.take(), id).await?;
-        let stored = self.complete_upload(owner, &upload, len, sha256).await;
+        let stored = self
+            .complete_upload(owner, &upload, names, len, sha256)
+            .await;
         drop(hashing);
         self.forget_upload(id).await;
         stored
@@ -463,6 +496,7 @@ impl UploadService {
         &self,
         owner: UserId,
         upload: &Upload,
+        names: &Names,
         len: u64,
         sha256: Vec<u8>,
     ) -> Result<ChunkOutcome, FilesError> {
@@ -473,7 +507,7 @@ impl UploadService {
                 .map(|ready| ChunkOutcome::Transferred { size: len, ready }),
             None => self
                 .content
-                .publish_stored(self.finish_upload(owner, upload, len, sha256).await)
+                .publish_stored(self.finish_upload(owner, upload, names, len, sha256).await)
                 .await
                 .map(ChunkOutcome::Complete),
         }

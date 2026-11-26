@@ -10,7 +10,7 @@ use db::{FOLDER_MIME, Node, NodeId, OnConflict};
 
 use super::*;
 use crate::{
-    Actor, BodyError, MoveOutcome, NodeUpdate, StoreOutcome,
+    Actor, BodyError, MoveOutcome, Names, NodeUpdate, StoreOutcome,
     content::{FALLBACK_MIME, resolve_mime},
 };
 
@@ -62,6 +62,7 @@ async fn upload_then_download_returns_same_content(pool: PgPool) {
             Actor::user(fx.alice),
             None,
             "note.txt",
+            &Names::Plain,
             None,
             None,
             body("hello"),
@@ -87,13 +88,13 @@ async fn ancestors_run_from_root_to_parent(pool: PgPool) {
     let a = fx
         .files
         .nodes
-        .create_folder(Actor::user(fx.alice), None, "a")
+        .create_folder(Actor::user(fx.alice), None, "a", &Names::Plain)
         .await
         .expect("a");
     let b = fx
         .files
         .nodes
-        .create_folder(Actor::user(fx.alice), Some(a.id), "b")
+        .create_folder(Actor::user(fx.alice), Some(a.id), "b", &Names::Plain)
         .await
         .expect("b");
     let file = fx
@@ -103,6 +104,7 @@ async fn ancestors_run_from_root_to_parent(pool: PgPool) {
             Actor::user(fx.alice),
             Some(b.id),
             "f.txt",
+            &Names::Plain,
             None,
             None,
             body("x"),
@@ -136,7 +138,7 @@ async fn ancestors_of_another_users_node_are_not_found(pool: PgPool) {
     let a = fx
         .files
         .nodes
-        .create_folder(Actor::user(fx.alice), None, "a")
+        .create_folder(Actor::user(fx.alice), None, "a", &Names::Plain)
         .await
         .expect("a");
     assert!(matches!(
@@ -155,6 +157,7 @@ async fn other_users_cannot_access_a_node(pool: PgPool) {
             Actor::user(fx.alice),
             None,
             "note.txt",
+            &Names::Plain,
             None,
             None,
             body("hello"),
@@ -182,7 +185,7 @@ async fn cannot_upload_into_another_users_folder(pool: PgPool) {
     let folder = fx
         .files
         .nodes
-        .create_folder(Actor::user(fx.alice), None, "docs")
+        .create_folder(Actor::user(fx.alice), None, "docs", &Names::Plain)
         .await
         .expect("folder");
     let result = fx
@@ -192,6 +195,7 @@ async fn cannot_upload_into_another_users_folder(pool: PgPool) {
             Actor::user(fx.bob),
             Some(folder.id),
             "x.txt",
+            &Names::Plain,
             None,
             None,
             body("hi"),
@@ -203,7 +207,15 @@ async fn cannot_upload_into_another_users_folder(pool: PgPool) {
 async fn put(fx: &Fixture, parent: Option<NodeId>, name: &str, text: &'static str) -> Node {
     fx.files
         .nodes
-        .upload(Actor::user(fx.alice), parent, name, None, None, body(text))
+        .upload(
+            Actor::user(fx.alice),
+            parent,
+            name,
+            &Names::Plain,
+            None,
+            None,
+            body(text),
+        )
         .await
         .map(StoreOutcome::into_node)
         .expect("upload")
@@ -223,6 +235,7 @@ async fn put_at(fx: &Fixture, name: &str, text: &'static str, at: OffsetDateTime
             Actor::user(fx.alice),
             None,
             name,
+            &Names::Plain,
             None,
             Some(at),
             body(text),
@@ -238,7 +251,7 @@ async fn move_to(fx: &Fixture, id: NodeId, parent: Option<NodeId>) -> MoveOutcom
     };
     fx.files
         .nodes
-        .update(Actor::user(fx.alice), id, update)
+        .update(Actor::user(fx.alice), id, update, &Names::Plain)
         .await
         .expect("move")
 }
@@ -278,6 +291,7 @@ async fn uploading_identical_content_changes_nothing(pool: PgPool) {
             Actor::user(fx.alice),
             None,
             "a.txt",
+            &Names::Plain,
             None,
             None,
             body("same"),
@@ -366,6 +380,7 @@ async fn replacing_with_older_content_keeps_it_as_a_version(pool: PgPool) {
         .replace_content(
             Actor::user(fx.alice),
             file.id,
+            &Names::Plain,
             None,
             Some(older),
             body("older"),
@@ -384,7 +399,7 @@ async fn a_file_and_a_folder_can_share_a_name(pool: PgPool) {
     assert!(
         fx.files
             .nodes
-            .create_folder(Actor::user(fx.alice), None, "same")
+            .create_folder(Actor::user(fx.alice), None, "same", &Names::Plain)
             .await
             .is_ok()
     );
@@ -395,13 +410,13 @@ async fn creating_a_folder_with_a_taken_name_conflicts(pool: PgPool) {
     let fx = fixture(pool, 1024).await;
     fx.files
         .nodes
-        .create_folder(Actor::user(fx.alice), None, "a")
+        .create_folder(Actor::user(fx.alice), None, "a", &Names::Plain)
         .await
         .expect("a");
     let result = fx
         .files
         .nodes
-        .create_folder(Actor::user(fx.alice), None, "a")
+        .create_folder(Actor::user(fx.alice), None, "a", &Names::Plain)
         .await;
     assert!(matches!(result, Err(FilesError::Conflict)));
 }
@@ -412,7 +427,7 @@ async fn folders_are_stored_with_the_directory_mime(pool: PgPool) {
     let folder = fx
         .files
         .nodes
-        .create_folder(Actor::user(fx.alice), None, "a")
+        .create_folder(Actor::user(fx.alice), None, "a", &Names::Plain)
         .await
         .expect("a");
     assert_eq!(folder.mime, FOLDER_MIME);
@@ -430,7 +445,7 @@ async fn renaming_onto_a_taken_name_conflicts(pool: PgPool) {
     let result = fx
         .files
         .nodes
-        .update(Actor::user(fx.alice), other.id, update)
+        .update(Actor::user(fx.alice), other.id, update, &Names::Plain)
         .await;
     assert!(matches!(result, Err(FilesError::Conflict)));
 }
@@ -441,7 +456,7 @@ async fn moving_an_identical_file_drops_the_source_and_merges_dates(pool: PgPool
     let folder = fx
         .files
         .nodes
-        .create_folder(Actor::user(fx.alice), None, "dir")
+        .create_folder(Actor::user(fx.alice), None, "dir", &Names::Plain)
         .await
         .expect("dir");
     let dest = put(&fx, Some(folder.id), "a.txt", "same").await;
@@ -478,7 +493,7 @@ async fn moving_a_different_file_versions_the_destination_and_appends_history(po
     let folder = fx
         .files
         .nodes
-        .create_folder(Actor::user(fx.alice), None, "dir")
+        .create_folder(Actor::user(fx.alice), None, "dir", &Names::Plain)
         .await
         .expect("dir");
     let dest = put(&fx, Some(folder.id), "a.txt", "dest1").await;
@@ -501,32 +516,37 @@ async fn moving_a_folder_merges_into_the_same_named_destination(pool: PgPool) {
     let target = fx
         .files
         .nodes
-        .create_folder(Actor::user(fx.alice), None, "target")
+        .create_folder(Actor::user(fx.alice), None, "target", &Names::Plain)
         .await
         .expect("target");
     let dest = fx
         .files
         .nodes
-        .create_folder(Actor::user(fx.alice), Some(target.id), "docs")
+        .create_folder(
+            Actor::user(fx.alice),
+            Some(target.id),
+            "docs",
+            &Names::Plain,
+        )
         .await
         .expect("dest");
     let dest_sub = fx
         .files
         .nodes
-        .create_folder(Actor::user(fx.alice), Some(dest.id), "sub")
+        .create_folder(Actor::user(fx.alice), Some(dest.id), "sub", &Names::Plain)
         .await
         .expect("dest sub");
     put(&fx, Some(dest_sub.id), "x.txt", "old").await;
     let source = fx
         .files
         .nodes
-        .create_folder(Actor::user(fx.alice), None, "docs")
+        .create_folder(Actor::user(fx.alice), None, "docs", &Names::Plain)
         .await
         .expect("src");
     let source_sub = fx
         .files
         .nodes
-        .create_folder(Actor::user(fx.alice), Some(source.id), "sub")
+        .create_folder(Actor::user(fx.alice), Some(source.id), "sub", &Names::Plain)
         .await
         .expect("src sub");
     let new_x = put(&fx, Some(source_sub.id), "x.txt", "new").await;
@@ -635,6 +655,7 @@ async fn oversized_upload_is_rejected(pool: PgPool) {
             Actor::user(fx.alice),
             None,
             "a.txt",
+            &Names::Plain,
             None,
             None,
             body("hello"),
@@ -649,7 +670,7 @@ async fn invalid_name_is_rejected(pool: PgPool) {
     let result = fx
         .files
         .nodes
-        .create_folder(Actor::user(fx.alice), None, "a/b")
+        .create_folder(Actor::user(fx.alice), None, "a/b", &Names::Plain)
         .await;
     assert!(matches!(result, Err(FilesError::InvalidName)));
 }
@@ -660,13 +681,18 @@ async fn folder_cannot_move_into_its_descendant(pool: PgPool) {
     let outer = fx
         .files
         .nodes
-        .create_folder(Actor::user(fx.alice), None, "outer")
+        .create_folder(Actor::user(fx.alice), None, "outer", &Names::Plain)
         .await
         .expect("outer");
     let inner = fx
         .files
         .nodes
-        .create_folder(Actor::user(fx.alice), Some(outer.id), "inner")
+        .create_folder(
+            Actor::user(fx.alice),
+            Some(outer.id),
+            "inner",
+            &Names::Plain,
+        )
         .await
         .expect("inner");
     let update = NodeUpdate {
@@ -676,7 +702,7 @@ async fn folder_cannot_move_into_its_descendant(pool: PgPool) {
     let result = fx
         .files
         .nodes
-        .update(Actor::user(fx.alice), outer.id, update)
+        .update(Actor::user(fx.alice), outer.id, update, &Names::Plain)
         .await;
     assert!(matches!(result, Err(FilesError::Cycle)));
 }
@@ -694,7 +720,7 @@ async fn lost_and_found(fx: &Fixture) -> NodeId {
 async fn folder(fx: &Fixture, parent: Option<NodeId>, name: &str) -> Node {
     fx.files
         .nodes
-        .create_folder(Actor::user(fx.alice), parent, name)
+        .create_folder(Actor::user(fx.alice), parent, name, &Names::Plain)
         .await
         .expect("folder")
 }
@@ -800,6 +826,7 @@ async fn the_recycle_bin_folder_is_not_reachable(pool: PgPool) {
                     name: Some("x".to_owned()),
                     ..NodeUpdate::default()
                 },
+                &Names::Plain,
             )
             .await
             .map(drop),
@@ -814,6 +841,7 @@ async fn the_recycle_bin_folder_is_not_reachable(pool: PgPool) {
                     parent_id: db::Patch::Set(trash),
                     ..NodeUpdate::default()
                 },
+                &Names::Plain,
             )
             .await
             .map(drop),
@@ -837,6 +865,7 @@ async fn the_recycle_bin_folder_is_not_reachable(pool: PgPool) {
                 Actor::user(fx.alice),
                 Some(trash),
                 "b.txt",
+                &Names::Plain,
                 None,
                 None,
                 body("x"),
@@ -847,7 +876,7 @@ async fn the_recycle_bin_folder_is_not_reachable(pool: PgPool) {
     not_found(
         fx.files
             .nodes
-            .create_folder(Actor::user(fx.alice), Some(trash), "f")
+            .create_folder(Actor::user(fx.alice), Some(trash), "f", &Names::Plain)
             .await
             .map(drop),
     );
@@ -965,7 +994,14 @@ async fn binned_files_cannot_be_used(pool: PgPool) {
     assert!(matches!(
         fx.files
             .nodes
-            .replace_content(Actor::user(fx.alice), file.id, None, None, body("x"))
+            .replace_content(
+                Actor::user(fx.alice),
+                file.id,
+                &Names::Plain,
+                None,
+                None,
+                body("x")
+            )
             .await,
         Err(FilesError::NotFound)
     ));
@@ -1256,7 +1292,7 @@ async fn lost_and_found_can_be_renamed_and_stays_protected(pool: PgPool) {
     let renamed = fx
         .files
         .nodes
-        .update(Actor::user(fx.alice), found, update)
+        .update(Actor::user(fx.alice), found, update, &Names::Plain)
         .await
         .expect("rename");
     assert_eq!(renamed.node.name, "Found");
@@ -1377,6 +1413,7 @@ async fn emptying_the_bin_removes_every_binned_file_and_blob(pool: PgPool) {
             Actor::user(fx.bob),
             None,
             "bob.txt",
+            &Names::Plain,
             None,
             None,
             body("bob"),
@@ -1472,14 +1509,29 @@ async fn replace_content_updates_size_and_hash(pool: PgPool) {
     let file = fx
         .files
         .nodes
-        .upload(Actor::user(fx.alice), None, "a.txt", None, None, body("hi"))
+        .upload(
+            Actor::user(fx.alice),
+            None,
+            "a.txt",
+            &Names::Plain,
+            None,
+            None,
+            body("hi"),
+        )
         .await
         .map(StoreOutcome::into_node)
         .expect("upload");
     let updated = fx
         .files
         .nodes
-        .replace_content(Actor::user(fx.alice), file.id, None, None, body("longer"))
+        .replace_content(
+            Actor::user(fx.alice),
+            file.id,
+            &Names::Plain,
+            None,
+            None,
+            body("longer"),
+        )
         .await
         .map(StoreOutcome::into_node)
         .expect("replace");

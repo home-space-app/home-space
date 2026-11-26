@@ -12,7 +12,7 @@ use sqlx::{FromRow, PgConnection};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{Db, DbError, NodeId, UserId};
+use crate::{Db, DbError, NodeId, NodeKind, UserId};
 
 /// A vault unlocker as stored, with its security key's credential id and RP id.
 #[derive(Clone, Debug, PartialEq, Eq, FromRow)]
@@ -119,6 +119,15 @@ pub struct EnclosingPasswordFolder {
 pub struct FolderFile {
     pub node_id: NodeId,
     pub versions: Vec<Uuid>,
+}
+
+/// A node inside a folder being protected, as [`Db::folder_nodes`] lists it.
+#[derive(Clone, Debug, PartialEq, Eq, FromRow)]
+pub struct FolderNode {
+    pub id: NodeId,
+    pub parent_id: Option<NodeId>,
+    pub kind: NodeKind,
+    pub name: String,
 }
 
 /// Why a folder cannot be protected.
@@ -631,6 +640,101 @@ impl Db {
             }
         }
         Ok(files)
+    }
+
+    /// The nodes inside the user's folder `node`, not the folder itself, parents before their
+    /// children.
+    pub async fn folder_nodes(
+        &self,
+        user: UserId,
+        node: NodeId,
+    ) -> Result<Vec<FolderNode>, DbError> {
+        let nodes = sqlx::query_as::<_, FolderNode>(
+            "WITH RECURSIVE subtree AS ( \
+                 SELECT id, parent_id, kind, name, 0 AS depth FROM nodes \
+                 WHERE id = $1 AND owner_id = $2 \
+                 UNION ALL \
+                 SELECT n.id, n.parent_id, n.kind, n.name, s.depth + 1 FROM nodes n \
+                 JOIN subtree s ON n.parent_id = s.id \
+             ) SELECT id, parent_id, kind, name FROM subtree WHERE depth > 0 \
+             ORDER BY depth, id",
+        )
+        .bind(node)
+        .bind(user)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(nodes)
+    }
+
+    /// Renames the user's node `node` from `from` to `to`; `false` when its name is no longer
+    /// `from`, and `Conflict` when `to` is taken.
+    pub async fn rename_node_from(
+        &self,
+        user: UserId,
+        node: NodeId,
+        from: &str,
+        to: &str,
+    ) -> Result<bool, DbError> {
+        let renamed =
+            sqlx::query("UPDATE nodes SET name = $4 WHERE id = $1 AND owner_id = $2 AND name = $3")
+                .bind(node)
+                .bind(user)
+                .bind(from)
+                .bind(to)
+                .execute(self.pool())
+                .await?
+                .rows_affected();
+        Ok(renamed == 1)
+    }
+
+    /// The user's password folders.
+    pub async fn password_folders(&self, user: UserId) -> Result<Vec<NodeId>, DbError> {
+        let folders = sqlx::query_scalar(
+            "SELECT node_id FROM protected_folders WHERE owner_id = $1 AND lock = 'password'",
+        )
+        .bind(user)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(folders)
+    }
+
+    /// The password folders `session` has unlocked and not let expire. Unlike
+    /// [`Db::use_unlocked_folder`] this does not extend them.
+    pub async fn unlocked_folders(&self, session: Uuid) -> Result<Vec<NodeId>, DbError> {
+        let folders = sqlx::query_scalar(
+            "SELECT node_id FROM protected_unlocks WHERE session_id = $1 AND expires_at > now()",
+        )
+        .bind(session)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(folders)
+    }
+
+    /// For each of the user's folders `folders` that is a password folder or inside one, that
+    /// password folder: what holds the nodes in it.
+    pub async fn password_folders_over(
+        &self,
+        user: UserId,
+        folders: &[NodeId],
+    ) -> Result<Vec<(NodeId, NodeId)>, DbError> {
+        if folders.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids: Vec<Uuid> = folders.iter().map(|folder| folder.0).collect();
+        let found = sqlx::query_as(
+            "WITH RECURSIVE up AS ( \
+                 SELECT id AS origin, id FROM nodes WHERE owner_id = $1 AND id = ANY($2) \
+                 UNION ALL \
+                 SELECT up.origin, n.parent_id FROM nodes n JOIN up ON n.id = up.id \
+                 WHERE n.parent_id IS NOT NULL \
+             ) SELECT DISTINCT up.origin, p.node_id FROM up \
+             JOIN protected_folders p ON p.node_id = up.id AND p.lock = 'password'",
+        )
+        .bind(user)
+        .bind(&ids)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(found)
     }
 }
 
