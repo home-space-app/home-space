@@ -396,10 +396,18 @@ Done (stage C, the rest):
 - **Recycle bin:** deleting inside deletes for good, as in every protected folder (see
   [Deleting](#deleting-inside-a-protected-folder)). Deleting a folder that holds a password
   folder also needs every such folder unlocked (`423`).
-- **Change the password:** `POST /protected/{id}/password` `{ password }` for a session that
-  unlocked the folder and signed in recently; the account password rules apply. The key stays,
-  so nothing is re-encrypted; every other session is locked out until it unlocks with the new
-  one.
+- **Recovery key:** protecting with a password also makes a recovery key for the folder (the
+  vault's printed format: 55 characters in 11 groups), returned once as `recovery_key` in the
+  answer to `POST /protected`. The server keeps only its Argon2id hash.
+- **Change the password** (decided 2026-11-26): `POST /protected/{id}/password` `{ password,
+  current_password }`, or `{ password, recovery_key }` when the password is forgotten, plus a
+  recent sign-in. **Signing in to the account is never enough**: someone who has the account's
+  password must not get into its folders by resetting theirs. A recovery key that was used is
+  replaced, and the answer carries the new one (`recovery_key`), shown once. Wrong passwords and
+  keys are throttled like unlocks (`422 wrong-password`). The folder's key stays, so nothing is
+  re-encrypted; the caller's session has the folder unlocked, every other one is locked out
+  until it unlocks with the new password. Without the password and the recovery key, the files
+  are lost.
 - **Unprotect:** `POST /protected/{id}/unprotect` for a session that unlocked the folder and
   signed in recently. The folder is `unprotecting`: the server decrypts every blob and opens
   every name in place (same job and lock as protecting), and once a pass finds nothing left it
@@ -415,9 +423,8 @@ Done (stage C, the rest):
 
 To do:
 
-- **Forgotten password:** the server has the key, so the account owner could set a new folder
-  password after confirming it is them (recent sign-in). **Open question:** allow that, or keep
-  "forgotten password, lost data"?
+- Clients show the recovery key after protecting, ask the user to keep it somewhere safe, and
+  offer "Forgot the password?" with it.
 
 ## Deleting inside a protected folder
 
@@ -682,8 +689,6 @@ the web client like anywhere else, since the server decrypts them anyway. Phase 
 1. Root folder name: stays in clear (proposed), or sealed too?
 2. Auto-lock timeout default: 15 minutes (proposed)?
 3. Web client: opt-in per vault for security-key folders (proposed), or not at all?
-4. Password folders: may the owner reset a forgotten folder password after confirming it is
-   them, since the server has the key anyway?
-5. Minimum hardware: any FIDO2 key with `hmac-secret` and a PIN (proposed), or YubiKey only?
-6. Names in protected folders, of both locks, are limited to 159 bytes. Enough, or should the
+4. Minimum hardware: any FIDO2 key with `hmac-secret` and a PIN (proposed), or YubiKey only?
+5. Names in protected folders, of both locks, are limited to 159 bytes. Enough, or should the
    server allow longer names (which some file systems on the desktop could not hold anyway)?
