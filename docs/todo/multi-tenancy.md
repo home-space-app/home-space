@@ -339,8 +339,9 @@ so a script can't create a user in the wrong tenant.
 update. A domain is baked into more than the display name:
 
 - the OIDC callback URL registered at the IdP (the new one must be registered first);
-- the WebAuthn relying party id of protected folders (see below): a changed domain makes every
-  enrolled security key useless;
+- the WebAuthn relying party id of passkeys and security keys: a changed domain breaks passkey
+  sign-in on the web and protected-folder unlocking in the web client (native apps keep working,
+  see below);
 - share links already sent around;
 - the server URL saved in every desktop and mobile client.
 
@@ -398,13 +399,11 @@ store picks the root without a lookup.
 
 ## Interaction with other plans
 
-- **Protected folders (PR #107).** The WebAuthn PRF relying party id is the `public_url` host,
-  and security keys are bound to it for good. With tenants it must be **stored per tenant at
-  first enrolment** (a column on `tenants`, or with the vault records) and never re-derived from
-  the current primary domain. Otherwise moving a tenant to a new domain locks its users out of
-  their encrypted folders. The RP id must also be a registrable suffix of every alias the web
-  client may be used on, or the web client only works on the primary domain. The native
-  clients' rule "same RP id everywhere" becomes "the tenant's RP id".
+- **Protected folders (PR #107).** Protected folders reuse the sign-in security keys, and each
+  credential keeps the RP id it was registered under (`user_webauthn.rp_id`, the host of the
+  page). Native clients pass that stored RP id over CTAP2, so moving a tenant to a new domain
+  does not lock its users out of their encrypted folders on desktop and mobile. The web client
+  can unlock only on the old host, unless WebAuthn related origins are set up.
 - **Storage quotas (merged).** Per-user quotas are unchanged. A per-tenant quota (the sum of
   its users) is a natural addition, and the per-tenant storage root makes it cheap to report.
   The free-space check (`disk_space`) is shared by all tenants on the same disk: one tenant

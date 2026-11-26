@@ -130,11 +130,13 @@ replaces the TOTP code.
 - Signature counters are checked when the authenticator sends them (synced passkeys send 0).
 - A user may have up to 20 credentials.
 
-**Same key as protected folders?** A YubiKey can hold a sign-in passkey and a protected-folder
-unlocker, but they stay separate credentials and separate tables. The vault unlocker is key
-material (`prf_salt`) with its own rules, and removing a sign-in passkey must never remove the
-ability to decrypt. What is shared: the RP id helper, the `webauthn-rs` setup, the web client's
-`navigator.credentials` wrapper and, later, the native `Authenticator` trait.
+**Same key as protected folders?** Yes (changed 2026-11-26). A credential on a hardware key,
+registered with PRF (`user_webauthn.prf`) and a PIN, can also be enabled as a vault unlocker
+(`vault_unlockers.credential` → `user_webauthn.id`, with its own `prf_salt`). Synced passkeys are
+not offered, since the native apps cannot reach them. Registration requests the `prf` extension;
+sign-in never does, so no PRF value reaches the server. Removing a credential that is the last
+unlocker of a vault with folders is refused (`409 last-unlocker`) unless the user confirms
+deleting those folders; otherwise the vault key rotates. See `docs/todo/protected-folders.md`.
 
 ### Recovery codes
 
@@ -542,7 +544,8 @@ client falls back to plain password sign-in on older servers.
   `homespace-ctl tenant domain` warns and counts them. WebAuthn
   [related origins](https://w3c.github.io/webauthn/#sctn-related-origins) (`/.well-known/webauthn`)
   could keep aliases working; Chrome and Safari support it, Firefox not yet.
-- **Protected folders**: shares the RP id rule and WebAuthn plumbing, not credentials.
+- **Protected folders**: reuses the credentials (hardware keys with PRF) as vault unlockers, and
+  the RP id stored with each credential.
 - **Security hardening (#44)**: reuses `LoginThrottle` and the session-ended broadcast.
 - **Server manager**: `homespace-ctl install` generates `HOMESPACE_SECRETS_KEY`; `user reset-2fa`.
 - **Admin panel**: 2FA column and reset action.
