@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["api-client", "client-core", "desktop", "mobile-core", "pdf-core", "pdf-worker", "sync-core", "web"]
+members = ["api-client", "client-core", "desktop", "mobile-core", "pdf-core", "pdf-worker", "sync-core", "vault-core", "web"]
 
 [workspace.package]
 version = "0.12.3"

@@ -190,7 +190,9 @@ recovery key  ─┘                  (one per user)          ▼ Argon2id (salt
   re-keyed, change its lock or (later) be shared without touching the rest.
 - **Name key** and **X25519 identity**: derived from the folder secret with HKDF and distinct
   `info` strings. The X25519 public key (the folder's age recipient) is stored in clear on the
-  server.
+  server. Content is encrypted to it without a key, so a server that swapped it could read new
+  uploads: whenever a client has the folder secret (every touch), it derives the recipient and
+  refuses a listed one that differs (`FolderKeys::check_recipient`).
 - **File key**: age generates a random one for every file it encrypts, so every version of every
   file has its own. It is wrapped to the folder's recipient in the age header, inside the blob.
 - **Change lock** (password → security key or back): unlock, re-wrap the folder secret under the
@@ -260,7 +262,8 @@ gives the same ciphertext, so the existing uniqueness check keeps working.
   differ.
 - The plaintext is padded to a multiple of 32 bytes before sealing, so the length of a name is
   hidden to that granularity.
-- Stored in a new `sealed_name BYTEA` column (up to 1 KiB). The existing `name` column holds the
+- Stored in a new `sealed_name BYTEA` column (up to 1040 bytes: 255 four-byte characters,
+  padded, plus the 16-byte tag). The existing `name` column holds the
   node id as text for sealed nodes, which keeps all its checks and the constraint satisfied, and is
   what an old client would show. A unique index on `(owner_id, parent_id, kind, sealed_name)` where
   `sealed_name IS NOT NULL` replaces the name constraint for sealed nodes.
@@ -361,7 +364,7 @@ CREATE TABLE protected_folders (
 );
 
 ALTER TABLE nodes ADD COLUMN sealed BOOLEAN NOT NULL DEFAULT false;  -- inside a protected folder
-ALTER TABLE nodes ADD COLUMN sealed_name BYTEA CHECK (length(sealed_name) <= 1024);
+ALTER TABLE nodes ADD COLUMN sealed_name BYTEA CHECK (length(sealed_name) <= 1040);
 ```
 
 `vault_unlockers.credential` has no `ON DELETE`: deleting a `user_webauthn` row that is an
