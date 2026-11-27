@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use db::NodeKind;
 use files::StoreOptions;
-use files::{ChunkOutcome, FilesError, Names, UploadStatus, UploadTarget};
+use files::{ChunkOutcome, FilesError, Names, UploadDestination, UploadStatus, UploadTarget};
 use protocol::{
     ChunkResult, CreateUpload, NodeId, UploadInfo, UploadSession, UploadsQuery,
     paths::UPLOAD_OFFSET,
@@ -115,11 +115,13 @@ fn upload_info(upload: db::Upload) -> UploadInfo {
 async fn destination_names(
     tenant: &Tenant,
     user: &AuthUser,
-    destination: Option<Option<NodeId>>,
+    destination: UploadDestination,
 ) -> Result<Names, ApiError> {
     match destination {
-        Some(parent) => Ok(tenant.vault.names(user.id, user.session_id, parent).await?),
-        None => Ok(Names::Plain),
+        UploadDestination::Folder(parent) => {
+            Ok(tenant.vault.names(user.id, user.session_id, parent).await?)
+        }
+        UploadDestination::Transfer => Ok(Names::Plain),
     }
 }
 
@@ -130,9 +132,11 @@ async fn create(
     ApiJson(request): ApiJson<CreateUpload>,
 ) -> Result<Response, ApiError> {
     let destination = match (request.transfer_item_id, request.node_id) {
-        (Some(_), _) => None,
-        (None, Some(id)) => Some(state.files.nodes.get(user.id, id).await?.parent_id),
-        (None, None) => Some(request.parent_id),
+        (Some(_), _) => UploadDestination::Transfer,
+        (None, Some(id)) => {
+            UploadDestination::Folder(state.files.nodes.get(user.id, id).await?.parent_id)
+        }
+        (None, None) => UploadDestination::Folder(request.parent_id),
     };
     let names = destination_names(&tenant, &user, destination).await?;
     let target = match (request.transfer_item_id, request.node_id) {

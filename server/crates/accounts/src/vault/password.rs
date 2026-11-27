@@ -6,13 +6,11 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use auth::{AuthError, FolderSecretKind};
-use db::{NodeId, UserId};
-use protocol::{
-    ChangeFolderPassword, FolderPasswordChanged, FolderUnlocked, rules::password_problem,
-};
+use db::{NodeId, PasswordSecrets, UserId};
+use protocol::{ChangeFolderPassword, FolderPasswordChanged, FolderUnlocked};
 use vault_core::{FolderKeys, FolderSecret, RecoveryKey};
 
-use super::{FOLDER_UNLOCK_TTL, VaultService};
+use super::{FOLDER_UNLOCK_TTL, VaultService, check_password};
 use crate::AccountError;
 
 impl VaultService {
@@ -25,29 +23,11 @@ impl VaultService {
         password: &str,
         address: Option<IpAddr>,
     ) -> Result<FolderUnlocked, AccountError> {
-        let secrets = self
-            .db
-            .password_secrets(user, node)
-            .await?
-            .ok_or(AccountError::NotFound)?;
-        match self
-            .auth
-            .check_folder_password(
-                node,
-                FolderSecretKind::Password,
-                secrets.password_hash,
-                password,
-                address,
-            )
-            .await
-        {
-            Err(AuthError::InvalidCredentials) => {
-                return Err(AccountError::Auth(AuthError::WrongPassword));
-            }
-            other => other?,
-        }
-        let expires_at = OffsetDateTime::now_utc() + FOLDER_UNLOCK_TTL;
-        self.db.unlock_folder(session, node, expires_at).await?;
+        let secrets = self.password_secrets(user, node).await?;
+        let kind = FolderSecretKind::Password;
+        self.check_folder_secret(node, kind, secrets.password_hash, password, address)
+            .await?;
+        let expires_at = self.open_for(session, node).await?;
         tracing::info!(user = %user, folder = %node, "password folder unlocked");
         Ok(FolderUnlocked { expires_at })
     }
@@ -59,9 +39,7 @@ impl VaultService {
         session: Uuid,
         node: NodeId,
     ) -> Result<(), AccountError> {
-        if self.db.password_secrets(user, node).await?.is_none() {
-            return Err(AccountError::NotFound);
-        }
+        self.password_secrets(user, node).await?;
         self.db.lock_folder(session, node).await?;
         Ok(())
     }
@@ -77,14 +55,7 @@ impl VaultService {
         let Some(folder) = self.db.enclosing_password_folder(user, node).await? else {
             return Ok(None);
         };
-        let extend_to = OffsetDateTime::now_utc() + FOLDER_UNLOCK_TTL;
-        if !self
-            .db
-            .use_unlocked_folder(session, folder.node_id, extend_to)
-            .await?
-        {
-            return Err(AccountError::Locked);
-        }
+        self.require_unlocked(session, folder.node_id).await?;
         self.folder_keys(user, folder.node_id).await.map(Some)
     }
 
@@ -94,11 +65,7 @@ impl VaultService {
         user: UserId,
         node: NodeId,
     ) -> Result<FolderKeys, AccountError> {
-        let secrets = self
-            .db
-            .password_secrets(user, node)
-            .await?
-            .ok_or(AccountError::NotFound)?;
+        let secrets = self.password_secrets(user, node).await?;
         let raw = self.auth.open_folder_key(user, &secrets.sealed_key)?;
         let bytes: [u8; 32] = raw
             .as_slice()
@@ -121,17 +88,8 @@ impl VaultService {
         address: Option<IpAddr>,
     ) -> Result<FolderPasswordChanged, AccountError> {
         self.auth.require_recent_sign_in(user, session).await?;
-        let secrets = self
-            .db
-            .password_secrets(user, node)
-            .await?
-            .ok_or(AccountError::NotFound)?;
-        if let Some(message) = password_problem(&request.password) {
-            return Err(AccountError::Invalid {
-                field: "/password",
-                message,
-            });
-        }
+        let secrets = self.password_secrets(user, node).await?;
+        check_password(&request.password)?;
         let new_recovery = match (&request.current_password, &request.recovery_key) {
             (Some(current), None) => {
                 let kind = FolderSecretKind::Password;
@@ -140,9 +98,11 @@ impl VaultService {
                 None
             }
             (None, Some(typed)) => {
-                let key = RecoveryKey::parse(typed).map_err(|_| AccountError::Invalid {
-                    field: "/recovery_key",
-                    message: "That is not a recovery key: 55 letters and digits in 11 groups.",
+                let key = RecoveryKey::parse(typed).map_err(|_| {
+                    AccountError::invalid(
+                        "/recovery_key",
+                        "That is not a recovery key: 55 letters and digits in 11 groups.",
+                    )
                 })?;
                 let (kind, typed) = (FolderSecretKind::RecoveryKey, key.to_display());
                 self.check_folder_secret(node, kind, secrets.recovery_hash, &typed, address)
@@ -150,10 +110,10 @@ impl VaultService {
                 Some(RecoveryKey::generate().to_display())
             }
             _ => {
-                return Err(AccountError::Invalid {
-                    field: "/current_password",
-                    message: "Give the folder's current password, or its recovery key.",
-                });
+                return Err(AccountError::invalid(
+                    "/current_password",
+                    "Give the folder's current password, or its recovery key.",
+                ));
             }
         };
         let hash = self.auth.hash_folder_password(&request.password).await?;
@@ -164,12 +124,35 @@ impl VaultService {
         self.db
             .set_folder_password(user, node, &hash, recovery_hash.as_deref(), session)
             .await?;
-        let expires_at = OffsetDateTime::now_utc() + FOLDER_UNLOCK_TTL;
-        self.db.unlock_folder(session, node, expires_at).await?;
+        self.open_for(session, node).await?;
         tracing::info!(user = %user, folder = %node, recovered = new_recovery.is_some(), "password folder's password changed");
         Ok(FolderPasswordChanged {
             recovery_key: new_recovery.map(|key| key.to_string()),
         })
+    }
+
+    /// The secrets of the user's password folder `node`; `NotFound` when it is not one.
+    async fn password_secrets(
+        &self,
+        user: UserId,
+        node: NodeId,
+    ) -> Result<PasswordSecrets, AccountError> {
+        self.db
+            .password_secrets(user, node)
+            .await?
+            .ok_or(AccountError::NotFound)
+    }
+
+    /// Opens the password folder `node` to `session` for [`FOLDER_UNLOCK_TTL`], or keeps it open
+    /// that long; returns until when.
+    pub(super) async fn open_for(
+        &self,
+        session: Uuid,
+        node: NodeId,
+    ) -> Result<OffsetDateTime, AccountError> {
+        let expires_at = OffsetDateTime::now_utc() + FOLDER_UNLOCK_TTL;
+        self.db.unlock_folder(session, node, expires_at).await?;
+        Ok(expires_at)
     }
 
     /// Checks a folder's password, or recovery key, against its `hash`; `wrong-password` when

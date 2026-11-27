@@ -56,6 +56,13 @@ pub enum AccountError {
 }
 
 /// A missing row is a missing account or device; anything else is the server's fault.
+impl AccountError {
+    /// `Invalid`: the request's `field` (a JSON Pointer) is not acceptable, for `message`.
+    pub(crate) fn invalid(field: &'static str, message: &'static str) -> Self {
+        Self::Invalid { field, message }
+    }
+}
+
 impl From<DbError> for AccountError {
     fn from(err: DbError) -> Self {
         match err {

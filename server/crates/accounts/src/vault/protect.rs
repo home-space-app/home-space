@@ -1,6 +1,5 @@
 //! Protecting a folder, and taking its protection away again.
 
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use db::{
@@ -9,11 +8,11 @@ use db::{
 };
 use protocol::{
     FolderLock, ProtectFolder, ProtectedFolder, ProtectionState, encoding::Base64Url,
-    is_age_recipient, rules::password_problem,
+    is_age_recipient,
 };
 use vault_core::{FolderKeys, FolderSecret, RecoveryKey};
 
-use super::{FOLDER_UNLOCK_TTL, VaultService, check_wrapped};
+use super::{VaultService, check_password, check_wrapped};
 use crate::AccountError;
 
 impl VaultService {
@@ -38,32 +37,29 @@ impl VaultService {
         if request.lock == FolderLock::Password {
             let folder = self.protect_with_password(user, request).await?;
             // Whoever just set the password has the folder open, as after an unlock.
-            let expires_at = OffsetDateTime::now_utc() + FOLDER_UNLOCK_TTL;
-            self.db
-                .unlock_folder(session, request.node_id, expires_at)
-                .await?;
+            self.open_for(session, request.node_id).await?;
             return Ok(folder);
         }
         let wrapped = request
             .wrapped_secret
             .as_ref()
-            .ok_or(AccountError::Invalid {
-                field: "/wrapped_secret",
-                message: "A security-key lock needs the wrapped folder secret.",
-            })?;
+            .ok_or(AccountError::invalid(
+                "/wrapped_secret",
+                "A security-key lock needs the wrapped folder secret.",
+            ))?;
         check_wrapped("/wrapped_secret", wrapped)?;
-        let epoch = request.epoch.ok_or(AccountError::Invalid {
-            field: "/epoch",
-            message: "A security-key lock needs the vault epoch.",
-        })?;
+        let epoch = request.epoch.ok_or(AccountError::invalid(
+            "/epoch",
+            "A security-key lock needs the vault epoch.",
+        ))?;
         let recipient = request
             .recipient
             .as_deref()
             .filter(|recipient| is_age_recipient(recipient))
-            .ok_or(AccountError::Invalid {
-                field: "/recipient",
-                message: "The recipient must be an age X25519 recipient (age1…).",
-            })?;
+            .ok_or(AccountError::invalid(
+                "/recipient",
+                "The recipient must be an age X25519 recipient (age1…).",
+            ))?;
         let lock = NewProtection::SecurityKey(KeyLock {
             wrapped_secret: wrapped.as_bytes(),
             epoch,
@@ -80,22 +76,17 @@ impl VaultService {
         request: &ProtectFolder,
     ) -> Result<ProtectedFolder, AccountError> {
         if !self.auth.keeps_folder_keys() {
-            return Err(AccountError::Invalid {
-                field: "/lock",
-                message: "This server has no secrets key, so it cannot keep the key of a \
-                          password folder.",
-            });
+            return Err(AccountError::invalid(
+                "/lock",
+                "This server has no secrets key, so it cannot keep the key of a \
+                 password folder.",
+            ));
         }
-        let password = request.password.as_deref().ok_or(AccountError::Invalid {
-            field: "/password",
-            message: "A password lock needs the password.",
-        })?;
-        if let Some(message) = password_problem(password) {
-            return Err(AccountError::Invalid {
-                field: "/password",
-                message,
-            });
-        }
+        let password = request.password.as_deref().ok_or(AccountError::invalid(
+            "/password",
+            "A password lock needs the password.",
+        ))?;
+        check_password(password)?;
         let secret = FolderSecret::generate();
         self.check_names_fit(user, request.node_id, secret.keys()?)
             .await?;
@@ -129,11 +120,11 @@ impl VaultService {
         let names = files::Names::sealed(folder, keys);
         for node in self.db.folder_nodes(user, folder).await? {
             if names.store(node.kind, &node.name).is_err() {
-                return Err(AccountError::Invalid {
-                    field: "/node_id",
-                    message: "A name inside the folder is longer than 159 bytes, the most a \
-                              password folder holds. Rename it first.",
-                });
+                return Err(AccountError::invalid(
+                    "/node_id",
+                    "A name inside the folder is longer than 159 bytes, the most a \
+                     password folder holds. Rename it first.",
+                ));
             }
         }
         Ok(())

@@ -13,7 +13,7 @@ use sha2::Digest;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use db::{NodeId, Upload, UserId};
+use db::{Upload, UserId};
 
 use crate::{Actor, BodyError, FilesError, Names, content::ContentStore};
 
@@ -23,7 +23,7 @@ mod slots;
 mod types;
 
 use slots::{Hashing, Uploads};
-pub use types::{ChunkOutcome, UploadRequest, UploadStatus, UploadTarget};
+pub use types::{ChunkOutcome, UploadDestination, UploadRequest, UploadStatus, UploadTarget};
 
 /// Resumable uploads, of files of the user's tree and of transfers.
 #[derive(Clone, Debug)]
@@ -92,29 +92,27 @@ impl UploadService {
             .await
     }
 
-    /// The folder a file upload `id` stores into (`None` for the root), so the caller can tell
-    /// whose names it needs; `None` for an upload of a transfer.
+    /// Where upload `id` stores its file, so the caller can tell whose names it needs.
     pub async fn destination(
         &self,
         owner: UserId,
         id: Uuid,
-    ) -> Result<Option<Option<NodeId>>, FilesError> {
+    ) -> Result<UploadDestination, FilesError> {
         let upload = self.content.db.get_upload(owner, id).await?;
         if upload.transfer_item_id.is_some() {
-            return Ok(None);
+            return Ok(UploadDestination::Transfer);
         }
-        match upload.node_id {
-            Some(node) => Ok(Some(self.content.db.get_node(owner, node).await?.parent_id)),
-            None => Ok(Some(upload.parent_id)),
-        }
+        let folder = match upload.node_id {
+            Some(node) => self.content.db.get_node(owner, node).await?.parent_id,
+            None => upload.parent_id,
+        };
+        Ok(UploadDestination::Folder(folder))
     }
 
     /// Abandons an upload and the bytes it has received.
     pub async fn cancel_upload(&self, owner: UserId, id: Uuid) -> Result<(), FilesError> {
         self.content.db.get_upload(owner, id).await?;
-        let slot = self.uploads.slot(id);
-        let _guard = slot.lock().await;
-        self.forget_upload(id).await;
+        self.abandon_upload(id).await;
         Ok(())
     }
 

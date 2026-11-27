@@ -34,5 +34,7 @@ pub use tree::{
     BlobOp, MoveBatch, MoveConflict, MoveOutcome, NodeUpdate, StoreOptions, StoreOutcome,
     TrashOutcome,
 };
-pub use uploads::{ChunkOutcome, UploadRequest, UploadService, UploadStatus, UploadTarget};
+pub use uploads::{
+    ChunkOutcome, UploadDestination, UploadRequest, UploadService, UploadStatus, UploadTarget,
+};
 pub use versions::VersionService;

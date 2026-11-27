@@ -12,7 +12,7 @@ use time::Duration;
 
 use auth::AuthService;
 use db::Db;
-use protocol::{WRAPPED_LEN, encoding::Base64Url};
+use protocol::{WRAPPED_LEN, encoding::Base64Url, rules::password_problem};
 
 use crate::AccountError;
 
@@ -41,13 +41,21 @@ impl VaultService {
     }
 }
 
+/// Refuses a folder password that breaks the password rules.
+fn check_password(password: &str) -> Result<(), AccountError> {
+    match password_problem(password) {
+        Some(message) => Err(AccountError::invalid("/password", message)),
+        None => Ok(()),
+    }
+}
+
 fn check_wrapped(field: &'static str, wrapped: &Base64Url) -> Result<(), AccountError> {
     if wrapped.len() == WRAPPED_LEN {
         Ok(())
     } else {
-        Err(AccountError::Invalid {
+        Err(AccountError::invalid(
             field,
-            message: "A wrapped key must be 73 bytes.",
-        })
+            "A wrapped key must be 73 bytes.",
+        ))
     }
 }
