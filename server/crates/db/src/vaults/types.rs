@@ -1,13 +1,11 @@
 //! The rows and inputs of the vault and protected folders.
 
-use std::fmt;
-
-use protocol::{FolderLock, ProtectionState, UnlockerKind, redact::Redacted};
+use protocol::{FolderLock, ProtectionState, UnlockerKind};
 use sqlx::FromRow;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{DbError, NodeId, NodeKind};
+use crate::{DbError, NodeId};
 
 #[derive(Clone, Debug, PartialEq, Eq, FromRow)]
 pub struct StoredUnlocker {
@@ -68,14 +66,42 @@ pub struct Rewrapped {
 pub struct StoredProtection {
     pub node_id: NodeId,
     pub lock: FolderLock,
-    /// Security keys: the folder secret wrapped with the vault key of `epoch`.
-    pub wrapped_secret: Option<Vec<u8>>,
+    /// The folder secret, wrapped with the vault key of `epoch` (security key) or the
+    /// password's key (password).
+    pub wrapped_secret: Vec<u8>,
     pub epoch: Option<i32>,
+    /// Passwords: the folder secret wrapped with the folder's recovery key.
+    pub recovery_wrapped_secret: Option<Vec<u8>>,
+    pub kdf_salt: Option<Vec<u8>>,
+    pub kdf_memory_kib: Option<i32>,
+    pub kdf_iterations: Option<i32>,
+    pub kdf_parallelism: Option<i32>,
     /// The age recipient content is encrypted to.
     pub recipient: String,
     pub format: i32,
     pub state: ProtectionState,
     pub created_at: OffsetDateTime,
+}
+
+impl StoredProtection {
+    /// A password folder's Argon2id parameters; `None` for a security-key folder.
+    pub fn kdf(&self) -> Option<StoredKdf> {
+        Some(StoredKdf {
+            salt: self.kdf_salt.clone()?,
+            memory_kib: self.kdf_memory_kib?,
+            iterations: self.kdf_iterations?,
+            parallelism: self.kdf_parallelism?,
+        })
+    }
+}
+
+/// A password folder's Argon2id parameters, as the client made them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredKdf {
+    pub salt: Vec<u8>,
+    pub memory_kib: i32,
+    pub iterations: i32,
+    pub parallelism: i32,
 }
 
 /// The lock of a folder protected with a security key: its secret wrapped with the vault key
@@ -87,26 +113,24 @@ pub struct KeyLock<'a> {
     pub recipient: &'a str,
 }
 
-/// The lock of a folder the server encrypts: the hash its password is checked against, its
-/// secret sealed with the server's key, and the recipient derived from that secret.
-#[derive(Clone, Copy)]
+/// The lock of a folder protected with a password: its secret wrapped with the key the client
+/// derived from the password and with the folder's recovery key, the password's Argon2id
+/// parameters, and the age recipient clients encrypt to.
+#[derive(Clone, Copy, Debug)]
 pub struct PasswordLock<'a> {
-    pub password_hash: &'a str,
-    /// The hash of the folder's recovery key.
-    pub recovery_hash: &'a str,
-    pub sealed_key: &'a [u8],
+    pub wrapped_secret: &'a [u8],
+    pub recovery_wrapped_secret: &'a [u8],
+    pub kdf: &'a StoredKdf,
     pub recipient: &'a str,
 }
 
-impl fmt::Debug for PasswordLock<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PasswordLock")
-            .field("password_hash", &Redacted)
-            .field("recovery_hash", &Redacted)
-            .field("sealed_key", &Redacted)
-            .field("recipient", &self.recipient)
-            .finish()
-    }
+/// A password folder's secret wrapped for a new password, and for a new recovery key when
+/// the old one was used.
+#[derive(Clone, Copy, Debug)]
+pub struct NewPassword<'a> {
+    pub wrapped_secret: &'a [u8],
+    pub kdf: &'a StoredKdf,
+    pub recovery_wrapped_secret: Option<&'a [u8]>,
 }
 
 /// How a folder is protected.
@@ -114,48 +138,6 @@ impl fmt::Debug for PasswordLock<'_> {
 pub enum NewProtection<'a> {
     SecurityKey(KeyLock<'a>),
     Password(PasswordLock<'a>),
-}
-
-/// A password folder's secrets, to check a password and open its key.
-#[derive(Clone, PartialEq, Eq, FromRow)]
-pub struct PasswordSecrets {
-    pub password_hash: String,
-    pub recovery_hash: String,
-    pub sealed_key: Vec<u8>,
-}
-
-impl fmt::Debug for PasswordSecrets {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PasswordSecrets")
-            .field("password_hash", &Redacted)
-            .field("recovery_hash", &Redacted)
-            .field("sealed_key", &Redacted)
-            .finish()
-    }
-}
-
-/// The password folder that holds a node.
-#[derive(Clone, Debug, PartialEq, Eq, FromRow)]
-pub struct EnclosingPasswordFolder {
-    pub node_id: NodeId,
-    pub recipient: String,
-    pub state: ProtectionState,
-}
-
-/// A stored file to convert: its node and the ids of its older versions.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FolderFile {
-    pub node_id: NodeId,
-    pub versions: Vec<Uuid>,
-}
-
-/// A node inside a folder being protected, as [`Db::folder_nodes`](crate::Db::folder_nodes) lists it.
-#[derive(Clone, Debug, PartialEq, Eq, FromRow)]
-pub struct FolderNode {
-    pub id: NodeId,
-    pub parent_id: Option<NodeId>,
-    pub kind: NodeKind,
-    pub name: String,
 }
 
 /// Why a folder cannot be protected.

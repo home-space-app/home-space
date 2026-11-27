@@ -1,8 +1,8 @@
-//! The vault key and the scoped operations clients call.
+//! The vault key and the operations clients call for security-key folders.
 //!
-//! A security-key folder costs one touch per action: [`with_folder_keys`] asks the key, unwraps
-//! the vault key and the folder secret, runs the action, and drops every key before it returns.
-//! Password folders are the server's: it encrypts them, and clients only send the password.
+//! Unlocking a security-key folder costs one touch: [`unlock_folder`] asks the key, unwraps the
+//! vault key and the folder secret, drops both and returns the folder's keys, which the client
+//! holds until it locks the folder. Password folders are in [`crate::password`].
 
 use zeroize::Zeroize;
 
@@ -152,21 +152,26 @@ pub struct ProtectedFolder<'a> {
     pub recipient: &'a str,
 }
 
-/// One action in a security-key folder: one touch, then the folder keys for `action`, then
-/// nothing kept. Fails if the server's recipient for the folder is not the secret's.
-pub fn with_folder_keys<T>(
+/// Unlocks a security-key folder: one touch, and its keys. The vault key and the folder secret
+/// are dropped before it returns. Fails if the server's recipient for the folder is not the
+/// secret's.
+pub fn unlock_folder(
     auth: &mut impl Authenticator,
     user: &uuid::Uuid,
     unlocker: Unlocker<'_>,
     folder: ProtectedFolder<'_>,
-    action: impl FnOnce(&FolderKeys) -> Result<T>,
-) -> Result<T> {
+) -> Result<FolderKeys> {
     with_vault_key(auth, user, unlocker, |vault_key| {
-        let keys =
-            FolderSecret::unwrap(vault_key, folder.node_id, folder.wrapped_secret)?.keys()?;
-        keys.check_recipient(folder.recipient)?;
-        action(&keys)
+        open_folder(vault_key, folder)
     })
+}
+
+/// A security-key folder's keys from an open vault key, as when one unlock opens several
+/// folders. Fails if the server's recipient for the folder is not the secret's.
+pub fn open_folder(vault_key: &VaultKey, folder: ProtectedFolder<'_>) -> Result<FolderKeys> {
+    let keys = FolderSecret::unwrap(vault_key, folder.node_id, folder.wrapped_secret)?.keys()?;
+    keys.check_recipient(folder.recipient)?;
+    Ok(keys)
 }
 
 /// What `POST /protected` takes for a new protected folder.
@@ -274,13 +279,9 @@ mod tests {
             },
         ] {
             auth.touches = 0;
-            let (name, plain) = with_folder_keys(&mut auth, &USER, unlocker, listed, |keys| {
-                Ok((
-                    keys.open_name(&FOLDER, NodeKind::File, &sealed)?,
-                    content::decrypt_bytes(keys.identity(), &blob)?,
-                ))
-            })
-            .unwrap();
+            let keys = unlock_folder(&mut auth, &USER, unlocker, listed).unwrap();
+            let name = keys.open_name(&FOLDER, NodeKind::File, &sealed).unwrap();
+            let plain = content::decrypt_bytes(keys.identity(), &blob).unwrap();
             assert_eq!(name, "passport.pdf");
             assert_eq!(plain, b"scan");
             assert!(auth.touches <= 1);
@@ -292,7 +293,7 @@ mod tests {
             recipient: &other,
             ..listed
         };
-        assert!(with_folder_keys(&mut auth, &USER, unlocker_a, swapped, |_| Ok(())).is_err());
+        assert!(unlock_folder(&mut auth, &USER, unlocker_a, swapped).is_err());
     }
 
     #[test]

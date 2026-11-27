@@ -5,7 +5,7 @@ use tokio::fs;
 use uuid::Uuid;
 
 use db::{Node, NodeId, ReceivedShare, SharedAccess, UserId};
-use files::{Actor, ArchiveEntry, Names, SavedCopy};
+use files::{Actor, ArchiveEntry, SavedCopy};
 
 use crate::{ReceivedDetails, ShareError, ShareService, service::live};
 
@@ -69,9 +69,7 @@ impl ShareService {
         Ok((share.owner_name, entries))
     }
 
-    /// Saves copies of shared items into `user`'s folder `parent`, made on `device`, storing
-    /// names as `names`, those of `parent`, say.
-    #[allow(clippy::too_many_arguments)]
+    /// Saves copies of shared items into `user`'s folder `parent`, made on `device`.
     pub async fn copy_received(
         &self,
         user: UserId,
@@ -79,13 +77,12 @@ impl ShareService {
         id: Uuid,
         node_ids: &[NodeId],
         parent: Option<NodeId>,
-        names: &Names,
     ) -> Result<SavedCopy, ShareError> {
         let share = self.received(user, id).await?;
         let actor = Actor::new(user, device);
         Ok(self
             .nodes
-            .copy_shared(actor, share.root(), node_ids, parent, names)
+            .copy_shared(actor, share.root(), node_ids, parent)
             .await?)
     }
 }

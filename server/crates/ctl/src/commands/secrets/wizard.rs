@@ -30,7 +30,7 @@ pub async fn run(db: &Db, tenant: TenantId) -> Result<()> {
         "Rotating {jwt_var} and {key_var} of tenant {tenant}.\n\
          Both get new values; everything sealed with the secrets key is sealed again with the new\n\
          one, and every user is signed out on every device. Changing either by hand instead\n\
-         would leave authenticator apps and password folders unreadable.\n"
+         would leave authenticator apps unreadable.\n"
     );
     if !ask("Is the Home Space server stopped? It must stay stopped until this is done.")? {
         println!("Stop it first, then run this again. Nothing was changed.");
@@ -93,7 +93,7 @@ async fn check_current(
     match secrets_key::check(db, tenant, current.as_ref()).await {
         Ok(_) => Ok(()),
         Err(SecretsKeyError::Missing) => anyhow::bail!(
-            "authenticator apps or password folders are sealed with a secrets key: give the \
+            "authenticator apps are sealed with a secrets key: give the \
              current {key_var}. Nothing was changed"
         ),
         Err(SecretsKeyError::Wrong) => anyhow::bail!(

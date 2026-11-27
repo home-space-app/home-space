@@ -62,7 +62,7 @@ pub use oidc::OidcPending;
 pub use protocol::{NodeId, NodeKind, OnConflict, Patch, SharePermission, UserId};
 pub use search::{ContentState, RankedNode};
 pub use second_factors::{PendingLogin, SecondFactorState, StoredTotp};
-pub use secrets_keys::{SealedFolderKey, SealedSecrets, SealedTotp, SecretsRotation};
+pub use secrets_keys::{SealedSecrets, SealedTotp, SecretsRotation};
 pub use sessions::{Authentication, Confirmation, LiveSession};
 pub use shares::{
     NewShareLink, NewUserShare, OwnedShare, ReceivedShare, ShareLink, ShareRecipient, ShareUpdate,
@@ -78,9 +78,9 @@ pub use trash::{LOST_AND_FOUND, SpecialFolders, TrashedNode};
 pub use tx::Tx;
 pub use uploads::{NewUpload, Upload};
 pub use vaults::{
-    EnclosingPasswordFolder, FolderFile, FolderKey, FolderNode, KeyLock, NewProtection,
-    NewUnlocker, PasswordLock, PasswordSecrets, ProtectError, ProtectRefusal, Rewrapped,
-    StoredProtection, StoredUnlocker, StoredVault, UnlockerSource,
+    FolderKey, KeyLock, NewPassword, NewProtection, NewUnlocker, PasswordLock, ProtectError,
+    ProtectRefusal, Rewrapped, StoredKdf, StoredProtection, StoredUnlocker, StoredVault,
+    UnlockerSource,
 };
 pub use webauthn::{
     Ceremony, CeremonyKind, MAX_WEBAUTHN_CREDENTIALS, NewCeremony, NewCredential, StoredCredential,

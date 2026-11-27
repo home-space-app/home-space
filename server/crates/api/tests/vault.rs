@@ -378,9 +378,12 @@ async fn a_folder_needs_a_whole_lock_and_is_protected_once(pool: PgPool) {
     let notes = folder(&app, &token, "Notes").await;
     let protect_with = |body: Value| send(&app, Method::POST, "/api/v1/protected", &token, body);
 
-    let password = protect_with(json!({ "node_id": notes, "lock": "password" })).await;
+    let password = protect_with(json!({
+        "node_id": notes, "lock": "password", "wrapped_secret": wrapped(2), "recipient": RECIPIENT,
+    }))
+    .await;
     assert_eq!(password.status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(password.json()["errors"][0]["pointer"], "/password");
+    assert_eq!(password.json()["errors"][0]["pointer"], "/kdf");
     let bad_recipient = protect_with(json!({
         "node_id": notes, "lock": "security_key", "wrapped_secret": wrapped(2),
         "recipient": "age1nope", "epoch": 1,
@@ -467,16 +470,23 @@ async fn changing_what_unlocks_needs_a_recent_sign_in(pool: PgPool) {
     );
 }
 
-const FOLDER_PASSWORD: &str = "correct horse battery";
-const AGE_HEADER: &[u8] = b"age-encryption.org/v1\n";
+/// The Argon2id parameters a client sends for a password, with a salt of `fill`.
+fn kdf(fill: u8) -> Value {
+    json!({ "salt": b64(&[fill; 16]), "memory_kib": 65536, "iterations": 3, "parallelism": 1 })
+}
 
+/// Protects `node` with a password: the secret wrapped as a client would, for the password
+/// and for the folder's recovery key.
 async fn protect_with_password(app: &TestApp, token: &str, node: &str) -> common::Response {
     send(
         app,
         Method::POST,
         "/api/v1/protected",
         token,
-        json!({ "node_id": node, "lock": "password", "password": FOLDER_PASSWORD }),
+        json!({
+            "node_id": node, "lock": "password", "wrapped_secret": wrapped(5),
+            "recipient": RECIPIENT, "kdf": kdf(1), "recovery_wrapped_secret": wrapped(6),
+        }),
     )
     .await
 }
@@ -505,186 +515,6 @@ fn stored_blobs(app: &TestApp, user: &str) -> Vec<Vec<u8>> {
         .collect()
 }
 
-#[sqlx::test(migrations = "../../migrations")]
-async fn a_password_folder_is_encrypted_on_disk_and_opens_with_its_password(pool: PgPool) {
-    let app = setup(pool).await;
-    let token = app.user_token("alice").await;
-    let alice = app.user_id("alice").await.to_string();
-    let notes = folder(&app, &token, "Notes").await;
-    let file = upload_into(&app, &token, &notes, "plan.txt", "first draft").await;
-    upload_into(&app, &token, &notes, "plan.txt", "second draft").await;
-
-    let protecting = protect_with_password(&app, &token, &notes).await;
-    assert_eq!(
-        protecting.status,
-        StatusCode::CREATED,
-        "{}",
-        protecting.json()
-    );
-    assert_eq!(protecting.json()["state"], "protecting");
-    assert!(protecting.json().get("wrapped_secret").is_none());
-    let mut state = String::new();
-    for _ in 0..100 {
-        let listed = app.get("/api/v1/protected", &token).await.json();
-        state = listed[0]["state"].as_str().unwrap_or_default().to_owned();
-        if state == "protected" {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    assert_eq!(state, "protected");
-    // The current content and the older version are both age files now.
-    let blobs = stored_blobs(&app, &alice);
-    assert_eq!(blobs.len(), 2);
-    assert!(blobs.iter().all(|blob| blob.starts_with(AGE_HEADER)));
-    assert!(
-        !blobs
-            .iter()
-            .any(|blob| blob.windows(5).any(|w| w == b"draft"))
-    );
-
-    let content = format!("/api/v1/files/{file}/content");
-    let old = format!("/api/v1/files/{file}/versions/1/content");
-    let unlock_uri = format!("/api/v1/protected/{notes}/unlock");
-    // Setting the password left the folder unlocked for this session; lock it again.
-    assert_eq!(app.get(&content, &token).await.body, b"second draft");
-    let locked = delete(&app, &unlock_uri, &token).await;
-    assert_eq!(locked.status, StatusCode::NO_CONTENT);
-    assert_eq!(problem(&app.get(&content, &token).await), "locked");
-    let unlock = |password: &str| {
-        send(
-            &app,
-            Method::POST,
-            &unlock_uri,
-            &token,
-            json!({ "password": password }),
-        )
-    };
-    assert_eq!(problem(&unlock("not the password").await), "wrong-password");
-    let unlocked = unlock(FOLDER_PASSWORD).await;
-    assert_eq!(unlocked.status, StatusCode::OK, "{}", unlocked.json());
-
-    let current = app.get(&content, &token).await;
-    assert_eq!(current.status, StatusCode::OK);
-    assert_eq!(current.body, b"second draft");
-    assert_eq!(app.get(&old, &token).await.body, b"first draft");
-    let range = app
-        .send_with(
-            Method::GET,
-            &content,
-            Some(&token),
-            Body::empty(),
-            None,
-            &[("range", "bytes=7-11")],
-        )
-        .await;
-    assert_eq!(range.status, StatusCode::PARTIAL_CONTENT);
-    assert_eq!(range.body, b"draft");
-
-    // A new file is encrypted as it is stored, and reads back plain.
-    let new = upload_into(&app, &token, &notes, "todo.txt", "buy milk").await;
-    assert_eq!(stored_blobs(&app, &alice).len(), 3);
-    assert!(
-        stored_blobs(&app, &alice)
-            .iter()
-            .all(|blob| blob.starts_with(AGE_HEADER))
-    );
-    assert_eq!(
-        app.get(&format!("/api/v1/files/{new}/content"), &token)
-            .await
-            .body,
-        b"buy milk"
-    );
-
-    // Nothing moves in or out: what is inside is encrypted and what is outside is not.
-    let moved = send(
-        &app,
-        Method::POST,
-        "/api/v1/nodes/move",
-        &token,
-        json!({ "ids": [new], "parent_id": null }),
-    )
-    .await;
-    assert_eq!(problem(&moved), "protected");
-
-    let locked = delete(&app, &format!("/api/v1/protected/{notes}/unlock"), &token).await;
-    assert_eq!(locked.status, StatusCode::NO_CONTENT);
-    assert_eq!(problem(&app.get(&content, &token).await), "locked");
-}
-
-#[sqlx::test(migrations = "../../migrations")]
-async fn an_unlock_is_for_one_session_only(pool: PgPool) {
-    let app = setup(pool).await;
-    let laptop = app.user_token("alice").await;
-    let phone = app
-        .sign_in_from("alice", uuid::Uuid::now_v7(), "Phone")
-        .await;
-    let notes = folder(&app, &laptop, "Notes").await;
-    let protected = protect_with_password(&app, &laptop, &notes).await;
-    assert_eq!(protected.json()["state"], "protected");
-    let file = upload_into(&app, &laptop, &notes, "a.txt", "secret").await;
-    let content = format!("/api/v1/files/{file}/content");
-    send(
-        &app,
-        Method::POST,
-        &format!("/api/v1/protected/{notes}/unlock"),
-        &laptop,
-        json!({ "password": FOLDER_PASSWORD }),
-    )
-    .await;
-    assert_eq!(app.get(&content, &laptop).await.body, b"secret");
-    assert_eq!(problem(&app.get(&content, &phone).await), "locked");
-}
-
-#[sqlx::test(migrations = "../../migrations")]
-async fn a_password_folder_needs_a_good_password_and_finishes_on_the_server(pool: PgPool) {
-    let app = setup(pool).await;
-    let token = app.user_token("alice").await;
-    let notes = folder(&app, &token, "Notes").await;
-    let weak = send(
-        &app,
-        Method::POST,
-        "/api/v1/protected",
-        &token,
-        json!({ "node_id": notes, "lock": "password", "password": "short" }),
-    )
-    .await;
-    assert_eq!(weak.json()["errors"][0]["pointer"], "/password");
-    assert_eq!(
-        protect_with_password(&app, &token, &notes).await.status,
-        StatusCode::CREATED
-    );
-    let id = |action: &str| format!("/api/v1/protected/{notes}{action}");
-    let finish = send(&app, Method::POST, &id("/finish"), &token, json!({})).await;
-    assert_eq!(problem(&finish), "protected");
-    // The server drops a password folder's protection itself, once it decrypted it.
-    let remove = delete(&app, &id(""), &token).await;
-    assert_eq!(problem(&remove), "protected");
-}
-
-/// Waits for the server to finish protecting the user's only password folder.
-async fn wait_protected(app: &TestApp, token: &str) {
-    for _ in 0..100 {
-        let listed = app.get("/api/v1/protected", token).await.json();
-        if listed[0]["state"] == "protected" {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    panic!("the folder was not protected in time");
-}
-
-/// The names the database holds for the user's nodes.
-async fn stored_names(pool: &PgPool, user: &str) -> Vec<String> {
-    sqlx::query_scalar(
-        "SELECT n.name FROM nodes n JOIN users u ON u.id = n.owner_id WHERE u.username = $1",
-    )
-    .bind(user)
-    .fetch_all(pool)
-    .await
-    .expect("names")
-}
-
 async fn make_folder_in(app: &TestApp, token: &str, parent: &str, name: &str) -> common::Response {
     app.json(
         Method::POST,
@@ -698,241 +528,252 @@ async fn make_folder_in(app: &TestApp, token: &str, parent: &str, name: &str) ->
 fn names_of(listing: &Value) -> Vec<&str> {
     listing
         .as_array()
-        .expect("listing")
-        .iter()
-        .map(|node| node["name"].as_str().expect("name"))
+        .into_iter()
+        .flatten()
+        .filter_map(|node| node["name"].as_str())
         .collect()
 }
 
 #[sqlx::test(migrations = "../../migrations")]
-async fn names_in_a_password_folder_are_sealed_and_need_an_unlock(pool: PgPool) {
-    let app = setup(pool.clone()).await;
-    let token = app.user_token("alice").await;
-    let notes = folder(&app, &token, "Notes").await;
-    upload_into(&app, &token, &notes, "plan.txt", "draft").await;
-    let year = make_folder_in(&app, &token, &notes, "2025").await.json()["id"]
-        .as_str()
-        .expect("id")
-        .to_owned();
-    let taxes = upload_into(&app, &token, &year, "taxes.pdf", "numbers").await;
-
-    assert_eq!(
-        protect_with_password(&app, &token, &notes).await.status,
-        StatusCode::CREATED
-    );
-    wait_protected(&app, &token).await;
-    // The folder keeps its name; what is inside is sealed in the database.
-    let stored = stored_names(&pool, "alice").await;
-    assert!(stored.contains(&"Notes".to_owned()));
-    for plain in ["plan.txt", "2025", "taxes.pdf"] {
-        assert!(
-            !stored.iter().any(|name| name == plain),
-            "{plain} is stored in plain"
-        );
-    }
-
-    // Protecting left the folder unlocked for this session, which sees plain names.
-    let listing = app
-        .get(&format!("/api/v1/nodes?parent_id={notes}"), &token)
-        .await;
-    assert_eq!(listing.status, StatusCode::OK, "{}", listing.json());
-    assert_eq!(names_of(&listing.json()), ["plan.txt", "2025"]);
-    let node = app.get(&format!("/api/v1/nodes/{taxes}"), &token).await;
-    assert_eq!(node.json()["name"], "taxes.pdf");
-    let ancestors = app
-        .get(&format!("/api/v1/nodes/{taxes}/ancestors"), &token)
-        .await;
-    assert_eq!(names_of(&ancestors.json()), ["Notes", "2025"]);
-    let download = app
-        .get(&format!("/api/v1/files/{taxes}/content"), &token)
-        .await;
-    let disposition = download.headers["content-disposition"]
-        .to_str()
-        .expect("header");
-    assert!(disposition.contains("taxes.pdf"), "{disposition}");
-
-    // New names are sealed too, and come back plain.
-    let made = make_folder_in(&app, &token, &notes, "Receipts").await;
-    assert_eq!(made.status, StatusCode::CREATED, "{}", made.json());
-    assert_eq!(made.json()["name"], "Receipts");
-    let renamed = app
-        .json(
-            Method::PATCH,
-            &format!("/api/v1/nodes/{taxes}"),
-            Some(&token),
-            json!({ "name": "taxes 2025.pdf" }),
-        )
-        .await;
-    assert_eq!(renamed.json()["name"], "taxes 2025.pdf");
-    // Moving within the folder keeps the sealed name readable.
-    let moved = app
-        .json(
-            Method::PATCH,
-            &format!("/api/v1/nodes/{taxes}"),
-            Some(&token),
-            json!({ "parent_id": notes }),
-        )
-        .await;
-    assert_eq!(moved.json()["name"], "taxes 2025.pdf");
-    let again = upload_into(&app, &token, &notes, "plan.txt", "draft 2").await;
-    let listing = app
-        .get(&format!("/api/v1/nodes?parent_id={notes}"), &token)
-        .await;
-    assert_eq!(
-        names_of(&listing.json()),
-        ["plan.txt", "taxes 2025.pdf", "2025", "Receipts"]
-    );
-    let stored = stored_names(&pool, "alice").await;
-    for plain in ["Receipts", "taxes 2025.pdf", "plan.txt"] {
-        assert!(
-            !stored.iter().any(|name| name == plain),
-            "{plain} is stored in plain"
-        );
-    }
-    let long = "a".repeat(200);
-    let too_long = make_folder_in(&app, &token, &notes, &long).await;
-    assert_eq!(problem(&too_long), "invalid-name");
-
-    // Locked, nothing inside can be read or written; the folder itself still shows.
-    let unlock_uri = format!("/api/v1/protected/{notes}/unlock");
-    delete(&app, &unlock_uri, &token).await;
-    let root = app.get("/api/v1/nodes", &token).await;
-    assert!(names_of(&root.json()).contains(&"Notes"));
-    assert_eq!(
-        app.get(&format!("/api/v1/nodes/{notes}"), &token)
-            .await
-            .status,
-        StatusCode::OK
-    );
-    for uri in [
-        format!("/api/v1/nodes?parent_id={notes}"),
-        format!("/api/v1/nodes/{again}"),
-        format!("/api/v1/nodes/{again}/ancestors"),
-        format!("/api/v1/nodes/{again}/versions"),
-    ] {
-        assert_eq!(problem(&app.get(&uri, &token).await), "locked", "{uri}");
-    }
-    assert_eq!(
-        problem(&make_folder_in(&app, &token, &notes, "More").await),
-        "locked"
-    );
-    let upload = app
-        .upload(&token, &format!("parent_id={notes}&name=new.txt"), "x")
-        .await;
-    assert_eq!(problem(&upload), "locked");
-    let rename = app
-        .json(
-            Method::PATCH,
-            &format!("/api/v1/nodes/{again}"),
-            Some(&token),
-            json!({ "name": "other.txt" }),
-        )
-        .await;
-    assert_eq!(problem(&rename), "locked");
-    assert_eq!(
-        problem(&delete(&app, &format!("/api/v1/nodes/{again}"), &token).await),
-        "locked"
-    );
-    assert_eq!(
-        problem(&delete(&app, &format!("/api/v1/nodes/{notes}"), &token).await),
-        "locked"
-    );
-}
-
-#[sqlx::test(migrations = "../../migrations")]
-async fn a_folder_with_a_name_too_long_to_seal_is_not_protected(pool: PgPool) {
+async fn a_password_folder_keeps_only_what_the_client_wrapped(pool: PgPool) {
     let app = setup(pool).await;
     let token = app.user_token("alice").await;
     let notes = folder(&app, &token, "Notes").await;
-    make_folder_in(&app, &token, &notes, &"é".repeat(100)).await;
-    let refused = protect_with_password(&app, &token, &notes).await;
+    let protected = protect_with_password(&app, &token, &notes).await;
     assert_eq!(
-        refused.json()["errors"][0]["pointer"],
-        "/node_id",
+        protected.status,
+        StatusCode::CREATED,
         "{}",
-        refused.json()
+        protected.json()
     );
+    assert_eq!(protected.json()["state"], "protected");
+
+    let listed = app.get("/api/v1/protected", &token).await.json();
+    assert_eq!(listed[0]["lock"], "password");
+    assert_eq!(listed[0]["wrapped_secret"], wrapped(5));
+    assert_eq!(listed[0]["recovery_wrapped_secret"], wrapped(6));
+    assert_eq!(listed[0]["kdf"], kdf(1));
+    assert_eq!(listed[0]["recipient"], RECIPIENT);
+    assert!(listed[0].get("epoch").is_none());
+
+    // The server stores what the client sends, plain or not, and reads nothing.
+    let file = upload_into(&app, &token, &notes, "tj7VHBiK2oF", "age bytes").await;
+    let content = app
+        .get(&format!("/api/v1/files/{file}/content"), &token)
+        .await;
+    assert_eq!(content.status, StatusCode::OK);
+    assert_eq!(content.body, b"age bytes");
+    let unlock = send(
+        &app,
+        Method::POST,
+        &format!("/api/v1/protected/{notes}/unlock"),
+        &token,
+        json!({ "password": "anything" }),
+    )
+    .await;
+    assert_eq!(unlock.status, StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_password_lock_needs_its_parameters_within_bounds(pool: PgPool) {
+    let app = setup(pool).await;
+    let token = app.user_token("alice").await;
+    let notes = folder(&app, &token, "Notes").await;
+    let lock = |kdf: Value, recovery: Value| {
+        json!({
+            "node_id": notes, "lock": "password", "wrapped_secret": wrapped(5),
+            "recipient": RECIPIENT, "kdf": kdf, "recovery_wrapped_secret": recovery,
+        })
+    };
+    let weak =
+        json!({ "salt": b64(&[1; 16]), "memory_kib": 1024, "iterations": 3, "parallelism": 1 });
+    let short_salt =
+        json!({ "salt": b64(&[1; 8]), "memory_kib": 65536, "iterations": 3, "parallelism": 1 });
+    for (body, field) in [
+        (lock(weak, json!(wrapped(6))), "/kdf"),
+        (lock(short_salt, json!(wrapped(6))), "/kdf"),
+        (lock(Value::Null, json!(wrapped(6))), "/kdf"),
+        (lock(kdf(1), Value::Null), "/recovery_wrapped_secret"),
+        (
+            lock(kdf(1), json!(b64(&[6; 10]))),
+            "/recovery_wrapped_secret",
+        ),
+    ] {
+        let refused = send(&app, Method::POST, "/api/v1/protected", &token, body).await;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            refused.json()
+        );
+        assert_eq!(pointer(&refused), field);
+    }
     assert_eq!(app.get("/api/v1/protected", &token).await.json(), json!([]));
 }
 
 #[sqlx::test(migrations = "../../migrations")]
-async fn changes_leave_out_what_a_session_has_not_unlocked(pool: PgPool) {
-    let app = setup(pool).await;
-    let laptop = app.user_token("alice").await;
-    let phone = app
-        .sign_in_from("alice", uuid::Uuid::now_v7(), "Phone")
-        .await;
-    let notes = folder(&app, &laptop, "Notes").await;
-    protect_with_password(&app, &laptop, &notes).await;
-    let cursor = app.get("/api/v1/changes", &phone).await.json()["cursor"].clone();
-    let since = format!("/api/v1/changes?since={cursor}");
-
-    upload_into(&app, &laptop, &notes, "secret.txt", "x").await;
-    folder(&app, &laptop, "Public").await;
-
-    let upserted = |response: &common::Response| -> Vec<String> {
-        response.json()["changes"]
-            .as_array()
-            .expect("changes")
-            .iter()
-            .filter(|change| change["type"] == "upserted")
-            .map(|change| change["node"]["name"].as_str().expect("name").to_owned())
-            .collect()
-    };
-    // The laptop unlocked the folder by protecting it; the phone did not.
-    let seen = upserted(&app.get(&since, &laptop).await);
-    assert!(seen.contains(&"secret.txt".to_owned()), "{seen:?}");
-    assert!(seen.contains(&"Public".to_owned()));
-    assert_eq!(upserted(&app.get(&since, &phone).await), ["Public"]);
-}
-
-#[sqlx::test(migrations = "../../migrations")]
-async fn a_resumable_upload_into_a_password_folder_is_sealed(pool: PgPool) {
+async fn a_password_folder_takes_a_new_wrap_and_keeps_its_recovery_key(pool: PgPool) {
     let app = setup(pool.clone()).await;
     let token = app.user_token("alice").await;
     let notes = folder(&app, &token, "Notes").await;
     protect_with_password(&app, &token, &notes).await;
-    let created = app
-        .json(
-            Method::POST,
-            "/api/v1/uploads",
-            Some(&token),
-            json!({ "parent_id": notes, "name": "scan.pdf", "size": 4 }),
-        )
-        .await;
-    assert_eq!(created.status, StatusCode::CREATED, "{}", created.json());
-    let upload = created.json()["id"].as_str().expect("id").to_owned();
-    let appended = app
-        .send_with(
-            Method::PATCH,
-            &format!("/api/v1/uploads/{upload}"),
-            Some(&token),
-            Body::from("scan"),
-            Some("application/offset+octet-stream"),
-            &[("upload-offset", "0")],
-        )
-        .await;
-    assert!(appended.status.is_success(), "{}", appended.json());
-    let node = &appended.json()["node"];
-    assert_eq!(node["name"], "scan.pdf");
-    assert_eq!(node["mime"], "application/pdf");
-    assert!(
-        !stored_names(&pool, "alice")
-            .await
-            .contains(&"scan.pdf".to_owned())
-    );
+    let uri = format!("/api/v1/protected/{notes}/password");
 
-    // A locked folder takes no upload.
-    delete(&app, &format!("/api/v1/protected/{notes}/unlock"), &token).await;
-    let refused = app
+    let changed = send(
+        &app,
+        Method::POST,
+        &uri,
+        &token,
+        json!({ "wrapped_secret": wrapped(7), "kdf": kdf(2) }),
+    )
+    .await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.json());
+    assert_eq!(changed.json()["wrapped_secret"], wrapped(7));
+    assert_eq!(changed.json()["kdf"], kdf(2));
+    assert_eq!(changed.json()["recovery_wrapped_secret"], wrapped(6));
+
+    // With the recovery key, the client replaces it too.
+    let recovered = send(
+        &app,
+        Method::POST,
+        &uri,
+        &token,
+        json!({ "wrapped_secret": wrapped(8), "kdf": kdf(3), "recovery_wrapped_secret": wrapped(9) }),
+    )
+    .await;
+    assert_eq!(recovered.json()["recovery_wrapped_secret"], wrapped(9));
+    assert_eq!(recovered.json()["recipient"], RECIPIENT);
+
+    // A security-key folder has no password.
+    recovery_vault(&app, &token).await;
+    let keys = folder(&app, &token, "Keys").await;
+    protect(&app, &token, &keys, 1).await;
+    let refused = send(
+        &app,
+        Method::POST,
+        &format!("/api/v1/protected/{keys}/password"),
+        &token,
+        json!({ "wrapped_secret": wrapped(7), "kdf": kdf(2) }),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::NOT_FOUND);
+
+    sign_in_long_ago(&pool).await;
+    let stale = send(
+        &app,
+        Method::POST,
+        &uri,
+        &token,
+        json!({ "wrapped_secret": wrapped(7), "kdf": kdf(2) }),
+    )
+    .await;
+    assert_eq!(problem(&stale), "reauthentication-required");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_password_folder_with_content_is_protecting_until_the_client_has_replaced_it(
+    pool: PgPool,
+) {
+    let app = setup(pool).await;
+    let token = app.user_token("alice").await;
+    let notes = folder(&app, &token, "Notes").await;
+    upload_into(&app, &token, &notes, "plan.txt", "plain").await;
+    let protecting = protect_with_password(&app, &token, &notes).await;
+    assert_eq!(protecting.json()["state"], "protecting");
+    let id = |action: &str| format!("/api/v1/protected/{notes}{action}");
+    let finished = send(&app, Method::POST, &id("/finish"), &token, json!({})).await;
+    assert_eq!(finished.json()["state"], "protected", "{}", finished.json());
+    let unprotecting = send(&app, Method::POST, &id("/unprotect"), &token, json!({})).await;
+    assert_eq!(unprotecting.json()["state"], "unprotecting");
+    let removed = delete(&app, &id(""), &token).await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.json());
+    assert_eq!(app.get("/api/v1/protected", &token).await.json(), json!([]));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn nothing_moves_across_the_edge_of_a_protected_folder(pool: PgPool) {
+    let app = setup(pool).await;
+    let token = app.user_token("alice").await;
+    recovery_vault(&app, &token).await;
+    let docs = folder(&app, &token, "Docs").await;
+    let notes = id_in(&app, &token, &docs, "Notes").await;
+    let keys = id_in(&app, &token, &docs, "Keys").await;
+    protect_with_password(&app, &token, &notes).await;
+    protect(&app, &token, &keys, 1).await;
+    let plain = upload_into(&app, &token, &docs, "plain.txt", "outside").await;
+    let sealed = upload_into(&app, &token, &notes, "tj7VHBiK2oF", "inside").await;
+    let inner = id_in(&app, &token, &notes, "eDnpgp214PuY").await;
+
+    for (id, parent) in [
+        (&plain, &notes),
+        (&plain, &keys),
+        (&sealed, &docs),
+        (&sealed, &keys),
+    ] {
+        let refused = move_node(&app, &token, id, parent).await;
+        assert_eq!(problem(&refused), "protected", "{}", refused.json());
+    }
+    let batch = app
+        .json(
+            Method::POST,
+            "/api/v1/nodes/move",
+            Some(&token),
+            json!({ "ids": [plain], "parent_id": notes }),
+        )
+        .await;
+    assert_eq!(problem(&batch), "protected", "{}", batch.json());
+
+    // Within the folder, and the folder itself, move as usual.
+    let within = move_node(&app, &token, &sealed, &inner).await;
+    assert_eq!(within.status, StatusCode::OK, "{}", within.json());
+    let elsewhere = folder(&app, &token, "Elsewhere").await;
+    let whole = move_node(&app, &token, &notes, &elsewhere).await;
+    assert_eq!(whole.status, StatusCode::OK, "{}", whole.json());
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn nothing_lands_unencrypted_or_renumbered_in_a_protected_folder(pool: PgPool) {
+    let app = setup(pool).await;
+    let token = app.user_token("alice").await;
+    let notes = folder(&app, &token, "Notes").await;
+    protect_with_password(&app, &token, &notes).await;
+    let keep_both = app
         .json(
             Method::POST,
             "/api/v1/uploads",
             Some(&token),
-            json!({ "parent_id": notes, "name": "other.pdf", "size": 4 }),
+            json!({ "parent_id": notes, "name": "tj7VHBiK2oF", "size": 3, "keep_both": true }),
         )
         .await;
-    assert_eq!(problem(&refused), "locked");
+    assert_eq!(problem(&keep_both), "protected", "{}", keep_both.json());
+    let saved = app
+        .json(
+            Method::POST,
+            &format!("/api/v1/transfers/{}/save", uuid::Uuid::now_v7()),
+            Some(&token),
+            json!({ "parent_id": notes }),
+        )
+        .await;
+    assert_eq!(problem(&saved), "protected", "{}", saved.json());
+    let copied = app
+        .json(
+            Method::POST,
+            &format!("/api/v1/shared/{}/copy", uuid::Uuid::now_v7()),
+            Some(&token),
+            json!({ "node_ids": [uuid::Uuid::now_v7()], "parent_id": notes }),
+        )
+        .await;
+    assert_eq!(problem(&copied), "protected", "{}", copied.json());
+}
+
+async fn move_node(app: &TestApp, token: &str, id: &str, parent: &str) -> common::Response {
+    app.json(
+        Method::PATCH,
+        &format!("/api/v1/nodes/{id}"),
+        Some(token),
+        json!({ "parent_id": parent }),
+    )
+    .await
 }
 
 async fn id_in(app: &TestApp, token: &str, parent: &str, name: &str) -> String {
@@ -968,7 +809,7 @@ async fn password_folders_stay_out_of_search_duplicates_shares_and_transfers(poo
             .await;
         assert_eq!(problem(&refused), "protected", "{}", refused.json());
     }
-    // A shared folder that holds a password folder does not show it.
+    // A shared folder that holds a protected folder does not show it.
     let shared = app
         .json(
             Method::POST,
@@ -1024,27 +865,14 @@ async fn deleting_in_a_password_folder_skips_the_recycle_bin(pool: PgPool) {
     let notes = id_in(&app, &token, &docs, "Notes").await;
     upload_into(&app, &token, &docs, "plain.txt", "outside").await;
     protect_with_password(&app, &token, &notes).await;
-    let secret = upload_into(&app, &token, &notes, "secret.txt", "inside").await;
-    upload_into(&app, &token, &notes, "other.txt", "inside too").await;
+    let sealed = upload_into(&app, &token, &notes, "tj7VHBiK2oF", "age bytes").await;
+    upload_into(&app, &token, &notes, "eDnpgp214PuY", "more age bytes").await;
 
-    let deleted = delete(&app, &format!("/api/v1/nodes/{secret}"), &token).await;
+    let deleted = delete(&app, &format!("/api/v1/nodes/{sealed}"), &token).await;
     assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.json());
     assert_eq!(app.get("/api/v1/trash", &token).await.json(), json!([]));
     assert_eq!(stored_blobs(&app, &alice).len(), 2);
 
-    // A folder holding a locked password folder is deleted only once it is unlocked.
-    let unlock_uri = format!("/api/v1/protected/{notes}/unlock");
-    delete(&app, &unlock_uri, &token).await;
-    let refused = delete(&app, &format!("/api/v1/nodes/{docs}"), &token).await;
-    assert_eq!(problem(&refused), "locked");
-    send(
-        &app,
-        Method::POST,
-        &unlock_uri,
-        &token,
-        json!({ "password": FOLDER_PASSWORD }),
-    )
-    .await;
     let deleted = delete(&app, &format!("/api/v1/nodes/{docs}"), &token).await;
     assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.json());
     let binned = app.get("/api/v1/trash", &token).await.json();
@@ -1052,206 +880,6 @@ async fn deleting_in_a_password_folder_skips_the_recycle_bin(pool: PgPool) {
     assert_eq!(binned[0]["node"]["name"], "plain.txt");
     assert_eq!(stored_blobs(&app, &alice).len(), 1);
     assert_eq!(app.get("/api/v1/protected", &token).await.json(), json!([]));
-}
-
-#[sqlx::test(migrations = "../../migrations")]
-async fn a_password_folders_password_changes_with_the_old_one_or_the_recovery_key(pool: PgPool) {
-    let app = setup(pool).await;
-    let laptop = app.user_token("alice").await;
-    let phone = app
-        .sign_in_from("alice", uuid::Uuid::now_v7(), "Phone")
-        .await;
-    let notes = folder(&app, &laptop, "Notes").await;
-    let protected = protect_with_password(&app, &laptop, &notes).await;
-    let recovery = protected.json()["recovery_key"]
-        .as_str()
-        .expect("a recovery key, shown once")
-        .to_owned();
-    assert_eq!(recovery.split('-').count(), 11);
-    assert!(
-        app.get("/api/v1/protected", &laptop).await.json()[0]
-            .get("recovery_key")
-            .is_none()
-    );
-    let unlock_uri = format!("/api/v1/protected/{notes}/unlock");
-    let change = format!("/api/v1/protected/{notes}/password");
-    let listing = format!("/api/v1/nodes?parent_id={notes}");
-    let unlock = |token: String, password: String| {
-        let uri = unlock_uri.clone();
-        let app = &app;
-        async move {
-            send(
-                app,
-                Method::POST,
-                &uri,
-                &token,
-                json!({ "password": password }),
-            )
-            .await
-        }
-    };
-    assert_eq!(
-        unlock(phone.clone(), FOLDER_PASSWORD.to_owned())
-            .await
-            .status,
-        StatusCode::OK
-    );
-
-    // Signing in is not enough: the old password or the recovery key is.
-    let bare = send(
-        &app,
-        Method::POST,
-        &change,
-        &laptop,
-        json!({ "password": "a brand new one" }),
-    )
-    .await;
-    assert_eq!(bare.json()["errors"][0]["pointer"], "/current_password");
-    let wrong = send(
-        &app,
-        Method::POST,
-        &change,
-        &laptop,
-        json!({ "password": "a brand new one", "current_password": "not it at all" }),
-    )
-    .await;
-    assert_eq!(problem(&wrong), "wrong-password");
-    let weak = send(
-        &app,
-        Method::POST,
-        &change,
-        &laptop,
-        json!({ "password": "short", "current_password": FOLDER_PASSWORD }),
-    )
-    .await;
-    assert_eq!(weak.json()["errors"][0]["pointer"], "/password");
-
-    let changed = send(
-        &app,
-        Method::POST,
-        &change,
-        &laptop,
-        json!({ "password": "a brand new one", "current_password": FOLDER_PASSWORD }),
-    )
-    .await;
-    assert_eq!(changed.status, StatusCode::OK, "{}", changed.json());
-    assert!(changed.json().get("recovery_key").is_none());
-    // The phone is locked out and needs the new password; the laptop has the folder open.
-    assert_eq!(problem(&app.get(&listing, &phone).await), "locked");
-    assert_eq!(app.get(&listing, &laptop).await.status, StatusCode::OK);
-    assert_eq!(
-        problem(&unlock(phone.clone(), FOLDER_PASSWORD.to_owned()).await),
-        "wrong-password"
-    );
-
-    // Forgotten: the recovery key sets a new password, and is replaced.
-    let not_a_key = send(
-        &app,
-        Method::POST,
-        &change,
-        &phone,
-        json!({ "password": "forgot it again", "recovery_key": "ABCDE" }),
-    )
-    .await;
-    assert_eq!(not_a_key.json()["errors"][0]["pointer"], "/recovery_key");
-    let recovered = send(
-        &app,
-        Method::POST,
-        &change,
-        &phone,
-        json!({ "password": "forgot it again", "recovery_key": recovery.to_lowercase() }),
-    )
-    .await;
-    assert_eq!(recovered.status, StatusCode::OK, "{}", recovered.json());
-    let renewed = recovered.json()["recovery_key"]
-        .as_str()
-        .expect("a new recovery key")
-        .to_owned();
-    assert_ne!(renewed, recovery);
-    assert_eq!(app.get(&listing, &phone).await.status, StatusCode::OK);
-    assert_eq!(problem(&app.get(&listing, &laptop).await), "locked");
-    let reused = send(
-        &app,
-        Method::POST,
-        &change,
-        &laptop,
-        json!({ "password": "yet another one", "recovery_key": recovery }),
-    )
-    .await;
-    assert_eq!(problem(&reused), "wrong-password");
-    assert_eq!(
-        unlock(laptop.clone(), "forgot it again".to_owned())
-            .await
-            .status,
-        StatusCode::OK
-    );
-}
-
-#[sqlx::test(migrations = "../../migrations")]
-async fn unprotecting_a_password_folder_decrypts_it_in_place(pool: PgPool) {
-    let app = setup(pool.clone()).await;
-    let token = app.user_token("alice").await;
-    let alice = app.user_id("alice").await.to_string();
-    let notes = folder(&app, &token, "Notes").await;
-    let file = upload_into(&app, &token, &notes, "plan.txt", "first draft").await;
-    upload_into(&app, &token, &notes, "plan.txt", "second draft").await;
-    id_in(&app, &token, &notes, "2025").await;
-    protect_with_password(&app, &token, &notes).await;
-    wait_protected(&app, &token).await;
-    assert!(
-        stored_blobs(&app, &alice)
-            .iter()
-            .all(|blob| blob.starts_with(AGE_HEADER))
-    );
-
-    let unlock_uri = format!("/api/v1/protected/{notes}/unlock");
-    let unprotect = format!("/api/v1/protected/{notes}/unprotect");
-    delete(&app, &unlock_uri, &token).await;
-    assert_eq!(
-        problem(&send(&app, Method::POST, &unprotect, &token, json!({})).await),
-        "locked"
-    );
-    send(
-        &app,
-        Method::POST,
-        &unlock_uri,
-        &token,
-        json!({ "password": FOLDER_PASSWORD }),
-    )
-    .await;
-    let started = send(&app, Method::POST, &unprotect, &token, json!({})).await;
-    assert_eq!(started.status, StatusCode::OK, "{}", started.json());
-    assert_eq!(started.json()["state"], "unprotecting");
-
-    let mut gone = false;
-    for _ in 0..100 {
-        if app.get("/api/v1/protected", &token).await.json() == json!([]) {
-            gone = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    assert!(gone, "the protection was not dropped");
-    let blobs = stored_blobs(&app, &alice);
-    assert_eq!(blobs.len(), 2);
-    assert!(blobs.iter().all(|blob| !blob.starts_with(AGE_HEADER)));
-    let stored = stored_names(&pool, "alice").await;
-    for plain in ["plan.txt", "2025"] {
-        assert!(
-            stored.contains(&plain.to_owned()),
-            "{plain} is not plain again"
-        );
-    }
-    // An ordinary folder again: no unlock needed.
-    delete(&app, &unlock_uri, &token).await;
-    let listing = app
-        .get(&format!("/api/v1/nodes?parent_id={notes}"), &token)
-        .await;
-    assert_eq!(names_of(&listing.json()), ["plan.txt", "2025"]);
-    let old = app
-        .get(&format!("/api/v1/files/{file}/versions/1/content"), &token)
-        .await;
-    assert_eq!(old.body, b"first draft");
 }
 
 #[sqlx::test(migrations = "../../migrations")]

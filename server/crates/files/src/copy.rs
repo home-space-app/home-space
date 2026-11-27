@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use db::{Node, NodeId, NodeKind, SharedRoot, UserId};
 
 use crate::{
-    Actor, FilesError, MAX_ARCHIVE_ENTRIES, Names, NodeService, StoreOptions, StoreOutcome,
+    Actor, FilesError, MAX_ARCHIVE_ENTRIES, NodeService, StoreOptions, StoreOutcome,
     content::new_content, emitted, tree,
 };
 
@@ -21,18 +21,16 @@ pub struct SavedCopy {
 impl NodeService {
     /// Copies `node_ids`, each reachable through `share`, into `caller`'s folder `parent` (the
     /// root when `None`), folders with everything inside. A name that is taken at the top gets
-    /// a number. The whole copy must fit in `caller`'s quota. Names are stored as `names`, the
-    /// names of `parent`, says.
+    /// a number. The whole copy must fit in `caller`'s quota.
     pub async fn copy_shared(
         &self,
         actor: Actor,
         share: SharedRoot,
         node_ids: &[NodeId],
         parent: Option<NodeId>,
-        names: &Names,
     ) -> Result<SavedCopy, FilesError> {
         self.acting(actor.device)
-            .copy_shared_as(actor.user, share, node_ids, parent, names)
+            .copy_shared_as(actor.user, share, node_ids, parent)
             .await
     }
 
@@ -42,7 +40,6 @@ impl NodeService {
         owner: UserId,
         node: &Node,
         parent: Option<NodeId>,
-        names: &Names,
     ) -> Result<StoreOutcome, FilesError> {
         let staged = self
             .content
@@ -64,7 +61,6 @@ impl NodeService {
             caller,
             parent,
             &node.name,
-            names,
             content,
             options,
         )
@@ -78,7 +74,6 @@ impl NodeService {
         share: SharedRoot,
         node_ids: &[NodeId],
         parent: Option<NodeId>,
-        names: &Names,
     ) -> Result<SavedCopy, FilesError> {
         if let Some(parent) = parent
             && self.content.db.get_node(caller, parent).await?.kind != NodeKind::Folder
@@ -115,17 +110,12 @@ impl NodeService {
                 let node = entry.node;
                 match node.kind {
                     NodeKind::Folder => {
-                        let folder = self
-                            .content
-                            .save_folder(caller, into, &node.name, names)
-                            .await?;
+                        let folder = self.content.save_folder(caller, into, &node.name).await?;
                         placed.insert(entry.rel, folder.id);
                         saved.folders.push(folder);
                     }
                     NodeKind::File => {
-                        let outcome = self
-                            .copy_file(caller, share.owner_id, &node, into, names)
-                            .await?;
+                        let outcome = self.copy_file(caller, share.owner_id, &node, into).await?;
                         saved.files.push(outcome);
                     }
                 }

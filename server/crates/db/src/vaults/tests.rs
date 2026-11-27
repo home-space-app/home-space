@@ -1,6 +1,5 @@
 use protocol::ProtectionState;
 use sqlx::PgPool;
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::*;
@@ -80,18 +79,27 @@ fn with_key(epoch: i32) -> NewProtection<'static> {
     })
 }
 
-fn with_password() -> NewProtection<'static> {
+fn kdf(salt: u8) -> StoredKdf {
+    StoredKdf {
+        salt: vec![salt; 16],
+        memory_kib: 65536,
+        iterations: 3,
+        parallelism: 1,
+    }
+}
+
+fn with_password(kdf: &StoredKdf) -> NewProtection<'_> {
     NewProtection::Password(PasswordLock {
-        password_hash: "$argon2id$...",
-        recovery_hash: "$argon2id$...",
-        sealed_key: &[1, 2, 3],
+        wrapped_secret: &WRAPPED,
+        recovery_wrapped_secret: &[8; 73],
+        kdf,
         recipient: RECIPIENT,
     })
 }
 
 /// A folder locked with a password.
 async fn password_folder(db: &Db, owner: UserId, node: NodeId) {
-    db.protect_folder(owner, node, with_password())
+    db.protect_folder(owner, node, with_password(&kdf(1)))
         .await
         .expect("password folder");
 }
@@ -278,7 +286,7 @@ async fn rotation_rewraps_everything_or_nothing(pool: PgPool) {
         .expect("db")
         .expect("some");
     assert_eq!(protected.epoch, Some(2));
-    assert_eq!(protected.wrapped_secret, Some(vec![9; 73]));
+    assert_eq!(protected.wrapped_secret, vec![9; 73]);
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -405,117 +413,66 @@ async fn a_conversion_finishes_or_is_cancelled_but_a_protected_folder_stays(pool
 }
 
 #[sqlx::test(migrations = "../../migrations")]
-async fn a_password_folder_is_found_from_inside_and_lists_its_files(pool: PgPool) {
+async fn a_password_folder_keeps_its_parameters_and_takes_a_new_password(pool: PgPool) {
     let db = Db::from_pool(pool);
     let alice = user(&db, "alice").await;
     let notes = folder(&db, alice, None, "Notes").await;
-    let inner = folder(&db, alice, Some(notes), "2026").await;
-    let content = |byte: u8| NewContent {
-        size: 1,
-        sha256: vec![byte],
-        mime: "text/plain".to_owned(),
-        modified_at: None,
-    };
-    let mut tx = db.transaction(alice).await.expect("tx");
-    let file = tx
-        .insert_file(Some(inner), "a.txt", &content(1))
-        .await
-        .expect("file");
-    tx.commit().await.expect("commit");
-    assert!(
-        db.enclosing_password_folder(alice, file.id)
-            .await
-            .expect("db")
-            .is_none()
-    );
-
     password_folder(&db, alice, notes).await;
-    let found = db
-        .enclosing_password_folder(alice, file.id)
+    let stored = db
+        .protected_folder(alice, notes)
         .await
         .expect("db")
-        .expect("inside");
-    assert_eq!(found.node_id, notes);
-    assert_eq!(found.state, ProtectionState::Protecting);
-    assert_eq!(found.recipient, RECIPIENT);
-    let files = db.folder_files(alice, notes).await.expect("files");
-    assert_eq!(files.len(), 1);
-    assert_eq!(files[0].node_id, file.id);
-    assert!(files[0].versions.is_empty());
-    let converting = db
-        .converting_password_folders(TenantId::DEFAULT)
+        .expect("protected");
+    assert_eq!(stored.state, ProtectionState::Protected);
+    assert_eq!(stored.kdf(), Some(kdf(1)));
+    assert_eq!(stored.recovery_wrapped_secret, Some(vec![8; 73]));
+
+    let new_kdf = kdf(2);
+    let changed = db
+        .set_folder_password(
+            alice,
+            notes,
+            NewPassword {
+                wrapped_secret: &[9; 73],
+                kdf: &new_kdf,
+                recovery_wrapped_secret: None,
+            },
+        )
         .await
-        .expect("converting");
+        .expect("changed");
+    assert_eq!(changed.wrapped_secret, vec![9; 73]);
+    assert_eq!(changed.kdf(), Some(kdf(2)));
     assert_eq!(
-        converting,
-        vec![(alice, notes, ProtectionState::Protecting)]
+        changed.recovery_wrapped_secret,
+        Some(vec![8; 73]),
+        "the recovery key stays unless a new one is given"
     );
-    let secrets = db
-        .password_secrets(alice, notes)
-        .await
-        .expect("db")
-        .expect("secrets");
-    assert_eq!(secrets.sealed_key, vec![1, 2, 3]);
 }
 
 #[sqlx::test(migrations = "../../migrations")]
-async fn an_unlock_belongs_to_one_session_and_expires(pool: PgPool) {
-    let db = Db::from_pool(pool.clone());
+async fn only_a_password_folder_takes_a_new_password(pool: PgPool) {
+    let db = Db::from_pool(pool);
     let alice = user(&db, "alice").await;
-    let notes = folder(&db, alice, None, "Notes").await;
-    password_folder(&db, alice, notes).await;
-    let session = |id: Uuid| {
-        sqlx::query(
-            "INSERT INTO sessions (id, user_id, expires_at, auth_methods, authenticated_at) \
-             VALUES ($1, $2, now() + interval '1 day', '{pwd}', now())",
-        )
-        .bind(id)
-        .bind(alice)
-        .execute(&pool)
-    };
-    let laptop = Uuid::now_v7();
-    let phone = Uuid::now_v7();
-    session(laptop).await.expect("laptop");
-    session(phone).await.expect("phone");
-    let later = OffsetDateTime::now_utc() + time::Duration::minutes(15);
-    assert!(
-        !db.use_unlocked_folder(laptop, notes, later)
-            .await
-            .expect("db")
-    );
-    db.unlock_folder(laptop, notes, later)
+    vault(&db, alice).await;
+    let papers = folder(&db, alice, None, "Papers").await;
+    db.protect_folder(alice, papers, with_key(1))
         .await
-        .expect("unlock");
-    assert!(
-        db.use_unlocked_folder(laptop, notes, later)
-            .await
-            .expect("db")
-    );
-    assert!(
-        !db.use_unlocked_folder(phone, notes, later)
-            .await
-            .expect("db")
-    );
-    db.lock_folder(laptop, notes).await.expect("lock");
-    assert!(
-        !db.use_unlocked_folder(laptop, notes, later)
-            .await
-            .expect("db")
-    );
-
-    let past = OffsetDateTime::now_utc() - time::Duration::minutes(1);
-    db.unlock_folder(phone, notes, past).await.expect("unlock");
-    assert!(
-        !db.use_unlocked_folder(phone, notes, later)
-            .await
-            .expect("db")
-    );
-    assert_eq!(db.expire_folder_unlocks().await.expect("expire"), 1);
+        .expect("protected");
+    let new_kdf = kdf(2);
+    let password = NewPassword {
+        wrapped_secret: &[9; 73],
+        kdf: &new_kdf,
+        recovery_wrapped_secret: None,
+    };
+    assert!(matches!(
+        db.set_folder_password(alice, papers, password).await,
+        Err(DbError::NotFound)
+    ));
 }
 
-/// Security: protecting a folder waits for a store into it that is under way, and then sees
-/// what it stored, so the converter seals it; the store cannot land after the folder went
-/// straight to `protected` as an empty one.
+/// Security: protecting a folder waits for a change to the tree that is under way, and then
+/// sees what it stored: it cannot land after the folder went straight to `protected` as an
+/// empty one, where no client would encrypt it.
 #[sqlx::test(migrations = "../../migrations")]
 async fn protecting_waits_for_a_store_in_progress_and_sees_what_it_stored(pool: PgPool) {
     let db = Db::from_pool(pool);
@@ -525,7 +482,7 @@ async fn protecting_waits_for_a_store_in_progress_and_sees_what_it_stored(pool: 
     store.hold_protections().await.expect("hold");
     assert!(
         store
-            .password_folder_of(Some(docs))
+            .protected_folder_of(Some(docs))
             .await
             .expect("read")
             .is_none()
@@ -543,7 +500,10 @@ async fn protecting_waits_for_a_store_in_progress_and_sees_what_it_stored(pool: 
 
     let protecting = tokio::spawn({
         let db = db.clone();
-        async move { db.protect_folder(alice, docs, with_password()).await }
+        async move {
+            let kdf = kdf(1);
+            db.protect_folder(alice, docs, with_password(&kdf)).await
+        }
     });
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert!(!protecting.is_finished(), "protecting waits for the store");
@@ -557,9 +517,9 @@ async fn protecting_waits_for_a_store_in_progress_and_sees_what_it_stored(pool: 
     );
 }
 
-/// A store that holds the protections reads the protection as it is, and keeps it so.
+/// A change that holds the protections reads the protection as it is, and keeps it so.
 #[sqlx::test(migrations = "../../migrations")]
-async fn a_store_after_protecting_sees_the_password_folder(pool: PgPool) {
+async fn a_store_after_protecting_sees_the_protected_folder(pool: PgPool) {
     let db = Db::from_pool(pool);
     let alice = user(&db, "alice").await;
     let docs = folder(&db, alice, None, "docs").await;
@@ -568,14 +528,14 @@ async fn a_store_after_protecting_sees_the_password_folder(pool: PgPool) {
     let mut store = db.transaction(alice).await.expect("tx");
     store.hold_protections().await.expect("hold");
     let holder = store
-        .password_folder_of(Some(inner))
+        .protected_folder_of(Some(inner))
         .await
         .expect("read")
         .expect("inside");
-    assert_eq!(holder.node_id, docs);
+    assert_eq!(holder, docs);
     assert!(
         store
-            .password_folder_of(None)
+            .protected_folder_of(None)
             .await
             .expect("root")
             .is_none()

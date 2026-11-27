@@ -380,10 +380,10 @@ placeholder (`change-me...`) or made of only a few different characters.
 The signing secret can also come from a file (`HOMESPACE_JWT_SECRET_FILE`, e.g. a Docker/Podman
 secret).
 
-Two-factor sign-in with an authenticator app, and password folders, need `HOMESPACE_SECRETS_KEY`
-(or `_FILE`): it seals the apps' secrets and the folders' keys in the database, so a backup does
-not hand them out. Generate it like the signing secret and keep it apart from it. Without it
-nobody can add an app or a password folder, and everything else works. `homespace-ctl install`
+Two-factor sign-in with an authenticator app needs `HOMESPACE_SECRETS_KEY` (or `_FILE`): it seals
+the apps' secrets in the database, so a backup does not hand them out. Generate it like the
+signing secret and keep it apart from it. Without it nobody can add an app, and everything else
+works. `homespace-ctl install`
 generates one.
 
 **Rotate the secrets only with `homespace-ctl secrets rotate`.** It replaces the signing secret
@@ -397,8 +397,8 @@ app, seals again, writes the new values where the old ones were and starts the a
 wherever the server reads its secrets (a secret manager, say), and start the server when it is
 done. A run that was cut short is finished by running it again.
 
-**Changing `HOMESPACE_SECRETS_KEY` by hand loses data**: authenticator apps and password folders
-sealed with the old key open with no other. The database records which key they are sealed with,
+**Changing `HOMESPACE_SECRETS_KEY` by hand loses data**: authenticator apps sealed with the old
+key open with no other. The database records which key they are sealed with,
 and the server refuses to start with any other key; put the old one back, then rotate. A user who lost their app and recovery codes is reset by an
 administrator in the user's panel, or with `homespace-ctl user reset-2fa <username>`.
 

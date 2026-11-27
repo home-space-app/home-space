@@ -11,6 +11,15 @@ secret32! {
     pub struct PrfOutput;
 }
 
+impl PrfOutput {
+    /// What a platform's WebAuthn PRF gave, such as the browser's `prf.results.first`, for
+    /// clients that cannot answer [`Authenticator::prf`] synchronously. The caller should wipe
+    /// its own copy.
+    pub fn new(bytes: [u8; 32]) -> Self {
+        Self::from_bytes(bytes)
+    }
+}
+
 /// A WebAuthn credential on a security key, as `GET /me/webauthn` lists it.
 #[derive(Clone, Copy, Debug)]
 pub struct CredentialRef<'a> {

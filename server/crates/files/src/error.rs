@@ -37,9 +37,6 @@ pub enum FilesError {
     /// Not allowed for what a protected folder holds; the text says why.
     #[error("{0}")]
     Protected(&'static str),
-    /// The name is too long to be sealed inside a password folder.
-    #[error("a name inside a password folder can be at most 159 bytes long")]
-    NameTooLongToProtect,
     /// A folder cannot be moved into itself or its descendants.
     #[error("cannot move a folder into itself")]
     Cycle,
@@ -102,7 +99,7 @@ impl AsProblem for FilesError {
         match self {
             Self::NotFound => ProblemType::NotFound,
             Self::Conflict => ProblemType::NameTaken,
-            Self::InvalidName | Self::NameTooLongToProtect => ProblemType::InvalidName,
+            Self::InvalidName => ProblemType::InvalidName,
             Self::Cycle => ProblemType::MoveIntoItself,
             Self::Protected(_) => ProblemType::Protected,
             Self::LostAndFound => ProblemType::LostAndFound,

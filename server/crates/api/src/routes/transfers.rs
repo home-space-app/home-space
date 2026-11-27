@@ -166,18 +166,22 @@ async fn save(
     body: Option<Json<SaveTransfer>>,
 ) -> Result<Json<Vec<Node>>, ApiError> {
     let parent = body.and_then(|Json(body)| body.parent_id);
-    let names = tenant.vault.names(user.id, user.session_id, parent).await?;
+    if let Some(parent) = parent {
+        tenant
+            .vault
+            .refuse_protected(
+                user.id,
+                &[parent],
+                "A transfer cannot be saved into a protected folder, where it would be unencrypted.",
+            )
+            .await?;
+    }
     let saved = state
         .files
         .transfers
-        .save_transfer(user.actor(), id, parent, &names)
+        .save_transfer(user.actor(), id, parent)
         .await?;
-    Ok(Json(saved_at_top(
-        parent,
-        &names,
-        saved.folders,
-        saved.files,
-    )))
+    Ok(Json(saved_at_top(parent, saved.folders, saved.files)))
 }
 
 /// A file of a ready transfer, for its recipient. Answers one `Range` of bytes when asked,

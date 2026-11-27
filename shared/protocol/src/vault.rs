@@ -1,21 +1,15 @@
 //! Protected folders and the vault that unlocks them (feature `protected_folders`).
 //!
-//! A folder locked with a security key is end to end: the server keeps only what is useless
-//! without the key (wrapped keys, PRF salts, the folders' public age recipients) and clients do
-//! all the cryptography (`shared/vault-core`). A folder locked with a password is encrypted by
-//! the server, which keeps its key. See `docs/todo/protected-folders.md`.
-
-use std::fmt;
+//! Protected folders are end to end, whatever their lock: the server keeps only what is useless
+//! without the user's security key or the folder's password (wrapped keys, PRF salts, Argon2id
+//! parameters, the folders' public age recipients) and clients do all the cryptography
+//! (`shared/vault-core`). See `docs/todo/protected-folders.md`.
 
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{
-    NodeId,
-    encoding::Base64Url,
-    redact::{Redacted, redacted},
-};
+use crate::{NodeId, encoding::Base64Url};
 
 /// Length of a wrapped vault key or folder secret: version, nonce, key and tag.
 pub const WRAPPED_LEN: usize = 73;
@@ -148,11 +142,9 @@ pub struct RotateVault {
     sqlx(type_name = "text", rename_all = "snake_case")
 )]
 pub enum FolderLock {
-    /// End to end: the client encrypts to the folder's recipient, and any of the user's
-    /// folder keys opens it through the vault.
+    /// Any of the user's folder keys opens it through the vault.
     SecurityKey,
-    /// The server encrypts with a key it keeps and opens it to whoever gives the folder's
-    /// password. Not end to end.
+    /// The folder's password opens it, or its recovery key.
     Password,
 }
 
@@ -174,9 +166,8 @@ impl FolderLock {
     sqlx(type_name = "text", rename_all = "snake_case")
 )]
 pub enum ProtectionState {
-    /// The existing content is being replaced with its encrypted form: by the client, which
-    /// downloaded it, removed it from the server and uploads it encrypted (security key), or
-    /// by the server (password).
+    /// The existing content is being replaced with its encrypted form by the client, which
+    /// downloaded it, removed it from the server and uploads it encrypted.
     Protecting,
     Protected,
     /// The content is being replaced with its decrypted form.
@@ -193,141 +184,91 @@ impl ProtectionState {
     }
 }
 
-/// A protected folder, from `GET /protected`.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The Argon2id parameters a client derives a password folder's key with. Clients make them
+/// (`vault-core`) and refuse ones outside the bounds below; the server checks the same bounds.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PasswordKdf {
+    /// Random per password, [`PASSWORD_SALT_LEN`] bytes.
+    pub salt: Base64Url,
+    pub memory_kib: u32,
+    pub iterations: u32,
+    pub parallelism: u32,
+}
+
+/// Length of a password folder's Argon2id salt.
+pub const PASSWORD_SALT_LEN: usize = 16;
+/// Bounds of [`PasswordKdf::memory_kib`]: 19 MiB to 256 MiB.
+pub const PASSWORD_MEMORY_KIB: std::ops::RangeInclusive<u32> = 19 * 1024..=256 * 1024;
+/// Bounds of [`PasswordKdf::iterations`].
+pub const PASSWORD_ITERATIONS: std::ops::RangeInclusive<u32> = 2..=10;
+/// Bounds of [`PasswordKdf::parallelism`].
+pub const PASSWORD_PARALLELISM: std::ops::RangeInclusive<u32> = 1..=4;
+
+impl PasswordKdf {
+    /// Whether the salt has its length and the costs are within the bounds clients accept.
+    pub fn is_valid(&self) -> bool {
+        self.salt.len() == PASSWORD_SALT_LEN
+            && PASSWORD_MEMORY_KIB.contains(&self.memory_kib)
+            && PASSWORD_ITERATIONS.contains(&self.iterations)
+            && PASSWORD_PARALLELISM.contains(&self.parallelism)
+    }
+}
+
+/// A protected folder, from `GET /protected`. Everything here is useless without the user's
+/// security key, or the folder's password or recovery key.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtectedFolder {
     pub node_id: NodeId,
     pub lock: FolderLock,
-    /// Security keys: the folder secret, wrapped with the vault key of `epoch`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wrapped_secret: Option<Base64Url>,
+    /// The folder secret: wrapped with the vault key of `epoch` (security key), or with the key
+    /// the password derives through `kdf` (password).
+    pub wrapped_secret: Base64Url,
+    /// Security keys: the vault epoch `wrapped_secret` is wrapped under.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub epoch: Option<i32>,
-    /// The age recipient content is encrypted to. For a security key, clients check it against
-    /// the one their key derives before they encrypt anything to it, so a server cannot swap
-    /// in its own.
+    /// Passwords: the Argon2id parameters of the password.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kdf: Option<PasswordKdf>,
+    /// Passwords: the folder secret wrapped with the folder's recovery key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_wrapped_secret: Option<Base64Url>,
+    /// The age recipient content is encrypted to. Clients check it against the one the secret
+    /// derives before they encrypt anything to it, so a server cannot swap in its own.
     pub recipient: String,
     pub format: i32,
     pub state: ProtectionState,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
-    /// Only in the answer to protecting with a password: the folder's recovery key, shown once.
-    /// It sets a new password when the old one is forgotten; the server keeps only its hash.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recovery_key: Option<String>,
 }
 
-impl fmt::Debug for ProtectedFolder {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ProtectedFolder")
-            .field("node_id", &self.node_id)
-            .field("lock", &self.lock)
-            .field("wrapped_secret", &self.wrapped_secret)
-            .field("epoch", &self.epoch)
-            .field("recipient", &self.recipient)
-            .field("format", &self.format)
-            .field("state", &self.state)
-            .field("created_at", &self.created_at)
-            .field("recovery_key", &redacted(self.recovery_key.as_ref()))
-            .finish()
-    }
-}
-
-/// `POST /protected`: protects one of the caller's folders. A security key needs
-/// `wrapped_secret`, `recipient` and the vault's `epoch`; a password needs `password`. An empty
-/// folder is protected at once. One with content stays `protecting` until it is replaced with
-/// its encrypted form: by the client, which then calls `POST /protected/{id}/finish` (security
-/// key), or by the server (password).
-#[derive(Clone, Serialize, Deserialize)]
+/// `POST /protected`: protects one of the caller's folders with a secret the client made and
+/// wrapped. A security key needs the vault's `epoch`; a password needs `kdf` and
+/// `recovery_wrapped_secret`. An empty folder is protected at once. One with content stays
+/// `protecting` while the client replaces it with its encrypted form, then calls
+/// `POST /protected/{id}/finish`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProtectFolder {
     pub node_id: NodeId,
     pub lock: FolderLock,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wrapped_secret: Option<Base64Url>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recipient: Option<String>,
+    pub wrapped_secret: Base64Url,
+    pub recipient: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub epoch: Option<i32>,
-    /// The folder's password, for a password lock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub password: Option<String>,
+    pub kdf: Option<PasswordKdf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_wrapped_secret: Option<Base64Url>,
 }
 
-impl fmt::Debug for ProtectFolder {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ProtectFolder")
-            .field("node_id", &self.node_id)
-            .field("lock", &self.lock)
-            .field("wrapped_secret", &self.wrapped_secret)
-            .field("recipient", &self.recipient)
-            .field("epoch", &self.epoch)
-            .field("password", &redacted(self.password.as_ref()))
-            .finish()
-    }
-}
-
-/// `POST /protected/{id}/unlock`: the password of a password folder.
-#[derive(Clone, Serialize, Deserialize)]
-pub struct UnlockFolder {
-    pub password: String,
-}
-
-impl fmt::Debug for UnlockFolder {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("UnlockFolder")
-            .field("password", &Redacted)
-            .finish()
-    }
-}
-
-/// `POST /protected/{id}/password`: a new password for a password folder, with exactly one
-/// proof: the current password, or the folder's recovery key when it is forgotten. Signing in to
-/// the account is not enough. The folder's key stays; other sessions are locked out.
-#[derive(Clone, Serialize, Deserialize)]
+/// `POST /protected/{id}/password`: a password folder's secret wrapped for a new password,
+/// which the client could only do after opening it with the old password or the recovery key.
+/// With a new recovery key too when the old one was used. The server cannot check either.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChangeFolderPassword {
-    pub password: String,
+    pub wrapped_secret: Base64Url,
+    pub kdf: PasswordKdf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_password: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recovery_key: Option<String>,
-}
-
-/// The answer to `POST /protected/{id}/password`.
-#[derive(Clone, Serialize, Deserialize)]
-pub struct FolderPasswordChanged {
-    /// A new recovery key, shown once, when the old one was used: it was typed in, so it is
-    /// replaced.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recovery_key: Option<String>,
-}
-
-impl fmt::Debug for FolderPasswordChanged {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FolderPasswordChanged")
-            .field("recovery_key", &redacted(self.recovery_key.as_ref()))
-            .finish()
-    }
-}
-
-impl fmt::Debug for ChangeFolderPassword {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ChangeFolderPassword")
-            .field("password", &Redacted)
-            .field(
-                "current_password",
-                &redacted(self.current_password.as_ref()),
-            )
-            .field("recovery_key", &redacted(self.recovery_key.as_ref()))
-            .finish()
-    }
-}
-
-/// The answer to `POST /protected/{id}/unlock`: the session can use the folder until
-/// `expires_at`, which moves on while it does.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FolderUnlocked {
-    #[serde(with = "time::serde::rfc3339")]
-    pub expires_at: OffsetDateTime,
+    pub recovery_wrapped_secret: Option<Base64Url>,
 }
 
 /// Whether `recipient` looks like an age X25519 recipient: `age1` and 58 bech32 characters.

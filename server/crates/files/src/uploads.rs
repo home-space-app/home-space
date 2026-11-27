@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use db::{Upload, UserId};
 
-use crate::{Actor, BodyError, FilesError, Names, content::ContentStore};
+use crate::{Actor, BodyError, FilesError, content::ContentStore};
 
 mod create;
 mod finish;
@@ -23,7 +23,7 @@ mod slots;
 mod types;
 
 use slots::{Hashing, Uploads};
-pub use types::{ChunkOutcome, UploadDestination, UploadRequest, UploadStatus, UploadTarget};
+pub use types::{ChunkOutcome, UploadRequest, UploadStatus, UploadTarget};
 
 /// Resumable uploads, of files of the user's tree and of transfers.
 #[derive(Clone, Debug)]
@@ -74,39 +74,20 @@ impl UploadService {
     }
 
     /// Appends a chunk that starts at `offset`; the chunk that completes the upload stores the
-    /// file and ends the upload, whether storing succeeds or not. `names` are those of the folder
-    /// the file goes to (see [`UploadService::destination`]).
+    /// file and ends the upload, whether storing succeeds or not.
     pub async fn append_chunk<S>(
         &self,
         actor: Actor,
         id: Uuid,
         offset: u64,
-        names: &Names,
         body: S,
     ) -> Result<ChunkOutcome, FilesError>
     where
         S: Stream<Item = Result<Bytes, BodyError>>,
     {
         self.acting(actor.device)
-            .append_chunk_as(actor.user, id, offset, names, body)
+            .append_chunk_as(actor.user, id, offset, body)
             .await
-    }
-
-    /// Where upload `id` stores its file, so the caller can tell whose names it needs.
-    pub async fn destination(
-        &self,
-        owner: UserId,
-        id: Uuid,
-    ) -> Result<UploadDestination, FilesError> {
-        let upload = self.content.db.get_upload(owner, id).await?;
-        if upload.transfer_item_id.is_some() {
-            return Ok(UploadDestination::Transfer);
-        }
-        let folder = match upload.node_id {
-            Some(node) => self.content.db.get_node(owner, node).await?.parent_id,
-            None => upload.parent_id,
-        };
-        Ok(UploadDestination::Folder(folder))
     }
 
     /// Abandons an upload and the bytes it has received.
@@ -186,7 +167,6 @@ impl UploadService {
         owner: UserId,
         id: Uuid,
         offset: u64,
-        names: &Names,
         body: S,
     ) -> Result<ChunkOutcome, FilesError>
     where
@@ -203,9 +183,7 @@ impl UploadService {
             return Ok(ChunkOutcome::Partial { offset: len });
         }
         let sha256 = self.received_sha256(hashing.take(), id).await?;
-        let stored = self
-            .complete_upload(owner, &upload, names, len, sha256)
-            .await;
+        let stored = self.complete_upload(owner, &upload, len, sha256).await;
         drop(hashing);
         self.forget_upload(id).await;
         stored

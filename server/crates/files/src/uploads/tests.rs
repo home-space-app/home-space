@@ -6,7 +6,7 @@ use tokio::io::AsyncReadExt;
 use db::Db;
 
 use super::*;
-use crate::{Actor, BlobStore, FileServices, FilesConfig, Names, StoreOptions};
+use crate::{Actor, BlobStore, FileServices, FilesConfig, StoreOptions};
 use db::NodeId;
 use events::Events;
 
@@ -75,7 +75,6 @@ async fn start(fx: &Fixture, size: u64) -> Uuid {
             None,
             crate::UploadRequest {
                 target: new_file("a.txt"),
-                names: &Names::Plain,
                 size,
                 content_type: None,
                 modified_at: None,
@@ -89,13 +88,7 @@ async fn start(fx: &Fixture, size: u64) -> Uuid {
 async fn append(fx: &Fixture, id: Uuid, offset: u64, text: &'static str) -> ChunkOutcome {
     fx.files
         .uploads
-        .append_chunk(
-            Actor::user(fx.alice),
-            id,
-            offset,
-            &Names::Plain,
-            chunk(text),
-        )
+        .append_chunk(Actor::user(fx.alice), id, offset, chunk(text))
         .await
         .expect("append")
 }
@@ -150,7 +143,7 @@ async fn a_wrong_offset_is_rejected_with_the_current_one(pool: PgPool) {
     let result = fx
         .files
         .uploads
-        .append_chunk(Actor::user(fx.alice), id, 1, &Names::Plain, chunk("x"))
+        .append_chunk(Actor::user(fx.alice), id, 1, chunk("x"))
         .await;
     assert!(matches!(
         result,
@@ -165,7 +158,7 @@ async fn an_interrupted_chunk_resumes_from_the_received_bytes(pool: PgPool) {
     let result = fx
         .files
         .uploads
-        .append_chunk(Actor::user(fx.alice), id, 0, &Names::Plain, broken("abc"))
+        .append_chunk(Actor::user(fx.alice), id, 0, broken("abc"))
         .await;
     assert!(result.is_err());
     let status = fx
@@ -201,7 +194,6 @@ async fn sizes_over_the_limit_are_rejected(pool: PgPool) {
             None,
             crate::UploadRequest {
                 target: new_file("a.txt"),
-                names: &Names::Plain,
                 size: 1025,
                 content_type: None,
                 modified_at: None,
@@ -213,7 +205,7 @@ async fn sizes_over_the_limit_are_rejected(pool: PgPool) {
     let result = fx
         .files
         .uploads
-        .append_chunk(Actor::user(fx.alice), id, 0, &Names::Plain, chunk("abc"))
+        .append_chunk(Actor::user(fx.alice), id, 0, chunk("abc"))
         .await;
     assert!(matches!(result, Err(FilesError::TooLarge { limit: 2 })));
 }
@@ -229,7 +221,7 @@ async fn other_users_cannot_see_or_feed_an_upload(pool: PgPool) {
     assert!(matches!(
         fx.files
             .uploads
-            .append_chunk(Actor::user(fx.bob), id, 0, &Names::Plain, chunk("abcd"))
+            .append_chunk(Actor::user(fx.bob), id, 0, chunk("abcd"))
             .await,
         Err(FilesError::NotFound)
     ));
@@ -250,7 +242,6 @@ async fn a_replace_upload_versions_the_existing_file(pool: PgPool) {
             crate::NewFile {
                 parent: None,
                 name: "a.txt",
-                names: &Names::Plain,
                 content_type: None,
                 modified_at: None,
             },
@@ -267,7 +258,6 @@ async fn a_replace_upload_versions_the_existing_file(pool: PgPool) {
             None,
             crate::UploadRequest {
                 target: UploadTarget::Replace(file.id),
-                names: &Names::Plain,
                 size: 5,
                 content_type: None,
                 modified_at: None,
@@ -293,7 +283,6 @@ async fn invalid_names_are_rejected_up_front(pool: PgPool) {
             None,
             crate::UploadRequest {
                 target: new_file("a/b"),
-                names: &Names::Plain,
                 size: 1,
                 content_type: None,
                 modified_at: None,
@@ -315,7 +304,6 @@ async fn cancelling_a_devices_uploads_leaves_the_others(pool: PgPool) {
             Some(laptop),
             crate::UploadRequest {
                 target: new_file("a.txt"),
-                names: &Names::Plain,
                 size: 4,
                 content_type: None,
                 modified_at: None,

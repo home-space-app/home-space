@@ -479,12 +479,10 @@ impl AuthService {
 }
 
 mod browser;
-mod folders;
 mod reauth;
 mod second_factor;
 mod webauthn;
 
-pub use folders::FolderSecretKind;
 pub use reauth::ReauthProof;
 pub use second_factor::SecondFactorProof;
 #[cfg(test)]

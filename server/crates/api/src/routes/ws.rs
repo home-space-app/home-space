@@ -201,48 +201,9 @@ impl Connection {
             Err(RecvError::Lagged(_)) => Event::Resync,
             Err(RecvError::Closed) => return Step::Stop,
         };
-        let Some(event) = self.shown(event).await else {
-            return Step::Wait;
-        };
         serde_json::to_string(&event)
             .ok()
             .map_or(Step::Wait, |text| Step::Send(Message::text(text)))
-    }
-
-    /// `event` as this socket's session may see it: about a node inside a password folder only
-    /// once the session unlocked the folder, with the node's plain name. Checking does not keep
-    /// the folder unlocked. When the check fails the client is told to resync instead.
-    async fn shown(&self, event: Event) -> Option<Event> {
-        let (Event::NodeCreated { node } | Event::NodeUpdated { node }) = &event else {
-            return Some(event);
-        };
-        let Some(parent) = node.parent_id else {
-            return Some(event);
-        };
-        let shown = match self
-            .tenant
-            .vault
-            .shown(self.grant.user_id, self.grant.session_id, &[parent])
-            .await
-        {
-            Ok(shown) => shown,
-            Err(err) => {
-                tracing::warn!(error = %err, "checking an event against password folders failed");
-                return Some(Event::Resync);
-            }
-        };
-        let name = shown.name(Some(parent), node.kind, &node.name)?;
-        Some(match event {
-            Event::NodeCreated { mut node } => {
-                node.name = name;
-                Event::NodeCreated { node }
-            }
-            Event::NodeUpdated { mut node } => {
-                node.name = name;
-                Event::NodeUpdated { node }
-            }
-            other => other,
-        })
     }
 
     /// Someone's sessions ended: closes the socket if its own did.

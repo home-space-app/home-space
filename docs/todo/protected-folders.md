@@ -1,77 +1,77 @@
-# Protected folders: end to end with a security key, or server-encrypted with a password
+# Protected folders: end to end, with a security key or a password
 
 ## Problem
 
 Everything a user stores is readable by whoever runs, backs up or breaks into the server: file
 content on disk (or in object storage, see `object-storage.md`), names in `nodes`, and extracted
 text in `search_entries`. Some folders (identity documents, tax papers, medical records, keys)
-should be readable only on the user's own devices, or at least only after a second secret.
+should be readable only on the user's own devices.
 
-The user picks a folder and clicks **Protect**, choosing one of two locks:
+A folder's context menu offers **Protect with a security key** and **Protect with a password**:
 
 - **Security key** (recommended): one of the user's folder keys, security keys (a YubiKey or any
   FIDO2 key) enabled for the vault (see [Folder keys](#folder-keys-credentials-of-their-own)).
-  **End to end**: the client encrypts
-  names and content, and someone with the server and all its data still cannot decrypt the folder;
-  the secret is on the key, behind its PIN.
-- **Password** (less secure): a password chosen for the folder. **Not end to end**: the server
-  encrypts the folder with a key it keeps, and opens it to whoever gives the password. It protects
-  against people who get at the stored files, or at the user's signed-in apps, but not against the
-  server itself.
+  The secret is on the key, behind its PIN.
+- **Password**: a password chosen for the folder. The client derives a key from it (Argon2id)
+  and nothing about the password is on the server.
 
-Both add **Unlock** and **Lock** to the folder, and both lock themselves after inactivity and when
-the app closes. Desktop first, mobile later; the web client can do security-key folders opt-in
-and with a trust caveat ([Web client](#web-client)).
+Both are **end to end** (decided 2026-11-27): the client encrypts names and content, and someone
+with the server and all its data still cannot decrypt the folder without the key or the
+password. Both add **Unlock** and **Lock** to the folder, and both lock themselves after
+inactivity and when the app closes. Web and desktop first, mobile later; the web client carries a
+trust caveat ([Web client](#web-client)).
 
 ## The two locks
 
-Decided 2026-11-26.
+Decided 2026-11-26, changed 2026-11-27: password folders were first encrypted by the server, with
+a key it kept. They are end to end now, like security-key folders, and the server no longer
+encrypts, unlocks or converts anything.
 
 | | Security key | Password |
 |---|---|---|
-| Who encrypts | The client (`shared/vault-core`) | The server |
-| What the server can read | Nothing: names and content are ciphertext it stores like any other bytes | Everything, while it has the key (always) |
-| Key | Folder secret wrapped by the user's vault, which each folder key (and an optional recovery key) unwraps through WebAuthn PRF / `hmac-secret` | Random folder key, kept sealed with the server's secrets key; the password is checked against an Argon2id hash |
-| Protecting an existing folder | The client downloads the files, deletes them from the server (for good, see below), and uploads them encrypted. **Their version history is lost**, and the user is warned first. | The server encrypts the content and every old version in place; history is kept. |
-| Names | Sealed by the client (AES-SIV), stored as base64url text in the normal `name` | Encrypted by the server, shown to sessions that unlocked the folder |
-| Unlock | PIN and touch; decrypts the names only. Every open, upload or rename needs another touch: **no key stays in the client's memory**. | Password, sent to the server; the session sees the folder until Lock or a timeout |
-| Old clients and on-demand files | See meaningless names (base64url); new clients hide protected folders there | See nothing inside a locked folder (`423 locked`) |
+| Who encrypts | The client (`shared/vault-core`) | The client (`shared/vault-core`) |
+| What the server can read | Nothing: names and content are ciphertext it stores like any other bytes | The same |
+| Key | Folder secret wrapped by the user's vault, which each folder key (and an optional recovery key) unwraps through WebAuthn PRF / `hmac-secret` | Folder secret wrapped by a key derived from the password (Argon2id, parameters stored with it), and again by the folder's own recovery key |
+| Unlock | PIN and touch, once | The password, once; checked by the client (a wrong one does not unwrap) |
+| While unlocked | The folder's keys stay in the client's memory until Lock, inactivity, or the key is unplugged | The same, until Lock or inactivity |
+| Protecting an existing folder | The client downloads the files, deletes them from the server (for good, see below), and uploads them encrypted. **Their version history is lost**, and the user is warned first. | The same |
+| Names | Sealed by the client (AES-SIV), stored as base64url text in the normal `name` | The same |
+| Old clients and on-demand files | See meaningless names (base64url); new clients hide protected folders there | The same |
 | Deleting | **For good**, versions included: nothing inside goes to the recycle bin | The same |
+| Weakest point | The key and its PIN | The password: whoever has what the server keeps can guess passwords offline |
 
 ## Threat model
 
 Protects against:
 
-- Someone who reads the server's disk, database, object storage bucket or backups:
-  - **Security-key folders:** fully, and also a server operator or an attacker with the server
-    who reads data passively. What the server holds (credential ids, salts, wrapped keys,
+- Someone who reads the server's disk, database, object storage bucket or backups, a server
+  operator, or an attacker with the server who reads data passively:
+  - **Security-key folders:** fully. What the server holds (credential ids, salts, wrapped keys,
     ciphertext) is useless without the physical key and its PIN.
-  - **Password folders:** someone with the stored files (blobs, object storage, a disk) but not
-    the database **and** the server's secrets key (`HOMESPACE_SECRETS_KEY`, kept outside the
-    database like the one for authenticator app secrets). With all three they can decrypt without
-    the password.
+  - **Password folders:** as far as the password is strong. What the server holds (Argon2id
+    parameters, the secret wrapped by the password's key and by the recovery key, ciphertext)
+    lets someone guess passwords offline, each guess costing 64 MiB and three Argon2id passes,
+    with no throttling. Clients ask for a password the account's rules accept and say so.
 - Someone who steals a laptop with an app signed in, or an access token: a security-key folder
-  cannot be opened without the key and its PIN, a password folder not without its password.
-  Everything that changes what unlocks a folder needs a recent sign-in.
+  cannot be opened without the key and its PIN, a password folder not without its password
+  (though a stolen token can fetch what is needed to guess it offline). Everything that changes
+  what unlocks a folder needs a recent sign-in.
 - Someone who steals the security key: without its PIN the key does not answer (FIDO2 user
   verification is required, and the key locks itself after 8 wrong PINs).
-- Malware that reads the app's memory **while a security-key folder is unlocked but no file is
-  being opened**: it finds names, not keys (see [Unlock and lock](#unlock-and-lock)).
 
 Does **not** protect against:
 
-- **Password folders: the server.** Its operator, or an attacker who controls it, can read the
-  folder whenever they like. The Protect dialog says so in one sentence.
 - An attacker controlling a client while the user works in it (malware on the desktop, a
-  malicious browser extension). They can see what the user opens and can wait for the next touch.
+  malicious browser extension). While a folder is unlocked its keys are in the app's memory.
 - A server that serves a **modified web client**. This only affects the web client; see
   [Web client](#web-client).
-- Metadata of security-key folders. The server still sees: which folder is protected, how many
-  files and folders it has and how they nest, file sizes (rounded only by the 64 KiB chunks plus a
+- Metadata. The server still sees: which folder is protected and with which lock, how many files
+  and folders it has and how they nest, file sizes (rounded only by the 64 KiB chunks plus a
   small header), how many versions each file has, when files are created and changed, which
-  device changed them, and that names within one folder differ. It does not see names, MIME types
-  or content.
-- Deletion. The server can still delete or roll back ciphertext. Tampering is detected (AEAD), but
+  device changed them, and that names within one folder differ. It does not see names, MIME
+  types or content.
+- Deletion. The server, or someone with a recent sign-in, can delete or roll back ciphertext, or
+  replace a wrapped secret so that nothing opens the folder. Tampering is detected (AEAD), but
   the server can withhold a file or serve an older version of it. Rollback detection is listed
   under [Later](#later).
 - Plaintext from before protection that the server cannot erase: backups, snapshots, object
@@ -184,7 +184,7 @@ recovery key  ─┘                      │
 - **Name key** and **X25519 identity**: derived from the folder secret with HKDF and distinct
   `info` strings. The X25519 public key (the folder's age recipient) is stored in clear on the
   server. Content is encrypted to it without a key, so a server that swapped it could read new
-  uploads: whenever a client has the folder secret (every touch), it derives the recipient and
+  uploads: whenever a client has the folder secret (every unlock), it derives the recipient and
   refuses a listed one that differs (`FolderKeys::check_recipient`).
 - **File key**: age generates a random one for every file it encrypts, so every version of every
   file has its own. It is wrapped to the folder's recipient in the age header, inside the blob.
@@ -277,9 +277,9 @@ What follows for the other features, without special cases on the server:
 | Feature | In a security-key folder |
 |---|---|
 | Search | The server indexes nothing inside a protected folder of either lock. Inside an unlocked folder the client searches the decrypted names in memory. |
-| Previews, gallery, viewers | Only in the client, after decryption; a gallery of many images is one touch for the visible page. |
+| Previews, gallery, viewers | Only in the client, after decryption; no prompt once the folder is unlocked. |
 | Shares, transfers, archive downloads | Refused for a protected folder and what it holds (`409 protected`), for both locks, since they would hand out ciphertext. A shared folder or a folder sent to a device that holds a protected folder leaves it out, in listings, archives and copies. Sharing encrypted folders with other users is under [Later](#later). |
-| Moves and copies | Work as today. Within the folder the client sends the name sealed for the new parent. Into or out of it, the client copies with encryption (or decryption) and deletes the source; a plain move would leave plaintext inside or ciphertext outside. |
+| Moves and copies | Within the folder, moves work as today; the client sends the name sealed for the new parent. Into or out of it, the server refuses (`409 protected`): the client copies with encryption (or decryption) and deletes the source, since a plain move would leave plaintext inside or ciphertext outside. |
 | Versions | Kept from the moment of protection on. Each version is its own age file with its own file key. |
 | Recycle bin | Not used: deleting inside deletes for good (see [Deleting](#deleting-inside-a-protected-folder)). |
 | Duplicates, "unchanged" upload check | Never match: random file keys make equal files differ. |
@@ -302,7 +302,7 @@ happens: "The previous versions of the files in this folder will be deleted."
    is protected already, so they are deleted for good, old versions included, without passing
    through the recycle bin. It also offers to purge files of this folder that were in the bin
    before (their `original_path` is inside it).
-4. With one touch it seals every name, then encrypts each file to the folder's recipient and
+4. With the new folder's keys it seals every name, then encrypts each file to the folder's recipient and
    uploads it, recreating the folders. Progress shows in the transfers panel.
 5. `POST /protected/{id}/finish` marks the folder `protected`. The temporary directory is deleted.
 6. The client tells the user what the server cannot erase: **server backups and snapshots,
@@ -321,112 +321,52 @@ happens: "The previous versions of the files in this folder will be deleted."
   download and decrypt, delete (for good), upload plain, then `DELETE /protected/{id}`. A
   `protected` folder's row is never deleted directly, since its secret would go with it.
 
-## Password folders (server-side encryption)
+## Password folders
 
-Decided 2026-11-26: a password folder is the server's. Clients send the password and receive
-plaintext over TLS, like any other folder once it is unlocked.
+Decided 2026-11-27: a password folder is end to end like a security-key folder; only the way to
+its secret differs. Everything under [Security-key folders](#security-key-folders) about content
+(age), sealed names, the 159-byte name limit, protecting an existing folder and how the server
+treats the folder holds for password folders too.
 
-Done (stage A, content):
+### Key
 
-- **Protect:** `POST /protected` `{ node_id, lock: "password", password }` (recent sign-in; the
-  password follows the account password rules). The server generates a random folder secret,
-  stores it sealed with its secrets key (`secret_box`, as for authenticator app secrets; without
-  `HOMESPACE_SECRETS_KEY` password folders are refused), the folder's age recipient derived from
-  it, and an Argon2id hash of the password to check it against. The key is not derived from the
-  password, so changing the password will re-encrypt nothing. The session that protects the
-  folder has it unlocked, as after an unlock.
-- **Format:** the same as security-key folders: content is age files to the recipient
-  (`shared/vault-core`, which the server uses with its `server` feature). The listed size and
-  SHA-256 stay those of the plain content, since that is what clients receive.
-- **Writes:** whatever is stored inside a password folder (uploads, new versions, copies) is
-  encrypted to the recipient before it lands in place.
-- **Existing content:** with content, the folder is `protecting` and the server encrypts the
-  current content and **every old version in place**, so history is kept. It runs right after
-  protecting and then every minute until done (resuming after a restart), and marks the folder
-  `protected`. A blob the folder's identity already opens is skipped, so a run that stopped
-  half-way just runs again. The conversion and stores into the folder take turns on one lock, so
-  neither overwrites what the other just wrote. Clients cannot `finish` or `unprotect` a password
-  folder.
-- **Unlock:** `POST /protected/{id}/unlock` `{ password }`, throttled per folder and source like
-  share passwords (`422 wrong-password` when wrong). It grants the caller's session the folder
-  (`protected_unlocks`) for 15 minutes, extended while it is used; `DELETE
-  /protected/{id}/unlock` locks it again, and expired unlocks are swept every minute. Other
-  sessions of the same user stay locked out.
-- **Reads:** downloads of a file or a version inside answer `423 locked` unless the session (or
-  the ticket's session) unlocked the folder; then they are decrypted as they stream, range
-  requests included, decrypting only the chunks they need. Blobs not converted yet are sent as
-  they are.
-- **Moves** into or out of a password folder are refused (`409 protected`): what is inside is
-  stored encrypted and what is outside is not. The client copies instead.
-- Protecting removes the folder's search entries; new content is indexed from ciphertext, which
-  yields no text.
+```
+password ── Argon2id(NFC(password), salt, 64 MiB, 3 passes, 1 lane) ── HKDF ─▶ kek ─┐
+recovery key (per folder) ─────────────── HKDF ─▶ recovery kek ────────────────────┼─ each wraps ─▶ folder secret
+                                                                                    ┘
+```
 
-Done (stage B, names and access):
+- **Folder secret**: random, made by the client when it protects the folder, exactly as for a
+  security-key folder (name key and age identity derived from it).
+- **Password KEK**: `HKDF-SHA256(Argon2id(NFC(password), salt), "home-space password kek v1")`.
+  The salt (16 bytes) is new for every password; the costs are 64 MiB, 3 passes and 1 lane (the
+  browser derives on a single thread), about a second. Clients refuse parameters a server lists
+  outside 19 to 256 MiB, 2 to 10 passes and 1 to 4 lanes, so a server can neither make a phone
+  derive for minutes nor offer a cheap derivation; the server checks the same bounds.
+- **Recovery key**: 32 random bytes per folder, printed like the vault's (55 characters in 11
+  groups), shown once after protecting. `kek = HKDF-SHA256(recovery, "home-space folder recovery
+  kek v1")`, distinct from the vault's recovery KEK.
+- Wrapping is the same XChaCha20-Poly1305 with the folder's node id as associated data as for a
+  security-key folder's secret (73 bytes).
+- Known-answer vectors for both KEKs are in `shared/vault-core/src/vectors.rs`.
 
-- **Names at rest:** every name inside a password folder (not the folder's own, which its parent
-  lists) is stored sealed: the same AES-SIV as security-key folders (`vault-core`), with the
-  folder's name key, as base64url text. The associated data is the **protected folder's id**, not
-  the direct parent's as for security-key folders, so moving within the folder keeps a sealed
-  name valid and folder merges still meet same-named folders. Sealing is deterministic, so the
-  unique index still refuses two equal names. The server seals at the edge of its tree logic
-  (`files::Names`): numbering a taken name (`plan (1).txt`) and guessing a type from an extension
-  work on the plain name.
-- **Name length:** the same 159 bytes as in security-key folders, `422 invalid-name` beyond.
-  Protecting a folder that holds a longer name is refused (`/node_id`: rename it first); one that
-  appears while the folder is being converted is shortened, keeping its extension, and a name
-  whose sealed form is taken (equal after Unicode normalization) is numbered.
-- **Existing names** are sealed by the same conversion as the content, before it, and skipped
-  when they already open.
-- **Access:** reading or writing inside a password folder needs the session to have unlocked it,
-  else `423 locked`: listing, a node, its ancestors, properties and versions, downloads,
-  creating folders, uploads (single and resumable, at every chunk), replacing content, renaming,
-  moving, deleting (also the folder itself, with all it holds), and saving a transfer or a copy of
-  a shared item into it. The folder's own entry and the listing of its parent stay readable.
-  Every such use extends the unlock.
-- **Feeds:** the changes journal and the websocket's events leave out nodes inside a folder the
-  session has not unlocked, and carry plain names for one it has. Checking does not extend the
-  unlock, so a client that only listens lets it expire. A client lists the folder again after
-  unlocking it, since the journal went on without it.
+### What the server does
 
-Done (stage C, the rest):
-
-- **Left out:** nothing inside a protected folder, of either lock, is indexed for search (names
-  or content) or listed among duplicates, which would tell that a plain file has a copy inside.
-  Sharing or sending a protected folder or anything in it is refused (`409 protected`); a shared
-  folder that holds one does not show it through the share (listing, archive, copy), and sending
-  such a folder leaves it out. The server has no previews.
-- **Recycle bin:** deleting inside deletes for good, as in every protected folder (see
-  [Deleting](#deleting-inside-a-protected-folder)). Deleting a folder that holds a password
-  folder also needs every such folder unlocked (`423`).
-- **Recovery key:** protecting with a password also makes a recovery key for the folder (the
-  vault's printed format: 55 characters in 11 groups), returned once as `recovery_key` in the
-  answer to `POST /protected`. The server keeps only its Argon2id hash.
-- **Change the password** (decided 2026-11-26): `POST /protected/{id}/password` `{ password,
-  current_password }`, or `{ password, recovery_key }` when the password is forgotten, plus a
-  recent sign-in. **Signing in to the account is never enough**: someone who has the account's
-  password must not get into its folders by resetting theirs. A recovery key that was used is
-  replaced, and the answer carries the new one (`recovery_key`), shown once. Wrong passwords and
-  keys are throttled like unlocks (`422 wrong-password`). The folder's key stays, so nothing is
-  re-encrypted; the caller's session has the folder unlocked, every other one is locked out
-  until it unlocks with the new password. Without the password and the recovery key, the files
-  are lost.
-- **Unprotect:** `POST /protected/{id}/unprotect` for a session that unlocked the folder and
-  signed in recently. The folder is `unprotecting`: the server decrypts every blob and opens
-  every name in place (same job and lock as protecting), and once a pass finds nothing left it
-  drops the protection, the key and the unlocks with it. Meanwhile the folder still needs the
-  unlock, new names are refused (`409 protected`, "try again once it is done") and new content
-  is stored plain. `DELETE /protected/{id}` stays refused for password folders.
-- **Unfinished uploads** into a password folder are listed under their plain names for a session
-  that unlocked it, and left out for one that did not.
-- **Stores and conversions** take one read-write lock: stores into a password folder hold it
-  shared from reading the folder's state until the blob is committed, the conversion exclusively
-  per blob. So a store never lands in the form the folder had before protecting or unprotecting
-  began.
-
-To do:
-
-- Clients show the recovery key after protecting, ask the user to keep it somewhere safe, and
-  offer "Forgot the password?" with it.
+- `POST /protected` `{ node_id, lock: "password", wrapped_secret, recipient, kdf: { salt,
+  memory_kib, iterations, parallelism }, recovery_wrapped_secret }` (recent sign-in) stores them.
+  It never sees the password or a key, and cannot tell a right password from a wrong one.
+- `GET /protected` lists them back, for a client to unlock with.
+- **Change the password**: the client opens the secret with the current password, or with the
+  recovery key when the password is forgotten, wraps it for the new password with a new salt,
+  and sends `POST /protected/{id}/password` `{ wrapped_secret, kdf, recovery_wrapped_secret? }`
+  (recent sign-in). With the recovery key, it also makes a new recovery key, shown once, and
+  sends the secret wrapped by it: a recovery key that was typed in is replaced. The secret stays,
+  so nothing is re-encrypted. The server cannot check that the client knew the old password;
+  anyone with a recent sign-in can replace the wrap, which destroys access like deleting the
+  files would. The folder's recipient never changes, and clients check it against every secret
+  they unwrap, so a replaced wrap cannot redirect new uploads.
+- `finish`, `unprotect` and `DELETE /protected/{id}` work as for security-key folders.
+- Without the password and the recovery key, the files are lost.
 
 ## Deleting inside a protected folder
 
@@ -445,39 +385,32 @@ deleting the protected folder would take along the key its binned files need.
 
 ## Unlock and lock
 
-For security-key folders the client keeps **no decryption key** between actions (decided
-2026-11-26). Each action that needs one asks the security key, derives what it needs, does that
-one action and wipes every key (`zeroize`) before it returns.
+Decided 2026-11-27: an unlocked folder is its **keys in the client's memory** (`FolderKeys`,
+wiped on drop), whatever its lock. Unlocking asks once; then every action works without a prompt
+until the folder locks. (Before, a security-key folder asked for a touch for every action and
+kept no key; that is dropped as too tedious for what it protected against: malware that reads the
+app's memory can also read what the user opens.)
 
 | Action | Security-key folder | Password folder |
 |---|---|---|
-| **Unlock** (context menu, toolbar, or the "Locked" placeholder when the folder is opened) | PIN and touch. Decrypts the **names** of the folder's subtree, then wipes the keys. | Password, checked by the server. The session can use the folder. |
-| Browse, sort, search names | No key: the names are in memory. | The server lists decrypted names. |
-| Open, download, export | One touch for the whole selection: unwraps the age file keys of the selected files, then wipes the folder identity. | No prompt. |
-| Upload, new folder, rename, move | One touch per action, to seal the names. Content is encrypted to the public recipient without a key. | No prompt. |
-| **Lock**, **Lock all** | Wipes the names and the PIN token. | Ends the session's access on the server and wipes the names. |
+| **Unlock** (context menu, toolbar, or the "Locked" placeholder when the folder is opened) | PIN and touch. Unwraps the vault key, then the folder secret; keeps the folder's keys and drops the rest. | The password. Derives the KEK and unwraps the folder secret; a wrong password does not unwrap. Keeps the folder's keys. |
+| Browse, sort, search names | Names opened in memory | The same |
+| Open, download, export, upload, new folder, rename, move | No prompt: the keys are in memory | The same |
+| **Lock**, **Lock all** | Wipes the keys and the names | The same |
 
-- **PIN once, touch each time** (decided 2026-11-26). Unlock asks for the PIN; the client keeps
-  the key's CTAP2 `pinUvAuthToken` until Lock, so later actions need only a touch. The token is
-  not a decryption key: it is useless without the physical key plugged in and touched, and user
-  verification stays on, so `hmac-secret` gives the same secret. A CTAP 2.1 key limits how long a
-  token may be used (about 10 minutes); after that, or after the key is unplugged, the next action
-  asks for the PIN again. On Windows, `webauthn.dll` shows its own dialog and may ask for the PIN
-  every time; the app cannot change that.
-- **Viewer:** while a file of a security-key folder is open in a viewer, its age file key (not
-  the folder secret) stays in memory so a video can seek and a PDF can load pages; it is wiped
-  when the viewer closes. The decrypted bytes on screen are in memory too, which cannot be
-  avoided.
-- **Lock** also revokes viewer buffers and deletes the folder's temporary decrypted files.
-  Encrypting uploads in progress finish first: they need only the public recipient.
 - **Auto-lock**, per folder:
-  - after 15 minutes without activity in that folder (a setting);
-  - on sleep and screen lock;
-  - when the security key that unlocked it is unplugged (security-key folders);
+  - after **10 minutes without activity** in that folder (opening, uploading, renaming,
+    browsing it), a setting;
+  - when the security key that unlocked it is unplugged, where the platform can tell (desktop
+    over USB HID, Android over USB; not the web, and not NFC, where the key is only there for
+    the tap);
   - on sign-out;
-  - when the app closes.
-  On a crash the names and the PIN token die with the process; temporary files are swept at the
-  next start. Password folders also lock on the server when the session's access times out.
+  - when the app closes, or the page is closed or reloaded.
+  On a crash the keys die with the process; temporary files are swept at the next start.
+- **Viewer:** the decrypted bytes on screen are in memory, which cannot be avoided. Lock closes
+  the viewers of the folder, revokes their buffers (`Blob` URLs on the web) and deletes its
+  temporary decrypted files. Encrypting uploads in progress finish first: they need only the
+  public recipient.
 
 ## Server
 
@@ -493,13 +426,15 @@ In `server/migrations/0032_protected_folders.sql` (done):
   created_at)`: `kind` is `security_key`, a folder key (with its name, credential id, RP id and
   a 32-byte `prf_salt`, the credential id unique per user), or `recovery` (at most one per
   user). Nothing refers to `user_webauthn`.
-- `protected_folders (node_id, owner_id, lock, wrapped_secret, epoch, recipient, password_hash,
-  sealed_key, format, state, created_at)`: a security-key folder has `wrapped_secret`, `epoch`
-  and `recipient` (checked to look like `age1` and 58 bech32 characters); a password folder has
-  `password_hash` and `sealed_key`. `state` is `protecting`, `protected` or `unprotecting`.
-  Wrapped keys and secrets are 73 bytes.
+- `protected_folders (node_id, owner_id, lock, recipient, wrapped_secret, epoch,
+  recovery_wrapped_secret, kdf_salt, kdf_memory_kib, kdf_iterations, kdf_parallelism, format,
+  state, created_at)` (as `0034_password_folders_end_to_end.sql` recreated it): every folder has
+  `wrapped_secret` and `recipient` (checked to look like `age1` and 58 bech32 characters); a
+  security-key folder has `epoch`, a password folder the recovery copy and the Argon2id
+  parameters. `state` is `protecting`, `protected` or `unprotecting`. Wrapped keys and secrets
+  are 73 bytes.
 
-Nothing on `nodes` changes: names and content of security-key folders are stored as they come.
+Nothing on `nodes` changes: names and content of protected folders are stored as they come.
 
 ### API
 
@@ -521,7 +456,8 @@ Done (feature `protected_folders`):
   [{ node_id, wrapped_secret }], remove: [id] }`: one transaction; every unlocker that stays and
   every security-key folder must be listed exactly once (`422` otherwise).
 - `GET /protected`; `POST /protected` `{ node_id, lock: "security_key", wrapped_secret,
-  recipient, epoch }`. Protecting refuses the recycle bin, Lost & Found and anything overlapping
+  recipient, epoch }` or `{ node_id, lock: "password", wrapped_secret, recipient, kdf,
+  recovery_wrapped_secret }`. Protecting refuses the recycle bin, Lost & Found and anything overlapping
   another protected folder (`409 protected`), and ends the sharing of the folder and everything in
   it. An empty folder is `protected` at once, one with content `protecting`.
 - `POST /protected/{id}/finish` (`protecting` → `protected`), `POST /protected/{id}/unprotect`
@@ -531,28 +467,29 @@ Done (feature `protected_folders`):
   (`require_recent_sign_in`): adding or removing unlockers, rotating, protecting, unprotecting
   and removing a protection. With a stolen access token alone, nobody can add their own unlocker,
   lock the user's files with their own key, or throw away a folder's secret.
+- `POST /protected/{id}/password` `{ wrapped_secret, kdf, recovery_wrapped_secret? }`: a
+  password folder's secret wrapped for a new password (see [Password folders](#password-folders)).
+- `409 protected` for: moving a node into or out of a protected folder (either lock: inside is
+  ciphertext, outside plain; the folder itself moves); sharing or sending anything in one; saving
+  a transfer or copying shared items into one, which would land unencrypted; and a resumable
+  upload into one with `keep_both`, since the server would number the client's sealed name and
+  it would no longer open. Clients name such a file anew themselves.
 - Clients do not put `protected_folders` in `REQUIRES`: without it they hide Protect.
-
-Done for password folders: `lock: "password"` in `POST /protected`, `POST` and `DELETE
-/protected/{id}/unlock`, `POST /protected/{id}/password`, `POST /protected/{id}/unprotect`
-(decrypted by the server), `423 locked` on every read and write inside a locked folder, the
-changes journal and events filtered per session, and `409 protected` on moves across the
-folder's edge and on sharing or sending from a protected folder (see
-[Password folders](#password-folders-server-side-encryption)).
 
 ## Desktop client (phase 2)
 
-`shared/vault-core` (done: no I/O, no UI) is used by desktop, web and mobile-core, and by the
-server for password folders:
+`shared/vault-core` (done: no I/O, no UI) is used by desktop, web and mobile-core; the server
+does not use it:
 
 - wrapping and unwrapping the vault key and folder secrets (`chacha20poly1305`, `hkdf`, `sha2`),
-  recovery key encoding;
+  recovery key encoding, and a password folder's Argon2id KEK (`argon2`);
 - `seal_name` / `open_name` (`aes-siv`, `unicode-normalization`), as base64url text;
 - streaming encrypt and decrypt, and seekable decrypt, on top of `age`;
 - an `Authenticator` trait (`prf(credential, salt)`), implemented by each platform, and a
   software one for tests;
-- every secret in a `zeroize` type, with the API shaped so a key lives only inside one call
-  (`with_folder_keys(|keys| …)`), not in a struct that outlives the action.
+- every secret in a `zeroize` type; the vault key lives only inside one call
+  (`with_vault_key(|key| …)`), and an unlocked folder is its `FolderKeys`, held until Lock
+  (`vault::unlock_folder`, `password::unlock_with_password`).
 
 Desktop `Authenticator`:
 
@@ -589,8 +526,8 @@ UI:
   (watch the file, re-encrypt, upload as a new version).
 - **Download** is an explicit export to a place the user picks; the app warns that the copy is
   not protected.
-- **Upload** into an unlocked protected folder (drag and drop, file picker) asks one touch to seal
-  the names, then encrypts while uploading.
+- **Upload** into an unlocked protected folder (drag and drop, file picker) seals the names with
+  the folder's keys, then encrypts while uploading.
 - The on-demand files (`clients/vfs-core`) and folder sync (`sync-core`) leave out the folders
   `GET /protected` lists.
 
@@ -615,11 +552,12 @@ Chrome can reach the key, decrypt in memory and hand the files out:
 protect against. A server operator, or an attacker who controls the server, can serve a modified
 client that sends the keys or the plaintext back after the user unlocks. Desktop and mobile apps
 do not have this problem: they are signed releases that do not change when the server changes.
-This is the same limit every web-based end-to-end encrypted service has.
+This is the same limit every web-based end-to-end encrypted service has. Password folders are end to end
+too, so the caveat covers both locks: a modified client could send the password back.
 
 Proposal: support the web client for security-key folders, but as an **opt-in per vault** ("Allow
 unlocking in the browser", off by default, explained in one sentence). Password folders work in
-the web client like anywhere else, since the server decrypts them anyway. Phase 4, after desktop.
+the web client from the start, with the caveat in the Protect dialog (see open questions).
 
 ## Mobile (phase 5)
 
@@ -646,12 +584,14 @@ the web client like anywhere else, since the server decrypts them anyway. Phase 
 2. **Desktop, security keys**: enabling keys, recovery key, the Protect dialog, protecting new and
    existing folders, Unlock / Lock / Lock all, auto-lock, browse, open, upload, download, move and
    rename inside, deleting for good, hiding from on-demand files and sync.
-3. **Password folders**: the server's encryption of content, unlock and lock (stage A, done);
-   names and locked listings (stage B, done); search, shares, transfers, password change,
-   unprotect (stage C, done); then the clients.
+3. **Password folders, end to end** (2026-11-27): Argon2id-wrapped folder secrets and per-folder
+   recovery keys in `vault-core`, the server storing them (done); then the clients: the shared
+   groundwork in `api-client` and `client-core` (the protected folders, unlocked keys with
+   the inactivity timer, sealed names in listings, encrypting uploads and decrypting downloads),
+   and the Protect, Unlock and Lock UI on the web and the desktop. No hardware needed.
 4. **Desktop polish**: external-app save-back, unprotect.
-5. **Web** (opt-in), with Chrome, Edge and Firefox in the e2e tests (a virtual authenticator with
-   PRF in Chrome DevTools Protocol / Playwright).
+5. **Web security keys** (opt-in), with Chrome, Edge and Firefox in the e2e tests (a virtual
+   authenticator with PRF in Chrome DevTools Protocol / Playwright).
 6. **Android**, then **iOS**.
 
 ## Testing
@@ -668,11 +608,12 @@ the web client like anywhere else, since the server decrypts them anyway. Phase 
   keys and an administrator's reset of second factors leaving the vault alone, `409 last-unlocker`,
   rotation needing every folder and the current epoch, protection never overlapping, the states
   of a conversion, recent sign-in for every change of what unlocks.
-- Password folders: no plaintext blob, name or search entry left after the encryption job, every
-  version still downloadable, `423` for every read and write while locked, access ending on Lock
-  and after the timeout, the changes journal and events leaving out what a session has not
-  unlocked, nothing indexed, shared or sent from inside, deletes skipping the bin, a password
-  change locking other sessions out, and unprotecting leaving plain blobs and names (done).
+- Password folders (done): the server keeps exactly what the client wrapped and refuses
+  parameters out of bounds, a new password keeps the recovery copy unless replaced, nothing
+  moves across a protected folder's edge, nothing lands there unencrypted or renumbered, nothing
+  inside is indexed, shared or sent, deletes skip the bin. `vault-core`: a wrong password does
+  not unwrap, NFC and NFD passwords agree, the recovery key opens and is replaced when used, a
+  swapped recipient is caught, known-answer vectors for both KEKs.
 
 ## Later
 
@@ -695,5 +636,7 @@ the web client like anywhere else, since the server decrypts them anyway. Phase 
 2. Auto-lock timeout default: 15 minutes (proposed)?
 3. Web client: opt-in per vault for security-key folders (proposed), or not at all?
 4. Minimum hardware: any FIDO2 key with `hmac-secret` and a PIN (proposed), or YubiKey only?
-5. Names in protected folders, of both locks, are limited to 159 bytes. Enough, or should the
+5. Web client and password folders: from the start with the caveat in the Protect dialog
+   (proposed), or behind the same opt-in as security keys?
+6. Names in protected folders, of both locks, are limited to 159 bytes. Enough, or should the
    server allow longer names (which some file systems on the desktop could not hold anyway)?

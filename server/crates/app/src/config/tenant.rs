@@ -134,9 +134,8 @@ impl TenantSettings {
         }))
     }
 
-    /// The key that seals authenticator app secrets and password-folder keys; `None` when no
-    /// key is set. Optional: without it no authenticator app or password folder can be added,
-    /// and nothing else changes.
+    /// The key that seals authenticator app secrets; `None` when no key is set. Optional:
+    /// without it no authenticator app can be added, and nothing else changes.
     pub fn secrets_key(&self) -> Result<Option<auth::SecretBox>> {
         let Some(current) = value_or_file(
             &self.var("HOMESPACE_SECRETS_KEY"),

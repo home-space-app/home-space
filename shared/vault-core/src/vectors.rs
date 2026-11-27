@@ -5,6 +5,7 @@ use crate::authenticator::PrfOutput;
 use crate::folder::FolderSecret;
 use crate::kdf::{Kek, prf_salt_input};
 use crate::names::NodeKind;
+use crate::password::{MIN_ITERATIONS, MIN_MEMORY_KIB, PasswordKdf};
 use crate::recovery::RecoveryKey;
 
 fn hex(bytes: &[u8]) -> String {
@@ -39,6 +40,28 @@ fn keks() {
             .unwrap()
             .expose()),
         "1240aeb8c3667c9bffee4cc72d8bf6eda317fc843dddb26877aa3924ccb0fec5"
+    );
+}
+
+#[test]
+fn password_keks() {
+    let kdf = PasswordKdf {
+        salt: [0x06; 16],
+        memory_kib: MIN_MEMORY_KIB,
+        iterations: MIN_ITERATIONS,
+        parallelism: 1,
+    };
+    assert_eq!(
+        hex(Kek::from_password("correct horse", &kdf).unwrap().expose()),
+        "2e6244a1cf857782328f000a0fc2c7905e86b5be6b91ff142aec956582d59671"
+    );
+    assert_eq!(
+        hex(
+            Kek::from_folder_recovery(&RecoveryKey::from_bytes([0x02; 32]))
+                .unwrap()
+                .expose()
+        ),
+        "2b3ed7ccd8af01d027ecefbced19af60ad3a7a28bbc1e33a70d901d42949d462"
     );
 }
 

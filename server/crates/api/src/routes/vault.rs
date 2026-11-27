@@ -8,17 +8,15 @@ use axum::{
 };
 use uuid::Uuid;
 
-use axum::extract::State;
 use db::NodeId;
 use protocol::{
-    AddUnlocker, ChangeFolderPassword, FolderLock, FolderPasswordChanged, FolderUnlocked,
-    ProtectFolder, ProtectedFolder, ProtectionState, RotateVault, UnlockFolder, Vault,
+    AddUnlocker, ChangeFolderPassword, ProtectFolder, ProtectedFolder, RotateVault, Vault,
     VaultUnlocker,
 };
 
 use crate::{
     ApiError, AppState, browser,
-    extract::{ApiJson, ApiPath, AuthUser, ClientIp, Tenant},
+    extract::{ApiJson, ApiPath, AuthUser, Tenant},
 };
 
 pub fn routes() -> Router<AppState> {
@@ -31,7 +29,6 @@ pub fn routes() -> Router<AppState> {
         .route("/protected/{id}", delete(remove))
         .route("/protected/{id}/finish", post(finish))
         .route("/protected/{id}/unprotect", post(unprotect))
-        .route("/protected/{id}/unlock", post(unlock).delete(lock))
         .route("/protected/{id}/password", post(change_password))
 }
 
@@ -86,7 +83,6 @@ async fn folders(tenant: Tenant, user: AuthUser) -> Result<Json<Vec<ProtectedFol
 }
 
 async fn protect(
-    State(state): State<AppState>,
     tenant: Tenant,
     user: AuthUser,
     ApiJson(request): ApiJson<ProtectFolder>,
@@ -95,64 +91,22 @@ async fn protect(
         .vault
         .protect(user.id, user.session_id, &request)
         .await?;
-    if folder.lock == FolderLock::Password && folder.state == ProtectionState::Protecting {
-        convert_now(&state, &tenant);
-    }
     Ok((StatusCode::CREATED, Json(folder)))
 }
 
-/// Starts encrypting or decrypting the tenant's password folders that need it, rather than
-/// waiting for the regular job, which resumes it after a stop.
-fn convert_now(state: &AppState, tenant: &Tenant) {
-    let vault = tenant.vault.clone();
-    let nodes = state.files.nodes.clone();
-    tokio::spawn(async move {
-        if let Err(err) = vault.convert_folders(&nodes).await {
-            tracing::error!(error = %err, "converting a password folder failed");
-        }
-    });
-}
-
-/// Sets a new password for a password folder, given its current password or recovery key.
+/// Stores a password folder's secret wrapped for a new password by a client that opened it.
 async fn change_password(
     tenant: Tenant,
     user: AuthUser,
-    ClientIp(address): ClientIp,
     ApiPath(id): ApiPath<NodeId>,
     ApiJson(request): ApiJson<ChangeFolderPassword>,
-) -> Result<Json<FolderPasswordChanged>, ApiError> {
+) -> Result<Json<ProtectedFolder>, ApiError> {
     Ok(Json(
         tenant
             .vault
-            .change_password(user.id, user.session_id, id, &request, address)
+            .change_password(user.id, user.session_id, id, &request)
             .await?,
     ))
-}
-
-/// Unlocks a password folder for the caller's session.
-async fn unlock(
-    tenant: Tenant,
-    user: AuthUser,
-    ClientIp(address): ClientIp,
-    ApiPath(id): ApiPath<NodeId>,
-    ApiJson(request): ApiJson<UnlockFolder>,
-) -> Result<Json<FolderUnlocked>, ApiError> {
-    Ok(Json(
-        tenant
-            .vault
-            .unlock(user.id, user.session_id, id, &request.password, address)
-            .await?,
-    ))
-}
-
-/// Locks a password folder for the caller's session again.
-async fn lock(
-    tenant: Tenant,
-    user: AuthUser,
-    ApiPath(id): ApiPath<NodeId>,
-) -> Result<StatusCode, ApiError> {
-    tenant.vault.lock(user.id, user.session_id, id).await?;
-    Ok(StatusCode::NO_CONTENT)
 }
 
 /// The client has replaced the folder's content with its encrypted form.
@@ -164,19 +118,16 @@ async fn finish(
     Ok(Json(tenant.vault.finish(user.id, id).await?))
 }
 
-/// Starts replacing the folder's content with its decrypted form: by the client for a
-/// security-key folder, by the server for a password folder, which then drops the protection.
+/// Starts replacing the folder's content with its decrypted form, which the client does
+/// before it removes the protection.
 async fn unprotect(
-    State(state): State<AppState>,
     tenant: Tenant,
     user: AuthUser,
     ApiPath(id): ApiPath<NodeId>,
 ) -> Result<Json<ProtectedFolder>, ApiError> {
-    let folder = tenant.vault.unprotect(user.id, user.session_id, id).await?;
-    if folder.lock == FolderLock::Password {
-        convert_now(&state, &tenant);
-    }
-    Ok(Json(folder))
+    Ok(Json(
+        tenant.vault.unprotect(user.id, user.session_id, id).await?,
+    ))
 }
 
 /// Forgets the protection of a folder whose content is plain again.

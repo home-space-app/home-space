@@ -80,10 +80,10 @@ pub use trash::{RestoreRequest, TrashItem};
 pub use upload::{ChunkResult, CreateUpload, UploadInfo, UploadSession, UploadsQuery};
 pub use validate::Validate;
 pub use vault::{
-    AddUnlocker, ChangeFolderPassword, FolderLock, FolderPasswordChanged, FolderUnlocked,
-    MAX_CREDENTIAL_ID_LEN, PRF_SALT_LEN, ProtectFolder, ProtectedFolder, ProtectionState,
-    RewrappedFolder, RewrappedUnlocker, RotateVault, UnlockFolder, UnlockerKind, Vault,
-    VaultUnlocker, WRAPPED_LEN, is_age_recipient,
+    AddUnlocker, ChangeFolderPassword, FolderLock, MAX_CREDENTIAL_ID_LEN, PASSWORD_ITERATIONS,
+    PASSWORD_MEMORY_KIB, PASSWORD_PARALLELISM, PASSWORD_SALT_LEN, PRF_SALT_LEN, PasswordKdf,
+    ProtectFolder, ProtectedFolder, ProtectionState, RewrappedFolder, RewrappedUnlocker,
+    RotateVault, UnlockerKind, Vault, VaultUnlocker, WRAPPED_LEN, is_age_recipient,
 };
 pub use version::Version;
 pub use webauthn::{

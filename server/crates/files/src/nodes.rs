@@ -10,20 +10,18 @@ use db::{ChangeBatch, ChangesSince, Node, NodeId, NodeKind, NodeProperties, OnCo
 use events::DomainEvent;
 
 use crate::{
-    Actor, BodyError, FilesError, MoveBatch, MoveOutcome, Names, NodeUpdate, StoreOptions,
-    StoreOutcome,
+    Actor, BodyError, FilesError, MoveBatch, MoveOutcome, NodeUpdate, StoreOptions, StoreOutcome,
     content::{ContentStore, new_content},
     emitted, tree,
 };
 
-/// A file to store with [`NodeService::upload`]: in `parent` (the root when `None`) as `name`,
-/// kept as `names` stores the names of that folder. A missing `content_type` is guessed from the
-/// name; `modified_at` is when the content last changed, if the client knows.
+/// A file to store with [`NodeService::upload`]: in `parent` (the root when `None`) as `name`.
+/// A missing `content_type` is guessed from the name; `modified_at` is when the content last
+/// changed, if the client knows.
 #[derive(Clone, Copy, Debug)]
 pub struct NewFile<'a> {
     pub parent: Option<NodeId>,
     pub name: &'a str,
-    pub names: &'a Names,
     pub content_type: Option<&'a str>,
     pub modified_at: Option<OffsetDateTime>,
 }
@@ -65,22 +63,15 @@ impl NodeService {
         self.content.max_upload_bytes
     }
 
-    /// Creates a folder under `parent` (or at the root), whose names are stored as `names`
-    /// says. The node returned carries the stored name, like everything this service returns.
+    /// Creates a folder under `parent` (or at the root).
     pub async fn create_folder(
         &self,
         actor: Actor,
         parent: Option<NodeId>,
         name: &str,
-        names: &Names,
     ) -> Result<Node, FilesError> {
         self.acting(actor.device)
-            .create_folder_as(
-                actor.user,
-                parent,
-                &names.store(NodeKind::Folder, name)?,
-                names,
-            )
+            .create_folder_as(actor.user, parent, name)
             .await
     }
 
@@ -104,13 +95,12 @@ impl NodeService {
     }
 
     /// Replaces the content of an existing file; different content becomes a new version, or
-    /// an older one when it was last changed before the current content. `names` opens the
-    /// file's name, which a missing content type is guessed from.
+    /// an older one when it was last changed before the current content. A missing content type
+    /// is guessed from the file's name.
     pub async fn replace_content<S>(
         &self,
         actor: Actor,
         id: NodeId,
-        names: &Names,
         content_type: Option<&str>,
         modified_at: Option<OffsetDateTime>,
         body: S,
@@ -119,7 +109,7 @@ impl NodeService {
         S: Stream<Item = Result<Bytes, BodyError>>,
     {
         self.acting(actor.device)
-            .replace_content_as(actor.user, id, names, content_type, modified_at, body)
+            .replace_content_as(actor.user, id, content_type, modified_at, body)
             .await
     }
 
@@ -166,21 +156,15 @@ impl NodeService {
         Ok(self.content.db.list_children(owner, parent).await?)
     }
 
-    /// Renames and/or moves a node; a new name is stored as `names` says, which must be the
-    /// names of the node's folder and of its destination alike.
+    /// Renames and/or moves a node.
     pub async fn update(
         &self,
         actor: Actor,
         id: NodeId,
-        mut update: NodeUpdate,
-        names: &Names,
+        update: NodeUpdate,
     ) -> Result<MoveOutcome, FilesError> {
-        if let Some(name) = update.name.take() {
-            let kind = self.content.db.get_node(actor.user, id).await?.kind;
-            update.name = Some(names.store(kind, &name)?);
-        }
         self.acting(actor.device)
-            .update_as(actor.user, id, update, names)
+            .update_as(actor.user, id, update)
             .await
     }
 
@@ -203,12 +187,8 @@ impl NodeService {
         owner: UserId,
         parent: Option<NodeId>,
         name: &str,
-        names: &Names,
     ) -> Result<Node, FilesError> {
-        let folder = self
-            .content
-            .insert_folder(owner, parent, name, names)
-            .await?;
+        let folder = self.content.insert_folder(owner, parent, name).await?;
         self.content
             .events
             .publish_one(DomainEvent::NodeCreated(folder.clone()))
@@ -228,7 +208,6 @@ impl NodeService {
         let NewFile {
             parent,
             name,
-            names,
             content_type,
             modified_at,
         } = file;
@@ -241,7 +220,6 @@ impl NodeService {
             owner,
             parent,
             name,
-            names,
             new_content(&staged, content_type, name, modified_at),
             StoreOptions::default(),
         )
@@ -255,7 +233,6 @@ impl NodeService {
         &self,
         owner: UserId,
         id: NodeId,
-        names: &Names,
         content_type: Option<&str>,
         modified_at: Option<OffsetDateTime>,
         body: S,
@@ -272,12 +249,7 @@ impl NodeService {
             &self.content.db,
             owner,
             id,
-            new_content(
-                &staged,
-                content_type,
-                &names.show(NodeKind::File, &current.name),
-                modified_at,
-            ),
+            new_content(&staged, content_type, &current.name, modified_at),
         )
         .await;
         self.content
@@ -290,9 +262,8 @@ impl NodeService {
         owner: UserId,
         id: NodeId,
         update: NodeUpdate,
-        names: &Names,
     ) -> Result<MoveOutcome, FilesError> {
-        let outcome = tree::update_node(&self.content.db, owner, id, update, names).await?;
+        let outcome = tree::update_node(&self.content.db, owner, id, update).await?;
         self.content.apply_blob_ops(owner, &outcome.blob_ops).await;
         self.content.events.publish(emitted::moved(&outcome)).await;
         Ok(outcome)

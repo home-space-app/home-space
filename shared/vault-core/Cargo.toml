@@ -7,15 +7,13 @@ license = "MIT"
 publish = false
 
 [features]
-# What only the server needs: storing a folder key it keeps (password folders), and names up to
-# its full 255 characters.
-server = []
 # A software security key (`SoftAuthenticator`) for other crates' tests.
 testing = ["dep:hmac"]
 
 [dependencies]
 age = "0.12.1"
 age-core = "0.12.0"
+argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "zeroize"] }
 bech32 = "0.11.1"
 aes-siv = "0.8.0"
 chacha20poly1305 = "0.11.0"
@@ -37,6 +35,13 @@ hmac = "0.13.0"
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom_02 = { package = "getrandom", version = "0.2.17", features = ["js"] }
 getrandom = { version = "0.4.3", features = ["wasm_js"] }
+
+# Argon2id is the price of a password folder's unlock; unoptimized it takes many seconds.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
 
 # The server's lint set (server/Cargo.toml): this crate is no member of a workspace to inherit it from.
 [lints.clippy]

@@ -19,8 +19,7 @@ struct Placement {
 }
 
 impl UploadService {
-    /// Starts a resumable upload of `size` bytes from `device`, when the client named one. A new
-    /// file's name is kept as `names` stores it, the names of the folder it goes to.
+    /// Starts a resumable upload of `size` bytes from `device`, when the client named one.
     pub async fn create_upload(
         &self,
         owner: UserId,
@@ -29,7 +28,6 @@ impl UploadService {
     ) -> Result<UploadStatus, FilesError> {
         let UploadRequest {
             target,
-            names,
             size,
             content_type,
             modified_at,
@@ -39,12 +37,7 @@ impl UploadService {
                 limit: self.content.max_upload_bytes,
             });
         }
-        let mut place = self.resolve_target(owner, target, size).await?;
-        // A new file's name; a replaced file's is stored already, and a transfer's items are
-        // not in the tree.
-        if place.node_id.is_none() && place.transfer_item_id.is_none() {
-            place.name = names.store(NodeKind::File, &place.name)?;
-        }
+        let place = self.resolve_target(owner, target, size).await?;
         if place.transfer_item_id.is_none() {
             self.content.check_quota(owner, None, size).await?;
         }

@@ -258,12 +258,12 @@ async fn check_secrets_key(db: &Db, tenant: TenantId, key: Option<&SecretBox>) -
         }
         Ok(KeyCheck::Matches | KeyCheck::Unused) => Ok(()),
         Err(SecretsKeyError::Missing) => anyhow::bail!(
-            "{var} is not set, but authenticator apps or password folders are sealed with a \
+            "{var} is not set, but authenticator apps are sealed with a \
              secrets key: set {var} to that key again. Change the key only with \
              `homespace-ctl secrets rotate`"
         ),
         Err(SecretsKeyError::Wrong) => anyhow::bail!(
-            "{var} is not the key the authenticator apps and password folders are sealed with, \
+            "{var} is not the key the authenticator apps are sealed with, \
              and they open with no other: set {var} to that key again. Change the key only with \
              `homespace-ctl secrets rotate`"
         ),

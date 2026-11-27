@@ -67,7 +67,7 @@ type, a bad id in the path, a missing header), **415** for a body in the wrong f
 | `too-many-keys` | 409 | `conflict` | The account has 20 passkeys and security keys, the most it may; remove one first. |
 | `last-unlocker` | 409 | `conflict` | The folder key or recovery key is the last that unlocks the account's protected folders; add another one first. |
 | `vault-changed` | 409 | `conflict` | The vault was created or rotated meanwhile (`epoch` is not its current one); read `GET /vault` again. |
-| `protected` | 409 | `conflict` | The item is a protected folder, is inside one, or holds one, and this is not possible with it. Also a write that met the folder being protected or unprotected at that moment; sending it again works. |
+| `protected` | 409 | `conflict` | The item is a protected folder, is inside one, or holds one, and this is not possible with it: moving across its edge, sharing or sending from it, saving a transfer or copying shared items into it, or keeping both files there. |
 | `lost-and-found` | 409 | `conflict` | Lost & Found, or a folder holding it, cannot be deleted. |
 | `offset-mismatch` | 409 | `conflict` | A chunk does not start at `current_offset`, where the upload ends. |
 | `transfer-not-ready` | 409 | `conflict` | The transfer's files are still being uploaded. |
@@ -91,7 +91,6 @@ type, a bad id in the path, a missing header), **415** for a body in the wrong f
 | `not-a-file` | 422 | `bad_request` | Only a file can do this, and the item is a folder. |
 | `invalid-name` | 422 | `bad_request` | The name is empty, too long, `.` or `..`, or holds `/` or `\`. |
 | `invalid-transfer` | 422 | `bad_request` | The list of files of a transfer is not acceptable. |
-| `locked` | 423 | `forbidden` | The item is in a password folder this session has not unlocked; `POST /protected/{id}/unlock` with its password. |
 | `too-many-attempts` | 429 | `too_many_requests` | Too many wrong passwords, or too many sign-ins started from one address (browser, single sign-on or passkey); wait `retry_after` seconds. |
 | `server-busy` | 429 | `too_many_requests` | Too many passwords are waiting to be checked; wait `retry_after` seconds. |
 | `too-many-connections` | 429 | `too_many_requests` | The account has as many live connections as it may; wait `retry_after` seconds. |

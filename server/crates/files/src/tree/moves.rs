@@ -7,22 +7,19 @@ use db::{Db, DbError, Node, NodeId, NodeKind, OnConflict, Tx, UserId};
 use super::{
     BlobOp, MoveBatch, MoveOutcome, NodeUpdate, conflicts::plan_conflicts, guard, rules::FileMerge,
 };
-use crate::{FilesError, Names};
+use crate::FilesError;
 
 /// Renames and/or moves node `id`.
 ///
 /// A rename onto a taken name is a `Conflict`. Moving to another folder merges into a
 /// same-named node there: files keep the destination, gain a version when the content
 /// differs and combine their dates; folders are merged recursively. Moving a folder into
-/// itself or below is a `Cycle`. A new name was stored as `names`, the names of the node's
-/// folder and of its destination alike, say; a move never crosses the edge of a password
-/// folder.
+/// itself or below is a `Cycle`. A move never crosses the edge of a protected folder.
 pub(crate) async fn update_node(
     db: &Db,
     owner: UserId,
     id: NodeId,
     update: NodeUpdate,
-    names: &Names,
 ) -> Result<MoveOutcome, FilesError> {
     let mut tx = db.transaction(owner).await?;
     guard::hold(&mut tx).await?;
@@ -30,9 +27,6 @@ pub(crate) async fn update_node(
     let parent = update.parent_id.apply(current.parent_id);
     if parent != current.parent_id {
         guard::refuse_crossing(&mut tx, &current, parent).await?;
-    }
-    if update.name.is_some() {
-        guard::check_names(&mut tx, parent, names).await?;
     }
     let name = update.name.unwrap_or_else(|| current.name.clone());
     let mut effects = Effects::default();
@@ -71,7 +65,7 @@ pub(crate) async fn update_node(
 /// Folders merge into same-named folders. A file clashes when a live file of the same name
 /// is in its way, or when two selected files share a name; `on_conflict` decides what
 /// happens then. Selected nodes inside another selected folder move along with it. None may
-/// cross the edge of a password folder.
+/// cross the edge of a protected folder.
 pub(crate) async fn move_nodes(
     db: &Db,
     owner: UserId,

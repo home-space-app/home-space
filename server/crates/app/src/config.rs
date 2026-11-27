@@ -53,9 +53,8 @@ pub struct Config {
     )]
     pub jwt_secret_previous: Option<String>,
 
-    /// Key that seals the secrets of authenticator apps (two-factor sign-in) and the keys of
-    /// password folders in the database; set this or `HOMESPACE_SECRETS_KEY_FILE`. Without it
-    /// neither can be added. Keep it apart from the JWT secret, never lose it, and change it
+    /// Key that seals the secrets of authenticator apps (two-factor sign-in) in the database;
+    /// set this or `HOMESPACE_SECRETS_KEY_FILE`. Without it none can be added. Keep it apart from the JWT secret, never lose it, and change it
     /// only with `homespace-ctl secrets rotate`: what it sealed opens with no other key.
     #[arg(long, env = "HOMESPACE_SECRETS_KEY", hide_env_values = true)]
     pub secrets_key: Option<String>,
