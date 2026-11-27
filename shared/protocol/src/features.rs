@@ -37,7 +37,9 @@ pub const PASSKEYS: &str = "passkeys";
 /// encrypts; the server keeps wrapped secrets, Argon2id parameters and age recipients. The
 /// vault's security keys are folder keys, credentials a client makes for the vault alone
 /// (`name`, `credential_id`, `rp_id`, `prf_salt`), never sign-in credentials. Moves across
-/// a protected folder's edge get `409 protected`. Clients without it hide Protect.
+/// a protected folder's edge get `409 protected`. Names inside a protected folder may be up to
+/// 1387 characters (`rules::MAX_SEALED_NODE_NAME_CHARS`), the sealed text of a 255-character
+/// name; elsewhere the limit stays 255. Clients without it hide Protect.
 pub const PROTECTED_FOLDERS: &str = "protected_folders";
 
 /// Every feature this server provides, each added with the release that introduced it.

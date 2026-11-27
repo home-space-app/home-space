@@ -9,6 +9,7 @@ mod duplicates;
 mod login;
 mod move_dialog;
 mod oidc_callback;
+mod protect_dialog;
 mod public_share;
 mod search;
 mod search_box;
@@ -23,6 +24,7 @@ mod sidebar;
 mod transfer_save;
 mod transfers;
 mod trash;
+mod unprotect_dialog;
 mod viewer;
 mod visibility_dialog;
 

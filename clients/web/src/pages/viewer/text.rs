@@ -7,10 +7,10 @@ use leptos_router::{
 };
 
 use client_core::{text::TextDoc, viewers::Viewer};
-use protocol::Node;
+use protocol::{Node, NodeId};
 
-use super::{ViewerHeader, fetch_content};
-use crate::{icon::Icon, leave_guard, route, session::Auth, upload};
+use super::{ViewerHeader, file_content};
+use crate::{icon::Icon, leave_guard, protected, route, session::Auth, upload};
 
 const LOADING: &str = "Loading…";
 const NOT_UTF8: &str = "This file is not UTF-8 text, so it can only be viewed.";
@@ -31,6 +31,9 @@ pub fn TextViewer(
     node: RwSignal<Option<Node>>,
     viewer: Viewer,
     header: ViewerHeader,
+    /// The protected folder the file is in: it is decrypted to show and encrypted to save.
+    #[prop(optional_no_strip)]
+    protected: Option<NodeId>,
 ) -> impl IntoView {
     let doc = RwSignal::new(None::<TextDoc>);
     let mode = RwSignal::new(Mode::Read);
@@ -75,7 +78,7 @@ pub fn TextViewer(
     let fetch = move |file: Node| {
         doc.set(None);
         spawn_local(async move {
-            match fetch_content(auth, file.id).await {
+            match file_content(auth, &file, protected).await {
                 Ok(bytes)
                     if u64::try_from(bytes.len()).is_ok_and(|len| len <= viewer.max_bytes) =>
                 {
@@ -142,8 +145,18 @@ pub fn TextViewer(
         saving.set(true);
         error.set(None);
         spawn_local(async move {
-            let client = crate::session::client();
-            match upload::replace_content(&client, file.id, &file.name, &file.mime, &bytes).await {
+            let saved = match protected {
+                Some(folder) => {
+                    protected::replace_plain(protected::vault(), folder, &file, &bytes).await
+                }
+                None => {
+                    let client = crate::session::client();
+                    upload::replace_content(&client, file.id, &file.name, &file.mime, &bytes)
+                        .await
+                        .map_err(|err| auth.fail(&err))
+                }
+            };
+            match saved {
                 Ok(saved) => {
                     shown.set_value(Some(saved.sha256.clone()));
                     doc.set(Some(current.with_text(&text)));
@@ -152,9 +165,9 @@ pub fn TextViewer(
                     saving.set(false);
                     node.set(Some(saved));
                 }
-                Err(err) => {
+                Err(message) => {
                     saving.set(false);
-                    error.set(Some(auth.fail(&err)));
+                    error.set(Some(message));
                 }
             }
         });

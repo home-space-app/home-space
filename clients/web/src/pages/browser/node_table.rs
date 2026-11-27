@@ -8,7 +8,7 @@ use client_core::{
     format::human_size,
     listing::{Sort, SortKey},
 };
-use protocol::{Node, NodeId, NodeKind};
+use protocol::{FolderLock, Node, NodeId, NodeKind, ProtectionState};
 
 use crate::components::{Menu, MenuItem};
 use crate::{
@@ -16,6 +16,7 @@ use crate::{
     icon::{Icon, node_icon},
     locale::short_date,
     pages::viewer::use_view_link,
+    protected::{Vault, use_vault},
     route,
     viewers::viewers,
 };
@@ -24,6 +25,7 @@ const KEY_ENTER: &str = "Enter";
 const KEY_ESCAPE: &str = "Escape";
 
 const ICON_FOLDER: &str = "folder";
+const ICON_LOCKED: &str = "lock";
 
 #[derive(Clone, Copy)]
 pub struct TableActions {
@@ -42,6 +44,18 @@ pub struct TableActions {
     pub details: Callback<Node>,
     pub delete: Callback<Vec<Node>>,
     pub lost_and_found: Signal<Option<NodeId>>,
+    /// The listing is inside a protected folder: files open decrypted, and nothing is shared,
+    /// sent or moved out.
+    pub inside_protected: Signal<bool>,
+    /// The listing is inside a folder being unprotected: nothing is renamed or moved.
+    pub frozen: Signal<bool>,
+    pub protect: Callback<Node>,
+    pub unprotect: Callback<Node>,
+    pub unlock: Callback<Node>,
+    pub lock: Callback<NodeId>,
+    pub change_password: Callback<Node>,
+    /// Goes on protecting or unprotecting a folder that stopped halfway.
+    pub finish: Callback<NodeId>,
 }
 
 #[component]
@@ -203,10 +217,47 @@ fn NodeRow(node: Node, actions: TableActions) -> impl IntoView {
         details,
         delete,
         lost_and_found,
+        inside_protected,
+        frozen,
+        protect,
+        unprotect,
+        unlock,
+        lock,
+        change_password,
+        finish,
         ..
     } = actions;
     let is_folder = node.kind == NodeKind::Folder;
-    let icon = node_icon(&node);
+    let vault = use_vault();
+    let node_id = node.id;
+    let protection = Memo::new(move |_| {
+        if is_folder {
+            vault.protection_of(node_id)
+        } else {
+            None
+        }
+    });
+    let is_protected = move || protection.read().is_some();
+    let unlocked = move || is_protected() && vault.is_unlocked(node_id);
+    let is_password = move || {
+        protection
+            .read()
+            .as_ref()
+            .is_some_and(|folder| folder.lock == FolderLock::Password)
+    };
+    let state = move || protection.read().as_ref().map(|folder| folder.state);
+    let finish_label = move || match state() {
+        Some(ProtectionState::Unprotecting) => "Finish unprotecting",
+        _ => "Finish protecting",
+    };
+    let plain_icon = node_icon(&node);
+    let icon = move || {
+        if is_protected() {
+            ICON_LOCKED
+        } else {
+            plain_icon
+        }
+    };
     let name = node.name.clone();
     let size = if is_folder {
         String::new()
@@ -219,13 +270,14 @@ fn NodeRow(node: Node, actions: TableActions) -> impl IntoView {
     } else {
         format!("{size} \u{b7} {modified}")
     };
+    // Inside a protected folder the listing gives a file the type its opened name says, and
+    // the viewer decrypts it.
     let viewable = viewers().viewer_for_node(&node).is_some();
     let href = if is_folder {
         route::folder(node.id)
     } else {
         use_view_link().href(node.id)
     };
-    let node_id = node.id;
     let editing = Memo::new(move |_| {
         renaming
             .read()
@@ -252,7 +304,7 @@ fn NodeRow(node: Node, actions: TableActions) -> impl IntoView {
                 {move || if editing.get() {
                     view! {
                         <span class="node-table__name node-table__name--editing">
-                            <Icon name=icon />
+                            <Icon name=icon() />
                             <input
                                 node_ref=rename_input
                                 class="field__input node-table__input"
@@ -288,7 +340,7 @@ fn NodeRow(node: Node, actions: TableActions) -> impl IntoView {
                             scroll=is_folder
                             attr:class="node-table__name node-table__name--link"
                         >
-                            <Icon name=icon />
+                            <Icon name=icon() />
                             <span class="node-table__text">
                                 {name}
                                 <span class="node-table__meta">{meta}</span>
@@ -299,7 +351,7 @@ fn NodeRow(node: Node, actions: TableActions) -> impl IntoView {
                 } else {
                     view! {
                         <span class="node-table__name">
-                            <Icon name=icon />
+                            <Icon name=icon() />
                             <span class="node-table__text">
                                 {name.clone()}
                                 <span class="node-table__meta">{meta.clone()}</span>
@@ -351,36 +403,87 @@ fn NodeRow(node: Node, actions: TableActions) -> impl IntoView {
                                         />
                                     }
                                 })}
-                            <MenuItem
-                                icon="share"
-                                label="Share…"
-                                on_select=Callback::new(move |()| share.run(vec![target.get_value()]))
-                            />
-                            <MenuItem
-                                icon="send"
-                                label="Send to device…"
-                                on_select=Callback::new(move |()| send.run(vec![target.get_value()]))
-                            />
-                            <MenuItem
-                                icon="info"
-                                label="Details"
-                                on_select=Callback::new(move |()| details.run(target.get_value()))
-                            />
-                            <MenuItem
-                                icon="edit"
-                                label="Rename"
-                                on_select=Callback::new(move |()| {
-                                    let node = target.get_value();
-                                    renaming.set(Some((node.id, node.name)))
-                                })
-                            />
-                            <MenuItem
-                                icon="drive_file_move"
-                                label="Move"
-                                on_select=Callback::new(move |()| {
-                                    moving.set(Some(vec![target.get_value()]))
-                                })
-                            />
+                            <Show when=move || is_protected() && !unlocked()>
+                                <MenuItem
+                                    icon="lock"
+                                    label="Unlock…"
+                                    on_select=Callback::new(move |()| unlock.run(target.get_value()))
+                                />
+                            </Show>
+                            <Show when=unlocked>
+                                <MenuItem
+                                    icon="lock"
+                                    label="Lock"
+                                    on_select=Callback::new(move |()| lock.run(node_id))
+                                />
+                            </Show>
+                            <Show when=move || unlocked() && state() != Some(ProtectionState::Protected)>
+                                <MenuItem
+                                    icon="lock"
+                                    label=finish_label()
+                                    on_select=Callback::new(move |()| finish.run(node_id))
+                                />
+                            </Show>
+                            <Show when=move || unlocked() && state() == Some(ProtectionState::Protected)>
+                                <MenuItem
+                                    icon="lock"
+                                    label="Unprotect…"
+                                    on_select=Callback::new(move |()| unprotect.run(target.get_value()))
+                                />
+                            </Show>
+                            <Show when=is_password>
+                                <MenuItem
+                                    icon="edit"
+                                    label="Change password…"
+                                    on_select=Callback::new(move |()| change_password.run(target.get_value()))
+                                />
+                            </Show>
+                            <Show when=move || {
+                                is_folder && !is_protected() && !inside_protected.get()
+                                    && lost_and_found.get() != Some(node_id) && Vault::available()
+                            }>
+                                <MenuItem
+                                    icon="lock"
+                                    label="Protect with password…"
+                                    on_select=Callback::new(move |()| protect.run(target.get_value()))
+                                />
+                            </Show>
+                            <Show when=move || !is_protected() && !inside_protected.get()>
+                                <MenuItem
+                                    icon="share"
+                                    label="Share…"
+                                    on_select=Callback::new(move |()| share.run(vec![target.get_value()]))
+                                />
+                                <MenuItem
+                                    icon="send"
+                                    label="Send to device…"
+                                    on_select=Callback::new(move |()| send.run(vec![target.get_value()]))
+                                />
+                            </Show>
+                            <Show when=move || !inside_protected.get()>
+                                <MenuItem
+                                    icon="info"
+                                    label="Details"
+                                    on_select=Callback::new(move |()| details.run(target.get_value()))
+                                />
+                            </Show>
+                            <Show when=move || !frozen.get()>
+                                <MenuItem
+                                    icon="edit"
+                                    label="Rename"
+                                    on_select=Callback::new(move |()| {
+                                        let node = target.get_value();
+                                        renaming.set(Some((node.id, node.name)))
+                                    })
+                                />
+                                <MenuItem
+                                    icon="drive_file_move"
+                                    label="Move"
+                                    on_select=Callback::new(move |()| {
+                                        moving.set(Some(vec![target.get_value()]))
+                                    })
+                                />
+                            </Show>
                             <Show when=move || lost_and_found.get() != Some(node_id)>
                                 <MenuItem
                                     icon="delete"

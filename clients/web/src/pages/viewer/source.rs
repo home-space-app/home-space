@@ -1,16 +1,29 @@
-//! Where the file a viewer shows comes from: one of the user's own files, or one shared with
-//! them. The PDF and video viewers read either the same way.
+//! Where the file a viewer shows comes from: one of the user's own files, one shared with
+//! them, or a file of a protected folder, decrypted in the page. The PDF and video viewers read
+//! any of them the same way.
 
 use protocol::{NodeId, TicketRequest};
 use uuid::Uuid;
 
 use super::{download_failed, fetch_bytes};
-use crate::session::{self, Auth};
+use crate::{
+    protected,
+    session::{self, Auth},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Source {
     Own(NodeId),
-    Shared { share: Uuid, node: NodeId },
+    Shared {
+        share: Uuid,
+        node: NodeId,
+    },
+    /// File `node`, of `size` bytes as stored, in the unlocked protected folder `folder`.
+    Protected {
+        folder: NodeId,
+        node: NodeId,
+        size: i64,
+    },
 }
 
 impl Source {
@@ -22,13 +35,17 @@ impl Source {
                 share_id: share,
                 node_id: node,
             },
+            Self::Protected { folder, node, size } => {
+                return protected::download_plain(protected::vault(), folder, node, size).await;
+            }
         };
         let url = self.url(auth, &request).await?;
         fetch_bytes(&url).await.map_err(|err| download_failed(&err))
     }
 
     /// A URL a player can fetch the file from in as many range requests as it needs, until the
-    /// stream ticket in it expires.
+    /// stream ticket in it expires. A protected folder's file is decrypted whole into a `blob:`
+    /// URL instead, revoked when the folder locks.
     pub(super) async fn stream_url(self, auth: Auth) -> Result<String, String> {
         let request = match self {
             Self::Own(node_id) => TicketRequest::Stream { node_id },
@@ -36,6 +53,14 @@ impl Source {
                 share_id: share,
                 node_id: node,
             },
+            Self::Protected { folder, .. } => {
+                let plain = self.bytes(auth).await?;
+                // Without a type: the player tells the format from the bytes.
+                let url = protected::untyped_blob_url(&plain)
+                    .ok_or_else(|| "The video could not be loaded.".to_owned())?;
+                protected::vault().keep_url(folder, url.clone());
+                return Ok(url);
+            }
         };
         self.url(auth, &request).await
     }
@@ -50,7 +75,9 @@ impl Source {
         }
         .map_err(|err| auth.fail(&err))?;
         Ok(match self {
-            Self::Own(node) => client.download_url(node, &ticket.ticket),
+            Self::Own(node) | Self::Protected { node, .. } => {
+                client.download_url(node, &ticket.ticket)
+            }
             Self::Shared { share, node } => client.received_file_url(share, node, &ticket.ticket),
         })
     }

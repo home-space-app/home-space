@@ -9,10 +9,11 @@ use web_sys::{Blob, BlobPropertyBag, HtmlElement, KeyboardEvent, Url};
 use client_core::{gallery::Gallery, listing::Sort, viewers::Viewer};
 use protocol::{Event, Node, NodeId};
 
-use super::{ViewerHeader, fetch_content, use_view_link};
+use super::{ViewerHeader, file_content, use_view_link};
 use crate::{
     events,
     icon::Icon,
+    protected,
     session::{self, Auth},
     viewers::viewers,
 };
@@ -37,6 +38,9 @@ pub fn ImageViewer(
     node: RwSignal<Option<Node>>,
     viewer: Viewer,
     header: ViewerHeader,
+    /// The protected folder the picture is in: it and its neighbours are decrypted to show.
+    #[prop(optional_no_strip)]
+    protected: Option<NodeId>,
 ) -> impl IntoView {
     let url = RwSignal::new(None::<String>);
     let error = RwSignal::new(None::<String>);
@@ -48,7 +52,7 @@ pub fn ImageViewer(
 
     let show = move |file: Node| {
         spawn_local(async move {
-            let loaded = fetch_content(auth, file.id).await.and_then(|bytes| {
+            let loaded = file_content(auth, &file, protected).await.and_then(|bytes| {
                 if u64::try_from(bytes.len()).is_ok_and(|len| len <= viewer.max_bytes) {
                     object_url(&bytes, &file.mime)
                 } else {
@@ -92,6 +96,12 @@ pub fn ImageViewer(
             };
             match listing {
                 Ok(listing) => {
+                    let listing = match protected {
+                        Some(folder) => protected::vault()
+                            .opened(folder, listing)
+                            .unwrap_or_default(),
+                        None => listing,
+                    };
                     gallery.set(Gallery::new(viewers(), &listing, &file, Sort::default()));
                 }
                 Err(err) => error.set(Some(auth.fail(&err))),
@@ -121,6 +131,12 @@ pub fn ImageViewer(
 
     events::use_events(move |event| match event {
         Event::Resync => {
+            if let Some(file) = node.get_untracked() {
+                list(file);
+            }
+        }
+        // Names in a protected folder arrive sealed, so its pictures are listed and opened again.
+        _ if protected.is_some() => {
             if let Some(file) = node.get_untracked() {
                 list(file);
             }

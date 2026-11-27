@@ -50,6 +50,10 @@ pub const PASSKEY_FINISH: &str = "/api/v1/auth/passkey/finish";
 pub const VAULT: &str = "/api/v1/vault";
 /// `POST` enables a folder key or sets the recovery key.
 pub const VAULT_UNLOCKERS: &str = "/api/v1/vault/unlockers";
+/// `POST` replaces the vault key and rewraps everything under it.
+pub const VAULT_ROTATE: &str = "/api/v1/vault/rotate";
+/// `GET` lists the caller's protected folders, `POST` protects one.
+pub const PROTECTED: &str = "/api/v1/protected";
 pub const NODES: &str = "/api/v1/nodes";
 pub const NODES_MOVE: &str = "/api/v1/nodes/move";
 pub const FOLDERS: &str = "/api/v1/folders";
@@ -116,6 +120,26 @@ pub fn me_webauthn_key(id: uuid::Uuid) -> String {
 /// `DELETE` removes one of the vault's unlockers.
 pub fn vault_unlocker(id: uuid::Uuid) -> String {
     format!("{VAULT_UNLOCKERS}/{id}")
+}
+
+/// `DELETE` forgets the protection of a folder that is being protected or unprotected.
+pub fn protected_folder(id: NodeId) -> String {
+    format!("{PROTECTED}/{id}")
+}
+
+/// `POST` marks a folder whose content the client has encrypted as protected.
+pub fn protected_finish(id: NodeId) -> String {
+    format!("{PROTECTED}/{id}/finish")
+}
+
+/// `POST` starts replacing a protected folder's content with its decrypted form.
+pub fn protected_unprotect(id: NodeId) -> String {
+    format!("{PROTECTED}/{id}/unprotect")
+}
+
+/// `POST` stores a password folder's secret wrapped for a new password.
+pub fn protected_password(id: NodeId) -> String {
+    format!("{PROTECTED}/{id}/password")
 }
 
 pub fn admin_user_second_factors(id: crate::UserId) -> String {

@@ -8,6 +8,7 @@ mod load;
 mod local_files;
 mod locale;
 mod pages;
+mod protected;
 mod route;
 mod save_file;
 mod session;

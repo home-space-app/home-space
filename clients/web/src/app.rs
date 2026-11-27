@@ -14,6 +14,7 @@ use crate::{
         Login, OidcCallback, PublicSharePage, SearchPage, SettingsPage, SharedWithMePage,
         SharesPage, Shell, TransferList, TransfersPage, TrashPage,
     },
+    protected,
     session::Auth,
     update::UpdateToast,
     uploads::{Sending, UploadItem, UploadPanel},
@@ -28,6 +29,7 @@ pub fn App() -> impl IntoView {
     incoming::provide_incoming();
     leave_guard::provide();
     reconfirm::provide();
+    protected::provide(auth);
     let hub = events::provide_hub();
     Effect::new(move |_| {
         if auth.user.read().is_some() {

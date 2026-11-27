@@ -6,8 +6,10 @@ use web_sys::File;
 
 use client_core::send::files_to_upload;
 use protocol::{CreatedTransfer, NodeId};
+use vault_core::Recipient;
 
 use crate::{
+    protected,
     session::{self, Auth},
     upload,
 };
@@ -40,12 +42,20 @@ fn update_upload(
     });
 }
 
+/// Files going into a protected folder: the key their content is encrypted to, and their
+/// sealed names, one per file.
+pub struct Encryption {
+    pub recipient: Recipient,
+    pub names: Vec<String>,
+}
+
 pub fn start_upload(
     uploads: RwSignal<Vec<UploadItem>>,
     on_done: impl Fn() + 'static,
     auth: Auth,
     parent: Option<NodeId>,
     files: Vec<File>,
+    encryption: Option<Encryption>,
 ) {
     let ids: Vec<u64> = files.iter().map(|_| upload::next_id()).collect();
     uploads.update(|items| {
@@ -57,22 +67,32 @@ pub fn start_upload(
         }));
     });
     spawn_local(async move {
-        for (id, file) in ids.into_iter().zip(files) {
+        for (index, (id, file)) in ids.into_iter().zip(files).enumerate() {
             update_upload(uploads, id, |item| item.state = UploadState::Active);
             let on_progress: upload::OnProgress = Rc::new(move |fraction| {
                 update_upload(uploads, id, |item| item.progress = fraction)
             });
-            match upload::upload(&session::client(), &file, parent, &on_progress).await {
+            let sent = match &encryption {
+                Some(Encryption { recipient, names }) => {
+                    let name = names.get(index).map_or("", String::as_str);
+                    protected::encrypt_file(&file, recipient, name).await
+                }
+                None => Ok(file),
+            };
+            let outcome = match sent {
+                Ok(file) => upload::upload(&session::client(), &file, parent, &on_progress)
+                    .await
+                    .map_err(|err| auth.fail(&err)),
+                Err(message) => Err(message),
+            };
+            match outcome {
                 Ok(_) => update_upload(uploads, id, |item| {
                     item.progress = 1.0;
                     item.state = UploadState::Done;
                 }),
-                Err(err) => {
-                    let message = auth.fail(&err);
-                    update_upload(uploads, id, |item| {
-                        item.state = UploadState::Failed(message)
-                    });
-                }
+                Err(message) => update_upload(uploads, id, |item| {
+                    item.state = UploadState::Failed(message)
+                }),
             }
         }
         on_done();

@@ -31,6 +31,7 @@ pub(crate) async fn update_node(
     let name = update.name.unwrap_or_else(|| current.name.clone());
     let mut effects = Effects::default();
     let node = if parent == current.parent_id {
+        guard::refuse_invalid_name(&mut tx, parent, &name).await?;
         let node = tx.relocate(id, parent, &name, true).await?;
         effects.updated.push(node.clone());
         node
@@ -264,7 +265,10 @@ impl<'a> Placer<'a> {
             .find_sibling(parent, node.kind, &name, Some(node.id))
             .await?;
         let placed = match dest {
-            None => self.tx.relocate(node.id, parent, &name, touch).await?,
+            None => {
+                guard::refuse_invalid_name(self.tx, parent, &name).await?;
+                self.tx.relocate(node.id, parent, &name, touch).await?
+            }
             Some(dest) if dest.kind == NodeKind::File => self.merge_file(node, &dest).await?,
             Some(dest) => self.merge_folder(node, &dest).await?,
         };

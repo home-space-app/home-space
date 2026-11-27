@@ -5,9 +5,14 @@ use wiremock::{
 };
 
 use api_client::{ApiError, Client};
-use protocol::{AddUnlocker, ErrorCode, UnlockerKind, encoding::Base64Url, paths};
+use protocol::{
+    AddUnlocker, ChangeFolderPassword, ErrorCode, FolderLock, NodeId, PasswordKdf, ProtectFolder,
+    ProtectionState, UnlockerKind, encoding::Base64Url, paths,
+};
 
 const UNLOCKER: &str = "0190d1f0-0000-7000-8000-0000000000a1";
+const FOLDER: &str = "0190d1f0-0000-7000-8000-0000000000b1";
+const RECIPIENT: &str = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p";
 
 fn tokens() -> serde_json::Value {
     json!({ "access_token": "access", "refresh_token": "refresh", "expires_in": 900 })
@@ -135,4 +140,134 @@ async fn the_last_unlocker_of_locked_folders_is_kept() {
         matches!(&refused, Err(ApiError::Api { code: ErrorCode::Conflict, message }) if message.contains("last key")),
         "{refused:?}"
     );
+}
+
+fn folder() -> NodeId {
+    NodeId(FOLDER.parse().expect("uuid"))
+}
+
+fn kdf() -> PasswordKdf {
+    PasswordKdf {
+        salt: Base64Url::from(vec![6; 16]),
+        memory_kib: 65_536,
+        iterations: 3,
+        parallelism: 1,
+    }
+}
+
+fn kdf_json() -> serde_json::Value {
+    json!({ "salt": "BgYGBgYGBgYGBgYGBgYGBg", "memory_kib": 65_536, "iterations": 3, "parallelism": 1 })
+}
+
+fn password_folder(state: &str) -> serde_json::Value {
+    json!({
+        "node_id": FOLDER,
+        "lock": "password",
+        "wrapped_secret": "AQ",
+        "kdf": kdf_json(),
+        "recovery_wrapped_secret": "Ag",
+        "recipient": RECIPIENT,
+        "format": 1,
+        "state": state,
+        "created_at": "2026-11-27T10:00:00Z",
+    })
+}
+
+#[tokio::test]
+async fn a_password_folder_is_posted_with_both_wraps_and_its_parameters() {
+    let server = MockServer::start().await;
+    let client = signed_in(&server).await;
+    Mock::given(method("POST"))
+        .and(path(paths::PROTECTED))
+        .and(body_json(json!({
+            "node_id": FOLDER,
+            "lock": "password",
+            "wrapped_secret": "AQ",
+            "recipient": RECIPIENT,
+            "kdf": kdf_json(),
+            "recovery_wrapped_secret": "Ag",
+        })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(password_folder("protecting")))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let request = ProtectFolder {
+        node_id: folder(),
+        lock: FolderLock::Password,
+        wrapped_secret: Base64Url::from(vec![1]),
+        recipient: RECIPIENT.to_owned(),
+        epoch: None,
+        kdf: Some(kdf()),
+        recovery_wrapped_secret: Some(Base64Url::from(vec![2])),
+    };
+    let protected = client.protect_folder(&request).await.expect("protected");
+    assert_eq!(protected.state, ProtectionState::Protecting);
+    assert_eq!(protected.kdf, Some(kdf()));
+}
+
+#[tokio::test]
+async fn protected_folders_are_listed_finished_and_given_a_new_password() {
+    let server = MockServer::start().await;
+    let client = signed_in(&server).await;
+    Mock::given(method("GET"))
+        .and(path(paths::PROTECTED))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!([password_folder("protecting")])),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(paths::protected_finish(folder())))
+        .respond_with(ResponseTemplate::new(200).set_body_json(password_folder("protected")))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(paths::protected_password(folder())))
+        .and(body_json(
+            json!({ "wrapped_secret": "Aw", "kdf": kdf_json() }),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(password_folder("protected")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let listed = client.protected_folders().await.expect("listed");
+    assert_eq!(listed[0].node_id, folder());
+    assert_eq!(listed[0].lock, FolderLock::Password);
+    let finished = client.finish_protection(folder()).await.expect("finished");
+    assert_eq!(finished.state, ProtectionState::Protected);
+    let change = ChangeFolderPassword {
+        wrapped_secret: Base64Url::from(vec![3]),
+        kdf: kdf(),
+        recovery_wrapped_secret: None,
+    };
+    client
+        .change_folder_password(folder(), &change)
+        .await
+        .expect("changed");
+}
+
+#[tokio::test]
+async fn a_protection_is_removed_after_unprotecting() {
+    let server = MockServer::start().await;
+    let client = signed_in(&server).await;
+    Mock::given(method("POST"))
+        .and(path(paths::protected_unprotect(folder())))
+        .respond_with(ResponseTemplate::new(200).set_body_json(password_folder("unprotecting")))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(paths::protected_folder(folder())))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let unprotecting = client
+        .unprotect_folder(folder())
+        .await
+        .expect("unprotecting");
+    assert_eq!(unprotecting.state, ProtectionState::Unprotecting);
+    client.remove_protection(folder()).await.expect("removed");
 }

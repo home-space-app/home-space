@@ -7,13 +7,27 @@ use client_core::{
     labels::HOME,
     listing::{Sort, already_in, sort_nodes},
 };
-use protocol::{Conflict, Node, NodeId, NodeKind, OnConflict};
+use client_core::protected::seal_name;
+use protocol::{Conflict, Node, NodeId, NodeKind, OnConflict, ProtectedFolder};
 
 use super::conflict_dialog::ConflictDialog;
-use crate::{components::ErrorAlert, icon::Icon, load, session, session::Auth};
+use crate::{
+    components::ErrorAlert,
+    icon::Icon,
+    load,
+    protected::{Vault, use_vault},
+    session,
+    session::Auth,
+};
+
+const LOCKED_MEANWHILE: &str = "The folder locked meanwhile; unlock it again.";
 
 /// Picks a destination folder and moves `nodes` there; `refresh` reloads the listing behind
 /// the dialog once the move is done.
+///
+/// Inside a protected folder (`within`: the folder and the path to the open folder, names
+/// opened) the destination is one of its folders, starting at the open one, and each name is
+/// sealed again for its new folder, as a sealed name is bound to it.
 #[component]
 pub fn MoveDialog(
     nodes: Vec<Node>,
@@ -21,7 +35,18 @@ pub fn MoveDialog(
     selected: RwSignal<HashSet<NodeId>>,
     refresh: impl Fn() + Copy + Send + Sync + 'static,
     auth: Auth,
+    #[prop(optional_no_strip)] within: Option<(ProtectedFolder, Vec<Node>)>,
 ) -> impl IntoView {
+    let vault = use_vault();
+    let root = within.as_ref().map(|(folder, _)| folder.node_id);
+    // The trail never goes above the protected folder.
+    let (floor, start) = within.map_or((0, Vec::new()), |(folder, path)| {
+        let floor = path
+            .iter()
+            .position(|node| node.id == folder.node_id)
+            .map_or(path.len(), |at| at + 1);
+        (floor, path)
+    });
     let ids: Vec<NodeId> = nodes.iter().map(|node| node.id).collect();
     let title = match nodes.as_slice() {
         [node] => format!("Move “{}”", node.name),
@@ -29,7 +54,7 @@ pub fn MoveDialog(
     };
     let moving_ids = ids.clone();
     let origin = nodes.clone();
-    let trail = RwSignal::new(Vec::<Node>::new());
+    let trail = RwSignal::new(start);
     let folders = RwSignal::new(Vec::<Node>::new());
     let error = RwSignal::new(None::<String>);
     let target = Memo::new(move |_| trail.read().last().map(|folder| folder.id));
@@ -46,6 +71,9 @@ pub fn MoveDialog(
                         entry.kind == NodeKind::Folder && !moving_ids.contains(&entry.id)
                     })
                     .collect();
+                if let Some(root) = root {
+                    listing = vault.opened(root, listing).unwrap_or_default();
+                }
                 sort_nodes(&mut listing, Sort::default());
                 Ok(listing)
             }
@@ -58,8 +86,23 @@ pub fn MoveDialog(
 
     // The title and clashes of a move that was held back, until the user chooses.
     let conflicts = RwSignal::new(None::<(String, Vec<Conflict>)>);
+    let sealed_moves = nodes.clone();
     let send = Callback::new(move |mode: OnConflict| {
         let destination: Option<NodeId> = target.get_untracked();
+        if let (Some(root), Some(destination)) = (root, destination) {
+            let nodes = sealed_moves.clone();
+            spawn_local(async move {
+                match move_sealed(vault, root, &nodes, destination).await {
+                    Ok(()) => {
+                        moving.set(None);
+                        selected.update(HashSet::clear);
+                    }
+                    Err(message) => error.set(Some(message)),
+                }
+                refresh();
+            });
+            return;
+        }
         let ids = ids.clone();
         spawn_local(async move {
             match session::client().move_nodes(&ids, destination, mode).await {
@@ -122,7 +165,7 @@ pub fn MoveDialog(
                     </p>
                 </header>
                 <ul class="folder-picker">
-                    <Show when=move || !trail.read().is_empty()>
+                    <Show when=move || { floor < trail.read().len() }>
                         <li>
                             <button
                                 class="folder-picker__button folder-picker__button--up"
@@ -180,4 +223,26 @@ pub fn MoveDialog(
                 })
         }}
     }
+}
+
+/// Moves `nodes`, of the protected folder `root` with their names opened, into its folder
+/// `destination`, each under its name sealed for that folder, one by one.
+async fn move_sealed(
+    vault: Vault,
+    root: NodeId,
+    nodes: &[Node],
+    destination: NodeId,
+) -> Result<(), String> {
+    let client = session::client();
+    for node in nodes {
+        let sealed = vault
+            .with_keys(root, |keys| seal_name(keys, destination, node.kind, &node.name))
+            .ok_or(LOCKED_MEANWHILE)?
+            .map_err(|err| format!("“{}”: {err}", node.name))?;
+        client
+            .relocate(node.id, Some(destination), &sealed)
+            .await
+            .map_err(|err| format!("“{}” was not moved: {err}", node.name))?;
+    }
+    Ok(())
 }

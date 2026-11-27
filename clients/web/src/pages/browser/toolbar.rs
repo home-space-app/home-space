@@ -21,6 +21,17 @@ pub fn Toolbar(
     can_add: Signal<bool>,
     on_new_folder: Callback<()>,
     on_upload: Callback<Vec<File>>,
+    /// The open folder is in a protected folder, where sharing, sending and moving out are not
+    /// possible.
+    inside_protected: Signal<bool>,
+    /// The open folder is in a folder being unprotected, where nothing is moved.
+    frozen: Signal<bool>,
+    /// Locks the protected folder the open folder is in; shown while it is unlocked.
+    lockable: Signal<bool>,
+    on_lock: Callback<()>,
+    /// Another protected folder than the open one is unlocked: Lock all is shown.
+    others_unlocked: Signal<bool>,
+    on_lock_all: Callback<()>,
 ) -> impl IntoView {
     view! {
         <div class="explorer__toolbar">
@@ -32,13 +43,39 @@ pub fn Toolbar(
                     text=Signal::derive(move || format!("{} selected", selected_count.get()))
                     icon="more_horiz"
                 >
-                    <MenuItem icon="share" label="Share…" on_select=on_share />
-                    <MenuItem icon="send" label="Send to device…" on_select=on_send />
-                    <MenuItem icon="drive_file_move" label="Move" on_select=on_move />
+                    <Show when=move || !inside_protected.get()>
+                        <MenuItem icon="share" label="Share…" on_select=on_share />
+                        <MenuItem icon="send" label="Send to device…" on_select=on_send />
+                    </Show>
+                    <Show when=move || !frozen.get()>
+                        <MenuItem icon="drive_file_move" label="Move" on_select=on_move />
+                    </Show>
                     <Show when=move || can_delete.get()>
                         <MenuItem icon="delete" label="Delete" danger=true on_select=on_delete />
                     </Show>
                 </Menu>
+            </Show>
+            <Show when=move || lockable.get()>
+                <button
+                    class="button"
+                    aria-label="Lock this protected folder"
+                    title="Lock this protected folder"
+                    on:click=move |_| on_lock.run(())
+                >
+                    <Icon name="lock" />
+                    <span class="label">"Lock"</span>
+                </button>
+            </Show>
+            <Show when=move || others_unlocked.get()>
+                <button
+                    class="button"
+                    aria-label="Lock every protected folder"
+                    title="Lock every protected folder"
+                    on:click=move |_| on_lock_all.run(())
+                >
+                    <Icon name="lock" />
+                    <span class="label">"Lock all"</span>
+                </button>
             </Show>
             <label
                 class="button button--primary"
