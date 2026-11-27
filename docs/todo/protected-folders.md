@@ -106,15 +106,14 @@ needs no key anyway, because every folder has a public age recipient.
 
 ### What a folder key is
 
-- A credential made with `navigator.credentials.create` (web) or CTAP2 `makeCredential`
-  (native) with a challenge the client makes itself: the server takes no part in its ceremonies
+- A credential made by an app with CTAP2 `makeCredential` (the web client's
+  `navigator.credentials.create` ceremony predates the decision to leave keys to the apps) with a challenge the client makes itself: the server takes no part in its ceremonies
   and never checks an attestation or an assertion. Not discoverable (`residentKey:
   discouraged`), always with user verification, and with the `prf` extension (`hmac-secret`),
   asked for the new salt at once. The user handle is random, never the account's, so a key that
   keeps the credential anyway cannot replace a sign-in passkey with it.
-- On a hardware key: the web client asks for a security key (`hints: ["security-key"]`,
-  `cross-platform`) and refuses a new credential whose authenticator data says it is backed up
-  (a synced passkey), since the native apps cannot reach those.
+- Only on a hardware key: a new credential whose authenticator data says it is backed up (a
+  synced passkey) is refused, since the native apps cannot reach those.
 - The key needs a PIN (or fingerprint): `hmac-secret` gives a different secret with and without
   user verification, so unlocking always asks for it.
 - The server keeps it as an unlocker (`vault_unlockers`): its name (at most 64 characters, like
@@ -127,19 +126,17 @@ Sign-in ceremonies never ask for PRF, so a PRF value never reaches the server, a
 
 ### Enabling a key
 
+Decided 2026-11-27: security keys are for the desktop and mobile apps only; the web client never
+holds the vault key (see [Web client](#web-client)).
+
 - **Web:** the security page lists **Sign-in keys** and **Folder keys** apart (done), and removes
-  a folder key (done). "Add a folder key" makes the credential
-  (`clients/web/src/webauthn/folder_key.rs`, done), takes its PRF secret from the answer to
-  `create` when the browser gives it, else from one more assertion, wraps the vault key for it and
-  sends `POST /vault/unlockers`. The vault key is new for the first key; for another, an existing
-  folder key opens the vault first (one assertion listing them all, each with its salt through
-  `evalByCredential`), or the recovery key. **To do:** the wrapping, which waits for
-  `vault-core` to take a PRF secret the browser gave (its `Authenticator` trait is synchronous,
-  `navigator.credentials` is not, and `PrfOutput` has no public constructor).
+  a folder key (done), which needs no key material. Its "Add a folder key" ceremony
+  (`clients/web/src/webauthn/folder_key.rs`) was built before this decision and never wraps the
+  vault key; enabling moves to the apps.
 - **Desktop:** "Security keys for protected folders" lists the folder keys (`GET /vault`).
   **Enable** makes a new credential with CTAP2 `makeCredential` for the server's host, with
-  `hmac-secret`, then wraps the vault key for it as above. Until the native authenticators exist,
-  it opens the web security page in the browser.
+  `hmac-secret`, and wraps the vault key for it. The vault key is new for the first key; for
+  another, an existing folder key or the recovery key opens the vault first.
 
 ### How a PRF secret is produced
 
@@ -193,8 +190,8 @@ recovery key  ─┘                      │
 
 Nothing is forced (decided 2026-11-26):
 
-- The Protect dialog offers **Security key (recommended)** and **Password (less secure, not end
-  to end)**.
+- The Protect dialog of the apps offers **Security key (recommended)** and **Password**; the web
+  client offers Password only.
   - No folder key: the security-key choice is shown but disabled, with "This folder cannot be
     protected securely without a security key. Add one in your account's security settings." and
     a button that opens them.
@@ -249,10 +246,12 @@ uniqueness check keeps working without the server knowing the names.
 - The plaintext is padded with `0x80` and zeros to a multiple of 32 bytes, so the length of a name
   is hidden to that granularity.
 - **The server stores it as the node's name like any other** (decided 2026-11-26): no extra
-  column, no check that it is encrypted. Base64url holds neither `/` nor `\`, and at most five
-  padded blocks plus the tag are 235 characters, within the 255 the server allows. So a name in a
-  security-key folder can be **at most 159 bytes of UTF-8** (159 ASCII characters, about 53 in
-  most Asian scripts, 39 emoji), which the client checks before sealing.
+  column, no check that it is encrypted. Base64url holds neither `/` nor `\`.
+- **Names are as long as anywhere else** (decided 2026-11-27): up to 255 characters after NFC,
+  which the client checks before sealing. The longest, 255 four-byte characters, pads to 1024
+  bytes and seals to 1040 with the tag, 1387 characters of base64url. The server allows names up
+  to 1387 characters inside protected folders only (`MAX_SEALED_NODE_NAME_CHARS`); everywhere
+  else the limit stays 255.
 - **Case:** names compare by bytes, as today. Unicode is normalized to NFC before sealing, so
   macOS (NFD) and the others agree.
 
@@ -264,7 +263,7 @@ too.
 
 Decided 2026-11-26: the server does no cryptography for security-key folders and does not tell
 their nodes apart. It is the client's job to encrypt; the server stores and serves bytes. Someone
-who lists such a folder without the key (an old client, the web client without opt-in, the API)
+who lists such a folder without the key (an old client, the web client, the API)
 sees names with no meaning and can count the files, nothing more.
 
 What the server does:
@@ -325,7 +324,7 @@ happens: "The previous versions of the files in this folder will be deleted."
 
 Decided 2026-11-27: a password folder is end to end like a security-key folder; only the way to
 its secret differs. Everything under [Security-key folders](#security-key-folders) about content
-(age), sealed names, the 159-byte name limit, protecting an existing folder and how the server
+(age), sealed names, their 255-character limit, protecting an existing folder and how the server
 treats the folder holds for password folders too.
 
 ### Key
@@ -399,8 +398,9 @@ app's memory can also read what the user opens.)
 | **Lock**, **Lock all** | Wipes the keys and the names | The same |
 
 - **Auto-lock**, per folder:
-  - after **10 minutes without activity** in that folder (opening, uploading, renaming,
-    browsing it), a setting;
+  - after **15 minutes without activity** in that folder (opening, uploading, renaming,
+    browsing it): `AUTO_LOCK_AFTER` in `client_core::protected`, one constant for every client
+    (decided 2026-11-27);
   - when the security key that unlocked it is unplugged, where the platform can tell (desktop
     over USB HID, Android over USB; not the web, and not NFC, where the key is only there for
     the tap);
@@ -530,34 +530,40 @@ UI:
   the folder's keys, then encrypts while uploading.
 - The on-demand files (`clients/vfs-core`) and folder sync (`sync-core`) leave out the folders
   `GET /protected` lists.
+- **Opened from the browser** (decided 2026-11-27): the app registers the `home-space` URL scheme
+  with the operating system (a `.desktop` file with `x-scheme-handler/home-space` on Linux,
+  `CFBundleURLTypes` on macOS, the registry under `HKCU\Software\Classes` on Windows). The web
+  client links a security-key folder as `home-space://folder/<id>?server=<origin>`
+  (`client_core::app_link`, done); the app checks that `server` is the server it is signed in
+  to, opens the folder, finds it locked and asks for the key. A second start with a link hands it
+  to the running app.
 
 ## Web client
 
-Chrome can reach the key, decrypt in memory and hand the files out:
+Decided 2026-11-27: the web client unlocks **password folders only**. Security keys are left to
+the desktop and mobile apps, so the browser never holds a vault key.
 
-- **Key access:** `navigator.credentials.get` with the `prf` extension and the stored credential
-  id. Works with security keys in Chrome and Edge (since 116), and in recent Firefox. Safari
-  supports PRF for its own passkeys; for USB and NFC security keys it had a bug returning
-  unusable output as of early 2026, so Safari is treated as unsupported until verified. The
-  credential works only on the host it was registered on (its RP id).
-- **Prompts:** the browser asks for the PIN on every assertion, so on the web each action is PIN
-  and touch.
-- **Decrypt:** `vault-core` compiles to WASM with the Leptos app; nothing needs WebCrypto.
-- **Hand out:** viewers get `Blob` URLs (revoked on lock). Downloads stream through the File
-  System Access API (`showSaveFilePicker`, Chrome and Edge) so a large file is never fully in
-  memory; elsewhere a `Blob` download, limited to files that fit in memory (the web client shows
-  the limit).
+- **Password folders:** Protect with password, Unlock, Lock, Lock all, Change password and
+  "Forgot the password?" with the recovery key, Unprotect, and Finish protecting or unprotecting
+  a conversion that stopped (done). Inside an unlocked folder: listings with the names opened,
+  encrypted uploads, new folders and renames, moves within the folder (each name sealed again for
+  its new parent), decrypted downloads, the built-in viewers (text editing saves encrypted), and
+  "Delete for good" (done). After protecting, it offers to delete for good the folder's files that
+  were in the recycle bin from before, which are still plain (done).
+- **Security-key folders** show locked, with **Open in the desktop app**, a
+  `home-space://folder/<id>?server=<origin>` link (see [Desktop client](#desktop-client-phase-2)).
+- **Decrypt:** `vault-core` compiles to WASM with the Leptos app; nothing needs WebCrypto. The
+  page encrypts and decrypts whole files in memory, up to 512 MB; larger ones need an app.
+- **Hand out:** viewers get `Blob` URLs or bytes in memory, closed and revoked on lock; a
+  download is a `Blob` of the decrypted file. Decrypted files are only ever shown as a type from a
+  short list, never as HTML or SVG.
 
 **The caveat:** the web client's code comes from the same server that the encryption is meant to
 protect against. A server operator, or an attacker who controls the server, can serve a modified
-client that sends the keys or the plaintext back after the user unlocks. Desktop and mobile apps
-do not have this problem: they are signed releases that do not change when the server changes.
-This is the same limit every web-based end-to-end encrypted service has. Password folders are end to end
-too, so the caveat covers both locks: a modified client could send the password back.
-
-Proposal: support the web client for security-key folders, but as an **opt-in per vault** ("Allow
-unlocking in the browser", off by default, explained in one sentence). Password folders work in
-the web client from the start, with the caveat in the Protect dialog (see open questions).
+client that sends the password or the plaintext back after the user unlocks. Desktop and mobile
+apps do not have this problem: they are signed releases that do not change when the server
+changes. This is the same limit every web-based end-to-end encrypted service has; the Protect
+dialog says so.
 
 ## Mobile (phase 5)
 
@@ -578,27 +584,22 @@ the web client from the start, with the caveat in the Protect dialog (see open q
 
 1. **Foundation** (server + `vault-core`): `vault-core` with fixed test vectors (done); schema,
    vault and protected folder API, folder keys apart from sign-in keys, `409 last-unlocker`, the
-   protecting states (done); the web client's folder key list and ceremonies (done) and enabling
-   one (waits for `vault-core`, see [Enabling a key](#enabling-a-key)); Authenticator spikes for
+   protecting states (done); the web client's folder key list (done); Authenticator spikes for
    Linux, macOS and Windows.
 2. **Desktop, security keys**: enabling keys, recovery key, the Protect dialog, protecting new and
    existing folders, Unlock / Lock / Lock all, auto-lock, browse, open, upload, download, move and
-   rename inside, deleting for good, hiding from on-demand files and sync.
+   rename inside, deleting for good, hiding from on-demand files and sync, the `home-space://`
+   scheme for folders handed over from the browser.
 3. **Password folders, end to end** (2026-11-27): Argon2id-wrapped folder secrets and per-folder
    recovery keys in `vault-core`, the server storing them (done); the shared groundwork in
    `api-client` and `client-core` (`client_core::protected`: unlocked keys with the
-   inactivity timer, sealed names, the password lock's requests) (done); the web client (done):
-   Protect with password, Unlock, Lock, Change password and "Forgot the password?" with the
-   recovery key, sealed names in listings, encrypted uploads, decrypted download and open in a
-   new tab, "Deleted for good". Protecting a folder with content copies each file encrypted and
-   then deletes the plain one, so it can stop and continue ("Finish protecting") without a
-   journal. The page encrypts whole files in memory, up to 512 MB. Not yet on the web: moves
-   inside a protected folder (they need the name sealed for the new parent), the viewers, and
-   purging the folder's old files from the bin. Then the desktop. No hardware needed.
+   inactivity timer, sealed names, the password lock's requests) (done); the web client, as
+   [Web client](#web-client) lists (done). Protecting a folder with content copies each file
+   encrypted and then deletes the plain one, so it can stop and continue ("Finish protecting")
+   without a journal; unprotecting does the same the other way. Then the desktop. No hardware
+   needed.
 4. **Desktop polish**: external-app save-back, unprotect.
-5. **Web security keys** (opt-in), with Chrome, Edge and Firefox in the e2e tests (a virtual
-   authenticator with PRF in Chrome DevTools Protocol / Playwright).
-6. **Android**, then **iOS**.
+5. **Android**, then **iOS**.
 
 ## Testing
 
@@ -631,18 +632,21 @@ the web client from the start, with the caveat in the Protect dialog (see open q
   public key.
 - **Rollback detection:** a signed, versioned manifest per folder so a client notices when the
   server withholds or rolls back files.
-- **Seal the root name** (see open questions).
-- **Synced passkeys** (Google Password Manager, iCloud Keychain, Windows Hello) as unlockers in
-  the web client: PRF works with them, but they are not hardware keys, native apps cannot reach
-  them, and losing the account loses the passkey.
+- **Seal the root name:** it stays in clear for now (decided 2026-11-27), so the listing shows
+  which folder is protected.
+- **Security keys in the browser:** WebAuthn PRF would allow it, behind an opt-in per vault; left
+  out (2026-11-27) so the vault key never meets code the server serves.
 
-## Open questions
+## Decided questions
 
-1. Root folder name: stays in clear (proposed), or sealed too?
-2. Auto-lock timeout default: 15 minutes (proposed)?
-3. Web client: opt-in per vault for security-key folders (proposed), or not at all?
-4. Minimum hardware: any FIDO2 key with `hmac-secret` and a PIN (proposed), or YubiKey only?
-5. Web client and password folders: from the start with the caveat in the Protect dialog
-   (proposed), or behind the same opt-in as security keys?
-6. Names in protected folders, of both locks, are limited to 159 bytes. Enough, or should the
-   server allow longer names (which some file systems on the desktop could not hold anyway)?
+Answered 2026-11-27:
+
+1. The protected folder's own name stays in clear.
+2. Auto-lock after 15 minutes without activity, one constant for every client
+   (`client_core::protected::AUTO_LOCK_AFTER`).
+3. No opt-in: the web client does not use security keys at all; it hands such folders to the
+   desktop app through `home-space://`.
+4. Minimum hardware: any FIDO2 key with `hmac-secret` and a PIN.
+5. Password folders work in the web client from the start, with the caveat in the Protect dialog.
+6. Names in protected folders have the same limit as anywhere else, 255 characters; the server
+   accepts their sealed text, up to 1387 characters, inside protected folders only.

@@ -6,8 +6,8 @@ use client_core::{
     format::conflicts_title,
     labels::HOME,
     listing::{Sort, already_in, sort_nodes},
+    protected::seal_name,
 };
-use client_core::protected::seal_name;
 use protocol::{Conflict, Node, NodeId, NodeKind, OnConflict, ProtectedFolder};
 
 use super::conflict_dialog::ConflictDialog;
@@ -236,7 +236,9 @@ async fn move_sealed(
     let client = session::client();
     for node in nodes {
         let sealed = vault
-            .with_keys(root, |keys| seal_name(keys, destination, node.kind, &node.name))
+            .with_keys(root, |keys| {
+                seal_name(keys, destination, node.kind, &node.name)
+            })
             .ok_or(LOCKED_MEANWHILE)?
             .map_err(|err| format!("“{}”: {err}", node.name))?;
         client

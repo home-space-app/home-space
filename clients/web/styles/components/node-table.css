@@ -251,13 +251,3 @@
     min-height: var(--touch-target);
   }
 }
-
-/* A file of a protected folder, which opens decrypted in a new tab rather than in the viewer. */
-.node-table__name--button {
-  padding: 0;
-  border: 0;
-  background: none;
-  font: inherit;
-  text-align: start;
-  cursor: pointer;
-}

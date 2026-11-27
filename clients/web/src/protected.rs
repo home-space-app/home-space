@@ -17,6 +17,7 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::{Blob, BlobPropertyBag, File, FilePropertyBag, Response};
 
 use api_client::ApiError;
+use client_core::app_link::AppLink;
 use client_core::protected::{
     ENCRYPTED_MIME, ProtectedError, UnlockedFolders, enclosing, open_listing, open_name, seal_name,
     shown_mime,
@@ -366,6 +367,22 @@ impl Vault {
     }
 }
 
+/// Hands the protected folder `folder` to the desktop app through its `home-space://` link: a
+/// folder protected with a security key unlocks only in the apps.
+pub fn open_in_desktop(folder: NodeId) {
+    let Some(location) = web_sys::window().map(|window| window.location()) else {
+        return;
+    };
+    let Some(link) = location
+        .origin()
+        .ok()
+        .and_then(|origin| AppLink::folder(&origin, folder))
+    else {
+        return;
+    };
+    let _ = location.set_href(&link.to_url());
+}
+
 /// `file` encrypted to `recipient`, as a file named `sealed_name` for the upload.
 pub async fn encrypt_file(
     file: &File,
@@ -443,9 +460,11 @@ pub async fn download_plain(
 pub fn blob_url(plain: &[u8], name: &str) -> Option<String> {
     let options = BlobPropertyBag::new();
     options.set_type(shown_mime(name));
-    let blob =
-        Blob::new_with_u8_array_sequence_and_options(&Array::of1(&Uint8Array::from(plain)), &options)
-            .ok()?;
+    let blob = Blob::new_with_u8_array_sequence_and_options(
+        &Array::of1(&Uint8Array::from(plain)),
+        &options,
+    )
+    .ok()?;
     web_sys::Url::create_object_url_with_blob(&blob).ok()
 }
 
@@ -579,7 +598,9 @@ pub async fn replace_plain(
 ) -> Result<Node, String> {
     let parent = node.parent_id.ok_or(LOCKED_MEANWHILE)?;
     let sealed = vault
-        .with_keys(folder, |keys| seal_name(keys, parent, node.kind, &node.name))
+        .with_keys(folder, |keys| {
+            seal_name(keys, parent, node.kind, &node.name)
+        })
         .ok_or(LOCKED_MEANWHILE)?
         .map_err(|err| err.to_string())?;
     let recipient = vault.recipient(folder).ok_or(LOCKED_MEANWHILE)?;

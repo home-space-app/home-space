@@ -406,7 +406,7 @@ fn NodeRow(node: Node, actions: TableActions) -> impl IntoView {
                             <Show when=move || is_protected() && !unlocked()>
                                 <MenuItem
                                     icon="lock"
-                                    label="Unlock…"
+                                    label=if is_password() { "Unlock…" } else { "Open in the desktop app" }
                                     on_select=Callback::new(move |()| unlock.run(target.get_value()))
                                 />
                             </Show>
