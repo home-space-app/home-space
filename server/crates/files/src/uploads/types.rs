@@ -42,6 +42,16 @@ pub struct UploadStatus {
     pub size: u64,
 }
 
+/// Where an upload stores its file once complete, from
+/// [`UploadService::destination`](crate::UploadService::destination).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UploadDestination {
+    /// A file in this folder; the root when `None`.
+    Folder(Option<NodeId>),
+    /// A file of a transfer, outside the tree.
+    Transfer,
+}
+
 /// Result of appending a chunk.
 #[derive(Debug)]
 pub enum ChunkOutcome {

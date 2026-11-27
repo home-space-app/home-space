@@ -41,10 +41,10 @@ impl VaultService {
                     || request.rp_id.is_some()
                     || request.prf_salt.is_some()
                 {
-                    return Err(AccountError::Invalid {
-                        field: "/kind",
-                        message: "A recovery key has no name, credential or PRF salt.",
-                    });
+                    return Err(AccountError::invalid(
+                        "/kind",
+                        "A recovery key has no name, credential or PRF salt.",
+                    ));
                 }
                 UnlockerSource::Recovery
             }
@@ -59,10 +59,10 @@ impl VaultService {
         match self.db.add_vault_unlocker(user, new).await {
             Err(DbError::Stale) => return Err(AccountError::VaultChanged),
             Err(DbError::Conflict) => {
-                return Err(AccountError::Invalid {
-                    field: "/credential_id",
-                    message: "This key already unlocks the protected folders.",
-                });
+                return Err(AccountError::invalid(
+                    "/credential_id",
+                    "This key already unlocks the protected folders.",
+                ));
             }
             other => other?,
         }
@@ -107,10 +107,10 @@ impl VaultService {
                 .as_ref()
                 .is_some_and(|salt| salt.len() != PRF_SALT_LEN)
             {
-                return Err(AccountError::Invalid {
-                    field: "/unlockers",
-                    message: "A PRF salt must be 32 bytes.",
-                });
+                return Err(AccountError::invalid(
+                    "/unlockers",
+                    "A PRF salt must be 32 bytes.",
+                ));
             }
             unlockers.push(Rewrapped {
                 id: unlocker.id,
@@ -138,11 +138,11 @@ impl VaultService {
             Err(DbError::Stale) => return Err(AccountError::VaultChanged),
             Err(DbError::Conflict) => return Err(AccountError::LastUnlocker),
             Err(DbError::Invalid) => {
-                return Err(AccountError::Invalid {
-                    field: "",
-                    message: "List every unlocker that stays and every folder locked with a \
-                              security key, each once.",
-                });
+                return Err(AccountError::invalid(
+                    "",
+                    "List every unlocker that stays and every folder locked with a \
+                     security key, each once.",
+                ));
             }
             other => other?,
         };
@@ -156,9 +156,11 @@ fn folder_key<'a>(
     request: &'a AddUnlocker,
     own_host: impl Fn(&str) -> bool,
 ) -> Result<FolderKey<'a>, AccountError> {
-    let missing = |field| AccountError::Invalid {
-        field,
-        message: "A folder key needs its name, credential id, RP id and PRF salt.",
+    let missing = |field| {
+        AccountError::invalid(
+            field,
+            "A folder key needs its name, credential id, RP id and PRF salt.",
+        )
     };
     let name = request.name.as_deref().ok_or_else(|| missing("/name"))?;
     let credential_id = request
@@ -171,22 +173,22 @@ fn folder_key<'a>(
         .as_ref()
         .ok_or_else(|| missing("/prf_salt"))?;
     if credential_id.is_empty() || credential_id.len() > MAX_CREDENTIAL_ID_LEN {
-        return Err(AccountError::Invalid {
-            field: "/credential_id",
-            message: "A credential id is 1 to 1023 bytes.",
-        });
+        return Err(AccountError::invalid(
+            "/credential_id",
+            "A credential id is 1 to 1023 bytes.",
+        ));
     }
     if !own_host(rp_id) {
-        return Err(AccountError::Invalid {
-            field: "/rp_id",
-            message: "The key must be made for an address of this server.",
-        });
+        return Err(AccountError::invalid(
+            "/rp_id",
+            "The key must be made for an address of this server.",
+        ));
     }
     if prf_salt.len() != PRF_SALT_LEN {
-        return Err(AccountError::Invalid {
-            field: "/prf_salt",
-            message: "The PRF salt must be 32 bytes.",
-        });
+        return Err(AccountError::invalid(
+            "/prf_salt",
+            "The PRF salt must be 32 bytes.",
+        ));
     }
     Ok(FolderKey {
         name: name.trim(),

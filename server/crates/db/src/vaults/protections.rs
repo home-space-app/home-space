@@ -10,10 +10,27 @@ use crate::{Db, DbError, NodeId, Tx, UserId};
 /// is the second key.
 const PROTECTIONS_LOCK: i32 = 0x7072_6f74;
 
+/// The columns of a [`StoredProtection`].
+macro_rules! protection_columns {
+    () => {
+        "node_id, lock, wrapped_secret, epoch, recipient, format, state, created_at"
+    };
+}
+
 macro_rules! protection_select {
     () => {
-        "SELECT node_id, lock, wrapped_secret, epoch, recipient, format, state, created_at \
-         FROM protected_folders"
+        concat!("SELECT ", protection_columns!(), " FROM protected_folders")
+    };
+}
+
+/// A recursive CTE `subtree (id)`: the node `$1` and everything below it.
+macro_rules! subtree {
+    () => {
+        "WITH RECURSIVE subtree AS ( \
+             SELECT id FROM nodes WHERE id = $1 \
+             UNION ALL \
+             SELECT n.id FROM nodes n JOIN subtree s ON n.parent_id = s.id \
+         ) "
     };
 }
 
@@ -73,13 +90,10 @@ impl Db {
                 .fetch_one(&mut *tx)
                 .await?;
         unshare_subtree(&mut tx, user, node).await?;
-        sqlx::query(
-            "WITH RECURSIVE subtree AS ( \
-                 SELECT id FROM nodes WHERE id = $1 \
-                 UNION ALL \
-                 SELECT n.id FROM nodes n JOIN subtree s ON n.parent_id = s.id \
-             ) DELETE FROM search_entries WHERE node_id IN (SELECT id FROM subtree)",
-        )
+        sqlx::query(concat!(
+            subtree!(),
+            "DELETE FROM search_entries WHERE node_id IN (SELECT id FROM subtree)"
+        ))
         .bind(node)
         .execute(&mut *tx)
         .await?;
@@ -89,27 +103,27 @@ impl Db {
             ProtectionState::Protecting
         };
         let insert = match protection {
-            NewProtection::SecurityKey(lock) => sqlx::query_as::<_, StoredProtection>(
+            NewProtection::SecurityKey(lock) => sqlx::query_as::<_, StoredProtection>(concat!(
                 "INSERT INTO protected_folders \
                  (node_id, owner_id, lock, wrapped_secret, epoch, recipient, state) \
                  VALUES ($1, $2, 'security_key', $3, $4, $5, $6) \
-                 RETURNING node_id, lock, wrapped_secret, epoch, recipient, format, state, \
-                 created_at",
-            )
+                 RETURNING ",
+                protection_columns!()
+            ))
             .bind(node)
             .bind(user)
             .bind(lock.wrapped_secret)
             .bind(lock.epoch)
             .bind(lock.recipient)
             .bind(state),
-            NewProtection::Password(lock) => sqlx::query_as::<_, StoredProtection>(
+            NewProtection::Password(lock) => sqlx::query_as::<_, StoredProtection>(concat!(
                 "INSERT INTO protected_folders \
                  (node_id, owner_id, lock, password_hash, sealed_key, recipient, state, \
                   recovery_hash) \
                  VALUES ($1, $2, 'password', $3, $4, $5, $6, $7) \
-                 RETURNING node_id, lock, wrapped_secret, epoch, recipient, format, state, \
-                 created_at",
-            )
+                 RETURNING ",
+                protection_columns!()
+            ))
             .bind(node)
             .bind(user)
             .bind(lock.password_hash)
@@ -145,10 +159,11 @@ impl Db {
         if !from.contains(&state) {
             return Err(DbError::Stale);
         }
-        let changed = sqlx::query_as::<_, StoredProtection>(
+        let changed = sqlx::query_as::<_, StoredProtection>(concat!(
             "UPDATE protected_folders SET state = $3 WHERE owner_id = $1 AND node_id = $2 \
-             RETURNING node_id, lock, wrapped_secret, epoch, recipient, format, state, created_at",
-        )
+             RETURNING ",
+            protection_columns!()
+        ))
         .bind(user)
         .bind(node)
         .bind(to)
@@ -238,14 +253,11 @@ async fn protection_refusal(
     if enclosing_protection(tx, user, node).await?.is_some() {
         return Ok(Some(ProtectRefusal::Overlaps));
     }
-    let special: bool = sqlx::query_scalar(
-        "WITH RECURSIVE subtree AS ( \
-                 SELECT id FROM nodes WHERE id = $1 \
-                 UNION ALL \
-                 SELECT n.id FROM nodes n JOIN subtree s ON n.parent_id = s.id \
-             ) SELECT EXISTS (SELECT 1 FROM user_folders uf, subtree s \
-                 WHERE uf.user_id = $2 AND (uf.trash_id = s.id OR uf.lost_and_found_id = s.id))",
-    )
+    let special: bool = sqlx::query_scalar(concat!(
+        subtree!(),
+        "SELECT EXISTS (SELECT 1 FROM user_folders uf, subtree s \
+                 WHERE uf.user_id = $2 AND (uf.trash_id = s.id OR uf.lost_and_found_id = s.id))"
+    ))
     .bind(node)
     .bind(user)
     .fetch_one(&mut *tx)
@@ -282,13 +294,10 @@ async fn enclosing_protection(
 
 /// Whether `node` is protected, or a folder in it is.
 async fn overlaps_protection(conn: &mut PgConnection, node: NodeId) -> Result<bool, DbError> {
-    let overlaps = sqlx::query_scalar(
-        "WITH RECURSIVE subtree AS ( \
-             SELECT id FROM nodes WHERE id = $1 \
-             UNION ALL \
-             SELECT n.id FROM nodes n JOIN subtree s ON n.parent_id = s.id \
-         ) SELECT EXISTS (SELECT 1 FROM protected_folders p JOIN subtree s ON p.node_id = s.id)",
-    )
+    let overlaps = sqlx::query_scalar(concat!(
+        subtree!(),
+        "SELECT EXISTS (SELECT 1 FROM protected_folders p JOIN subtree s ON p.node_id = s.id)"
+    ))
     .bind(node)
     .fetch_one(conn)
     .await?;
@@ -302,13 +311,10 @@ async fn unshare_subtree(
     user: UserId,
     node: NodeId,
 ) -> Result<(), DbError> {
-    sqlx::query(
-        "WITH RECURSIVE subtree AS ( \
-             SELECT id FROM nodes WHERE id = $1 \
-             UNION ALL \
-             SELECT n.id FROM nodes n JOIN subtree s ON n.parent_id = s.id \
-         ) DELETE FROM share_items WHERE node_id IN (SELECT id FROM subtree)",
-    )
+    sqlx::query(concat!(
+        subtree!(),
+        "DELETE FROM share_items WHERE node_id IN (SELECT id FROM subtree)"
+    ))
     .bind(node)
     .execute(&mut *conn)
     .await?;
