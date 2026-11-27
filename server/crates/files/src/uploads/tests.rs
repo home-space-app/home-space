@@ -6,7 +6,7 @@ use tokio::io::AsyncReadExt;
 use db::Db;
 
 use super::*;
-use crate::{Actor, BlobStore, FileServices, FilesConfig, Names};
+use crate::{Actor, BlobStore, FileServices, FilesConfig, Names, StoreOptions};
 use db::NodeId;
 use events::Events;
 
