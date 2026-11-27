@@ -11,8 +11,8 @@ use std::hash::Hash;
 use time::OffsetDateTime;
 
 use crate::rules::{
-    MAX_COPY_ITEMS, MAX_SHARE_ITEMS, MAX_SHARE_RECIPIENTS, device_name, node_name_problem,
-    password_problem, username_problem,
+    MAX_COPY_ITEMS, MAX_SHARE_ITEMS, MAX_SHARE_RECIPIENTS, device_name, password_problem,
+    sealed_node_name_problem, username_problem,
 };
 use crate::{
     BrowserLoginDecision, BrowserLoginExchangeRequest, BrowserLoginStartQuery,
@@ -119,7 +119,7 @@ impl Validate for RenameDevice {
 impl Validate for CreateFolderRequest {
     fn validate(&self) -> Result<(), Vec<FieldError>> {
         let mut found = Violations::default();
-        found.check("/name", node_name_problem(&self.name));
+        found.check("/name", sealed_node_name_problem(&self.name));
         found.finish()
     }
 }
@@ -127,7 +127,10 @@ impl Validate for CreateFolderRequest {
 impl Validate for UpdateRequest {
     fn validate(&self) -> Result<(), Vec<FieldError>> {
         let mut found = Violations::default();
-        found.check("/name", self.name.as_deref().and_then(node_name_problem));
+        found.check(
+            "/name",
+            self.name.as_deref().and_then(sealed_node_name_problem),
+        );
         found.finish()
     }
 }
@@ -135,7 +138,7 @@ impl Validate for UpdateRequest {
 impl Validate for UploadQuery {
     fn validate(&self) -> Result<(), Vec<FieldError>> {
         let mut found = Violations::default();
-        found.check("/name", node_name_problem(&self.name));
+        found.check("/name", sealed_node_name_problem(&self.name));
         found.finish()
     }
 }
@@ -145,7 +148,7 @@ impl Validate for CreateUpload {
         let mut found = Violations::default();
         // Only a new file takes its name from here; a replacement or a transfer item has one.
         if self.node_id.is_none() && self.transfer_item_id.is_none() {
-            found.check("/name", node_name_problem(&self.name));
+            found.check("/name", sealed_node_name_problem(&self.name));
         }
         found.finish()
     }
@@ -459,5 +462,20 @@ mod tests {
         assert_eq!(add(None).validate(), Ok(()));
         assert_eq!(pointers(add(Some(" ")).validate()), ["/name"]);
         assert_eq!(pointers(add(Some(&"k".repeat(65))).validate()), ["/name"]);
+    }
+
+    #[test]
+    fn a_node_name_may_be_as_long_as_a_sealed_one_until_the_server_knows_where_it_goes() {
+        let folder = |name: String| CreateFolderRequest {
+            parent_id: None,
+            name,
+        };
+        let longest = crate::rules::MAX_SEALED_NODE_NAME_CHARS;
+        assert_eq!(folder("a".repeat(longest)).validate(), Ok(()));
+        assert_eq!(
+            pointers(folder("a".repeat(longest + 1)).validate()),
+            ["/name"]
+        );
+        assert_eq!(pointers(folder("a/b".to_owned()).validate()), ["/name"]);
     }
 }

@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::names::MAX_NAME_BYTES;
+use crate::names::MAX_NAME_CHARS;
 
 /// Everything that can go wrong in this crate. Messages are for logs; clients map the variants
 /// to their own texts.
@@ -48,7 +48,7 @@ pub enum Error {
 pub enum NameProblem {
     /// Nothing left once normalized.
     Empty,
-    /// More than [`MAX_NAME_BYTES`] in UTF-8 after NFC.
+    /// More than [`MAX_NAME_CHARS`] characters after NFC.
     TooLong,
     /// AES-SIV refused it.
     Unsealable,
@@ -58,7 +58,7 @@ impl fmt::Display for NameProblem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => f.write_str("empty"),
-            Self::TooLong => write!(f, "longer than {MAX_NAME_BYTES} bytes"),
+            Self::TooLong => write!(f, "longer than {MAX_NAME_CHARS} characters"),
             Self::Unsealable => f.write_str("cannot be sealed"),
         }
     }

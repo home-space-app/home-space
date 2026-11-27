@@ -65,6 +65,7 @@ impl ContentStore {
     ) -> Result<Node, FilesError> {
         let mut tx = self.db.transaction(owner).await?;
         guard::hold(&mut tx).await?;
+        guard::refuse_invalid_name(&mut tx, parent, name).await?;
         let folder = tx.insert_folder(parent, name).await?;
         tx.commit().await?;
         Ok(folder)

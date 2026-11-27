@@ -28,6 +28,7 @@ pub(crate) async fn store_file(
     let mut tx = db.transaction(owner).await?;
     guard::hold(&mut tx).await?;
     tx.require_folder(parent).await?;
+    guard::refuse_invalid_name(&mut tx, parent, name).await?;
     let existing = tx.find_sibling(parent, NodeKind::File, name, None).await?;
     let (existing, name) = match existing {
         Some(file) if options.keep_both && Some(file.id) != options.version_of => {

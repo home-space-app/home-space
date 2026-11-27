@@ -585,10 +585,16 @@ the web client from the start, with the caveat in the Protect dialog (see open q
    existing folders, Unlock / Lock / Lock all, auto-lock, browse, open, upload, download, move and
    rename inside, deleting for good, hiding from on-demand files and sync.
 3. **Password folders, end to end** (2026-11-27): Argon2id-wrapped folder secrets and per-folder
-   recovery keys in `vault-core`, the server storing them (done); then the clients: the shared
-   groundwork in `api-client` and `client-core` (the protected folders, unlocked keys with
-   the inactivity timer, sealed names in listings, encrypting uploads and decrypting downloads),
-   and the Protect, Unlock and Lock UI on the web and the desktop. No hardware needed.
+   recovery keys in `vault-core`, the server storing them (done); the shared groundwork in
+   `api-client` and `client-core` (`client_core::protected`: unlocked keys with the
+   inactivity timer, sealed names, the password lock's requests) (done); the web client (done):
+   Protect with password, Unlock, Lock, Change password and "Forgot the password?" with the
+   recovery key, sealed names in listings, encrypted uploads, decrypted download and open in a
+   new tab, "Deleted for good". Protecting a folder with content copies each file encrypted and
+   then deletes the plain one, so it can stop and continue ("Finish protecting") without a
+   journal. The page encrypts whole files in memory, up to 512 MB. Not yet on the web: moves
+   inside a protected folder (they need the name sealed for the new parent), the viewers, and
+   purging the folder's old files from the bin. Then the desktop. No hardware needed.
 4. **Desktop polish**: external-app save-back, unprotect.
 5. **Web security keys** (opt-in), with Chrome, Edge and Firefox in the e2e tests (a virtual
    authenticator with PRF in Chrome DevTools Protocol / Playwright).

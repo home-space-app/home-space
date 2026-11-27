@@ -14,6 +14,7 @@ client-core = { path = "client-core" }
 protocol = { path = "../shared/protocol" }
 pdf-core = { path = "pdf-core" }
 sync-core = { path = "sync-core" }
+vault-core = { path = "../shared/vault-core" }
 
 base64 = "0.23.1"
 sha2 = "0.11.1"
@@ -34,6 +35,9 @@ codegen-units = 1
 # in the web client's worker even more so. Only hayro and the crates it renders with.
 [profile.dev.package]
 ab_glyph_rasterizer.opt-level = 3
+# Argon2id unlocks a password folder; unoptimized it takes many seconds, in the browser more so.
+argon2.opt-level = 3
+blake2.opt-level = 3
 brotli-decompressor.opt-level = 3
 color.opt-level = 3
 euclid.opt-level = 3

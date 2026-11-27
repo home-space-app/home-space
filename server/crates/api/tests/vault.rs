@@ -914,3 +914,134 @@ async fn deleting_in_a_security_key_folder_skips_the_recycle_bin(pool: PgPool) {
     assert_eq!(binned[0]["node"]["name"], "plain.txt");
     assert_eq!(stored_blobs(&app, &alice).len(), 1);
 }
+
+/// PATCHes the name of node `id`.
+async fn rename(app: &TestApp, token: &str, id: &str, name: &str) -> common::Response {
+    app.json(
+        Method::PATCH,
+        &format!("/api/v1/nodes/{id}"),
+        Some(token),
+        json!({ "name": name }),
+    )
+    .await
+}
+
+/// Starts a resumable upload of `content` as `name` in `parent` and sends it in one chunk.
+async fn upload_resumable(
+    app: &TestApp,
+    token: &str,
+    parent: &str,
+    name: &str,
+    content: &'static str,
+) -> common::Response {
+    let created = app
+        .json(
+            Method::POST,
+            "/api/v1/uploads",
+            Some(token),
+            json!({ "parent_id": parent, "name": name, "size": content.len() }),
+        )
+        .await;
+    if created.status != StatusCode::CREATED {
+        return created;
+    }
+    let id = created.json()["id"].as_str().expect("id").to_owned();
+    app.send_with(
+        Method::PATCH,
+        &format!("/api/v1/uploads/{id}"),
+        Some(token),
+        Body::from(content),
+        None,
+        &[("upload-offset", "0")],
+    )
+    .await
+}
+
+/// A name inside a protected folder is the client's sealing of it, longer than the name: up to
+/// 1387 characters there, while everywhere else names stay within 255.
+#[sqlx::test(migrations = "../../migrations")]
+async fn only_a_protected_folder_holds_names_as_long_as_sealed_ones(pool: PgPool) {
+    use protocol::rules::{MAX_NODE_NAME_CHARS, MAX_SEALED_NODE_NAME_CHARS};
+
+    let app = setup(pool).await;
+    let token = app.user_token("alice").await;
+    let notes = folder(&app, &token, "Notes").await;
+    let plain = folder(&app, &token, "Plain").await;
+    protect_with_password(&app, &token, &notes).await;
+    let sealed = |fill: &str| fill.repeat(MAX_SEALED_NODE_NAME_CHARS);
+
+    let made = make_folder_in(&app, &token, &notes, &sealed("a")).await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.json());
+    let inner = made.json()["id"].as_str().expect("id").to_owned();
+    let renamed = rename(&app, &token, &inner, &sealed("b")).await;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.json());
+    let uploaded = app
+        .upload(
+            &token,
+            &format!("parent_id={notes}&name={}", sealed("c")),
+            "age bytes",
+        )
+        .await;
+    assert_eq!(uploaded.status, StatusCode::CREATED, "{}", uploaded.json());
+    let resumed = upload_resumable(&app, &token, &notes, &sealed("d"), "age").await;
+    assert!(resumed.status.is_success(), "{}", resumed.json());
+    let listed = app
+        .get(&format!("/api/v1/nodes?parent_id={notes}"), &token)
+        .await
+        .json();
+    let mut names = names_of(&listed);
+    names.sort_unstable();
+    assert_eq!(names, [sealed("b"), sealed("c"), sealed("d")]);
+
+    // One more is more than any sealed name.
+    let too_long = "e".repeat(MAX_SEALED_NODE_NAME_CHARS + 1);
+    let refusals = [
+        make_folder_in(&app, &token, &notes, &too_long).await,
+        rename(&app, &token, &inner, &too_long).await,
+        app.upload(&token, &format!("parent_id={notes}&name={too_long}"), "x")
+            .await,
+        upload_resumable(&app, &token, &notes, &too_long, "x").await,
+    ];
+    for refused in refusals {
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            refused.json()
+        );
+        assert_eq!(problem(&refused), "validation-failed");
+    }
+
+    // Outside, at the root or in a plain folder, the plain limit holds.
+    let long = "f".repeat(MAX_NODE_NAME_CHARS + 1);
+    let root_folder = app
+        .json(
+            Method::POST,
+            "/api/v1/folders",
+            Some(&token),
+            json!({ "name": long }),
+        )
+        .await;
+    let refusals = [
+        root_folder,
+        make_folder_in(&app, &token, &plain, &long).await,
+        rename(&app, &token, &plain, &long).await,
+        rename(&app, &token, &notes, &sealed("g")).await,
+        app.upload(&token, &format!("parent_id={plain}&name={long}"), "x")
+            .await,
+        app.upload(&token, &format!("name={long}"), "x").await,
+        upload_resumable(&app, &token, &plain, &long, "x").await,
+    ];
+    for refused in refusals {
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            refused.json()
+        );
+        assert_eq!(problem(&refused), "invalid-name", "{}", refused.json());
+    }
+    let longest_plain = "h".repeat(MAX_NODE_NAME_CHARS);
+    let kept = make_folder_in(&app, &token, &plain, &longest_plain).await;
+    assert_eq!(kept.status, StatusCode::CREATED, "{}", kept.json());
+}

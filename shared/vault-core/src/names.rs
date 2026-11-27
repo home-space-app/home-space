@@ -4,8 +4,11 @@
 //! `sealed = base64url(AES-SIV-256(name key, ad = [parent id, kind], pad(NFC(name))))`, without
 //! padding characters. The padding inside is `0x80` and zeros up to a multiple of 32 bytes, so
 //! the server learns a name's length only to that granularity. The server stores the text as
-//! the node's name like any other: it fits its 255-character limit and holds neither `/` nor
-//! `\`.
+//! the node's name like any other; it holds neither `/` nor `\`.
+//!
+//! A name may be as long as any other ([`MAX_NAME_CHARS`] characters after NFC). Its sealed
+//! text is longer, up to [`MAX_SEALED_CHARS`] characters, which the server allows inside
+//! protected folders only.
 
 use aes_siv::aead::KeyInit;
 use aes_siv::siv::Aes256Siv;
@@ -15,22 +18,24 @@ use zeroize::Zeroizing;
 
 use crate::{Error, NameProblem, Result};
 
-/// The server's limit for a node name, in characters, which a sealed name must fit.
-pub const SERVER_NAME_CHARS: usize = 255;
+/// Longest name in a protected folder, in characters after NFC: the same as the server's limit
+/// on any node name (`protocol::rules::MAX_NODE_NAME_CHARS`). Hiding names costs no length.
+pub const MAX_NAME_CHARS: usize = 255;
 /// Names are padded to a multiple of this many bytes.
 pub const PAD_TO: usize = 32;
-/// Most padded blocks a sealed name holds.
-const MAX_BLOCKS: usize = 5;
 /// AES-SIV's synthetic IV, which comes first in a sealed name.
 const SIV_TAG_LEN: usize = 16;
 /// Ends a name inside its padding.
 const PAD_MARK: u8 = 0x80;
-/// Longest sealed name in bytes: the 16-byte tag and five padded blocks, which in base64url is
-/// 235 characters, the most that fits [`SERVER_NAME_CHARS`].
-pub const MAX_SEALED_LEN: usize = MAX_BLOCKS * PAD_TO + SIV_TAG_LEN;
-/// Longest name in a protected folder, in UTF-8 bytes after NFC: the padded blocks less the
-/// `0x80` that ends it. Shorter than elsewhere (255 characters), the price of hiding names.
-pub const MAX_NAME_BYTES: usize = MAX_BLOCKS * PAD_TO - 1;
+/// Longest padded name in bytes: [`MAX_NAME_CHARS`] four-byte characters (1020 bytes) and the
+/// `0x80` that ends them, padded to 1024.
+const MAX_PADDED_LEN: usize = (MAX_NAME_CHARS * 4 + 1).next_multiple_of(PAD_TO);
+/// Longest sealed name in bytes: the 16-byte tag and the longest padded name, 1040.
+pub const MAX_SEALED_LEN: usize = MAX_PADDED_LEN + SIV_TAG_LEN;
+/// Longest sealed name as stored, in base64url characters without padding: 1387. The server
+/// allows names this long inside protected folders only
+/// (`protocol::rules::MAX_SEALED_NODE_NAME_CHARS`).
+pub const MAX_SEALED_CHARS: usize = (MAX_SEALED_LEN * 4).div_ceil(3);
 
 /// File or folder; bound into the sealed name like the server's unique key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,7 +70,7 @@ pub(crate) fn seal(
     if name.is_empty() {
         return Err(Error::Name(NameProblem::Empty));
     }
-    if name.len() > MAX_NAME_BYTES {
+    if name.chars().count() > MAX_NAME_CHARS {
         return Err(Error::Name(NameProblem::TooLong));
     }
     let mut padded = Zeroizing::new(Vec::with_capacity(name.len() + PAD_TO));
@@ -112,7 +117,7 @@ pub(crate) fn open(
     }
     let name = std::str::from_utf8(&padded[..end]).map_err(|_| Error::SealedName)?;
     // Another client wrote it; still refuse what this one would never seal.
-    if name.is_empty() || !is_nfc(name) || name.len() > MAX_NAME_BYTES {
+    if name.is_empty() || !is_nfc(name) || name.chars().count() > MAX_NAME_CHARS {
         return Err(Error::SealedName);
     }
     Ok(name.to_owned())
@@ -173,34 +178,43 @@ mod tests {
 
     #[test]
     fn the_longest_name_fits_the_server() {
+        assert_eq!(MAX_SEALED_LEN, 1040);
+        assert_eq!(MAX_SEALED_CHARS, 1387);
         assert_eq!(
             seal(&KEY, &PARENT, NodeKind::File, "")
                 .unwrap_err()
                 .to_string(),
             "invalid name: empty"
         );
-        let longest = "a".repeat(MAX_NAME_BYTES);
+        // 255 four-byte characters are 1020 bytes, the longest a name can be.
+        let longest = "😀".repeat(MAX_NAME_CHARS);
         let sealed = seal(&KEY, &PARENT, NodeKind::File, &longest).unwrap();
-        assert_eq!(sealed.len(), 235);
-        assert!(sealed.len() <= SERVER_NAME_CHARS);
+        assert_eq!(sealed.len(), MAX_SEALED_CHARS);
+        assert_eq!(sealed_len(&longest), MAX_SEALED_LEN);
         assert_eq!(
             open(&KEY, &PARENT, NodeKind::File, &sealed).unwrap(),
             longest
         );
-        // 39 four-byte characters are 156 bytes; 40 are too many.
-        assert!(seal(&KEY, &PARENT, NodeKind::File, &"😀".repeat(39)).is_ok());
+        let ascii = "a".repeat(MAX_NAME_CHARS);
+        let sealed = seal(&KEY, &PARENT, NodeKind::File, &ascii).unwrap();
+        assert_eq!(open(&KEY, &PARENT, NodeKind::File, &sealed).unwrap(), ascii);
         assert_eq!(
-            seal(&KEY, &PARENT, NodeKind::File, &"😀".repeat(40))
-                .unwrap_err()
-                .to_string(),
-            "invalid name: longer than 159 bytes"
+            seal(
+                &KEY,
+                &PARENT,
+                NodeKind::File,
+                &"😀".repeat(MAX_NAME_CHARS + 1)
+            )
+            .unwrap_err()
+            .to_string(),
+            "invalid name: longer than 255 characters"
         );
         assert!(
             seal(
                 &KEY,
                 &PARENT,
                 NodeKind::File,
-                &"a".repeat(MAX_NAME_BYTES + 1)
+                &"a".repeat(MAX_NAME_CHARS + 1)
             )
             .is_err()
         );

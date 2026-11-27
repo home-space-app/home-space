@@ -2,8 +2,12 @@
 //! lock, everything is ciphertext the client made and outside one it is plain, so a move
 //! across a protected folder's edge is refused. The move's transaction first holds the
 //! owner's protections, so the folders checked stay protected as they are until it ends.
+//!
+//! Names inside a protected folder are the client's sealing of them, longer than plain names
+//! (see [`protocol::rules::MAX_SEALED_NODE_NAME_CHARS`]); only there may a name be that long.
 
-use db::{Node, NodeId, Tx};
+use db::{Db, Node, NodeId, Tx, UserId};
+use protocol::rules::{node_name_problem, sealed_node_name_problem};
 
 use crate::FilesError;
 
@@ -33,4 +37,38 @@ pub(crate) async fn refuse_crossing(
     } else {
         Err(FilesError::Protected(CROSSING))
     }
+}
+
+/// Refuses `name` for a node in `parent` (the root when `None`) unless it is a valid node
+/// name, or a sealed name up to [`protocol::rules::MAX_SEALED_NODE_NAME_CHARS`] characters and
+/// `parent` is a protected folder or inside one. Request validation allows the longer names
+/// everywhere, not knowing where the node goes. Asks the database only for a long name.
+pub(crate) async fn refuse_invalid_name(
+    tx: &mut Tx,
+    parent: Option<NodeId>,
+    name: &str,
+) -> Result<(), FilesError> {
+    if node_name_problem(name).is_none() {
+        return Ok(());
+    }
+    if sealed_node_name_problem(name).is_none() && tx.protected_folder_of(parent).await?.is_some() {
+        Ok(())
+    } else {
+        Err(FilesError::InvalidName)
+    }
+}
+
+/// [`refuse_invalid_name`] for what only records a name to use later, such as a resumable
+/// upload; storing the node checks again. Opens a transaction only for a long name.
+pub(crate) async fn refuse_invalid_name_of(
+    db: &Db,
+    owner: UserId,
+    parent: Option<NodeId>,
+    name: &str,
+) -> Result<(), FilesError> {
+    if node_name_problem(name).is_none() {
+        return Ok(());
+    }
+    let mut tx = db.transaction(owner).await?;
+    refuse_invalid_name(&mut tx, parent, name).await
 }

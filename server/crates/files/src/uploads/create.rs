@@ -6,7 +6,7 @@ use db::{NewUpload, NodeId, NodeKind, UserId};
 use protocol::TransferState;
 
 use super::{UploadRequest, UploadService, UploadStatus, UploadTarget, slots::Hashing};
-use crate::{FilesError, StoreOptions};
+use crate::{FilesError, StoreOptions, tree::guard};
 
 /// Where an upload's bytes go once they have all arrived.
 #[derive(Default)]
@@ -80,6 +80,7 @@ impl UploadService {
                 if let Some(parent) = parent {
                     self.content.db.get_node(owner, parent).await?;
                 }
+                guard::refuse_invalid_name_of(&self.content.db, owner, parent, &name).await?;
                 Ok(Placement {
                     parent_id: parent,
                     name,

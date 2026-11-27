@@ -7,9 +7,12 @@ publish.workspace = true
 
 [dependencies]
 protocol.workspace = true
+thiserror.workspace = true
 time.workspace = true
+vault-core.workspace = true
 url = "2.5.8"
 uuid = "1.29.0"
 
 [dev-dependencies]
 time = { workspace = true, features = ["macros"] }
+vault-core = { workspace = true, features = ["testing"] }

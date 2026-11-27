@@ -23,6 +23,8 @@ use web_sys::{KeyboardEvent, Response};
 use client_core::viewers::ViewerKind;
 use protocol::{Event, Node, NodeId, TicketRequest};
 
+use crate::protected::{self, Vault, use_vault};
+
 pub use self::shared::SharedViewer;
 use self::{
     image::{ImageViewer, has_modifier, is_typing},
@@ -45,6 +47,7 @@ const LOADING: &str = "Loading…";
 pub(super) const NO_VIEWER: &str = "This file cannot be shown here. Download it to open it.";
 const UNREACHABLE: &str = "could not reach the server";
 const DELETED: &str = "This file was deleted.";
+const LOCKED: &str = "This file is in a protected folder that is locked. Unlock the folder to see it.";
 const CLOSE: &str = "Close";
 const KEY_ESCAPE: &str = "Escape";
 /// Set on the document while the popup is open, so the page under it does not scroll.
@@ -180,26 +183,60 @@ fn mark_open(open: bool) {
     };
 }
 
-/// The user's file `id`, kept up to date as it changes.
+/// `file` as the viewer shows it: in the protected folder `inside`, with its name opened and
+/// its type taken from the name; `None` while that folder is locked.
+fn shown_file(vault: Vault, inside: Option<NodeId>, file: Node) -> Option<Node> {
+    match inside {
+        None => Some(file),
+        Some(folder) => vault
+            .opened(folder, vec![file])
+            .and_then(|mut shown| shown.pop()),
+    }
+}
+
+/// The user's file `id`, kept up to date as it changes. A file of a protected folder is
+/// decrypted in the page while the folder is unlocked, and closed when it locks.
 #[component]
 fn OwnViewer(auth: Auth, id: Memo<Option<NodeId>>, close: Memo<String>) -> impl IntoView {
     let node = RwSignal::new(None::<Node>);
     let error = RwSignal::new(None::<String>);
     let deleted = RwSignal::new(false);
+    let vault = use_vault();
+    // The protected folder the file is in.
+    let inside = RwSignal::new(None::<NodeId>);
+    let locked = Memo::new(move |_| inside.get().is_some_and(|folder| !vault.is_unlocked(folder)));
 
     let resource = load::load(
         move || {
             let id = id.get();
+            // Loaded again when a folder locks or unlocks.
+            vault.track();
             async move {
-                match id {
-                    Some(id) => session::client().get(id).await.map(Some),
-                    None => Ok(None),
-                }
+                let Some(id) = id else {
+                    return Ok(None);
+                };
+                let client = session::client();
+                let file = client.get(id).await?;
+                let ancestors = if vault.any_protected() {
+                    client.ancestors(id).await?
+                } else {
+                    Vec::new()
+                };
+                Ok(Some((file, ancestors)))
             }
         },
         move |loaded| match loaded {
-            Ok(loaded) => {
-                node.set(loaded);
+            Ok(Some((file, ancestors))) => {
+                let folder = vault
+                    .enclosing(ancestors.iter().map(|ancestor| ancestor.id))
+                    .map(|folder| folder.node_id);
+                inside.set(folder);
+                node.set(shown_file(vault, folder, file));
+                error.set(None);
+            }
+            Ok(None) => {
+                inside.set(None);
+                node.set(None);
                 error.set(None);
             }
             Err(err) => error.set(Some(auth.fail(&err))),
@@ -208,7 +245,7 @@ fn OwnViewer(auth: Auth, id: Memo<Option<NodeId>>, close: Memo<String>) -> impl 
 
     events::use_events(move |event| match event {
         Event::NodeUpdated { node: changed } if Some(changed.id) == id.get_untracked() => {
-            node.set(Some(changed));
+            node.set(shown_file(vault, inside.get_untracked(), changed));
         }
         Event::NodeDeleted { id: gone, .. } if Some(gone) == id.get_untracked() => {
             deleted.set(true);
@@ -230,10 +267,11 @@ fn OwnViewer(auth: Auth, id: Memo<Option<NodeId>>, close: Memo<String>) -> impl 
             .unwrap_or_default()
     });
 
+    // Each version of a file has its own hash; its size is what a decrypting source needs.
     let version = Memo::new(move |_| {
         node.read()
             .as_ref()
-            .map(|node| (node.id, node.sha256.clone()))
+            .map(|node| ((node.id, node.size), node.sha256.clone()))
     });
 
     let header = ViewerHeader { close, name };
@@ -245,15 +283,36 @@ fn OwnViewer(auth: Auth, id: Memo<Option<NodeId>>, close: Memo<String>) -> impl 
             }
             .into_any();
         }
+        if locked.get() {
+            return view! {
+                {header.view(None)}
+                <p class="explorer__empty">{LOCKED}</p>
+            }
+            .into_any();
+        }
+        let protected_in = inside.get();
         match (viewer.get(), loaded.get()) {
             (Some(viewer), _) => match viewer.kind {
-                ViewerKind::Text => view! { <TextViewer auth node viewer header /> }.into_any(),
-                ViewerKind::Image => view! { <ImageViewer auth node viewer header /> }.into_any(),
+                ViewerKind::Text => {
+                    view! { <TextViewer auth node viewer header protected=protected_in /> }
+                        .into_any()
+                }
+                ViewerKind::Image => {
+                    view! { <ImageViewer auth node viewer header protected=protected_in /> }
+                        .into_any()
+                }
                 ViewerKind::Pdf | ViewerKind::Video => {
                     // Opened again for each version of the file.
                     (move || {
-                        version.get().map(|(id, _)| {
-                            let source = Source::Own(id);
+                        version.get().map(|((id, size), _)| {
+                            let source = match protected_in {
+                                Some(folder) => Source::Protected {
+                                    folder,
+                                    node: id,
+                                    size,
+                                },
+                                None => Source::Own(id),
+                            };
                             match viewer.kind {
                                 ViewerKind::Pdf => view! {
                                     <PdfViewer
@@ -320,6 +379,20 @@ impl ViewerHeader {
                 </div>
             </div>
         }
+    }
+}
+
+/// The content of `file`, decrypted when it is in the protected folder `protected`.
+pub(super) async fn file_content(
+    auth: Auth,
+    file: &Node,
+    protected: Option<NodeId>,
+) -> Result<Vec<u8>, String> {
+    match protected {
+        Some(folder) => {
+            protected::download_plain(protected::vault(), folder, file.id, file.size).await
+        }
+        None => fetch_content(auth, file.id).await,
     }
 }
 

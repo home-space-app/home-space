@@ -26,6 +26,8 @@ pub mod vault;
 mod vectors;
 pub mod wrap;
 
+/// The public key a protected folder's files are encrypted to.
+pub use age::x25519::Recipient;
 #[cfg(any(test, feature = "testing"))]
 pub use authenticator::SoftAuthenticator;
 pub use authenticator::{Authenticator, CredentialRef, PrfOutput};
