@@ -3,7 +3,7 @@
 
 use sqlx::{Postgres, Transaction};
 
-use crate::{Db, DbError, NodeId, TenantId, UserId};
+use crate::{Db, DbError, TenantId, UserId};
 
 /// An authenticator app secret as stored, sealed for `user`.
 #[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow)]
@@ -12,24 +12,15 @@ pub struct SealedTotp {
     pub sealed: Vec<u8>,
 }
 
-/// The key of a password folder as stored, sealed for its `owner`.
-#[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow)]
-pub struct SealedFolderKey {
-    pub node: NodeId,
-    pub owner: UserId,
-    pub sealed: Vec<u8>,
-}
-
 /// Everything of a tenant sealed with its secrets key.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SealedSecrets {
     pub totp: Vec<SealedTotp>,
-    pub folders: Vec<SealedFolderKey>,
 }
 
 impl SealedSecrets {
     pub fn is_empty(&self) -> bool {
-        self.totp.is_empty() && self.folders.is_empty()
+        self.totp.is_empty()
     }
 }
 
@@ -93,7 +84,7 @@ impl Db {
         let mut tx = self.begin().await?;
         // Blocks every write to these tables (reads go on) until the rotation ends.
         sqlx::query(
-            "LOCK TABLE user_totp, protected_folders, secrets_key_checks \
+            "LOCK TABLE user_totp, secrets_key_checks \
              IN SHARE ROW EXCLUSIVE MODE",
         )
         .execute(&mut *tx)
@@ -134,17 +125,6 @@ impl SecretsRotation {
                 .execute(&mut *self.tx)
                 .await?;
         }
-        for folder in &resealed.folders {
-            sqlx::query(
-                "UPDATE protected_folders SET sealed_key = $3 \
-                 WHERE node_id = $1 AND owner_id = $2 AND lock = 'password'",
-            )
-            .bind(folder.node)
-            .bind(folder.owner)
-            .bind(&folder.sealed)
-            .execute(&mut *self.tx)
-            .await?;
-        }
         sqlx::query(
             "INSERT INTO secrets_key_checks (tenant_id, sealed) VALUES ($1, $2) \
              ON CONFLICT (tenant_id) DO UPDATE SET sealed = EXCLUDED.sealed, created_at = now()",
@@ -162,9 +142,7 @@ impl SecretsRotation {
 /// Whether `resealed` names exactly the rows of `sealed`, in the same order.
 fn same_rows(sealed: &SealedSecrets, resealed: &SealedSecrets) -> bool {
     let totp = sealed.totp.iter().map(|row| row.user);
-    let folders = sealed.folders.iter().map(|row| (row.node, row.owner));
     totp.eq(resealed.totp.iter().map(|row| row.user))
-        && folders.eq(resealed.folders.iter().map(|row| (row.node, row.owner)))
 }
 
 async fn read_sealed(
@@ -176,17 +154,9 @@ async fn read_sealed(
          WHERE tenant_id = $1 ORDER BY user_id",
     )
     .bind(tenant)
-    .fetch_all(&mut *conn)
+    .fetch_all(conn)
     .await?;
-    let folders = sqlx::query_as::<_, SealedFolderKey>(
-        "SELECT p.node_id AS node, p.owner_id AS owner, p.sealed_key AS sealed \
-         FROM protected_folders p JOIN users u ON u.id = p.owner_id \
-         WHERE u.tenant_id = $1 AND p.lock = 'password' ORDER BY p.node_id",
-    )
-    .bind(tenant)
-    .fetch_all(&mut *conn)
-    .await?;
-    Ok(SealedSecrets { totp, folders })
+    Ok(SealedSecrets { totp })
 }
 
 /// Ends every session of the tenant's users: everyone has to sign in again, on every device.

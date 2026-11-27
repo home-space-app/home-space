@@ -1,15 +1,14 @@
 //! Client-side cryptography of protected folders (`docs/todo/protected-folders.md`).
 //!
 //! No I/O and no UI: the desktop, web and mobile clients fetch the wrapped keys from the server,
-//! ask an [`Authenticator`] (a security key) or the user (the recovery key) for the wrapping key,
-//! and call into this crate to unwrap, seal names and encrypt content. This is for folders locked
-//! with a security key, which are end to end; folders locked with a password are encrypted by
-//! the server.
+//! ask an [`Authenticator`] (a security key) or the user (a password or a recovery key) for the
+//! wrapping key, and call into this crate to unwrap, seal names and encrypt content. Folders of
+//! both locks are end to end: the server never has a key.
 //!
-//! Keys are short-lived by design. For security-key folders the client keeps no decryption key
-//! between actions, so the API hands keys to closures ([`vault::with_vault_key`],
-//! [`vault::with_folder_keys`]) instead of returning them. Every key type wipes itself on drop
-//! and implements neither `Clone` nor a `Debug` that shows its bytes.
+//! The vault key lives only inside one call ([`vault::with_vault_key`]). A folder's
+//! [`FolderKeys`] are what an unlocked folder is: the client holds them until it locks the
+//! folder. Every key type wipes itself on drop and implements neither `Clone` nor a `Debug`
+//! that shows its bytes.
 
 #![warn(missing_docs)]
 
@@ -19,6 +18,7 @@ mod error;
 pub mod folder;
 pub mod kdf;
 pub mod names;
+pub mod password;
 pub mod recovery;
 mod secret;
 pub mod vault;
@@ -33,6 +33,7 @@ pub use error::{ContentError, Error, Internal, NameProblem};
 pub use folder::{FolderKeys, FolderSecret};
 pub use kdf::Kek;
 pub use names::NodeKind;
+pub use password::{PasswordKdf, PasswordUnlock};
 pub use recovery::RecoveryKey;
 pub use vault::VaultKey;
 

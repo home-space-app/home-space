@@ -6,20 +6,16 @@ use futures_util::Stream;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use db::{Db, DeletedNodes, NewContent, Node, NodeId, NodeKind, QuotaUsage, UserId};
+use db::{Db, DeletedNodes, NewContent, Node, NodeId, QuotaUsage, UserId};
 use events::Events;
-use protocol::ProtectionState;
 
 use crate::{
-    BlobOp, BlobStore, BodyError, FilesError, Names, StoreOutcome, emitted,
+    BlobOp, BlobStore, BodyError, FilesError, StoreOutcome, emitted,
     store::StagedBlob,
     tree::{guard, rules::numbered_folder_name},
 };
 
 pub(crate) const FALLBACK_MIME: &str = "application/octet-stream";
-/// How many locks the stores and conversions of all users are spread over, so that encrypting
-/// one user's folder does not hold up the stores of most others.
-const SEALING_LOCKS: usize = 64;
 /// How many numbered names (`Photos (2)`, `Photos (3)`, ...) are tried for a taken one.
 const MAX_NUMBERED_NAMES: usize = 1000;
 
@@ -40,11 +36,6 @@ pub(crate) struct ContentStore {
     pub(crate) max_upload_bytes: u64,
     /// Where every change is published, for search and the user's devices.
     pub(crate) events: Events,
-    /// Stores hold their owner's lock (see [`Self::sealing`]) shared from reading the folder's
-    /// state until the blob is committed; the conversion that encrypts or decrypts a folder in
-    /// place holds it exclusively for each blob. So neither overwrites what the other just
-    /// wrote, and a store never lands in the form the folder had before its state changed.
-    sealing_locks: std::sync::Arc<[std::sync::Arc<tokio::sync::RwLock<()>>]>,
 }
 
 impl ContentStore {
@@ -54,19 +45,7 @@ impl ContentStore {
             store,
             max_upload_bytes,
             events,
-            sealing_locks: (0..SEALING_LOCKS)
-                .map(|_| std::sync::Arc::default())
-                .collect(),
         }
-    }
-
-    /// The lock that keeps stores of `owner`'s blobs and conversions of their folders apart.
-    pub(crate) fn sealing(&self, owner: UserId) -> std::sync::Arc<tokio::sync::RwLock<()>> {
-        let mut hasher = std::hash::DefaultHasher::new();
-        std::hash::Hash::hash(&owner, &mut hasher);
-        let count = u64::try_from(self.sealing_locks.len()).unwrap_or(u64::MAX);
-        let index = usize::try_from(std::hash::Hasher::finish(&hasher) % count).unwrap_or(0);
-        self.sealing_locks[index].clone()
     }
 
     /// The same content, recording `device` as the maker of the changes made through it.
@@ -78,17 +57,14 @@ impl ContentStore {
     }
 
     /// Creates a folder without publishing it, for changes that publish all they made at once.
-    /// `name` is stored as `names`, the names of `parent`, say.
     pub(crate) async fn insert_folder(
         &self,
         owner: UserId,
         parent: Option<NodeId>,
         name: &str,
-        names: &Names,
     ) -> Result<Node, FilesError> {
         let mut tx = self.db.transaction(owner).await?;
         guard::hold(&mut tx).await?;
-        guard::check_names(&mut tx, parent, names).await?;
         let folder = tx.insert_folder(parent, name).await?;
         tx.commit().await?;
         Ok(folder)
@@ -152,26 +128,11 @@ impl ContentStore {
                 return Err(err);
             }
         };
-        let node = match &outcome {
+        let committed = match &outcome {
             StoreOutcome::Unchanged(_) => {
                 self.store.discard(staged).await;
                 return Ok(outcome);
             }
-            StoreOutcome::Created(node)
-            | StoreOutcome::Versioned { node, .. }
-            | StoreOutcome::Archived { node, .. } => node.id,
-        };
-        let (staged, _sealing) = match self.seal_for(owner, node, staged).await {
-            Ok(sealed) => sealed,
-            Err(err) => {
-                if let StoreOutcome::Created(node) = &outcome {
-                    self.rollback_node(owner, node.id).await;
-                }
-                return Err(err);
-            }
-        };
-        let committed = match &outcome {
-            StoreOutcome::Unchanged(_) => Ok(()),
             StoreOutcome::Created(node) => {
                 let committed = self.store.commit(&staged, owner, node.id).await;
                 if committed.is_err() {
@@ -194,45 +155,6 @@ impl ContentStore {
             return Err(err.into());
         }
         Ok(outcome)
-    }
-
-    /// The blob to store for `node`: `staged` encrypted to its folder's recipient when it is
-    /// inside a password folder, as it is otherwise. While that folder's existing content is
-    /// still being encrypted, also the guard that keeps the conversion from writing the same
-    /// blobs meanwhile; it is held until the blob is in place.
-    async fn seal_for(
-        &self,
-        owner: UserId,
-        node: NodeId,
-        staged: StagedBlob,
-    ) -> Result<(StagedBlob, Option<tokio::sync::OwnedRwLockReadGuard<()>>), FilesError> {
-        // Held until the blob is committed, and taken before the folder's state is read, also
-        // outside password folders: one may be protected meanwhile. A conversion takes it
-        // exclusively for each blob, so once it starts, every store that saw the state before
-        // has landed (a plain blob it then seals) and every later one sees the new state.
-        let guard = self.sealing(owner).read_owned().await;
-        let folder = match self.db.enclosing_password_folder(owner, node).await {
-            Ok(Some(folder)) => folder,
-            Ok(None) => return Ok((staged, Some(guard))),
-            Err(err) => {
-                self.store.discard(staged).await;
-                return Err(err.into());
-            }
-        };
-        let recipient = match vault_core::content::parse_recipient(&folder.recipient) {
-            Ok(recipient) => recipient,
-            Err(err) => {
-                self.store.discard(staged).await;
-                return Err(FilesError::Io(std::io::Error::other(err)));
-            }
-        };
-        let guard = Some(guard);
-        // A folder being unprotected is decrypted in place; what arrives meanwhile stays plain.
-        if folder.state == ProtectionState::Unprotecting {
-            return Ok((staged, guard));
-        }
-        let sealed = self.store.seal_staged(staged, recipient).await?;
-        Ok((sealed, guard))
     }
 
     pub(crate) async fn apply_blob_ops(&self, owner: UserId, ops: &[BlobOp]) {
@@ -276,18 +198,16 @@ impl ContentStore {
         }
     }
 
-    /// Creates the folder `name` in `parent`, or `name (2)` and so on when it is taken, with
-    /// the name stored as `names` says.
+    /// Creates the folder `name` in `parent`, or `name (2)` and so on when it is taken.
     pub(crate) async fn save_folder(
         &self,
         owner: UserId,
         parent: Option<NodeId>,
         name: &str,
-        names: &Names,
     ) -> Result<Node, FilesError> {
         for n in 0..MAX_NUMBERED_NAMES {
-            let candidate = names.store(NodeKind::Folder, &numbered_folder_name(name, n))?;
-            match self.insert_folder(owner, parent, &candidate, names).await {
+            let candidate = numbered_folder_name(name, n);
+            match self.insert_folder(owner, parent, &candidate).await {
                 Err(FilesError::Conflict) => {}
                 other => return other,
             }

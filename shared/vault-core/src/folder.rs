@@ -3,7 +3,7 @@
 use age::x25519::{Identity, Recipient};
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::kdf::{hkdf_into, hkdf32};
+use crate::kdf::{Kek, hkdf_into, hkdf32};
 use crate::names::{self, NodeKind};
 use crate::secret::secret32;
 use crate::vault::VaultKey;
@@ -16,12 +16,12 @@ const AGE_IDENTITY_INFO: &[u8] = b"home-space age identity v1";
 const AGE_SECRET_KEY_HRP: &str = "AGE-SECRET-KEY-";
 
 secret32! {
-    /// The random secret of one protected folder, wrapped by the vault key and bound to the
-    /// folder's node id.
+    /// The random secret of one protected folder, wrapped by the vault key (security key) or the
+    /// password's KEK and the folder's recovery key (password), and bound to the folder's node id.
     pub struct FolderSecret;
 }
 
-/// What can wrap a folder secret: the vault key.
+/// What can wrap a folder secret: the vault key, or a password folder's KEK.
 pub trait FolderWrappingKey {
     /// The raw key bytes.
     #[doc(hidden)]
@@ -29,6 +29,12 @@ pub trait FolderWrappingKey {
 }
 
 impl FolderWrappingKey for VaultKey {
+    fn wrapping_bytes(&self) -> &[u8; 32] {
+        self.expose()
+    }
+}
+
+impl FolderWrappingKey for Kek {
     fn wrapping_bytes(&self) -> &[u8; 32] {
         self.expose()
     }
@@ -77,21 +83,6 @@ impl FolderSecret {
     }
 }
 
-/// For the server, which encrypts password folders itself and keeps their secret sealed with its
-/// own key. Clients never hold a folder secret outside one action.
-#[cfg(feature = "server")]
-impl FolderSecret {
-    /// A secret the server unsealed.
-    pub fn from_raw(bytes: [u8; 32]) -> Self {
-        Self::from_bytes(bytes)
-    }
-
-    /// The bytes to seal and store.
-    pub fn to_raw(&self) -> Zeroizing<[u8; 32]> {
-        Zeroizing::new(*self.expose())
-    }
-}
-
 /// age has no constructor from raw bytes, only its Bech32 text form.
 fn identity_from_bytes(bytes: &[u8; 32]) -> Result<Identity> {
     let hrp = bech32::Hrp::parse_unchecked(AGE_SECRET_KEY_HRP);
@@ -102,8 +93,8 @@ fn identity_from_bytes(bytes: &[u8; 32]) -> Result<Identity> {
         .map_err(|_| Error::Internal(Internal::AgeIdentity))
 }
 
-/// The keys of an unlocked folder. Hold it only for the action at hand: it can open every name
-/// and every file in the folder.
+/// The keys of an unlocked folder: they open every name and every file in it. Clients hold them
+/// while the folder is unlocked and drop them on Lock, after inactivity, and when the app closes.
 pub struct FolderKeys {
     name_key: Zeroizing<[u8; 64]>,
     identity: Identity,

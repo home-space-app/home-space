@@ -9,23 +9,19 @@ use events::DomainEvent;
 use protocol::TransferState;
 
 use super::{SavedTransfer, TransferService, manifest::split_path, require_ready};
-use crate::{
-    Actor, FilesError, Names, StoreOptions, StoreOutcome, content::new_content, emitted, tree,
-};
+use crate::{Actor, FilesError, StoreOptions, StoreOutcome, content::new_content, emitted, tree};
 
 impl TransferService {
     /// Moves the files of a ready transfer into the recipient's tree under `parent` (the root
-    /// when `None`), keeping its folders. A name that is taken at the top gets a number. Names
-    /// are stored as `names`, the names of `parent`, says.
+    /// when `None`), keeping its folders. A name that is taken at the top gets a number.
     pub async fn save_transfer(
         &self,
         actor: Actor,
         id: Uuid,
         parent: Option<NodeId>,
-        names: &Names,
     ) -> Result<SavedTransfer, FilesError> {
         self.acting(actor.device)
-            .save_transfer_as(actor.user, id, parent, names)
+            .save_transfer_as(actor.user, id, parent)
             .await
     }
 
@@ -36,7 +32,6 @@ impl TransferService {
         item: &TransferItem,
         parent: Option<NodeId>,
         name: &str,
-        names: &Names,
     ) -> Result<StoreOutcome, FilesError> {
         let staged = self.content.store.adopt_transfer_item(
             transfer.id,
@@ -49,16 +44,8 @@ impl TransferService {
             keep_both: true,
             ..StoreOptions::default()
         };
-        let stored = tree::store_file(
-            &self.content.db,
-            owner,
-            parent,
-            name,
-            names,
-            content,
-            options,
-        )
-        .await;
+        let stored =
+            tree::store_file(&self.content.db, owner, parent, name, content, options).await;
         self.content.finish_store(owner, staged, stored).await
     }
 
@@ -67,7 +54,6 @@ impl TransferService {
         caller: UserId,
         id: Uuid,
         parent: Option<NodeId>,
-        names: &Names,
     ) -> Result<SavedTransfer, FilesError> {
         let (transfer, items) = self.claim_for_saving(caller, id, parent).await?;
         let mut saved = SavedTransfer {
@@ -75,10 +61,7 @@ impl TransferService {
             folders: Vec::new(),
             files: Vec::new(),
         };
-        if let Err(err) = self
-            .place_items(caller, &mut saved, &items, parent, names)
-            .await
-        {
+        if let Err(err) = self.place_items(caller, &mut saved, &items, parent).await {
             self.after_failed_save(&saved, &err).await;
             return Err(err);
         }
@@ -149,7 +132,6 @@ impl TransferService {
         saved: &mut SavedTransfer,
         items: &[TransferItem],
         parent: Option<NodeId>,
-        names: &Names,
     ) -> Result<(), FilesError> {
         let mut placed = HashMap::<&str, NodeId>::new();
         for item in items {
@@ -160,13 +142,13 @@ impl TransferService {
             };
             match item.kind {
                 NodeKind::Folder => {
-                    let folder = self.content.save_folder(caller, into, name, names).await?;
+                    let folder = self.content.save_folder(caller, into, name).await?;
                     placed.insert(&item.path, folder.id);
                     saved.folders.push(folder);
                 }
                 NodeKind::File => {
                     let outcome = self
-                        .save_file(caller, &saved.transfer, item, into, name, names)
+                        .save_file(caller, &saved.transfer, item, into, name)
                         .await?;
                     saved.files.push(outcome);
                 }

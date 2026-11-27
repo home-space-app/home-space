@@ -113,7 +113,7 @@ async fn reseal(
         match secrets_key::check(db, tenant, None).await {
             Ok(KeyCheck::Unused) => {}
             Ok(_) | Err(SecretsKeyError::Missing) => anyhow::bail!(
-                "authenticator apps or password folders are sealed with a secrets key, and no new \
+                "authenticator apps are sealed with a secrets key, and no new \
                  one was given; nothing was changed"
             ),
             Err(err) => return Err(err).context("checking the secrets key"),
@@ -146,12 +146,10 @@ fn report(done: &Resealed) {
     match done {
         Resealed::Done(Rotation::Rotated {
             authenticator_apps,
-            password_folders,
             sessions_ended,
         }) => println!(
-            "Sealed again with the new key: {authenticator_apps} authenticator app(s) and \
-             {password_folders} password folder key(s). Ended {sessions_ended} session(s): \
-             everyone signs in again."
+            "Sealed again with the new key: {authenticator_apps} authenticator app(s). Ended \
+             {sessions_ended} session(s): everyone signs in again."
         ),
         Resealed::Done(Rotation::AlreadyDone) => println!(
             "The secrets are sealed with the new key already: an earlier run got this far."

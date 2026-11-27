@@ -2,7 +2,7 @@
 //! configured key is the one the tenant's secrets are sealed with, and sealing all of them
 //! again with a new key, which is the only way to change the key without losing them.
 
-use db::{Db, DbError, SealedFolderKey, SealedSecrets, SealedTotp, TenantId, UserId};
+use db::{Db, DbError, SealedSecrets, SealedTotp, TenantId, UserId};
 
 use crate::{AuthError, SecretBox};
 
@@ -38,7 +38,7 @@ pub enum KeyCheck {
 
 /// Checks that `key` is the secrets key `tenant`'s secrets are sealed with, recording a
 /// check for it the first time. The server does not serve a tenant this fails for: a key
-/// changed by hand would leave its authenticator apps and password folders unreadable.
+/// changed by hand would leave its authenticator apps unreadable.
 ///
 /// # Errors
 ///
@@ -80,7 +80,6 @@ pub enum Rotation {
     /// Everything was sealed again with the new key, and everyone signed out.
     Rotated {
         authenticator_apps: usize,
-        password_folders: usize,
         sessions_ended: u64,
     },
     /// The secrets are sealed with the new key already: an earlier rotation to it finished.
@@ -120,11 +119,10 @@ pub async fn rotate(
     }
     let resealed = reseal(tenant, &rotation.sealed, current, new)?;
     let check = new.seal_check(tenant)?;
-    let (authenticator_apps, password_folders) = (resealed.totp.len(), resealed.folders.len());
+    let authenticator_apps = resealed.totp.len();
     let sessions_ended = rotation.finish(&check, &resealed).await?;
     Ok(Rotation::Rotated {
         authenticator_apps,
-        password_folders,
         sessions_ended,
     })
 }
@@ -154,19 +152,7 @@ fn reseal(
             })
         })
         .collect::<Result<_, SecretsKeyError>>()?;
-    let folders = sealed
-        .folders
-        .iter()
-        .map(|row| {
-            let what = || format!("the key of password folder {}", row.node);
-            Ok(SealedFolderKey {
-                node: row.node,
-                owner: row.owner,
-                sealed: again(row.owner, &row.sealed, &what)?,
-            })
-        })
-        .collect::<Result<_, SecretsKeyError>>()?;
-    Ok(SealedSecrets { totp, folders })
+    Ok(SealedSecrets { totp })
 }
 
 #[cfg(test)]

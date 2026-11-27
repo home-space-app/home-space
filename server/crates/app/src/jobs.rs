@@ -32,33 +32,6 @@ pub fn spawn(db: &Db, state: &AppState, config: &Config) {
     ));
     tokio::spawn(expire_transfers(state.files.clone()));
     tokio::spawn(delete_users(state.files.clone()));
-    tokio::spawn(protect_folders(db.clone(), state.clone()));
-}
-
-/// Every minute: encrypts what password folders that are being protected still hold in plain
-/// (resuming after a restart), and forgets unlocks of them that have expired.
-async fn protect_folders(db: Db, state: AppState) {
-    let mut every_minute = interval(MINUTE);
-    every_minute.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    loop {
-        every_minute.tick().await;
-        for tenant in state.tenants.ready() {
-            report(
-                (
-                    "finished encrypting password folders",
-                    "encrypting password folders failed",
-                ),
-                tenant.vault.convert_folders(&state.files.nodes).await,
-            );
-        }
-        report(
-            (
-                "forgot expired unlocks of password folders",
-                "forgetting expired unlocks of password folders failed",
-            ),
-            db.expire_folder_unlocks().await,
-        );
-    }
 }
 
 /// Indexes what changed while the server was not running.

@@ -3,12 +3,12 @@
 use sha2::Digest;
 use uuid::Uuid;
 
-use db::{NewContent, NodeKind, Upload, UserId};
+use db::{NewContent, Upload, UserId};
 use events::DomainEvent;
 use protocol::TransferState;
 
 use super::{ChunkOutcome, UploadService, slots::Hashing};
-use crate::{FilesError, Names, StoreOptions, StoreOutcome, content::new_content, tree};
+use crate::{FilesError, StoreOptions, StoreOutcome, content::new_content, tree};
 
 impl UploadService {
     /// Stores the complete upload in the tree or in its transfer.
@@ -16,7 +16,6 @@ impl UploadService {
         &self,
         owner: UserId,
         upload: &Upload,
-        names: &Names,
         len: u64,
         sha256: Vec<u8>,
     ) -> Result<ChunkOutcome, FilesError> {
@@ -27,7 +26,7 @@ impl UploadService {
                 .map(|ready| ChunkOutcome::Transferred { size: len, ready }),
             None => self
                 .content
-                .publish_stored(self.finish_upload(owner, upload, names, len, sha256).await)
+                .publish_stored(self.finish_upload(owner, upload, len, sha256).await)
                 .await
                 .map(ChunkOutcome::Complete),
         }
@@ -51,7 +50,6 @@ impl UploadService {
         &self,
         owner: UserId,
         upload: &Upload,
-        names: &Names,
         size: u64,
         sha256: Vec<u8>,
     ) -> Result<StoreOutcome, FilesError> {
@@ -61,14 +59,16 @@ impl UploadService {
             .check_quota(owner, Some(upload.id), size)
             .await?;
         let staged = self.content.store.adopt_partial(upload.id, size, sha256);
-        let name = names.show(NodeKind::File, &upload.name);
-        let content = |name: &str| -> NewContent {
-            new_content(&staged, upload.mime.as_deref(), name, upload.modified_at)
+        let content = || -> NewContent {
+            new_content(
+                &staged,
+                upload.mime.as_deref(),
+                &upload.name,
+                upload.modified_at,
+            )
         };
         let stored = match upload.node_id {
-            Some(node) => {
-                tree::replace_content(&self.content.db, owner, node, content(&name)).await
-            }
+            Some(node) => tree::replace_content(&self.content.db, owner, node, content()).await,
             None => {
                 if let Some(parent) = upload.parent_id
                     && let Err(err) = self.content.db.get_node(owner, parent).await
@@ -85,9 +85,8 @@ impl UploadService {
                     &self.content.db,
                     owner,
                     upload.parent_id,
-                    &name,
-                    names,
-                    content(&name),
+                    &upload.name,
+                    content(),
                     options,
                 )
                 .await

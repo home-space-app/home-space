@@ -4,7 +4,7 @@ use bytes::Bytes;
 use futures_util::stream;
 use sqlx::PgPool;
 
-use files::{Actor, FileServices, FilesConfig, Names, NodeUpdate, StoreOutcome};
+use files::{Actor, FileServices, FilesConfig, NodeUpdate, StoreOutcome};
 
 use super::*;
 use crate::provider::ExtractError;
@@ -90,7 +90,6 @@ async fn upload(fx: &Fixture, parent: Option<NodeId>, name: &str, text: &'static
             files::NewFile {
                 parent,
                 name,
-                names: &Names::Plain,
                 content_type: None,
                 modified_at: None,
             },
@@ -147,7 +146,7 @@ async fn hits_report_their_location(pool: PgPool) {
     let folder = fx
         .files
         .nodes
-        .create_folder(Actor::user(fx.alice), None, "trips", &Names::Plain)
+        .create_folder(Actor::user(fx.alice), None, "trips")
         .await
         .expect("folder");
     upload(&fx, Some(folder.id), "paris.txt", "x").await;
@@ -173,7 +172,6 @@ async fn rename_reindexes_the_name(pool: PgPool) {
                 name: Some("fresh.txt".to_owned()),
                 ..NodeUpdate::default()
             },
-            &Names::Plain,
         )
         .await
         .expect("rename")
@@ -200,7 +198,6 @@ async fn catch_up_indexes_nodes_created_without_the_index(pool: PgPool) {
             files::NewFile {
                 parent: None,
                 name: "legacy.txt",
-                names: &Names::Plain,
                 content_type: None,
                 modified_at: None,
             },
@@ -254,7 +251,6 @@ async fn files_without_a_matching_provider_keep_name_only_entries(pool: PgPool) 
             files::NewFile {
                 parent: None,
                 name: "photo.jpg",
-                names: &Names::Plain,
                 content_type: Some("image/jpeg"),
                 modified_at: None,
             },
@@ -279,14 +275,7 @@ async fn catch_up_re_extracts_content_that_changed(pool: PgPool) {
     eventually_finds(&fx, "alpha", &["notes.txt"]).await;
     fx.files
         .nodes
-        .replace_content(
-            Actor::user(fx.alice),
-            node.id,
-            &Names::Plain,
-            None,
-            None,
-            body("bravo"),
-        )
+        .replace_content(Actor::user(fx.alice), node.id, None, None, body("bravo"))
         .await
         .expect("replace");
     let report = fx.index.catch_up().await.expect("catch up");
@@ -309,7 +298,6 @@ async fn a_new_version_replaces_the_indexed_content(pool: PgPool) {
             files::NewFile {
                 parent: None,
                 name: "notes.txt",
-                names: &Names::Plain,
                 content_type: None,
                 modified_at: None,
             },

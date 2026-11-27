@@ -13,12 +13,10 @@ use axum::{
 };
 use uuid::Uuid;
 
-use db::NodeKind;
 use files::StoreOptions;
-use files::{ChunkOutcome, FilesError, Names, UploadDestination, UploadStatus, UploadTarget};
+use files::{ChunkOutcome, FilesError, UploadStatus, UploadTarget};
 use protocol::{
-    ChunkResult, CreateUpload, NodeId, UploadInfo, UploadSession, UploadsQuery,
-    paths::UPLOAD_OFFSET,
+    ChunkResult, CreateUpload, UploadInfo, UploadSession, UploadsQuery, paths::UPLOAD_OFFSET,
 };
 
 use crate::extract::{ApiJson, ApiPath, ApiQuery};
@@ -27,6 +25,10 @@ use crate::{
     extract::{AuthUser, Tenant},
     support::{body::limited_body_stream, outcome::stored},
 };
+
+/// Why an upload into a protected folder cannot keep both files.
+const KEEP_BOTH_REFUSAL: &str =
+    "Inside a protected folder the client names the new file itself; keeping both is refused.";
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -63,11 +65,9 @@ fn session(status: UploadStatus, chunk_size: u64) -> UploadSession {
 }
 
 /// The user's unfinished uploads, or only this device's. A session without a device has none
-/// of its own. A new file going into a password folder is listed under its plain name when
-/// this session unlocked the folder, and left out when it did not.
+/// of its own.
 async fn list(
     State(state): State<AppState>,
-    tenant: Tenant,
     user: AuthUser,
     ApiQuery(query): ApiQuery<UploadsQuery>,
 ) -> Result<Json<Vec<UploadInfo>>, ApiError> {
@@ -76,25 +76,7 @@ async fn list(
         (true, Some(device)) => state.files.uploads.uploads(user.id, Some(device)).await?,
         (true, None) => Vec::new(),
     };
-    let parents: Vec<NodeId> = uploads
-        .iter()
-        .filter_map(|upload| upload.parent_id)
-        .collect();
-    let shown = tenant
-        .vault
-        .shown(user.id, user.session_id, &parents)
-        .await?;
-    Ok(Json(
-        uploads
-            .into_iter()
-            .filter_map(|mut upload| {
-                if upload.node_id.is_none() && upload.transfer_item_id.is_none() {
-                    upload.name = shown.name(upload.parent_id, NodeKind::File, &upload.name)?;
-                }
-                Some(upload_info(upload))
-            })
-            .collect(),
-    ))
+    Ok(Json(uploads.into_iter().map(upload_info).collect()))
 }
 
 fn upload_info(upload: db::Upload) -> UploadInfo {
@@ -110,35 +92,25 @@ fn upload_info(upload: db::Upload) -> UploadInfo {
     }
 }
 
-/// The names of the folder a file upload stores into, which the session must have unlocked
-/// when it is inside a password folder. A transfer's upload is not stored in the tree.
-async fn destination_names(
-    tenant: &Tenant,
-    user: &AuthUser,
-    destination: UploadDestination,
-) -> Result<Names, ApiError> {
-    match destination {
-        UploadDestination::Folder(parent) => {
-            Ok(tenant.vault.names(user.id, user.session_id, parent).await?)
-        }
-        UploadDestination::Transfer => Ok(Names::Plain),
-    }
-}
-
 async fn create(
     State(state): State<AppState>,
     tenant: Tenant,
     user: AuthUser,
     ApiJson(request): ApiJson<CreateUpload>,
 ) -> Result<Response, ApiError> {
-    let destination = match (request.transfer_item_id, request.node_id) {
-        (Some(_), _) => UploadDestination::Transfer,
-        (None, Some(id)) => {
-            UploadDestination::Folder(state.files.nodes.get(user.id, id).await?.parent_id)
-        }
-        (None, None) => UploadDestination::Folder(request.parent_id),
-    };
-    let names = destination_names(&tenant, &user, destination).await?;
+    // The server would number a taken name, which inside a protected folder is the client's
+    // sealing of it and would no longer open.
+    if let (true, None, None, Some(parent)) = (
+        request.keep_both,
+        request.transfer_item_id,
+        request.node_id,
+        request.parent_id,
+    ) {
+        tenant
+            .vault
+            .refuse_protected(user.id, &[parent], KEEP_BOTH_REFUSAL)
+            .await?;
+    }
     let target = match (request.transfer_item_id, request.node_id) {
         (Some(item), _) => UploadTarget::TransferItem(item),
         (None, Some(id)) => UploadTarget::Replace(id),
@@ -160,7 +132,6 @@ async fn create(
             user.device_id,
             files::UploadRequest {
                 target,
-                names: &names,
                 size: request.size,
                 content_type: request.mime.as_deref(),
                 modified_at: request.modified_at,
@@ -183,7 +154,6 @@ async fn status(
 
 async fn append(
     State(state): State<AppState>,
-    tenant: Tenant,
     user: AuthUser,
     headers: HeaderMap,
     ApiPath(id): ApiPath<Uuid>,
@@ -204,13 +174,11 @@ async fn append(
     if declared_len.is_some_and(|len| len > limit) {
         return Err(FilesError::TooLarge { limit }.into());
     }
-    let destination = state.files.uploads.destination(user.id, id).await?;
-    let names = destination_names(&tenant, &user, destination).await?;
     let chunk = limited_body_stream(body, limit);
     match state
         .files
         .uploads
-        .append_chunk(user.actor(), id, offset, &names, chunk)
+        .append_chunk(user.actor(), id, offset, chunk)
         .await
     {
         Ok(ChunkOutcome::Partial { offset }) => Ok(with_offset(
@@ -219,7 +187,7 @@ async fn append(
             Json(ChunkResult { offset, node: None }),
         )),
         Ok(ChunkOutcome::Complete(outcome)) => {
-            let (status, Json(node)) = stored(outcome, &names);
+            let (status, Json(node)) = stored(outcome);
             let offset = u64::try_from(node.size).unwrap_or_default();
             let body = Json(ChunkResult {
                 offset,

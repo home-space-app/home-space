@@ -3,7 +3,10 @@
 use protocol::ProtectionState;
 use sqlx::PgConnection;
 
-use super::{NewProtection, ProtectError, ProtectRefusal, StoredProtection, unlockers::lock_vault};
+use super::{
+    NewPassword, NewProtection, ProtectError, ProtectRefusal, StoredProtection,
+    unlockers::lock_vault,
+};
 use crate::{Db, DbError, NodeId, Tx, UserId};
 
 /// The class of the advisory locks that hold one user's folder protections in place; the user
@@ -13,7 +16,8 @@ const PROTECTIONS_LOCK: i32 = 0x7072_6f74;
 /// The columns of a [`StoredProtection`].
 macro_rules! protection_columns {
     () => {
-        "node_id, lock, wrapped_secret, epoch, recipient, format, state, created_at"
+        "node_id, lock, wrapped_secret, epoch, recovery_wrapped_secret, kdf_salt, \
+         kdf_memory_kib, kdf_iterations, kdf_parallelism, recipient, format, state, created_at"
     };
 }
 
@@ -65,9 +69,8 @@ impl Db {
     }
 
     /// Protects the user's folder `node`. An empty folder is protected at once; one with
-    /// content waits in `protecting` until it is replaced with its encrypted form, by the client
-    /// (security key) or the server (password). The folder and everything in it stop being
-    /// shared and leave the search index.
+    /// content waits in `protecting` until the client replaced it with its encrypted form. The
+    /// folder and everything in it stop being shared and leave the search index.
     pub async fn protect_folder(
         &self,
         user: UserId,
@@ -118,23 +121,54 @@ impl Db {
             .bind(state),
             NewProtection::Password(lock) => sqlx::query_as::<_, StoredProtection>(concat!(
                 "INSERT INTO protected_folders \
-                 (node_id, owner_id, lock, password_hash, sealed_key, recipient, state, \
-                  recovery_hash) \
-                 VALUES ($1, $2, 'password', $3, $4, $5, $6, $7) \
+                 (node_id, owner_id, lock, wrapped_secret, recovery_wrapped_secret, kdf_salt, \
+                  kdf_memory_kib, kdf_iterations, kdf_parallelism, recipient, state) \
+                 VALUES ($1, $2, 'password', $3, $4, $5, $6, $7, $8, $9, $10) \
                  RETURNING ",
                 protection_columns!()
             ))
             .bind(node)
             .bind(user)
-            .bind(lock.password_hash)
-            .bind(lock.sealed_key)
+            .bind(lock.wrapped_secret)
+            .bind(lock.recovery_wrapped_secret)
+            .bind(&lock.kdf.salt)
+            .bind(lock.kdf.memory_kib)
+            .bind(lock.kdf.iterations)
+            .bind(lock.kdf.parallelism)
             .bind(lock.recipient)
-            .bind(state)
-            .bind(lock.recovery_hash),
+            .bind(state),
         };
         let stored = insert.fetch_one(&mut *tx).await?;
         tx.commit().await?;
         Ok(stored)
+    }
+
+    /// Stores the password folder `node`'s secret wrapped for a new password, and for a new
+    /// recovery key when given. `NotFound` unless it is one of the user's password folders.
+    pub async fn set_folder_password(
+        &self,
+        user: UserId,
+        node: NodeId,
+        password: NewPassword<'_>,
+    ) -> Result<StoredProtection, DbError> {
+        let changed = sqlx::query_as::<_, StoredProtection>(concat!(
+            "UPDATE protected_folders SET wrapped_secret = $3, kdf_salt = $4, \
+             kdf_memory_kib = $5, kdf_iterations = $6, kdf_parallelism = $7, \
+             recovery_wrapped_secret = COALESCE($8, recovery_wrapped_secret) \
+             WHERE owner_id = $1 AND node_id = $2 AND lock = 'password' RETURNING ",
+            protection_columns!()
+        ))
+        .bind(user)
+        .bind(node)
+        .bind(password.wrapped_secret)
+        .bind(&password.kdf.salt)
+        .bind(password.kdf.memory_kib)
+        .bind(password.kdf.iterations)
+        .bind(password.kdf.parallelism)
+        .bind(password.recovery_wrapped_secret)
+        .fetch_optional(self.pool())
+        .await?;
+        changed.ok_or(DbError::NotFound)
     }
 
     /// Moves the protected folder `node` from state `from` to `to`. `NotFound` if it is not
@@ -203,12 +237,10 @@ impl Db {
 }
 
 impl Tx {
-    /// Keeps which of the owner's folders are protected, and in what state, as it is until the
-    /// transaction ends. Stores into the tree take it first, before any row lock, then read
-    /// with [`Tx::password_folder_of`] how the names they write must be stored: names chosen
-    /// before a folder was protected, or stopped being, are refused rather than written in the
-    /// wrong form. Stores do not wait for each other; protecting or unprotecting a folder waits
-    /// for the stores in progress, and they for it.
+    /// Keeps which of the owner's folders are protected as it is until the transaction ends.
+    /// Moves take it first, before any row lock, then check with [`Tx::protected_folder_of`]
+    /// that nothing crosses a protected folder's edge. Moves do not wait for each other;
+    /// protecting a folder waits for the moves in progress, and they for it.
     pub async fn hold_protections(&mut self) -> Result<(), DbError> {
         sqlx::query("SELECT pg_advisory_xact_lock_shared($1, hashtext($2::text))")
             .bind(PROTECTIONS_LOCK)

@@ -3,28 +3,18 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use db::{
-    Db, NewContent, NewNode, NewProtection, Node, NodeId, NodeKind, OnConflict, PasswordLock,
-    Patch, TenantId, UserId,
+    Db, KeyLock, NewContent, NewNode, NewProtection, NewUnlocker, Node, NodeId, NodeKind,
+    OnConflict, PasswordLock, Patch, StoredKdf, TenantId, UnlockerSource, UserId,
 };
-use protocol::ProtectionState;
-use vault_core::FolderSecret;
 
 use super::{NodeUpdate, StoreOptions, move_nodes, store_file, update_node};
-use crate::{FilesError, Names};
+use crate::FilesError;
 
 async fn store(db: &Db, owner: UserId, name: &str, content: NewContent) -> Node {
-    store_file(
-        db,
-        owner,
-        None,
-        name,
-        &Names::Plain,
-        content,
-        StoreOptions::default(),
-    )
-    .await
-    .expect("store")
-    .into_node()
+    store_file(db, owner, None, name, content, StoreOptions::default())
+        .await
+        .expect("store")
+        .into_node()
 }
 
 async fn add(db: &Db, owner: UserId, parent: Option<NodeId>, kind: NodeKind, name: &str) -> Node {
@@ -371,7 +361,7 @@ async fn a_file_names_the_device_that_wrote_it_and_a_rename_keeps_it(pool: PgPoo
         parent_id: Patch::Keep,
     };
 
-    let renamed = update_node(&db, alice, written.id, update, &Names::Plain)
+    let renamed = update_node(&db, alice, written.id, update)
         .await
         .expect("rename");
 
@@ -425,69 +415,101 @@ async fn older_content_is_kept_as_a_version_of_the_device_that_sent_it(pool: PgP
     );
 }
 
-/// Protects `folder` with a password straight in the database; empty, it is `protected` at once.
-async fn protect(db: &Db, owner: UserId, folder: NodeId) {
+const RECIPIENT: &str = "age1fauk43xvke3myu0vg0syaflnwhlslwxd2504jfdjwejkjc50pcysgcf5gf";
+
+/// Protects `folder` with a password straight in the database.
+async fn protect_with_password(db: &Db, owner: UserId, folder: NodeId) {
+    let kdf = StoredKdf {
+        salt: vec![1; 16],
+        memory_kib: 65536,
+        iterations: 3,
+        parallelism: 1,
+    };
     let lock = NewProtection::Password(PasswordLock {
-        password_hash: "$argon2id$...",
-        recovery_hash: "$argon2id$...",
-        sealed_key: &[1, 2, 3],
-        recipient: "age1fauk43xvke3myu0vg0syaflnwhlslwxd2504jfdjwejkjc50pcysgcf5gf",
+        wrapped_secret: &[7; 73],
+        recovery_wrapped_secret: &[8; 73],
+        kdf: &kdf,
+        recipient: RECIPIENT,
     });
     db.protect_folder(owner, folder, lock)
         .await
         .expect("protected");
 }
 
-fn refused_as_stale<T: std::fmt::Debug>(result: Result<T, FilesError>) {
+/// Gives `owner` a vault and protects `folder` with a security key straight in the database.
+async fn protect_with_key(db: &Db, owner: UserId, folder: NodeId) {
+    let unlocker = NewUnlocker {
+        id: Uuid::now_v7(),
+        source: UnlockerSource::Recovery,
+        wrapped_vault_key: &[7; 73],
+        epoch: 1,
+    };
+    db.add_vault_unlocker(owner, unlocker).await.expect("vault");
+    let lock = NewProtection::SecurityKey(KeyLock {
+        wrapped_secret: &[7; 73],
+        epoch: 1,
+        recipient: RECIPIENT,
+    });
+    db.protect_folder(owner, folder, lock)
+        .await
+        .expect("protected");
+}
+
+fn refused<T: std::fmt::Debug>(result: Result<T, FilesError>) {
     assert!(
         matches!(result, Err(FilesError::Protected(_))),
         "expected a refusal, got {result:?}"
     );
 }
 
-/// Security: names a request chose before the folder was protected are plain; written after
-/// it was, they would stay plain in a password folder. They are refused instead.
-#[sqlx::test(migrations = "../../migrations")]
-async fn plain_names_chosen_before_a_folder_was_protected_are_refused(pool: PgPool) {
-    let db = Db::from_pool(pool);
-    let alice = db
-        .create_user(TenantId::DEFAULT, "alice", "x")
-        .await
-        .expect("alice")
-        .id;
-    let docs = folder(&db, alice, None, "docs").await;
-    let outside = store(&db, alice, "a.txt", content(1)).await;
-    let stale = Names::Plain;
-    protect(&db, alice, docs.id).await;
-
-    let stored = store_file(
-        &db,
+/// Security: inside a protected folder everything is ciphertext the client made and outside it
+/// is plain, so nothing moves across its edge, whichever lock it has. Moves within it, and of
+/// the folder itself, are fine.
+async fn moves_across_the_edge_are_refused(db: &Db, alice: UserId, docs: Node) {
+    let outside = store(db, alice, "a.txt", content(1)).await;
+    let inside = store_file(
+        db,
         alice,
         Some(docs.id),
         "b.txt",
-        &stale,
         content(2),
         StoreOptions::default(),
     )
-    .await;
-    refused_as_stale(stored);
+    .await
+    .expect("store inside")
+    .into_node();
+    let sub = folder(db, alice, Some(docs.id), "sub").await;
 
-    let moved = move_nodes(&db, alice, &[outside.id], Some(docs.id), OnConflict::Abort).await;
-    refused_as_stale(moved);
-
-    let update = NodeUpdate {
+    refused(move_nodes(db, alice, &[outside.id], Some(docs.id), OnConflict::Abort).await);
+    refused(move_nodes(db, alice, &[inside.id], None, OnConflict::Abort).await);
+    let into = NodeUpdate {
         name: None,
         parent_id: Patch::Set(docs.id),
     };
-    refused_as_stale(update_node(&db, alice, outside.id, update, &stale).await);
+    refused(update_node(db, alice, outside.id, into).await);
+    let out = NodeUpdate {
+        name: None,
+        parent_id: Patch::Clear,
+    };
+    refused(update_node(db, alice, inside.id, out).await);
+
+    move_nodes(db, alice, &[inside.id], Some(sub.id), OnConflict::Abort)
+        .await
+        .expect("a move within the folder");
+    let elsewhere = folder(db, alice, None, "elsewhere").await;
+    let moved = NodeUpdate {
+        name: None,
+        parent_id: Patch::Set(elsewhere.id),
+    };
+    update_node(db, alice, docs.id, moved)
+        .await
+        .expect("the protected folder itself moves");
     let listed = db.list_children(alice, Some(docs.id)).await.expect("list");
-    assert!(listed.is_empty(), "nothing landed: {listed:?}");
+    assert_eq!(listed.iter().map(|n| n.id).collect::<Vec<_>>(), [sub.id]);
 }
 
-/// Names sealed for a password folder that is no longer one, or is being unprotected, are
-/// refused too.
 #[sqlx::test(migrations = "../../migrations")]
-async fn sealed_names_for_a_folder_that_is_not_protected_are_refused(pool: PgPool) {
+async fn nothing_moves_across_the_edge_of_a_password_folder(pool: PgPool) {
     let db = Db::from_pool(pool);
     let alice = db
         .create_user(TenantId::DEFAULT, "alice", "x")
@@ -495,49 +517,19 @@ async fn sealed_names_for_a_folder_that_is_not_protected_are_refused(pool: PgPoo
         .expect("alice")
         .id;
     let docs = folder(&db, alice, None, "docs").await;
-    let keys = FolderSecret::from_raw([7; 32]).keys().expect("keys");
-    let sealed = Names::sealed(docs.id, keys);
-    let stored = store_file(
-        &db,
-        alice,
-        Some(docs.id),
-        "b.txt",
-        &sealed,
-        content(2),
-        StoreOptions::default(),
-    )
-    .await;
-    refused_as_stale(stored);
+    protect_with_password(&db, alice, docs.id).await;
+    moves_across_the_edge_are_refused(&db, alice, docs).await;
+}
 
-    protect(&db, alice, docs.id).await;
-    store_file(
-        &db,
-        alice,
-        Some(docs.id),
-        "b.txt",
-        &sealed,
-        content(2),
-        StoreOptions::default(),
-    )
-    .await
-    .expect("the names are the folder's");
-    db.set_protection_state(
-        alice,
-        docs.id,
-        &[ProtectionState::Protected],
-        ProtectionState::Unprotecting,
-    )
-    .await
-    .expect("unprotecting");
-    let stored = store_file(
-        &db,
-        alice,
-        Some(docs.id),
-        "c.txt",
-        &sealed,
-        content(3),
-        StoreOptions::default(),
-    )
-    .await;
-    refused_as_stale(stored);
+#[sqlx::test(migrations = "../../migrations")]
+async fn nothing_moves_across_the_edge_of_a_security_key_folder(pool: PgPool) {
+    let db = Db::from_pool(pool);
+    let alice = db
+        .create_user(TenantId::DEFAULT, "alice", "x")
+        .await
+        .expect("alice")
+        .id;
+    let docs = folder(&db, alice, None, "docs").await;
+    protect_with_key(&db, alice, docs.id).await;
+    moves_across_the_edge_are_refused(&db, alice, docs).await;
 }

@@ -33,25 +33,9 @@ impl Tenant {
         ticket: Option<&str>,
         request: &protocol::TicketRequest,
     ) -> Result<UserId, ApiError> {
-        Ok(self.caller_session(headers, ticket, request).await?.0)
-    }
-
-    /// Who is asking, as [`Self::caller`], and from which session.
-    pub async fn caller_session(
-        &self,
-        headers: &HeaderMap,
-        ticket: Option<&str>,
-        request: &protocol::TicketRequest,
-    ) -> Result<(UserId, uuid::Uuid), ApiError> {
         match ticket {
-            Some(ticket) => {
-                let grant = self.auth.verify_ticket(ticket, request).await?;
-                Ok((grant.user_id, grant.session_id))
-            }
-            None => {
-                let user = AuthUser::from_headers(headers, self).await?;
-                Ok((user.id, user.session_id))
-            }
+            Some(ticket) => Ok(self.auth.verify_ticket(ticket, request).await?.user_id),
+            None => Ok(AuthUser::from_headers(headers, self).await?.id),
         }
     }
 }

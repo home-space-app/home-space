@@ -166,7 +166,7 @@ fn finish(plan: &InstallPlan) {
     println!("  Manage users: homespace-ctl user list | add | admin | passwd");
     println!(
         "  Rotate the secrets only with: homespace-ctl secrets rotate (changing them by hand \
-         loses authenticator apps and password folders)"
+         loses authenticator apps)"
     );
 }
 

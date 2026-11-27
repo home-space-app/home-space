@@ -5,7 +5,7 @@ use db::NodeId;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{Names, StoreOptions, StoreOutcome};
+use crate::{StoreOptions, StoreOutcome};
 
 /// What a resumable upload stores once complete.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,12 +23,10 @@ pub enum UploadTarget {
     TransferItem(Uuid),
 }
 
-/// A resumable upload to start: `size` bytes for `target`, a new file's name kept as `names`
-/// stores the names of the folder it goes to, with what is known of the content.
+/// A resumable upload to start: `size` bytes for `target`, with what is known of the content.
 #[derive(Clone, Debug)]
 pub struct UploadRequest<'a> {
     pub target: UploadTarget,
-    pub names: &'a Names,
     pub size: u64,
     pub content_type: Option<&'a str>,
     pub modified_at: Option<OffsetDateTime>,
@@ -40,16 +38,6 @@ pub struct UploadStatus {
     pub id: Uuid,
     pub offset: u64,
     pub size: u64,
-}
-
-/// Where an upload stores its file once complete, from
-/// [`UploadService::destination`](crate::UploadService::destination).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UploadDestination {
-    /// A file in this folder; the root when `None`.
-    Folder(Option<NodeId>),
-    /// A file of a transfer, outside the tree.
-    Transfer,
 }
 
 /// Result of appending a chunk.

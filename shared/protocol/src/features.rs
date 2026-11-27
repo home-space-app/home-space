@@ -32,12 +32,12 @@ pub const TWO_FACTOR: &str = "two_factor";
 /// Renaming one needs a recent confirmation, as adding and removing do.
 pub const PASSKEYS: &str = "passkeys";
 
-/// Folders can be protected, locked with a security key (end to end) or a password (encrypted
-/// by the server): `/vault` (unlockers, rotation) and `/protected` (unlock, password, unprotect).
-/// The vault's security keys are folder keys, credentials a client makes for the vault alone
-/// (`name`, `credential_id`, `rp_id`, `prf_salt`), never sign-in credentials. A write that
-/// meets a folder being protected or unprotected at that moment gets `409 protected` and
-/// succeeds when sent again. Clients without it hide Protect.
+/// Folders can be protected end to end, locked with a security key or a password: `/vault`
+/// (unlockers, rotation) and `/protected` (protect, finish, password, unprotect). The client
+/// encrypts; the server keeps wrapped secrets, Argon2id parameters and age recipients. The
+/// vault's security keys are folder keys, credentials a client makes for the vault alone
+/// (`name`, `credential_id`, `rp_id`, `prf_salt`), never sign-in credentials. Moves across
+/// a protected folder's edge get `409 protected`. Clients without it hide Protect.
 pub const PROTECTED_FOLDERS: &str = "protected_folders";
 
 /// Every feature this server provides, each added with the release that introduced it.

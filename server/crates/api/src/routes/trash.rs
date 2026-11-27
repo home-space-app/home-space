@@ -49,7 +49,7 @@ async fn restore(
         .await?;
     // What goes back into a password folder keeps its sealed name; see the recycle bin in
     // docs/todo/protected-folders.md.
-    Ok(Json(move_response(batch, &files::Names::Plain)))
+    Ok(Json(move_response(batch)))
 }
 
 async fn empty(State(state): State<AppState>, user: AuthUser) -> Result<StatusCode, ApiError> {

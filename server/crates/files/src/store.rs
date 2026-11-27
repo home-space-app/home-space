@@ -20,7 +20,6 @@ const HASH_BUFFER: usize = 1024 * 1024;
 
 mod blobs;
 mod partials;
-mod sealed;
 mod transfers;
 
 /// A fully received upload waiting to be committed into the store.

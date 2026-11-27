@@ -6,8 +6,8 @@ use crate::names::MAX_NAME_BYTES;
 /// to their own texts.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// A wrapped key did not open: the wrong security key or recovery key, or the stored value
-    /// was changed.
+    /// A wrapped key did not open: the wrong security key, password or recovery key, or the
+    /// stored value was changed.
     #[error("the key does not match or the wrapped value was changed")]
     Unwrap,
     /// A wrapped key has a format this version does not know.
@@ -26,6 +26,9 @@ pub enum Error {
     /// platform's own error.
     #[error("security key: {0}")]
     Authenticator(#[source] Box<dyn std::error::Error + Send + Sync>),
+    /// A password folder's Argon2id parameters are outside what clients accept.
+    #[error("the password parameters are out of bounds")]
+    PasswordParams,
     /// The folder's public key on the server is not the one its secret derives.
     #[error("the folder's public key does not match its secret")]
     RecipientMismatch,

@@ -2,14 +2,11 @@ use sqlx::PgPool;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
-use db::{FOLDER_MIME, NewNode, NewProtection, NodeId, NodeKind, PasswordLock};
-
 use super::*;
 
 const OLD: &str = "kq3ZcV0m8Tn1yWfLr7uGxP2aHs9EoJd4BbNiC6tM5QzK";
 const NEW: &str = "Xw7pR2nLq9TzVb4KsYc1MdHg6JfAe3Uo8NiZ5tQrWmEx";
 const OTHER: &str = "Lm4QzT8vR1nXc6WbPj3KsH9yGd2FaE7oUi5NtVrBwCqZ";
-const RECIPIENT: &str = "age1fauk43xvke3myu0vg0syaflnwhlslwxd2504jfdjwejkjc50pcysgcf5gf";
 const TENANT: TenantId = TenantId::DEFAULT;
 
 fn key(secret: &str) -> SecretBox {
@@ -24,31 +21,6 @@ async fn user(db: &Db, name: &str) -> UserId {
 async fn app(db: &Db, user: UserId, with: &SecretBox, plain: &[u8]) {
     let sealed = with.seal(TENANT, user, plain).expect("seal");
     db.start_totp(TENANT, user, &sealed).await.expect("totp");
-}
-
-/// A password folder of `owner` whose key is `plain`, sealed with `with`.
-async fn folder(db: &Db, owner: UserId, with: &SecretBox, plain: &[u8]) -> NodeId {
-    let new = NewNode {
-        id: NodeId::new(),
-        parent_id: None,
-        kind: NodeKind::Folder,
-        name: "papers".to_owned(),
-        size: 0,
-        sha256: None,
-        mime: FOLDER_MIME.to_owned(),
-    };
-    let node = db.create_node(owner, new).await.expect("folder").id;
-    let sealed = with.seal(TENANT, owner, plain).expect("seal");
-    let lock = NewProtection::Password(PasswordLock {
-        password_hash: "$argon2id$...",
-        recovery_hash: "$argon2id$...",
-        sealed_key: &sealed,
-        recipient: RECIPIENT,
-    });
-    db.protect_folder(owner, node, lock)
-        .await
-        .expect("protected");
-    node
 }
 
 async fn sign_in(db: &Db, user: UserId) {
@@ -119,7 +91,7 @@ async fn rotation_seals_everything_with_the_new_key_and_signs_everyone_out(pool:
     let alice = user(&db, "alice").await;
     let bob = user(&db, "bob").await;
     app(&db, alice, &old, b"alice's app").await;
-    let papers = folder(&db, bob, &old, b"bob's folder key").await;
+    app(&db, bob, &old, b"bob's app").await;
     sign_in(&db, alice).await;
     sign_in(&db, bob).await;
     check(&db, TENANT, Some(&old)).await.expect("check");
@@ -130,8 +102,7 @@ async fn rotation_seals_everything_with_the_new_key_and_signs_everyone_out(pool:
     assert_eq!(
         done,
         Rotation::Rotated {
-            authenticator_apps: 1,
-            password_folders: 1,
+            authenticator_apps: 2,
             sessions_ended: 2
         }
     );
@@ -142,11 +113,9 @@ async fn rotation_seals_everything_with_the_new_key_and_signs_everyone_out(pool:
             .expect("open"),
         b"alice's app"
     );
-    assert_eq!(sealed.folders[0].node, papers);
     assert_eq!(
-        new.open(TENANT, bob, &sealed.folders[0].sealed)
-            .expect("open"),
-        b"bob's folder key"
+        new.open(TENANT, bob, &sealed.totp[1].sealed).expect("open"),
+        b"bob's app"
     );
     assert!(old.open(TENANT, alice, &sealed.totp[0].sealed).is_err());
     assert_eq!(
