@@ -125,12 +125,24 @@ impl Action {
     }
 }
 
+/// What protected folders keep the selection from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Limits {
+    /// It is in a protected folder, is one or holds one: it is never handed out as it is
+    /// stored, so it cannot be sent or shared, and its details would show sealed names.
+    pub protected: bool,
+    /// It is in a folder being unprotected, where nothing may change.
+    pub frozen: bool,
+}
+
 /// The actions shown for `selected`, each with whether it is enabled.
 /// Lost & Found, identified by `lost_and_found`, cannot be deleted.
-pub fn actions(selected: &[&Node], lost_and_found: NodeId) -> Vec<(Action, bool)> {
+pub fn actions(selected: &[&Node], lost_and_found: NodeId, limits: Limits) -> Vec<(Action, bool)> {
     let single = selected.len() == 1;
     let any = !selected.is_empty();
-    let deletable = any && selected.iter().all(|node| node.id != lost_and_found);
+    let deletable = any && !limits.frozen && selected.iter().all(|node| node.id != lost_and_found);
+    let handed_out = any && !limits.protected;
+    let changes = !limits.frozen;
     let open = match selected {
         [node] if node.kind == NodeKind::Folder => Some((Action::Open, true)),
         [_] => Some((Action::OpenFile, true)),
@@ -139,11 +151,11 @@ pub fn actions(selected: &[&Node], lost_and_found: NodeId) -> Vec<(Action, bool)
     open.into_iter()
         .chain([
             (Action::Download, any),
-            (Action::Send, any),
-            (Action::Share, any),
-            (Action::Move, any),
-            (Action::Rename, single),
-            (Action::Details, single),
+            (Action::Send, handed_out),
+            (Action::Share, handed_out),
+            (Action::Move, any && changes),
+            (Action::Rename, single && changes),
+            (Action::Details, single && !limits.protected),
             (Action::Delete, deletable),
         ])
         .collect()
@@ -507,13 +519,13 @@ mod tests {
     const LOST_AND_FOUND: NodeId = NodeId(Uuid::from_u128(99));
 
     fn delete_enabled(selected: &[&Node]) -> bool {
-        actions(selected, LOST_AND_FOUND)
+        actions(selected, LOST_AND_FOUND, Limits::default())
             .into_iter()
             .any(|(action, enabled)| action == Action::Delete && enabled)
     }
 
     fn details_enabled(selected: &[&Node]) -> bool {
-        actions(selected, LOST_AND_FOUND)
+        actions(selected, LOST_AND_FOUND, Limits::default())
             .into_iter()
             .any(|(action, enabled)| action == Action::Details && enabled)
     }
@@ -551,7 +563,7 @@ mod tests {
     #[test]
     fn rename_and_move_stay_available_for_lost_and_found() {
         let folder = file(99);
-        let enabled: Vec<_> = actions(&[&folder], LOST_AND_FOUND)
+        let enabled: Vec<_> = actions(&[&folder], LOST_AND_FOUND, Limits::default())
             .into_iter()
             .filter(|(_, enabled)| *enabled)
             .map(|(action, _)| action)
@@ -560,7 +572,7 @@ mod tests {
     }
 
     fn first_action(selected: &[&Node]) -> Option<Action> {
-        actions(selected, LOST_AND_FOUND)
+        actions(selected, LOST_AND_FOUND, Limits::default())
             .first()
             .map(|(action, _)| *action)
     }

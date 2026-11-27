@@ -1,6 +1,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod app_link;
 mod browser;
 mod device;
 mod ellipsis;
@@ -9,6 +10,7 @@ mod executor;
 mod icons;
 mod locale;
 mod login;
+mod protected;
 mod session;
 mod sso;
 mod sync;
@@ -33,28 +35,43 @@ static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() -> iced::Result {
     locale::init_local_offset();
+    let link = app_link::from_args();
+    if let Some(link) = &link
+        && app_link::hand_over(link)
+    {
+        return Ok(());
+    }
+    app_link::register();
+    // What a crash left of decrypted copies goes before anything else.
+    protected::files::sweep();
     #[cfg(target_os = "macos")]
     set_dock_icon();
     let app_id = std::env::var(FLATPAK_ID_VAR).unwrap_or_else(|_| APP_ID.to_owned());
-    iced::application(app::App::new, app::App::update, app::App::view)
-        .title(APP_TITLE)
-        .executor::<executor::Executor>()
-        .subscription(app::App::subscription)
-        .theme(app::App::theme)
-        .settings(iced::Settings {
-            id: Some(app_id.clone()),
-            default_font: theme::FONT,
-            default_text_size: iced::Pixels(theme::TEXT_SIZE),
-            ..iced::Settings::default()
-        })
-        .window(iced::window::Settings {
-            size: WINDOW,
-            icon: window_icon(),
-            min_size: Some(MIN_WINDOW),
-            platform_specific: platform_specific(app_id),
-            ..iced::window::Settings::default()
-        })
-        .run()
+    iced::application(
+        move || app::App::new(link.clone()),
+        app::App::update,
+        app::App::view,
+    )
+    .title(APP_TITLE)
+    .executor::<executor::Executor>()
+    .subscription(app::App::subscription)
+    .theme(app::App::theme)
+    .settings(iced::Settings {
+        id: Some(app_id.clone()),
+        default_font: theme::FONT,
+        default_text_size: iced::Pixels(theme::TEXT_SIZE),
+        ..iced::Settings::default()
+    })
+    .window(iced::window::Settings {
+        size: WINDOW,
+        icon: window_icon(),
+        min_size: Some(MIN_WINDOW),
+        platform_specific: platform_specific(app_id),
+        // The app locks the protected folders and deletes their decrypted copies first.
+        exit_on_close_request: false,
+        ..iced::window::Settings::default()
+    })
+    .run()
 }
 
 /// iced reads the Linux window class and Wayland app id from here, not from `Settings::id`.

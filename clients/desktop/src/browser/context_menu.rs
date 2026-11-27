@@ -11,7 +11,7 @@ use super::{
     Message, devices,
     fit_column::fit_column,
     parts::divider,
-    toolbar::{Action, actions, menu_item, menu_row},
+    toolbar::{Action, Limits, actions, menu_item, menu_row},
 };
 use crate::{
     icons::{ICON_SIZE, Icon, Tint},
@@ -62,9 +62,10 @@ fn open_with_entry(selected: &[&Node]) -> Option<Entry> {
 pub fn view<'a>(
     selected: &[&Node],
     lost_and_found: NodeId,
+    limits: Limits,
     entries: Vec<Entry>,
 ) -> Element<'a, Message> {
-    let mut actions = actions(selected, lost_and_found);
+    let mut actions = actions(selected, lost_and_found, limits);
     let last = actions.pop();
     let mut items: Vec<_> = actions
         .into_iter()
@@ -97,16 +98,26 @@ fn entry<'a>(entry: Entry) -> Element<'a, Message> {
     )
 }
 
-/// The menu of the account in the sidebar.
-pub fn account<'a>() -> Element<'a, Message> {
-    panel([menu_row(
+/// The menu of the account in the sidebar; with Lock all while protected folders are unlocked.
+pub fn account<'a>(unlocked: bool) -> Element<'a, Message> {
+    let lock_all = unlocked.then(|| {
+        menu_row(
+            Icon::Lock,
+            Tint::Muted,
+            "Lock all protected folders",
+            "",
+            theme::tool,
+            Some(Message::LockAll),
+        )
+    });
+    panel(lock_all.into_iter().chain([menu_row(
         Icon::SignOut,
         Tint::Muted,
         "Sign out",
         "",
         theme::tool,
         Some(Message::SignOut),
-    )])
+    )]))
 }
 
 /// The menu of a device: renaming it, signing it out, which `can_sign_out` allows, and
@@ -286,7 +297,12 @@ mod tests {
             label: "Sync to local folder…",
             message: Message::CloseMenu,
         };
-        let mut ui = iced_test::simulator(view(&[&folder], NodeId(Uuid::from_u128(9)), vec![sync]));
+        let mut ui = iced_test::simulator(view(
+            &[&folder],
+            NodeId(Uuid::from_u128(9)),
+            Limits::default(),
+            vec![sync],
+        ));
 
         assert!(ui.find("Move…").is_ok());
         assert!(ui.find("Move to bin").is_ok());

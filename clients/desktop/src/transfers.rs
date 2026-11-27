@@ -26,6 +26,7 @@ use uuid::Uuid;
 use crate::{
     ellipsis::ellipsized,
     icons::{ICON_SIZE, Icon, Tint},
+    protected::{Inside, files as protected_files},
     sync::{part_path, read_range},
     theme,
 };
@@ -64,7 +65,7 @@ const TIP_PADDING: [f32; 2] = [4.0, 8.0];
 const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "heic", "bmp", "svg"];
 const DOCUMENT_EXTENSIONS: &[&str] = &["pdf", "txt", "md", "rtf", "doc", "docx", "odt", "json"];
 
-type TransferId = u64;
+pub(crate) type TransferId = u64;
 
 /// Which way bytes flow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,6 +184,8 @@ pub struct DownloadFile {
     size: u64,
     existing: Existing,
     then: Then,
+    /// The protected folder it is in, whose keys decrypt it.
+    inside: Option<Inside>,
 }
 
 impl DownloadFile {
@@ -195,7 +198,13 @@ impl DownloadFile {
             size: byte_size(node.size),
             existing: Existing::Replace,
             then: Then::Keep,
+            inside: None,
         }
+    }
+
+    /// Decrypts it with the keys of the protected folder it is in, if it is in one.
+    pub fn decrypting(self, inside: Option<Inside>) -> Self {
+        Self { inside, ..self }
     }
 
     /// Downloads `node` to `target`, replacing it, and then opens it with the default app.
@@ -213,6 +222,9 @@ pub enum Batch {
     Upload {
         parent: Option<NodeId>,
         plan: UploadPlan,
+        /// The unlocked protected folder it goes into, whose keys seal the names and whose
+        /// public key the files are encrypted to.
+        inside: Option<Inside>,
     },
     Download(Vec<DownloadFile>),
     /// The files of a transfer to a device, each with the item of the transfer it fills.
@@ -237,7 +249,11 @@ impl Batch {
     ) -> Option<(Self, Vec<TransferId>)> {
         let had_files = !ids.is_empty();
         match self {
-            Self::Upload { parent, plan } => {
+            Self::Upload {
+                parent,
+                plan,
+                inside,
+            } => {
                 let (files, kept): (Vec<UploadFile>, Vec<TransferId>) = plan
                     .files
                     .into_iter()
@@ -249,7 +265,14 @@ impl Batch {
                         folders: plan.folders,
                         files,
                     };
-                    (Self::Upload { parent, plan }, kept)
+                    (
+                        Self::Upload {
+                            parent,
+                            plan,
+                            inside,
+                        },
+                        kept,
+                    )
                 })
             }
             Self::Download(files) => {
@@ -823,6 +846,7 @@ pub async fn plan_download(
     client: Client,
     nodes: Vec<Node>,
     root: PathBuf,
+    inside: Option<Inside>,
 ) -> Result<Vec<DownloadFile>, String> {
     let mut files = Vec::new();
     let mut stack: Vec<(Node, PathBuf, usize)> = nodes
@@ -842,16 +866,21 @@ pub async fn plan_download(
                 size: byte_size(node.size),
                 existing: Existing::Fail,
                 then: Then::Keep,
+                inside: inside.clone(),
             }),
             NodeKind::Folder if depth >= MAX_DEPTH => return Err(TOO_DEEP.to_owned()),
             NodeKind::Folder => {
                 fs::create_dir_all(&target)
                     .await
                     .map_err(|err| format!("{}: {err}", target.display()))?;
-                let mut children = client
+                let children = client
                     .list(Some(node.id))
                     .await
                     .map_err(|err| err.to_string())?;
+                let mut children = match &inside {
+                    Some(inside) => inside.open_listing(children),
+                    None => children,
+                };
                 sort_nodes(&mut children, Sort::default());
                 stack.extend(children.into_iter().rev().map(|child| {
                     let path = target.join(sanitize_component(&child.name));
@@ -876,8 +905,13 @@ fn run_batch(
         async move |mut output: mpsc::Sender<Message>| {
             let direction = batch.direction();
             match batch {
-                Batch::Upload { parent, plan } => {
-                    upload_all(&client, parent, plan, &ids, &token, &mut output).await;
+                Batch::Upload {
+                    parent,
+                    plan,
+                    inside,
+                } => {
+                    let target = Target { parent, inside };
+                    upload_all(&client, target, plan, &ids, &token, &mut output).await;
                 }
                 Batch::Download(files) => {
                     download_all(&client, files, &ids, &token, &mut output).await;
@@ -891,28 +925,52 @@ fn run_batch(
     )
 }
 
+/// Where an upload goes: the folder, and the protected folder that holds it, if one does.
+struct Target {
+    parent: Option<NodeId>,
+    inside: Option<Inside>,
+}
+
+impl Target {
+    /// The name to store `name` as in `parent`: sealed inside a protected folder.
+    fn stored_name(
+        &self,
+        parent: Option<NodeId>,
+        kind: NodeKind,
+        name: &str,
+    ) -> Result<String, String> {
+        match &self.inside {
+            Some(inside) => inside.seal(parent, kind, name),
+            None => Ok(name.to_owned()),
+        }
+    }
+}
+
 async fn upload_all(
     client: &Client,
-    parent: Option<NodeId>,
+    target: Target,
     plan: UploadPlan,
     ids: &[TransferId],
     token: &CancellationToken,
     output: &mut mpsc::Sender<Message>,
 ) {
     let mut folders: HashMap<Vec<String>, Result<Option<NodeId>, String>> =
-        HashMap::from([(Vec::new(), Ok(parent))]);
+        HashMap::from([(Vec::new(), Ok(target.parent))]);
     for path in plan.folders {
         if let Some((name, base)) = path.split_last() {
             let created = match folders.get(base) {
-                Some(Ok(base_id)) => {
-                    let Some(created) = token
-                        .run_until_cancelled(ensure_folder(client, *base_id, name))
-                        .await
-                    else {
-                        return;
-                    };
-                    created.map(Some).map_err(|err| err.to_string())
-                }
+                Some(Ok(base_id)) => match target.stored_name(*base_id, NodeKind::Folder, name) {
+                    Ok(name) => {
+                        let Some(created) = token
+                            .run_until_cancelled(ensure_folder(client, *base_id, &name))
+                            .await
+                        else {
+                            return;
+                        };
+                        created.map(Some).map_err(|err| err.to_string())
+                    }
+                    Err(err) => Err(err),
+                },
                 Some(Err(err)) => Err(err.clone()),
                 None => Err(MISSING_FOLDER.to_owned()),
             };
@@ -925,8 +983,8 @@ async fn upload_all(
         }
         let _ = output.send(Message::Started(*id)).await;
         let result = match folders.get(&file.folder) {
-            Some(Ok(target)) => {
-                let upload = upload_file(client, *target, file, *id, output);
+            Some(Ok(parent)) => {
+                let upload = upload_file(client, &target, *parent, file, *id, output);
                 match token.run_until_cancelled(upload).await {
                     Some(result) => result,
                     None => return,
@@ -965,17 +1023,51 @@ async fn ensure_folder(
 
 async fn upload_file(
     client: &Client,
+    target: &Target,
     parent: Option<NodeId>,
     file: &UploadFile,
     id: TransferId,
     output: &mpsc::Sender<Message>,
 ) -> Result<(), String> {
-    let name = display_name(&file.path);
-    let stored = if file.size > client.upload_chunk_bytes() {
+    let name = target.stored_name(parent, NodeKind::File, &display_name(&file.path))?;
+    let progress = Some((id, output.clone()));
+    let Some(inside) = &target.inside else {
+        return store_file(client, parent, name, &file.path, file.size, progress)
+            .await
+            .map(drop)
+            .map_err(|err| err.to_string());
+    };
+    // Encrypted into the private folder first: a resumable upload reads its chunks again.
+    let sealed = protected_files::work_path().map_err(|err| err.to_string())?;
+    let stored =
+        match protected_files::encrypt_file(inside.recipient(), file.path.clone(), sealed.clone())
+            .await
+        {
+            Ok(size) => store_file(client, parent, name, &sealed, size, progress)
+                .await
+                .map(drop)
+                .map_err(|err| err.to_string()),
+            Err(err) => Err(err),
+        };
+    let _ = fs::remove_file(&sealed).await;
+    stored
+}
+
+/// Uploads the file at `path`, of `size` bytes, into `parent` as `name`, in chunks when it
+/// is large; `progress` hears how far it got.
+pub(crate) async fn store_file(
+    client: &Client,
+    parent: Option<NodeId>,
+    name: String,
+    path: &Path,
+    size: u64,
+    progress: Option<(TransferId, mpsc::Sender<Message>)>,
+) -> Result<Node, ApiError> {
+    if size > client.upload_chunk_bytes() {
         let request = CreateUpload {
             parent_id: parent,
             name,
-            size: file.size,
+            size,
             modified_at: None,
             mime: None,
             node_id: None,
@@ -987,30 +1079,32 @@ async fn upload_file(
         client
             .upload_resumable(
                 &request,
-                |offset, len| read_range(&file.path, offset, len),
+                |offset, len| read_range(path, offset, len),
                 |done| {
-                    let _ = output.clone().try_send(Message::Progress(id, done));
+                    if let Some((id, output)) = &progress {
+                        let _ = output.clone().try_send(Message::Progress(*id, done));
+                    }
                 },
             )
             .await
     } else {
         client
-            .upload(parent, &name, || {
-                upload_body(&file.path, id, output.clone())
-            })
+            .upload(parent, &name, || upload_body(path, progress.clone()))
             .await
-    };
-    stored.map(drop).map_err(|err| err.to_string())
+    }
 }
 
-/// Reads `len` bytes of the file at `path` starting at `offset`, for one chunk of a
-/// resumable upload.
-fn upload_body(path: &Path, id: TransferId, mut output: mpsc::Sender<Message>) -> reqwest::Body {
+/// The whole file at `path` as a request body, telling `progress` how far it got.
+fn upload_body(
+    path: &Path,
+    progress: Option<(TransferId, mpsc::Sender<Message>)>,
+) -> reqwest::Body {
     match std::fs::File::open(path) {
         Ok(file) => {
-            let mut meter = Meter::new(id);
+            let mut meter = progress.map(|(id, output)| (Meter::new(id), output));
             let chunks = ReaderStream::new(fs::File::from_std(file)).inspect(move |chunk| {
                 if let Ok(bytes) = chunk
+                    && let Some((meter, output)) = meter.as_mut()
                     && let Some(message) = meter.advance(bytes.len())
                 {
                     let _ = output.try_send(message);
@@ -1107,17 +1201,41 @@ async fn download_file(
         .run_until_cancelled(write_part(response, &part, id, output))
         .await;
     let result = match written {
-        Some(Ok(())) => fs::rename(&part, &file.target).await,
-        Some(Err(err)) => Err(err),
+        Some(Ok(())) => match &file.inside {
+            None => fs::rename(&part, &file.target)
+                .await
+                .map_err(|err| err.to_string()),
+            Some(inside) => decrypt_part(inside, &part, &file.target).await,
+        },
+        Some(Err(err)) => Err(err.to_string()),
         None => {
             let _ = fs::remove_file(&part).await;
             return None;
         }
     };
+    let _ = fs::remove_file(&part).await;
+    Some(result)
+}
+
+/// Decrypts the downloaded `part` next to `target` and moves it into place.
+async fn decrypt_part(inside: &Inside, part: &Path, target: &Path) -> Result<(), String> {
+    let plain = part_path(part);
+    let result = match protected_files::decrypt_file(
+        inside.clone(),
+        part.to_path_buf(),
+        plain.clone(),
+    )
+    .await
+    {
+        Ok(()) => fs::rename(&plain, target)
+            .await
+            .map_err(|err| err.to_string()),
+        Err(err) => Err(err),
+    };
     if result.is_err() {
-        let _ = fs::remove_file(&part).await;
+        let _ = fs::remove_file(&plain).await;
     }
-    Some(result.map_err(|err| err.to_string()))
+    result
 }
 
 async fn write_part(

@@ -19,6 +19,7 @@ use crate::{
     ellipsis::{ellipsized, fit},
     icons::{ICON_SIZE, Icon, Tint},
     locale::short_date,
+    protected::Inside,
     theme,
 };
 
@@ -102,9 +103,15 @@ enum Kind {
         lost_and_found: NodeId,
         trail: Vec<Node>,
         folders: Option<Vec<Node>>,
+        /// How much of the trail stays: inside a protected folder, the way down to it.
+        floor: usize,
+        /// Folders not offered: the protected ones, when moving from outside them.
+        hidden: Vec<NodeId>,
     },
     Delete {
         nodes: Vec<Node>,
+        /// Whether they are deleted for good, as inside a protected folder.
+        for_good: bool,
     },
     /// Confirms permanently deleting the `count` files in the recycle bin.
     EmptyTrash {
@@ -157,6 +164,15 @@ pub struct Dialog {
     kind: Kind,
     saving: bool,
     error: Option<String>,
+    /// The unlocked protected folder it acts in, whose keys seal the names it sends.
+    inside: Option<Inside>,
+}
+
+/// Where a move inside a protected folder starts: the folder shown, with the way to it.
+pub struct Within {
+    pub inside: Inside,
+    /// The folders from Home's child down to the folder shown, with their names opened.
+    pub trail: Vec<Node>,
 }
 
 impl Dialog {
@@ -165,22 +181,29 @@ impl Dialog {
             kind,
             saving: false,
             error: None,
+            inside: None,
         }
     }
 
-    /// Asks for the name of a new folder inside the folder named `parent`.
-    pub fn new_folder(parent: &str) -> (Self, Task<Message>) {
-        let dialog = Self::with(Kind::NewFolder {
-            name: String::new(),
-            parent: parent.to_owned(),
-        });
+    /// Asks for the name of a new folder inside the folder named `parent`; `inside` seals it.
+    pub fn new_folder(parent: &str, inside: Option<Inside>) -> (Self, Task<Message>) {
+        let dialog = Self {
+            inside,
+            ..Self::with(Kind::NewFolder {
+                name: String::new(),
+                parent: parent.to_owned(),
+            })
+        };
         (dialog, operation::focus(NAME_INPUT))
     }
 
-    /// Asks for a new name for `node`, with the current name selected.
-    pub fn rename(node: Node) -> (Self, Task<Message>) {
+    /// Asks for a new name for `node`, with the current name selected; `inside` seals it.
+    pub fn rename(node: Node, inside: Option<Inside>) -> (Self, Task<Message>) {
         let name = node.name.clone();
-        let dialog = Self::with(Kind::Rename { node, name });
+        let dialog = Self {
+            inside,
+            ..Self::with(Kind::Rename { node, name })
+        };
         let task = Task::batch([
             operation::focus(NAME_INPUT),
             operation::select_all(NAME_INPUT),
@@ -188,25 +211,49 @@ impl Dialog {
         (dialog, task)
     }
 
-    /// Lets the user pick a destination folder for `nodes`.
+    /// Lets the user pick a destination folder for `nodes`. From Home, the protected folders
+    /// in `hidden` are not offered; `within` a protected folder, only its own folders are.
     pub fn move_nodes(
         client: &Client,
         nodes: Vec<Node>,
         lost_and_found: NodeId,
+        hidden: Vec<NodeId>,
+        within: Option<Within>,
     ) -> (Self, Task<Message>) {
-        let task = list_folders(client, None);
-        let dialog = Self::with(Kind::Move {
-            nodes,
-            lost_and_found,
-            trail: Vec::new(),
-            folders: None,
-        });
+        let (trail, floor, inside) = match within {
+            Some(within) => {
+                let floor = within
+                    .trail
+                    .iter()
+                    .position(|folder| folder.id == within.inside.root)
+                    .map_or(within.trail.len(), |root| root + 1);
+                (within.trail, floor, Some(within.inside))
+            }
+            None => (Vec::new(), 0, None),
+        };
+        let task = list_folders(client, trail.last().map(|folder| folder.id));
+        let dialog = Self {
+            inside,
+            ..Self::with(Kind::Move {
+                nodes,
+                lost_and_found,
+                trail,
+                folders: None,
+                floor,
+                hidden,
+            })
+        };
         (dialog, task)
     }
 
-    /// Confirms deleting `nodes`.
-    pub fn delete(nodes: Vec<Node>) -> Self {
-        Self::with(Kind::Delete { nodes })
+    /// Confirms deleting `nodes`: to the recycle bin, or `for_good` inside a protected folder.
+    pub fn delete(nodes: Vec<Node>, for_good: bool) -> Self {
+        Self::with(Kind::Delete { nodes, for_good })
+    }
+
+    /// The protected folder the dialog acts in, when it is in one.
+    pub fn protected_root(&self) -> Option<NodeId> {
+        self.inside.as_ref().map(|inside| inside.root)
     }
 
     /// Confirms permanently deleting the `count` files in the recycle bin.
@@ -279,11 +326,21 @@ impl Dialog {
                     lost_and_found,
                     trail,
                     folders,
+                    hidden,
+                    ..
                 } = &mut self.kind
                     && trail.last().map(|folder| folder.id) == target
                 {
                     match result {
-                        Ok(listing) => *folders = Some(pickable(listing, nodes, *lost_and_found)),
+                        Ok(listing) => {
+                            let listing = match &self.inside {
+                                Some(inside) => inside.open_listing(listing),
+                                None => listing,
+                            };
+                            let mut offered = pickable(listing, nodes, *lost_and_found);
+                            offered.retain(|folder| !hidden.contains(&folder.id));
+                            *folders = Some(offered);
+                        }
                         Err(err) => self.error = Some(err.to_string()),
                     }
                 }
@@ -346,8 +403,20 @@ impl Dialog {
     }
 
     fn navigate(&mut self, client: &Client, change: impl FnOnce(&mut Vec<Node>)) -> Outcome {
-        if let Kind::Move { trail, folders, .. } = &mut self.kind {
+        if let Kind::Move {
+            trail,
+            folders,
+            floor,
+            ..
+        } = &mut self.kind
+        {
+            let before = trail.clone();
             change(trail);
+            // Out of a protected folder is not a destination: it holds what it holds.
+            if trail.len() < *floor {
+                *trail = before;
+                return Outcome::Task(Task::none());
+            }
             *folders = None;
             self.error = None;
             Outcome::Task(list_folders(client, trail.last().map(|folder| folder.id)))
@@ -361,24 +430,64 @@ impl Dialog {
         let operation: Option<Task<Message>> = match &self.kind {
             Kind::NewFolder { name, .. } => {
                 let name = name.trim().to_owned();
-                (!name.is_empty()).then(|| {
-                    perform(async move { client.create_folder(folder, &name).await.map(drop) })
-                })
+                if name.is_empty() {
+                    None
+                } else {
+                    let name = match self.stored_name(folder, NodeKind::Folder, &name) {
+                        Ok(name) => name,
+                        Err(err) => return self.refuse(err),
+                    };
+                    Some(perform(async move {
+                        client.create_folder(folder, &name).await.map(drop)
+                    }))
+                }
             }
             Kind::Rename { node, name } => {
                 let name = name.trim().to_owned();
                 let id = node.id;
-                (!name.is_empty() && name != node.name)
-                    .then(|| perform(async move { client.rename(id, &name).await.map(drop) }))
+                if name.is_empty() || name == node.name {
+                    None
+                } else {
+                    let name = match self.stored_name(node.parent_id, node.kind, &name) {
+                        Ok(name) => name,
+                        Err(err) => return self.refuse(err),
+                    };
+                    Some(perform(
+                        async move { client.rename(id, &name).await.map(drop) },
+                    ))
+                }
             }
             Kind::Move { nodes, trail, .. } => {
-                let ids = ids_of(nodes);
                 let destination = trail.last().map(|folder| folder.id);
-                Some(Retry::Move { ids, destination }.send(&client, OnConflict::Abort))
+                match &self.inside {
+                    Some(inside) => {
+                        let moves: Result<Vec<(NodeId, String)>, String> = nodes
+                            .iter()
+                            .map(|node| {
+                                inside
+                                    .seal(destination, node.kind, &node.name)
+                                    .map(|sealed| (node.id, sealed))
+                            })
+                            .collect();
+                        match moves {
+                            Ok(moves) => Some(perform(async move {
+                                for (id, sealed) in moves {
+                                    client.relocate(id, destination, &sealed).await?;
+                                }
+                                Ok(())
+                            })),
+                            Err(err) => return self.refuse(err),
+                        }
+                    }
+                    None => {
+                        let ids = ids_of(nodes);
+                        Some(Retry::Move { ids, destination }.send(&client, OnConflict::Abort))
+                    }
+                }
             }
             Kind::Conflicts { .. } | Kind::DiscardEdits { .. } => None,
             Kind::EmptyTrash { .. } => Some(perform(async move { client.empty_trash().await })),
-            Kind::Delete { nodes } => {
+            Kind::Delete { nodes, .. } => {
                 let ids = ids_of(nodes);
                 Some(perform(async move {
                     for id in ids {
@@ -397,6 +506,25 @@ impl Dialog {
             None if matches!(self.kind, Kind::Conflicts { .. }) => Outcome::Task(Task::none()),
             None => Outcome::Closed,
         }
+    }
+
+    /// The name to send for `name`, a `kind` in `parent`: sealed inside a protected folder.
+    fn stored_name(
+        &self,
+        parent: Option<NodeId>,
+        kind: NodeKind,
+        name: &str,
+    ) -> Result<String, String> {
+        match &self.inside {
+            Some(inside) => inside.seal(parent, kind, name),
+            None => Ok(name.to_owned()),
+        }
+    }
+
+    /// Shows why the dialog cannot do what it was asked, and stays open.
+    fn refuse(&mut self, err: String) -> Outcome {
+        self.error = Some(err);
+        Outcome::Task(Task::none())
     }
 
     /// The dialog panel, without the backdrop.
@@ -422,6 +550,7 @@ impl Dialog {
                 nodes,
                 trail,
                 folders,
+                floor,
                 ..
             } => {
                 let destination = trail.last().map_or(HOME, |folder| folder.name.as_str());
@@ -444,11 +573,14 @@ impl Dialog {
                 }
                 (
                     MOVE_WIDTH,
-                    column![head, picker(trail, folders.as_deref())],
+                    column![head, picker(trail, folders.as_deref(), *floor)],
                     self.primary(Some(Icon::Move), action),
                 )
             }
-            Kind::Delete { nodes } => (
+            Kind::Delete {
+                nodes,
+                for_good: false,
+            } => (
                 parts::DIALOG_WIDTH,
                 column![warning(
                     format!("{} to recycle bin?", titled("Move", nodes)),
@@ -457,6 +589,19 @@ impl Dialog {
                         .to_owned(),
                 )],
                 self.danger("Move to bin"),
+            ),
+            Kind::Delete {
+                nodes,
+                for_good: true,
+            } => (
+                parts::DIALOG_WIDTH,
+                column![warning(
+                    format!("{} for good?", titled("Delete", nodes)),
+                    "What is in a protected folder is deleted for good, with its old versions: \
+                     it does not go to the recycle bin. This cannot be undone."
+                        .to_owned(),
+                )],
+                self.danger("Delete for good"),
             ),
             Kind::EmptyTrash { count } => (
                 parts::DIALOG_WIDTH,
@@ -619,9 +764,13 @@ fn warning<'a>(title: String, body: String) -> Element<'a, Message> {
 }
 
 /// The box to pick a destination in: where it is, the way up and the folders inside.
-fn picker<'a>(trail: &'a [Node], folders: Option<&'a [Node]>) -> Element<'a, Message> {
+fn picker<'a>(
+    trail: &'a [Node],
+    folders: Option<&'a [Node]>,
+    floor: usize,
+) -> Element<'a, Message> {
     let mut entries = column![];
-    if let Some(above) = trail.len().checked_sub(1) {
+    if let Some(above) = trail.len().checked_sub(1).filter(|above| *above >= floor) {
         let parent = match above.checked_sub(1) {
             Some(index) => trail[index].name.as_str(),
             None => HOME,
@@ -828,6 +977,8 @@ mod tests {
             lost_and_found: NodeId(Uuid::from_u128(99)),
             trail: Vec::new(),
             folders: Some(Vec::new()),
+            floor: 0,
+            hidden: Vec::new(),
         })
     }
 
@@ -1009,6 +1160,8 @@ mod tests {
             lost_and_found: NodeId(Uuid::from_u128(99)),
             trail: vec![node("Documents", 2), node("Invoices", 3)],
             folders: Some(Vec::new()),
+            floor: 0,
+            hidden: Vec::new(),
         });
 
         let _ = dialog.update(&client(), None, Message::Crumb(1));
@@ -1028,6 +1181,8 @@ mod tests {
             lost_and_found: NodeId(Uuid::from_u128(99)),
             trail: vec![node("Documents", 2), node("Invoices", 3)],
             folders: Some(Vec::new()),
+            floor: 0,
+            hidden: Vec::new(),
         });
         let mut ui = iced_test::simulator(dialog.view());
 
@@ -1038,7 +1193,7 @@ mod tests {
 
     #[test]
     fn a_new_folder_says_where_it_goes() {
-        let (dialog, _task) = Dialog::new_folder("Documents");
+        let (dialog, _task) = Dialog::new_folder("Documents", None);
         let mut ui = iced_test::simulator(dialog.view());
 
         assert!(ui.find("In Documents").is_ok());
@@ -1046,7 +1201,7 @@ mod tests {
 
     #[test]
     fn deleting_offers_the_recycle_bin() {
-        let dialog = Dialog::delete(vec![node("a.txt", 1)]);
+        let dialog = Dialog::delete(vec![node("a.txt", 1)], false);
         let mut ui = iced_test::simulator(dialog.view());
 
         assert!(ui.find("Move “a.txt” to recycle bin?").is_ok());
@@ -1056,7 +1211,7 @@ mod tests {
 
     #[test]
     fn deleting_lost_and_found_shows_the_servers_message_in_the_dialog() {
-        let mut dialog = Dialog::delete(vec![node("Lost & Found", 1)]);
+        let mut dialog = Dialog::delete(vec![node("Lost & Found", 1)], false);
         dialog.saving = true;
         let err = ApiError::Api {
             code: protocol::ErrorCode::Conflict,

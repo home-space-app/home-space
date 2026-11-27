@@ -1705,7 +1705,9 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "trash",
+ "url",
  "uuid",
+ "vault-core",
  "wiremock",
 ]
 
@@ -8510,7 +8512,6 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "webauthn-rs-proto",
- "zeroize",
 ]
 
 [[package]]

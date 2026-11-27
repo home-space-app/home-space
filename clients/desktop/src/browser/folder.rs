@@ -9,6 +9,7 @@ use client_core::listing::{
 use protocol::{Node, NodeId};
 
 use super::{Message, grid::reveal_offset, selection::Selection};
+use crate::protected::Protection;
 
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
@@ -45,6 +46,8 @@ pub struct Folder {
     last_link: Option<Instant>,
     /// Where the rows are scrolled; `None` while they all fit.
     pub(super) viewport: Option<Viewport>,
+    /// Whether the folder is in a protected folder, or is one, and whether that is unlocked.
+    pub(super) protection: Protection,
 }
 
 impl Default for Folder {
@@ -63,6 +66,7 @@ impl Default for Folder {
             last_click: None,
             last_link: None,
             viewport: None,
+            protection: Protection::None,
         }
     }
 }

@@ -12,7 +12,10 @@ use client_core::format::sanitize_component;
 use sync_core::{Base, hash_file};
 
 use super::Message;
-use crate::transfers::{self, DownloadFile, UploadPlan};
+use crate::{
+    protected::{Inside, files as protected_files},
+    transfers::{self, DownloadFile, UploadPlan},
+};
 
 const TEMP_FOLDER: &str = "home-space";
 
@@ -42,8 +45,9 @@ pub fn plan_upload(parent: Option<NodeId>, paths: Vec<PathBuf>) -> Task<Message>
     })
 }
 
-/// Asks where to save `nodes` and plans their download.
-pub fn download(client: &Client, nodes: Vec<Node>) -> Task<Message> {
+/// Asks where to save `nodes` and plans their download; `inside` decrypts them when they are in
+/// an unlocked protected folder.
+pub fn download(client: &Client, nodes: Vec<Node>, inside: Option<Inside>) -> Task<Message> {
     match nodes.as_slice() {
         [node] if node.kind == NodeKind::File => {
             let node = node.clone();
@@ -55,7 +59,10 @@ pub fn download(client: &Client, nodes: Vec<Node>) -> Task<Message> {
                         .await;
                     Ok(handle
                         .map(|handle| {
-                            vec![DownloadFile::replacing(&node, handle.path().to_path_buf())]
+                            vec![
+                                DownloadFile::replacing(&node, handle.path().to_path_buf())
+                                    .decrypting(inside),
+                            ]
                         })
                         .unwrap_or_default())
                 },
@@ -68,8 +75,13 @@ pub fn download(client: &Client, nodes: Vec<Node>) -> Task<Message> {
                 async move {
                     match rfd::AsyncFileDialog::new().pick_folder().await {
                         Some(folder) => {
-                            transfers::plan_download(client, nodes, folder.path().to_path_buf())
-                                .await
+                            transfers::plan_download(
+                                client,
+                                nodes,
+                                folder.path().to_path_buf(),
+                                inside,
+                            )
+                            .await
                         }
                         None => Ok(Vec::new()),
                     }
@@ -87,6 +99,22 @@ pub fn temp_target(node: &Node) -> PathBuf {
         .join(TEMP_FOLDER)
         .join(node.id.0.to_string())
         .join(sanitize_component(&node.name))
+}
+
+/// Opens the file `node` of an unlocked protected folder with the default app, from a copy
+/// decrypted into the private folder, which is deleted when the folder locks.
+pub fn open_protected(node: &Node, inside: Inside) -> Task<Message> {
+    let node = node.clone();
+    Task::perform(
+        async move {
+            let target =
+                protected_files::opened_path(inside.root, &node).map_err(|err| err.to_string())?;
+            Ok(vec![
+                DownloadFile::opening(&node, target).decrypting(Some(inside)),
+            ])
+        },
+        Message::DownloadPlanned,
+    )
 }
 
 /// The copy of a file in a synced folder, on disk.

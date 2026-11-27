@@ -130,9 +130,7 @@ Decided 2026-11-27: security keys are for the desktop and mobile apps only; the 
 holds the vault key (see [Web client](#web-client)).
 
 - **Web:** the security page lists **Sign-in keys** and **Folder keys** apart (done), and removes
-  a folder key (done), which needs no key material. Its "Add a folder key" ceremony
-  (`clients/web/src/webauthn/folder_key.rs`) was built before this decision and never wraps the
-  vault key; enabling moves to the apps.
+  a folder key (done), which needs no key material. It never adds one: enabling is in the apps.
 - **Desktop:** "Security keys for protected folders" lists the folder keys (`GET /vault`).
   **Enable** makes a new credential with CTAP2 `makeCredential` for the server's host, with
   `hmac-secret`, and wraps the vault key for it. The vault key is new for the first key; for
@@ -509,34 +507,76 @@ Desktop `Authenticator`:
 
 UI:
 
-- "Protect…" in a folder's context menu (`browser/context_menu.rs`), opening the Protect dialog
-  described under [Lost keys and recovery](#lost-keys-and-recovery), with the history warning for
-  a folder that has content.
-- A protected folder shows a lock icon, open or closed. Opening it while locked shows "Locked"
-  with an Unlock button. "Unlock" and "Lock" are in the context menu and the toolbar, and
-  "Lock all" in the app menu. PIN entry is the app's own dialog on Linux and macOS, the system's
-  on Windows. Every action that needs a touch says "Touch your security key" with the action's
-  name, so a touch is never asked without a reason the user can see.
-- Auto-lock needs two things the desktop does not have today: an inactivity timer (a new iced
-  subscription in `browser/mod.rs`) and window close handling (`window::close_requests`; today
-  `browser/input.rs` has none).
-- **Open:** viewers (images, text, PDF, video) decrypt into memory. "Open with…" an external app
-  needs a file on disk: it is decrypted into the private temporary directory, deleted on lock and
-  on app exit, with a warning the first time. Saving back from an external app comes in phase 3
-  (watch the file, re-encrypt, upload as a new version).
-- **Download** is an explicit export to a place the user picks; the app warns that the copy is
-  not protected.
-- **Upload** into an unlocked protected folder (drag and drop, file picker) seals the names with
-  the folder's keys, then encrypts while uploading.
-- The on-demand files (`clients/vfs-core`) and folder sync (`sync-core`) leave out the folders
+**Password folders on the desktop (done 2026-11-28)**, in `clients/desktop/src/protected/` (the
+folder list, unlocked keys, encryption on disk, the conversion) and `browser/protect.rs` (the
+dialogs):
+
+- **Protect with password…**, **Unlock…**, **Lock**, **Change password…** (with "Forgot the
+  password?" and the recovery key), **Unprotect…** and **Finish protecting / unprotecting** are
+  in a folder's context menu. The account menu has **Lock all**; a banner inside an unlocked
+  folder has Lock and Lock all. Deriving the key runs off the interface's thread. Protecting,
+  changing the password and unprotecting confirm it is the user when the server asks (account
+  password or authenticator code); a passkey-only account is told to sign in again.
+- A protected folder shows a lock icon, open or closed. Opening it while locked shows "“Name” is
+  locked" with Unlock; a folder inside a locked one goes to it.
+- **Auto-lock:** a subscription checks every 15 s (`LOCK_CHECK`); browsing, opening, the viewer and
+  uploads count as activity. Closing the window (`exit_on_close_request: false`, then
+  `window::close_requests`) and signing out lock everything and delete the private folder.
+- **Private folder:** `$XDG_RUNTIME_DIR/home-space-protected` on Linux, the temp dir elsewhere,
+  `0700`. It holds the encrypted copies of uploads and the plain and encrypted copies a conversion
+  passes through, each deleted at once, and the decrypted copies opened with other apps, deleted
+  on lock. It is wiped at start, on sign-out and on close.
+- **Listings and names:** opened with the keys, with the file type from the name. In a protected
+  folder any event about the listing lists it again rather than applying sealed names.
+- **Upload** (picker and drop): names sealed for their parent, each file encrypted into the
+  private folder first (a resumable upload reads its chunks again), then uploaded. New folder,
+  rename and moves inside the folder send sealed names; the move picker stays inside the
+  protected folder, and the ordinary one does not offer protected folders.
+- **Open:** the built-in viewers decrypt in memory and a text edit saves encrypted. "Open with"
+  decrypts into the private folder.
+- **Download** decrypts each file after it arrives, next to its target.
+- **Delete** inside a protected folder, or of a folder that is or holds one, says "Delete for
+  good".
+- Send, share and details are off for what is in, is or holds a protected folder.
+- **Sync:** Protect is not offered for a synced folder. A protected folder that a synced folder
+  holds is set to not sync (`Command::Map` with no local folder), which stops following it and
+  leaves the local copy as it is.
+- **Conversion** (`protected/convert.rs`): the same resumable copy-then-delete as the web's,
+  streaming through the private folder, so it has no size limit. Progress shows in a banner;
+  after protecting, it offers to delete for good the folder's files that were in the recycle bin
+  from before.
+
+Still to do on the desktop:
+
+- **Security keys:** the `Authenticator` (CTAP2 `hmac-secret`; Windows WebAuthn API), enabling
+  folder keys, the vault recovery key, Protect with security key, and unlocking one. Until then a
+  security-key folder shows locked, saying security keys come in a later version.
+- **Warnings** before "Open with" and Download, that the copy is not protected.
+- **A folder protected elsewhere** (in the browser) while this app syncs it: the app sets it to
+  not sync only once it lists the protected folders again (at start and on resync), so the sync
+  may first follow some of its sealed renames. A server event when a folder's protection changes
+  would close the gap.
+- The on-demand files (`clients/vfs-core`) do not exist yet; they must leave out the folders
   `GET /protected` lists.
-- **Opened from the browser** (decided 2026-11-27): the app registers the `home-space` URL scheme
-  with the operating system (a `.desktop` file with `x-scheme-handler/home-space` on Linux,
-  `CFBundleURLTypes` on macOS, the registry under `HKCU\Software\Classes` on Windows). The web
-  client links a security-key folder as `home-space://folder/<id>?server=<origin>`
-  (`client_core::app_link`, done); the app checks that `server` is the server it is signed in
-  to, opens the folder, finds it locked and asks for the key. A second start with a link hands it
-  to the running app.
+
+The security-key parts of the interface, for later:
+
+- PIN entry is the app's own dialog on Linux and macOS, the system's on Windows. Every action
+  that needs a touch says "Touch your security key" with the action's name, so a touch is never
+  asked without a reason the user can see.
+
+**Opened from the browser** (decided 2026-11-27; done 2026-11-28 except macOS): the app registers
+the `home-space` URL scheme with the operating system: `MimeType=x-scheme-handler/home-space` and
+`Exec=HomeSpace %u` in the `.desktop` file (Flatpak too), `osx_url_schemes` in the bundle on
+macOS, and `HKCU\Software\Classes\home-space` through `reg add` at every start on Windows. The web
+client links a security-key folder as `home-space://folder/<id>?server=<origin>`
+(`client_core::app_link`); the app checks that `server` has the origin it is signed in to (a link
+that comes before sign-in waits for it), opens the folder, finds it locked and asks to unlock it.
+A second start with a link hands it to the running app (`desktop/src/app_link.rs`): the running
+app listens on a loopback port named, with a random token, in a file of its data folder that only
+the user can read, and takes a link only with the token. Not done: macOS hands the link to a
+running app as an Apple Event (`kAEGetURL`), which the app does not handle yet; the Windows
+registration is not tested on Windows.
 
 ## Web client
 
@@ -596,8 +636,8 @@ dialog says so.
    inactivity timer, sealed names, the password lock's requests) (done); the web client, as
    [Web client](#web-client) lists (done). Protecting a folder with content copies each file
    encrypted and then deletes the plain one, so it can stop and continue ("Finish protecting")
-   without a journal; unprotecting does the same the other way. Then the desktop. No hardware
-   needed.
+   without a journal; unprotecting does the same the other way. Then the desktop (done
+   2026-11-28, see [Desktop client](#desktop-client-phase-2)). No hardware needed.
 4. **Desktop polish**: external-app save-back, unprotect.
 5. **Android**, then **iOS**.
 

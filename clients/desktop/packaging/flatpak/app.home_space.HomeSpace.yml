@@ -39,7 +39,7 @@ modules:
       - install -Dm644 clients/desktop/packaging/home-space.desktop
         /app/share/applications/app.home_space.HomeSpace.desktop
       - desktop-file-edit
-        --set-key=Exec --set-value=home-space
+        --set-key=Exec --set-value='home-space %u'
         --set-icon=app.home_space.HomeSpace
         --set-key=StartupWMClass --set-value=app.home_space.HomeSpace
         /app/share/applications/app.home_space.HomeSpace.desktop

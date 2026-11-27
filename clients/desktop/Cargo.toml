@@ -36,7 +36,9 @@ tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt", 
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
 tokio-util = { version = "0.7.20", features = ["io"] }
 trash = "5.2.9"
+url = "2.5.8"
 uuid = { version = "1.29.0", features = ["v4"] }
+vault-core.workspace = true
 
 [features]
 # Keep the session in the system keyring (macOS Keychain, Secret Service, ...). Without it the
@@ -67,6 +69,8 @@ identifier = "io.github.indomitable.home-space"
 icon = ["packaging/home-space.icns"]
 category = "public.app-category.productivity"
 short_description = "Browse and transfer your home-space files"
+# home-space:// links, which the web client opens folders in the app with.
+osx_url_schemes = ["home-space"]
 
 # Linux packages, built by the release workflow from an existing release build:
 #   cargo build --release -p desktop --features keyring

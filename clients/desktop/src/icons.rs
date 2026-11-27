@@ -91,8 +91,10 @@ pub enum Icon {
     Stop,
     /// Clears finished rows from a list.
     ClearAll,
-    /// A device only its owner can send to.
+    /// A device only its owner can send to; a locked protected folder.
     Lock,
+    /// An unlocked protected folder.
+    LockOpen,
     /// A device everyone can send to.
     Public,
     /// A device some users can send to.
@@ -192,6 +194,7 @@ impl Icon {
             Self::Stop => include_bytes!("../assets/icons/stop.svg"),
             Self::ClearAll => include_bytes!("../assets/icons/clear_all.svg"),
             Self::Lock => include_bytes!("../assets/icons/lock.svg"),
+            Self::LockOpen => include_bytes!("../assets/icons/lock_open.svg"),
             Self::Public => include_bytes!("../assets/icons/public.svg"),
             Self::Group => include_bytes!("../assets/icons/group.svg"),
             Self::PersonAdd => include_bytes!("../assets/icons/person_add.svg"),

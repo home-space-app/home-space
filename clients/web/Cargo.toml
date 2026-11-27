@@ -26,7 +26,6 @@ uuid = "1.29.0"
 vault-core.workspace = true
 wasm-bindgen = "0.2.130"
 wasm-bindgen-futures = "0.4.80"
-zeroize = "1.9.1"
 # Turns the server's WebAuthn challenges into what navigator.credentials takes, and back.
 webauthn-rs-proto = { version = "0.6.2", features = ["wasm"] }
 
