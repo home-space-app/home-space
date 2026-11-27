@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 
 use authenticator::Authenticator;
-use common::{HOST_A, HOST_B, PASSWORD, TestApp, setup, setup_two_tenants};
+use common::{HOST_A, HOST_B, PASSWORD, TestApp, setup, setup_at, setup_two_tenants};
 
 const ORIGIN: &str = "https://files.example.com";
 
@@ -73,6 +73,33 @@ async fn add_key(app: &TestApp, token: &str, device: &mut Authenticator, kind: &
     .await;
     assert_eq!(finished.status, StatusCode::OK, "{}", finished.json());
     finished.json()
+}
+
+/// Confirms it is the user of `token` with `device`.
+async fn confirm_with_key(app: &TestApp, token: &str, device: &mut Authenticator) {
+    let challenge = post(
+        app,
+        "/api/v1/me/reauthenticate/webauthn",
+        Some(token),
+        json!({}),
+    )
+    .await;
+    assert_eq!(challenge.status, StatusCode::OK, "{}", challenge.json());
+    let challenge = challenge.json();
+    let answer = device.sign(ORIGIN, &challenge["options"]).expect("answer");
+    let confirmed = post(
+        app,
+        "/api/v1/me/reauthenticate",
+        Some(token),
+        json!({ "webauthn": { "challenge_id": challenge["challenge_id"], "credential": answer } }),
+    )
+    .await;
+    assert_eq!(
+        confirmed.status,
+        StatusCode::NO_CONTENT,
+        "{}",
+        confirmed.json()
+    );
 }
 
 /// Signs in with the password asking for two steps: returns the login token and the methods.
@@ -147,10 +174,13 @@ async fn session_methods(pool: &PgPool) -> Vec<Vec<String>> {
 }
 
 async fn sign_in_long_ago(pool: &PgPool) {
-    sqlx::query("UPDATE sessions SET authenticated_at = now() - interval '1 hour'")
-        .execute(pool)
-        .await
-        .expect("backdate");
+    sqlx::query(
+        "UPDATE sessions SET authenticated_at = now() - interval '1 hour', \
+         second_factor_at = now() - interval '1 hour'",
+    )
+    .execute(pool)
+    .await
+    .expect("backdate");
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -165,6 +195,17 @@ async fn the_first_key_brings_recovery_codes_and_each_key_is_listed(pool: PgPool
     assert_eq!(first["key"]["kind"], "passkey");
     assert_eq!(first["key"]["rp_id"], HOST_A);
     assert_eq!(first["recovery_codes"].as_array().map(Vec::len), Some(10));
+    // With a key, the password sign-in no longer allows adding another: the key confirms it.
+    let refused = post(
+        &app,
+        "/api/v1/me/webauthn/start",
+        Some(&token),
+        json!({ "kind": "security_key" }),
+    )
+    .await;
+    assert_eq!(problem(&refused), "reauthentication-required");
+    assert_eq!(refused.json()["methods"], json!(["webauthn"]));
+    confirm_with_key(&app, &token, &mut phone).await;
     let second = add_key(&app, &token, &mut yubikey, "security_key").await;
     assert_eq!(second["key"]["name"], "Security key");
     assert!(second.get("recovery_codes").is_none());
@@ -196,35 +237,7 @@ async fn the_first_key_brings_recovery_codes_and_each_key_is_listed(pool: PgPool
     )
     .await;
     assert_eq!(problem(&later), "reauthentication-required");
-    assert_eq!(later.json()["methods"], json!(["password", "webauthn"]));
-}
-
-#[sqlx::test(migrations = "../../migrations")]
-async fn the_list_says_which_keys_can_protect_folders(pool: PgPool) {
-    let app = setup(pool).await;
-    let token = app.user_token("alice").await;
-    let mut yubikey = Authenticator::new();
-    yubikey.hmac_secret = true;
-    let mut old_yubikey = Authenticator::new();
-    let mut phone = Authenticator::new();
-    phone.synced = true;
-    phone.hmac_secret = true;
-
-    let added = add_key(&app, &token, &mut yubikey, "security_key").await;
-    assert_eq!(added["key"]["prf"], true);
-    assert!(added["key"].get("synced").is_none());
-    add_key(&app, &token, &mut old_yubikey, "passkey").await;
-    add_key(&app, &token, &mut phone, "passkey").await;
-
-    let listed = app.get("/api/v1/me/webauthn", &token).await.json();
-    let keys: Vec<protocol::WebAuthnKey> = serde_json::from_value(listed).expect("keys");
-    let can: Vec<bool> = keys
-        .iter()
-        .map(protocol::WebAuthnKey::can_protect_folders)
-        .collect();
-    assert_eq!(can, [true, false, false], "{keys:?}");
-    assert!(!keys[1].prf && !keys[1].synced);
-    assert!(keys[2].prf && keys[2].synced);
+    assert_eq!(later.json()["methods"], json!(["webauthn"]));
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -377,6 +390,115 @@ async fn passkeys_need_the_servers_own_https_or_localhost_page_and_a_name(pool: 
     assert_eq!(providers("127.0.0.1:8080").await, json!(false));
 }
 
+/// Starts a passkey sign-in from a page of `origin`, sent to `host`.
+async fn passkey_start_from(app: &TestApp, host: &str, origin: &str) -> common::Response {
+    let body = json!({});
+    from_page(
+        app,
+        (host, origin),
+        Method::POST,
+        "/api/v1/auth/passkey/start",
+        None,
+        &body,
+    )
+    .await
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_tenant_with_a_public_url_takes_passkeys_only_there(pool: PgPool) {
+    let app = setup_at(pool, ORIGIN).await;
+
+    // A proxy that passes another `Host` on changes nothing.
+    let proxied = passkey_start_from(&app, "homespace:8080", ORIGIN).await;
+    assert_eq!(proxied.status, StatusCode::OK, "{}", proxied.json());
+    assert_eq!(proxied.json()["options"]["publicKey"]["rpId"], HOST_A);
+    // Neither the name the request was sent to nor another loopback port counts.
+    for (host, origin) in [
+        ("other.example", "https://other.example"),
+        ("homespace:8080", "http://homespace:8080"),
+        ("localhost:8080", "http://localhost:8081"),
+        ("localhost:8080", "http://localhost:8080"),
+    ] {
+        let refused = passkey_start_from(&app, host, origin).await;
+        assert_eq!(
+            problem(&refused),
+            "webauthn-unavailable",
+            "{origin} on {host}"
+        );
+    }
+
+    // A passkey made there signs in there, wherever the proxy says the request went.
+    let token = app.user_token("alice").await;
+    let mut phone = Authenticator::new();
+    add_key(&app, &token, &mut phone, "passkey").await;
+    let started = passkey_start_from(&app, "homespace:8080", ORIGIN).await;
+    let answer = phone
+        .sign(ORIGIN, &started.json()["options"])
+        .expect("the phone has a passkey");
+    let signed_in = from_page(
+        &app,
+        ("homespace:8080", ORIGIN),
+        Method::POST,
+        "/api/v1/auth/passkey/finish",
+        None,
+        &json!({ "challenge_id": started.json()["challenge_id"], "credential": answer }),
+    )
+    .await;
+    assert_eq!(signed_in.status, StatusCode::OK, "{}", signed_in.json());
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn without_a_public_url_a_development_server_takes_localhost(pool: PgPool) {
+    let app = setup(pool).await;
+    let token = app.user_token("alice").await;
+    let mut phone = Authenticator::new();
+    let dev = ("localhost:8080", "http://localhost:8081");
+
+    let started = from_page(
+        &app,
+        dev,
+        Method::POST,
+        "/api/v1/me/webauthn/start",
+        Some(&token),
+        &json!({ "kind": "passkey" }),
+    )
+    .await;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.json());
+    let challenge = started.json();
+    assert_eq!(challenge["options"]["publicKey"]["rp"]["id"], "localhost");
+    let credential = phone.register(dev.1, &challenge["options"]);
+    let finished = from_page(
+        &app,
+        dev,
+        Method::POST,
+        "/api/v1/me/webauthn/finish",
+        Some(&token),
+        &json!({ "challenge_id": challenge["challenge_id"], "credential": credential }),
+    )
+    .await;
+    assert_eq!(finished.status, StatusCode::OK, "{}", finished.json());
+    assert_eq!(finished.json()["key"]["rp_id"], "localhost");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn an_account_linked_to_the_provider_does_not_sign_in_with_a_passkey(pool: PgPool) {
+    let app = setup(pool.clone()).await;
+    let token = app.user_token("alice").await;
+    let mut phone = Authenticator::new();
+    add_key(&app, &token, &mut phone, "passkey").await;
+    sqlx::query(
+        "INSERT INTO user_identities (tenant_id, issuer, subject, user_id) \
+         SELECT tenant_id, 'https://idp.example', 'alice', id FROM users WHERE username = 'alice'",
+    )
+    .execute(&pool)
+    .await
+    .expect("link");
+
+    let refused = passkey_sign_in(&app, &mut phone).await;
+
+    assert_eq!(problem(&refused), "external-account", "{}", refused.json());
+}
+
 #[sqlx::test(migrations = "../../migrations")]
 async fn a_key_confirms_it_is_the_user(pool: PgPool) {
     let app = setup(pool.clone()).await;
@@ -421,6 +543,7 @@ async fn removing_the_last_key_or_a_reset_signs_in_with_the_password_alone(pool:
     let mut phone = Authenticator::new();
     let added = add_key(&app, &token, &mut phone, "passkey").await;
     let id = added["key"]["id"].as_str().expect("id");
+    confirm_with_key(&app, &token, &mut phone).await;
     let removed = app
         .send(
             Method::DELETE,

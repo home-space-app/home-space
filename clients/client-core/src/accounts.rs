@@ -2,7 +2,7 @@
 
 use time::OffsetDateTime;
 
-use protocol::Account;
+use protocol::{Account, AuthMethod};
 
 use crate::storage::{bytes, fraction};
 
@@ -101,11 +101,11 @@ pub fn sign_in_method(account: &Account, provider: Option<&str>) -> String {
     if account.external {
         return provider.unwrap_or("Single sign-on").to_owned();
     }
-    let has = |factor: &str| account.factors.iter().any(|named| named == factor);
+    let has = |factor| account.factors.contains(&factor);
     // Servers from before `factors` only say whether there is a second factor, which was
     // always an authenticator app.
-    let app = has("totp") || (account.two_factor && account.factors.is_empty());
-    match (app, has("webauthn")) {
+    let app = has(AuthMethod::Totp) || (account.two_factor && account.factors.is_empty());
+    match (app, has(AuthMethod::Webauthn)) {
         (false, false) => "Password",
         (true, false) => "Password and authenticator app",
         (false, true) => "Password and passkey",
@@ -240,9 +240,9 @@ mod tests {
 
     #[test]
     fn the_sign_in_method_names_each_second_factor() {
-        let with = |two_factor: bool, factors: &[&str]| Account {
+        let with = |two_factor: bool, factors: &[AuthMethod]| Account {
             two_factor,
-            factors: factors.iter().map(|&factor| factor.to_owned()).collect(),
+            factors: factors.to_vec(),
             ..account(0, None)
         };
         assert_eq!(sign_in_method(&with(false, &[]), None), "Password");
@@ -251,11 +251,11 @@ mod tests {
             "Password and authenticator app"
         );
         assert_eq!(
-            sign_in_method(&with(true, &["webauthn"]), None),
+            sign_in_method(&with(true, &[AuthMethod::Webauthn]), None),
             "Password and passkey"
         );
         assert_eq!(
-            sign_in_method(&with(true, &["totp", "webauthn"]), None),
+            sign_in_method(&with(true, &[AuthMethod::Totp, AuthMethod::Webauthn]), None),
             "Password, authenticator app and passkey"
         );
     }

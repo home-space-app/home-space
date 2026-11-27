@@ -29,7 +29,7 @@ pub struct UserStorage {
     pub id: UserId,
     pub username: String,
     pub is_admin: bool,
-    /// Has no password, so signs in only through an identity provider.
+    /// Linked to an identity provider account, which signs them in.
     pub external: bool,
     #[sqlx(flatten)]
     pub usage: StorageUsage,
@@ -125,7 +125,7 @@ impl Db {
     pub async fn storage_by_user(&self, tenant: TenantId) -> Result<Vec<UserStorage>, DbError> {
         let users = sqlx::query_as::<_, UserStorage>(concat!(
             "SELECT u.id, u.username, u.is_admin, \
-             u.password_hash IS NULL AS external, ",
+             EXISTS (SELECT 1 FROM user_identities i WHERE i.user_id = u.id) AS external, ",
             usage_select!(),
             " FROM users u WHERE u.tenant_id = $1 ORDER BY u.username"
         ))

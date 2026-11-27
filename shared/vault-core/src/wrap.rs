@@ -8,12 +8,16 @@ use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use zeroize::Zeroizing;
 
-use crate::{Error, Result};
+use crate::{Error, Internal, Result};
 
 const VERSION: u8 = 1;
 const NONCE_LEN: usize = 24;
+const KEY_LEN: usize = 32;
+const TAG_LEN: usize = 16;
 /// Length of a wrapped key.
-pub const WRAPPED_LEN: usize = 1 + NONCE_LEN + 32 + 16;
+pub const WRAPPED_LEN: usize = 1 + NONCE_LEN + KEY_LEN + TAG_LEN;
+/// Starts the associated data of every wrapped value.
+const AAD_DOMAIN: &[u8] = b"home-space wrap v1\0";
 
 /// What a wrapped value is, bound into its associated data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,7 +36,7 @@ impl Purpose {
 }
 
 fn aad(purpose: Purpose, owner: &uuid::Uuid) -> Vec<u8> {
-    let mut aad = b"home-space wrap v1\0".to_vec();
+    let mut aad = AAD_DOMAIN.to_vec();
     aad.extend_from_slice(purpose.label());
     aad.push(0);
     aad.extend_from_slice(owner.as_bytes());
@@ -40,11 +44,11 @@ fn aad(purpose: Purpose, owner: &uuid::Uuid) -> Vec<u8> {
 }
 
 pub(crate) fn wrap(
-    key: &[u8; 32],
-    secret: &[u8; 32],
+    key: &[u8; KEY_LEN],
+    secret: &[u8; KEY_LEN],
     purpose: Purpose,
     owner: &uuid::Uuid,
-) -> Vec<u8> {
+) -> Result<Vec<u8>> {
     let cipher = XChaCha20Poly1305::new(key.into());
     let mut nonce = [0u8; NONCE_LEN];
     rand::fill(&mut nonce);
@@ -57,31 +61,35 @@ pub(crate) fn wrap(
                 aad: &aad,
             },
         )
-        .expect("XChaCha20-Poly1305 encrypts any 32 bytes");
+        .map_err(|_| Error::Internal(Internal::KeyWrap))?;
     let mut out = Vec::with_capacity(WRAPPED_LEN);
     out.push(VERSION);
     out.extend_from_slice(&nonce);
     out.extend_from_slice(&ciphertext);
-    out
+    Ok(out)
 }
 
 pub(crate) fn unwrap(
-    key: &[u8; 32],
+    key: &[u8; KEY_LEN],
     wrapped: &[u8],
     purpose: Purpose,
     owner: &uuid::Uuid,
-) -> Result<[u8; 32]> {
-    if wrapped.len() != WRAPPED_LEN || wrapped[0] != VERSION {
+) -> Result<[u8; KEY_LEN]> {
+    if wrapped.len() != WRAPPED_LEN {
         return Err(Error::WrapFormat);
     }
-    let (nonce, ciphertext) = wrapped[1..].split_at(NONCE_LEN);
-    let nonce: [u8; NONCE_LEN] = nonce.try_into().expect("split at the nonce length");
+    let Some((&VERSION, body)) = wrapped.split_first() else {
+        return Err(Error::WrapFormat);
+    };
+    let Some((nonce, ciphertext)) = body.split_first_chunk::<NONCE_LEN>() else {
+        return Err(Error::WrapFormat);
+    };
     let cipher = XChaCha20Poly1305::new(key.into());
     let aad = aad(purpose, owner);
     let plain = Zeroizing::new(
         cipher
             .decrypt(
-                &XNonce::from(nonce),
+                &XNonce::from(*nonce),
                 Payload {
                     msg: ciphertext,
                     aad: &aad,
@@ -89,10 +97,7 @@ pub(crate) fn unwrap(
             )
             .map_err(|_| Error::Unwrap)?,
     );
-    Ok(plain
-        .as_slice()
-        .try_into()
-        .expect("the tag covers exactly 32 bytes"))
+    <[u8; KEY_LEN]>::try_from(plain.as_slice()).map_err(|_| Error::WrapFormat)
 }
 
 #[cfg(test)]
@@ -103,7 +108,7 @@ mod tests {
 
     #[test]
     fn round_trip() {
-        let wrapped = wrap(&[1; 32], &[2; 32], Purpose::VaultKey, &OWNER);
+        let wrapped = wrap(&[1; 32], &[2; 32], Purpose::VaultKey, &OWNER).unwrap();
         assert_eq!(wrapped.len(), WRAPPED_LEN);
         assert_eq!(
             unwrap(&[1; 32], &wrapped, Purpose::VaultKey, &OWNER).unwrap(),
@@ -113,7 +118,7 @@ mod tests {
 
     #[test]
     fn wrong_key_purpose_or_owner_fails() {
-        let wrapped = wrap(&[1; 32], &[2; 32], Purpose::VaultKey, &OWNER);
+        let wrapped = wrap(&[1; 32], &[2; 32], Purpose::VaultKey, &OWNER).unwrap();
         assert!(matches!(
             unwrap(&[9; 32], &wrapped, Purpose::VaultKey, &OWNER),
             Err(Error::Unwrap)
@@ -130,7 +135,7 @@ mod tests {
 
     #[test]
     fn tampering_and_bad_format_fail() {
-        let mut wrapped = wrap(&[1; 32], &[2; 32], Purpose::VaultKey, &OWNER);
+        let mut wrapped = wrap(&[1; 32], &[2; 32], Purpose::VaultKey, &OWNER).unwrap();
         wrapped[40] ^= 1;
         assert!(matches!(
             unwrap(&[1; 32], &wrapped, Purpose::VaultKey, &OWNER),

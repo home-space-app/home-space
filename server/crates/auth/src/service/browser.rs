@@ -23,8 +23,8 @@ impl AuthService {
     /// browser goes straight to the provider, which sends the code to the app as single
     /// sign-on does; the app trades it at [`browser_exchange`](Self::browser_exchange) all the
     /// same. Passkeys are a sign-in of their own, though: when one of the tenant's passkeys
-    /// works at `host`, the name the request was sent to, the page offers it beside the
-    /// provider.
+    /// works at `host`, the RP id of the tenant's pages the request was sent from, the page
+    /// offers it beside the provider.
     pub async fn browser_start(
         &self,
         redirect_uri: &str,

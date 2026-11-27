@@ -27,7 +27,9 @@ pub use error::AuthError;
 pub use oidc::{OidcConfig, OidcService};
 pub use protocol::TokenPair;
 pub use secret_box::SecretBox;
-pub use service::{Access, AuthConfig, AuthService, Grant, ReauthProof, SecondFactorProof};
+pub use service::{
+    Access, AuthConfig, AuthService, FolderSecretKind, Grant, ReauthProof, SecondFactorProof,
+};
 pub use share_passwords::SharePasswords;
 pub use throttle::LOGIN_ATTEMPTS_MEMORY;
 pub use token::{Claims, new_share_token};

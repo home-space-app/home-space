@@ -3,7 +3,7 @@
 
 use axum::{
     Json, Router,
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     routing::{delete, get, post},
 };
 use uuid::Uuid;
@@ -17,7 +17,7 @@ use protocol::{
 };
 
 use crate::{
-    ApiError, AppState,
+    ApiError, AppState, browser,
     extract::{ApiJson, ApiPath, AuthUser, ClientIp, Tenant},
 };
 
@@ -40,15 +40,17 @@ async fn vault(tenant: Tenant, user: AuthUser) -> Result<Json<Vault>, ApiError> 
     Ok(Json(tenant.vault.vault(user.id).await?))
 }
 
-/// Enables a security key, or sets the recovery key.
+/// Enables a folder key made on one of the tenant's pages, or sets the recovery key.
 async fn add_unlocker(
     tenant: Tenant,
     user: AuthUser,
+    headers: HeaderMap,
     ApiJson(request): ApiJson<AddUnlocker>,
 ) -> Result<(StatusCode, Json<VaultUnlocker>), ApiError> {
+    let own_host = |rp_id: &str| browser::is_own_rp_id(rp_id, &headers, &tenant);
     let added = tenant
         .vault
-        .add_unlocker(user.id, user.session_id, &request)
+        .add_unlocker(user.id, user.session_id, &request, own_host)
         .await?;
     Ok((StatusCode::CREATED, Json(added)))
 }

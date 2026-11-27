@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// How many numbered names are tried for a name whose sealed form is taken.
-const MAX_NUMBERED_NAMES: u32 = 1000;
+const MAX_NUMBERED_NAMES: u16 = 1000;
 
 impl NodeService {
     /// Seals every name and encrypts every blob in `folder` that is not yet sealed with its
@@ -33,7 +33,7 @@ impl NodeService {
         let mut sealed = 0;
         for file in self.content.db.folder_files(owner, folder).await? {
             {
-                let _writing = self.content.sealing.write().await;
+                let _writing = self.content.sealing(owner).write_owned().await;
                 if store
                     .seal_blob(owner, file.node_id, &recipient, identity)
                     .await?
@@ -42,7 +42,7 @@ impl NodeService {
                 }
             }
             for version in file.versions {
-                let _writing = self.content.sealing.write().await;
+                let _writing = self.content.sealing(owner).write_owned().await;
                 if store
                     .seal_version(owner, version, &recipient, identity)
                     .await?
@@ -88,8 +88,8 @@ impl NodeService {
         for number in 0..=MAX_NUMBERED_NAMES {
             let candidate = match (node.kind, number) {
                 (_, 0) => node.name.clone(),
-                (NodeKind::File, n) => numbered_file_name(&node.name, n),
-                (NodeKind::Folder, n) => numbered_folder_name(&node.name, n as usize + 1),
+                (NodeKind::File, n) => numbered_file_name(&node.name, u32::from(n)),
+                (NodeKind::Folder, n) => numbered_folder_name(&node.name, usize::from(n) + 1),
             };
             let stored = sealed_fitting(names, node.kind, &candidate)?;
             match self
@@ -143,13 +143,13 @@ impl NodeService {
         let mut opened = 0;
         for file in self.content.db.folder_files(owner, folder).await? {
             {
-                let _writing = self.content.sealing.write().await;
+                let _writing = self.content.sealing(owner).write_owned().await;
                 if store.unseal_blob(owner, file.node_id, identity).await? {
                     opened += 1;
                 }
             }
             for version in file.versions {
-                let _writing = self.content.sealing.write().await;
+                let _writing = self.content.sealing(owner).write_owned().await;
                 if store.unseal_version(owner, version, identity).await? {
                     opened += 1;
                 }
@@ -187,8 +187,8 @@ impl NodeService {
         for number in 0..=MAX_NUMBERED_NAMES {
             let candidate = match (node.kind, number) {
                 (_, 0) => plain.clone(),
-                (NodeKind::File, n) => numbered_file_name(&plain, n),
-                (NodeKind::Folder, n) => numbered_folder_name(&plain, n as usize + 1),
+                (NodeKind::File, n) => numbered_file_name(&plain, u32::from(n)),
+                (NodeKind::Folder, n) => numbered_folder_name(&plain, usize::from(n) + 1),
             };
             match self
                 .content
@@ -232,7 +232,10 @@ mod tests {
 
     #[test]
     fn a_long_name_is_shortened_to_fit_and_keeps_its_extension() {
-        let names = Names::sealed(NodeId::new(), FolderSecret::from_raw([3; 32]).keys());
+        let names = Names::sealed(
+            NodeId::new(),
+            FolderSecret::from_raw([3; 32]).keys().unwrap(),
+        );
         let long = format!("{}.pdf", "é".repeat(120));
         let stored = sealed_fitting(&names, NodeKind::File, &long).unwrap();
         let shown = names.show(NodeKind::File, &stored);

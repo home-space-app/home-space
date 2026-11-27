@@ -5,21 +5,36 @@
 //! all the cryptography (`shared/vault-core`). A folder locked with a password is encrypted by
 //! the server, which keeps its key. See `docs/todo/protected-folders.md`.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{NodeId, encoding::Base64Url};
+use crate::{
+    NodeId,
+    encoding::Base64Url,
+    redact::{Redacted, redacted},
+};
 
 /// Length of a wrapped vault key or folder secret: version, nonce, key and tag.
 pub const WRAPPED_LEN: usize = 73;
 /// Length of the PRF input of a security key unlocker.
 pub const PRF_SALT_LEN: usize = 32;
+/// The longest WebAuthn credential id, in bytes, as the WebAuthn specification allows.
+pub const MAX_CREDENTIAL_ID_LEN: usize = 1023;
+
 /// What opens the vault.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(
+    feature = "server",
+    derive(sqlx::Type),
+    sqlx(type_name = "text", rename_all = "snake_case")
+)]
 pub enum UnlockerKind {
-    /// One of the user's security keys (a sign-in credential with PRF).
+    /// A folder key: a WebAuthn credential with PRF that a client made on a security key for
+    /// the vault alone. It never signs in, even on a key that also holds a sign-in credential.
     SecurityKey,
     /// The printed recovery key; at most one.
     Recovery,
@@ -32,14 +47,6 @@ impl UnlockerKind {
             Self::Recovery => "recovery",
         }
     }
-
-    pub fn parse(name: &str) -> Option<Self> {
-        match name {
-            "security_key" => Some(Self::SecurityKey),
-            "recovery" => Some(Self::Recovery),
-            _ => None,
-        }
-    }
 }
 
 /// One unlocker of the vault, as `GET /vault` lists it.
@@ -47,12 +54,11 @@ impl UnlockerKind {
 pub struct VaultUnlocker {
     pub id: Uuid,
     pub kind: UnlockerKind,
-    /// Security keys only: the sign-in credential (`GET /me/webauthn`), which names the key's
-    /// credential id and RP id.
+    /// Security keys only: what the user calls the key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential: Option<Uuid>,
-    /// Security keys only: the authenticator's credential id, base64url, so a client asks the
-    /// right key without another request.
+    pub name: Option<String>,
+    /// Security keys only: the credential id, which a client asks the key for, with `rp_id`
+    /// and `prf_salt`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_id: Option<Base64Url>,
     /// Security keys only: the RP id the credential was made for.
@@ -75,14 +81,26 @@ pub struct Vault {
     pub unlockers: Vec<VaultUnlocker>,
 }
 
-/// `POST /vault/unlockers`: enables a security key or sets the recovery key. The first creates
+/// `POST /vault/unlockers`: enables a folder key or sets the recovery key. The first creates
 /// the vault, at epoch 1; a recovery key replaces the one before.
+///
+/// A folder key needs `name`, `credential_id`, `rp_id` and `prf_salt`; a recovery key none
+/// of them. The server cannot check the credential: the client made it and ran the PRF
+/// assertion with challenges of its own.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AddUnlocker {
     pub kind: UnlockerKind,
-    /// Security keys: the sign-in credential, which must be a hardware key with PRF.
+    /// What the user calls the key, at most [`MAX_KEY_NAME_LEN`](crate::MAX_KEY_NAME_LEN)
+    /// characters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential: Option<Uuid>,
+    pub name: Option<String>,
+    /// The new credential's id, at most [`MAX_CREDENTIAL_ID_LEN`] bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_id: Option<Base64Url>,
+    /// The RP id the credential was made for: a host this server answers on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rp_id: Option<String>,
+    /// The PRF input the key answered for the wrapping key, [`PRF_SALT_LEN`] bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prf_salt: Option<Base64Url>,
     pub wrapped_vault_key: Base64Url,
@@ -124,9 +142,14 @@ pub struct RotateVault {
 /// What a protected folder is locked with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(
+    feature = "server",
+    derive(sqlx::Type),
+    sqlx(type_name = "text", rename_all = "snake_case")
+)]
 pub enum FolderLock {
     /// End to end: the client encrypts to the folder's recipient, and any of the user's
-    /// enabled security keys opens it through the vault.
+    /// folder keys opens it through the vault.
     SecurityKey,
     /// The server encrypts with a key it keeps and opens it to whoever gives the folder's
     /// password. Not end to end.
@@ -140,19 +163,16 @@ impl FolderLock {
             Self::Password => "password",
         }
     }
-
-    pub fn parse(name: &str) -> Option<Self> {
-        match name {
-            "security_key" => Some(Self::SecurityKey),
-            "password" => Some(Self::Password),
-            _ => None,
-        }
-    }
 }
 
 /// Where a protected folder stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(
+    feature = "server",
+    derive(sqlx::Type),
+    sqlx(type_name = "text", rename_all = "snake_case")
+)]
 pub enum ProtectionState {
     /// The existing content is being replaced with its encrypted form: by the client, which
     /// downloaded it, removed it from the server and uploads it encrypted (security key), or
@@ -171,19 +191,10 @@ impl ProtectionState {
             Self::Unprotecting => "unprotecting",
         }
     }
-
-    pub fn parse(name: &str) -> Option<Self> {
-        match name {
-            "protecting" => Some(Self::Protecting),
-            "protected" => Some(Self::Protected),
-            "unprotecting" => Some(Self::Unprotecting),
-            _ => None,
-        }
-    }
 }
 
 /// A protected folder, from `GET /protected`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtectedFolder {
     pub node_id: NodeId,
     pub lock: FolderLock,
@@ -206,12 +217,28 @@ pub struct ProtectedFolder {
     pub recovery_key: Option<String>,
 }
 
+impl fmt::Debug for ProtectedFolder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProtectedFolder")
+            .field("node_id", &self.node_id)
+            .field("lock", &self.lock)
+            .field("wrapped_secret", &self.wrapped_secret)
+            .field("epoch", &self.epoch)
+            .field("recipient", &self.recipient)
+            .field("format", &self.format)
+            .field("state", &self.state)
+            .field("created_at", &self.created_at)
+            .field("recovery_key", &redacted(self.recovery_key.as_ref()))
+            .finish()
+    }
+}
+
 /// `POST /protected`: protects one of the caller's folders. A security key needs
 /// `wrapped_secret`, `recipient` and the vault's `epoch`; a password needs `password`. An empty
 /// folder is protected at once. One with content stays `protecting` until it is replaced with
 /// its encrypted form: by the client, which then calls `POST /protected/{id}/finish` (security
 /// key), or by the server (password).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ProtectFolder {
     pub node_id: NodeId,
     pub lock: FolderLock,
@@ -226,15 +253,30 @@ pub struct ProtectFolder {
     pub password: Option<String>,
 }
 
+impl fmt::Debug for ProtectFolder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProtectFolder")
+            .field("node_id", &self.node_id)
+            .field("lock", &self.lock)
+            .field("wrapped_secret", &self.wrapped_secret)
+            .field("recipient", &self.recipient)
+            .field("epoch", &self.epoch)
+            .field("password", &redacted(self.password.as_ref()))
+            .finish()
+    }
+}
+
 /// `POST /protected/{id}/unlock`: the password of a password folder.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct UnlockFolder {
     pub password: String,
 }
 
-impl std::fmt::Debug for UnlockFolder {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("UnlockFolder { .. }")
+impl fmt::Debug for UnlockFolder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UnlockFolder")
+            .field("password", &Redacted)
+            .finish()
     }
 }
 
@@ -259,15 +301,24 @@ pub struct FolderPasswordChanged {
     pub recovery_key: Option<String>,
 }
 
-impl std::fmt::Debug for FolderPasswordChanged {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("FolderPasswordChanged { .. }")
+impl fmt::Debug for FolderPasswordChanged {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FolderPasswordChanged")
+            .field("recovery_key", &redacted(self.recovery_key.as_ref()))
+            .finish()
     }
 }
 
-impl std::fmt::Debug for ChangeFolderPassword {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("ChangeFolderPassword { .. }")
+impl fmt::Debug for ChangeFolderPassword {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChangeFolderPassword")
+            .field("password", &Redacted)
+            .field(
+                "current_password",
+                &redacted(self.current_password.as_ref()),
+            )
+            .field("recovery_key", &redacted(self.recovery_key.as_ref()))
+            .finish()
     }
 }
 

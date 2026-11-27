@@ -25,7 +25,7 @@ pub use copy::SavedCopy;
 pub use duplicates::{DuplicateService, MAX_GROUPS, MAX_OUTDATED};
 pub use error::{BodyError, FilesError};
 pub use names::Names;
-pub use nodes::NodeService;
+pub use nodes::{NewFile, NodeService};
 pub use services::{DEFAULT_CHUNK_BYTES, FileServices, FilesConfig};
 pub use store::BlobStore;
 pub use transfers::{DEFAULT_TRANSFER_TTL, MAX_TRANSFER_ITEMS, SavedTransfer, TransferService};
@@ -34,5 +34,5 @@ pub use tree::{
     BlobOp, MoveBatch, MoveConflict, MoveOutcome, NodeUpdate, StoreOptions, StoreOutcome,
     TrashOutcome,
 };
-pub use uploads::{ChunkOutcome, UploadService, UploadStatus, UploadTarget};
+pub use uploads::{ChunkOutcome, UploadRequest, UploadService, UploadStatus, UploadTarget};
 pub use versions::VersionService;

@@ -1,9 +1,56 @@
-use serde::{Deserialize, Serialize};
+use std::fmt;
 
-use crate::{DeviceInfo, NodeId, PublicKeyCredential, UserId, WebAuthnAnswer};
+use serde::{Deserialize, Deserializer, Serialize};
+
+use crate::{
+    DeviceInfo, NodeId, PublicKeyCredential, UserId, WebAuthnAnswer,
+    redact::{Redacted, redacted},
+};
+
+/// A way for the user to prove it is them: their password, a code from their authenticator app
+/// (`totp`), a passkey or security key (`webauthn`), or one of their recovery codes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthMethod {
+    Password,
+    Totp,
+    Webauthn,
+    Recovery,
+}
+
+impl AuthMethod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Password => "password",
+            Self::Totp => "totp",
+            Self::Webauthn => "webauthn",
+            Self::Recovery => "recovery",
+        }
+    }
+}
+
+/// The methods of a list this client knows, leaving out those a newer server may name.
+pub(crate) fn known_methods<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<AuthMethod>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Named {
+        Known(AuthMethod),
+        Other(serde::de::IgnoredAny),
+    }
+    let named = Vec::<Named>::deserialize(deserializer)?;
+    Ok(named
+        .into_iter()
+        .filter_map(|method| match method {
+            Named::Known(method) => Some(method),
+            Named::Other(_) => None,
+        })
+        .collect())
+}
 
 /// Credentials submitted to log in.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
@@ -21,9 +68,21 @@ pub struct LoginRequest {
     pub two_step: bool,
 }
 
+impl fmt::Debug for LoginRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LoginRequest")
+            .field("username", &self.username)
+            .field("password", &Redacted)
+            .field("device", &self.device)
+            .field("cookie", &self.cookie)
+            .field("two_step", &self.two_step)
+            .finish()
+    }
+}
+
 /// `POST /auth/login/verify`: the second step of a sign-in, with one of `code`,
 /// `recovery_code` and `webauthn`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct LoginVerifyRequest {
     /// From the `second-factor-required` problem of the first step.
     pub login_token: String,
@@ -45,9 +104,22 @@ pub struct LoginVerifyRequest {
     pub cookie: bool,
 }
 
+impl fmt::Debug for LoginVerifyRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LoginVerifyRequest")
+            .field("login_token", &Redacted)
+            .field("code", &redacted(self.code.as_ref()))
+            .field("recovery_code", &redacted(self.recovery_code.as_ref()))
+            .field("webauthn", &self.webauthn)
+            .field("device", &self.device)
+            .field("cookie", &self.cookie)
+            .finish()
+    }
+}
+
 /// `POST /me/totp`: a new authenticator app secret, saved only once a code from it is
 /// confirmed with [`TotpConfirmRequest`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TotpEnrolment {
     /// The secret in base32, for typing into the app.
     pub secret: String,
@@ -55,18 +127,43 @@ pub struct TotpEnrolment {
     pub uri: String,
 }
 
+impl fmt::Debug for TotpEnrolment {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TotpEnrolment")
+            .field("secret", &Redacted)
+            .field("uri", &Redacted)
+            .finish()
+    }
+}
+
 /// `POST /me/totp/confirm`: the first code from the new authenticator app.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct TotpConfirmRequest {
     pub code: String,
+}
+
+impl fmt::Debug for TotpConfirmRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TotpConfirmRequest")
+            .field("code", &Redacted)
+            .finish()
+    }
 }
 
 /// A new set of recovery codes, each usable once instead of a second factor. They are shown
 /// only now; a new set replaces the old one. Empty after confirming an authenticator app when
 /// the account already had another second factor, and so its codes.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecoveryCodes {
     pub codes: Vec<String>,
+}
+
+impl fmt::Debug for RecoveryCodes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RecoveryCodes")
+            .field("codes", &vec![Redacted; self.codes.len()])
+            .finish()
+    }
 }
 
 /// The second factors of an account, in [`Me`].
@@ -89,16 +186,25 @@ impl SecondFactors {
 }
 
 /// `POST /me/password`: a signed-in user replaces their own password.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ChangePasswordRequest {
     pub current_password: String,
     pub new_password: String,
 }
 
+impl fmt::Debug for ChangePasswordRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChangePasswordRequest")
+            .field("current_password", &Redacted)
+            .field("new_password", &Redacted)
+            .finish()
+    }
+}
+
 /// `POST /me/reauthenticate`: a signed-in user confirms it is them before a sensitive change,
 /// answering `reauthentication-required`, with one of the `methods` it named: `password`,
 /// `totp` as `code`, or `webauthn` with the answer to `POST /me/reauthenticate/webauthn`.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct ReauthenticateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
@@ -107,6 +213,16 @@ pub struct ReauthenticateRequest {
     pub code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub webauthn: Option<WebAuthnAnswer>,
+}
+
+impl fmt::Debug for ReauthenticateRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReauthenticateRequest")
+            .field("password", &redacted(self.password.as_ref()))
+            .field("code", &redacted(self.code.as_ref()))
+            .field("webauthn", &self.webauthn)
+            .finish()
+    }
 }
 
 /// Refresh token submitted to rotate a session or log out.
@@ -151,8 +267,9 @@ pub struct Me {
     /// May open the administration pages; older servers leave it out.
     #[serde(default)]
     pub is_admin: bool,
-    /// Signs in through the identity provider rather than with a password; older servers leave
-    /// it out.
+    /// Linked to the identity provider, which signs it in and keeps its second factors and
+    /// passkeys: it has no password, authenticator app, recovery codes or sign-in keys here
+    /// (`409 external-account`), only folder keys. Older servers leave it out.
     #[serde(default)]
     pub external: bool,
     /// The account's second factors; older servers leave it out.
@@ -209,7 +326,7 @@ pub struct OidcStartQuery {
 }
 
 /// Query the provider sends to `GET /auth/oidc/callback`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct OidcCallbackQuery {
     /// Left out by some providers when they report an error.
     pub state: Option<String>,
@@ -217,8 +334,18 @@ pub struct OidcCallbackQuery {
     pub error: Option<String>,
 }
 
+impl fmt::Debug for OidcCallbackQuery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OidcCallbackQuery")
+            .field("state", &self.state)
+            .field("code", &redacted(self.code.as_ref()))
+            .field("error", &self.error)
+            .finish()
+    }
+}
+
 /// Exchanges the one-time code from the redirect for a session.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct OidcExchangeRequest {
     pub code: String,
     pub code_verifier: String,
@@ -229,6 +356,17 @@ pub struct OidcExchangeRequest {
     /// cannot read, and leaves it out of the response.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cookie: bool,
+}
+
+impl fmt::Debug for OidcExchangeRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OidcExchangeRequest")
+            .field("code", &Redacted)
+            .field("code_verifier", &Redacted)
+            .field("device", &self.device)
+            .field("cookie", &self.cookie)
+            .finish()
+    }
 }
 
 /// Query of `GET /auth/browser/start`, which an app opens in the system browser to sign in
@@ -277,11 +415,21 @@ pub struct BrowserLoginRedirect {
 
 /// `POST /auth/browser/exchange`: the app trades the one-time code for a session. Apps only,
 /// so the refresh token is always in the response.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct BrowserLoginExchangeRequest {
     pub code: String,
     pub code_verifier: String,
     /// The device signing in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<DeviceInfo>,
+}
+
+impl fmt::Debug for BrowserLoginExchangeRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BrowserLoginExchangeRequest")
+            .field("code", &Redacted)
+            .field("code_verifier", &Redacted)
+            .field("device", &self.device)
+            .finish()
+    }
 }

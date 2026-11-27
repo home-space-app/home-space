@@ -130,21 +130,30 @@ async fn sign_in(
     callback(app, &[("state", &started.state), ("code", PROVIDER_CODE)]).await
 }
 
+/// Signs in and exchanges the login code, returning the access token.
+async fn sign_in_for_access(
+    app: &TestApp,
+    idp: &FakeIdp,
+    token: impl FnOnce(&str) -> IdToken,
+) -> String {
+    let response = sign_in(app, idp, WEB_REDIRECT, token).await;
+    let (_, params) = client_redirect(&response);
+    let code = params.get("code").expect("login code");
+    let tokens = exchange(app, code, VERIFIER).await;
+    assert_eq!(tokens.status, StatusCode::OK);
+    tokens.json()["access_token"]
+        .as_str()
+        .expect("token")
+        .to_owned()
+}
+
 /// Signs in and exchanges the login code, returning the `/me` document.
 async fn sign_in_and_get_me(
     app: &TestApp,
     idp: &FakeIdp,
     token: impl FnOnce(&str) -> IdToken,
 ) -> Value {
-    let response = sign_in(app, idp, WEB_REDIRECT, token).await;
-    let (_, params) = client_redirect(&response);
-    let code = params.get("code").expect("login code");
-    let tokens = exchange(app, code, VERIFIER).await;
-    assert_eq!(tokens.status, StatusCode::OK);
-    let access = tokens.json()["access_token"]
-        .as_str()
-        .expect("token")
-        .to_owned();
+    let access = sign_in_for_access(app, idp, token).await;
     let me = app.get("/api/v1/me", &access).await;
     assert_eq!(me.status, StatusCode::OK);
     me.json()
@@ -585,6 +594,149 @@ async fn oidc_users_cannot_log_in_with_a_password(pool: PgPool) {
     }
 }
 
+/// The slug of a problem response's `type`.
+fn problem(response: &Response) -> String {
+    response.json()["type"]
+        .as_str()
+        .and_then(|kind| kind.rsplit('/').next())
+        .unwrap_or_default()
+        .to_owned()
+}
+
+fn alice(nonce: &str) -> IdToken {
+    IdToken::new("subject-1", nonce).with(json!({ "preferred_username": "alice" }))
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn provider_users_get_no_local_factors_and_confirm_at_the_provider(pool: PgPool) {
+    let idp = FakeIdp::start().await;
+    let app = setup_oidc(pool.clone(), &idp, DEFAULTS).await;
+    let access = sign_in_for_access(&app, &idp, alice).await;
+    assert_eq!(
+        app.get("/api/v1/me", &access).await.json()["external"],
+        true
+    );
+
+    let refusals = [
+        ("/api/v1/me/totp", json!({})),
+        ("/api/v1/me/recovery-codes", json!({})),
+        (
+            "/api/v1/me/password",
+            json!({ "current_password": PASSWORD, "new_password": "another-password-456" }),
+        ),
+    ];
+    for (uri, body) in &refusals {
+        let refused = app
+            .json(Method::POST, uri, Some(&access), body.clone())
+            .await;
+        assert_eq!(refused.status, StatusCode::CONFLICT, "{uri}");
+        assert_eq!(problem(&refused), "external-account", "{uri}");
+    }
+    let key = app
+        .send_with(
+            Method::POST,
+            "/api/v1/me/webauthn/start",
+            Some(&access),
+            json!({ "kind": "passkey" }).to_string().into(),
+            Some("application/json"),
+            &[("host", "files.example.com"), ("origin", PUBLIC_URL)],
+        )
+        .await;
+    assert_eq!(problem(&key), "external-account", "{}", key.json());
+
+    // A password from before the provider signs nothing in.
+    app.auth.create_user("bob", PASSWORD).await.expect("bob");
+    sqlx::query(
+        "UPDATE users SET password_hash = \
+         (SELECT password_hash FROM users WHERE username = 'bob') WHERE username = 'alice'",
+    )
+    .execute(&pool)
+    .await
+    .expect("password");
+    let login = app
+        .json(
+            Method::POST,
+            "/api/v1/auth/login",
+            None,
+            json!({ "username": "alice", "password": PASSWORD }),
+        )
+        .await;
+    assert_eq!(problem(&login), "external-account");
+
+    // Confirming it is them means signing in at the provider again.
+    sqlx::query("UPDATE sessions SET authenticated_at = now() - interval '1 hour'")
+        .execute(&pool)
+        .await
+        .expect("backdate");
+    let stale = app
+        .json(Method::POST, "/api/v1/me/totp", Some(&access), json!({}))
+        .await;
+    assert_eq!(problem(&stale), "reauthentication-required");
+    // No way to confirm here: none is named.
+    assert!(stale.json()["methods"].as_array().is_none_or(Vec::is_empty));
+    let by_password = app
+        .json(
+            Method::POST,
+            "/api/v1/me/reauthenticate",
+            Some(&access),
+            json!({ "password": PASSWORD }),
+        )
+        .await;
+    assert_eq!(problem(&by_password), "external-account");
+    let fresh = sign_in_for_access(&app, &idp, alice).await;
+    let after = app
+        .json(Method::POST, "/api/v1/me/totp", Some(&fresh), json!({}))
+        .await;
+    assert_eq!(problem(&after), "external-account");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_provider_user_given_a_password_is_a_new_user_to_the_provider(pool: PgPool) {
+    let idp = FakeIdp::start().await;
+    let app = setup_oidc(pool, &idp, DEFAULTS).await;
+    let before = sign_in_and_get_me(&app, &idp, alice).await;
+    let admin = app.user_token("sam").await;
+    app.db
+        .set_admin(app.user_id("sam").await, true)
+        .await
+        .expect("admin");
+
+    let set = app
+        .json(
+            Method::PUT,
+            &format!(
+                "/api/v1/admin/users/{}/password",
+                before["id"].as_str().expect("id")
+            ),
+            Some(&admin),
+            json!({ "password": "another-password-456" }),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::NO_CONTENT, "{}", set.json());
+
+    let login = app
+        .json(
+            Method::POST,
+            "/api/v1/auth/login",
+            None,
+            json!({ "username": "alice", "password": "another-password-456" }),
+        )
+        .await;
+    assert_eq!(login.status, StatusCode::OK, "{}", login.json());
+    let local = login.json()["access_token"]
+        .as_str()
+        .expect("token")
+        .to_owned();
+    assert_eq!(
+        app.get("/api/v1/me", &local).await.json()["external"],
+        false
+    );
+    let after = sign_in_and_get_me(&app, &idp, alice).await;
+    assert_ne!(after["id"], before["id"]);
+    assert_eq!(after["username"], "alice-2");
+    assert_eq!(after["external"], true);
+}
+
 #[sqlx::test(migrations = "../../migrations")]
 async fn oidc_sessions_can_be_refreshed_and_logged_out(pool: PgPool) {
     let idp = FakeIdp::start().await;
@@ -692,7 +844,7 @@ async fn a_provider_only_tenant_keeps_its_page_where_a_local_passkey_works(pool:
                 id: uuid::Uuid::now_v7(),
                 credential_id: b"alice-passkey",
                 credential: r#"{"counter":0}"#,
-                kind: "passkey",
+                kind: protocol::WebAuthnKind::Passkey,
                 rp_id: "files.example.com",
                 name: "Passkey",
             },

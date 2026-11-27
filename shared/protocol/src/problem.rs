@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ErrorCode, ProblemType};
+use crate::{AuthMethod, ErrorCode, ProblemType, auth::known_methods};
 
 /// Media type of [`Problem`] bodies.
 pub const PROBLEM_CONTENT_TYPE: &str = "application/problem+json";
@@ -51,8 +51,12 @@ pub struct Problem {
     pub errors: Vec<FieldError>,
     /// The ways the user can confirm it is them, such as `password` or `totp`, when a change or
     /// a sign-in needs it.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub methods: Vec<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "known_methods"
+    )]
+    pub methods: Vec<AuthMethod>,
     /// What `POST /auth/login/verify` takes to finish a sign-in that needs a second factor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub login_token: Option<String>,
@@ -142,6 +146,20 @@ mod tests {
         assert_eq!(json["error"], "conflict");
         assert_eq!(json["detail"], json["message"]);
         assert!(json.get("errors").is_none());
+    }
+
+    #[test]
+    fn methods_a_client_does_not_know_are_left_out() {
+        let problem: Problem =
+            serde_json::from_str(r#"{"methods":["password","sms","webauthn"]}"#).expect("json");
+        assert_eq!(
+            problem.methods,
+            [AuthMethod::Password, AuthMethod::Webauthn]
+        );
+        assert_eq!(
+            serde_json::to_value(&problem).expect("json")["methods"],
+            serde_json::json!(["password", "webauthn"])
+        );
     }
 
     #[test]

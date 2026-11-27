@@ -4,16 +4,12 @@
 use leptos::{ev::SubmitEvent, prelude::*, task::spawn_local};
 
 use api_client::{ApiError, SecondFactor, SecondFactorStep};
-use protocol::ErrorCode;
+use protocol::{AuthMethod, ErrorCode};
 
 use crate::{
     session::{Auth, client},
     webauthn,
 };
-
-const TOTP: &str = "totp";
-const WEBAUTHN: &str = "webauthn";
-const RECOVERY: &str = "recovery";
 
 /// What the user finishes the sign-in with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -24,11 +20,11 @@ enum Way {
 }
 
 impl Way {
-    fn method(self) -> &'static str {
+    fn method(self) -> AuthMethod {
         match self {
-            Self::Key => WEBAUTHN,
-            Self::Code => TOTP,
-            Self::Recovery => RECOVERY,
+            Self::Key => AuthMethod::Webauthn,
+            Self::Code => AuthMethod::Totp,
+            Self::Recovery => AuthMethod::Recovery,
         }
     }
 
@@ -42,11 +38,11 @@ impl Way {
 }
 
 /// The ways the account can finish with, the one to start with first.
-fn ways(methods: &[String]) -> Vec<Way> {
+fn ways(methods: &[AuthMethod]) -> Vec<Way> {
     let key_works = webauthn::available();
     [Way::Key, Way::Code, Way::Recovery]
         .into_iter()
-        .filter(|way| methods.iter().any(|method| method == way.method()))
+        .filter(|way| methods.contains(&way.method()))
         .filter(|way| *way != Way::Key || key_works)
         .collect()
 }
@@ -108,7 +104,7 @@ pub(super) fn SecondStep(
             let result = match client().login_webauthn_options(&login_token).await {
                 Ok(challenge) => match webauthn::get(challenge.options, None).await {
                     Ok(answer) => {
-                        auth.verify(&login_token, SecondFactor::WebAuthn(&answer))
+                        auth.verify(&login_token, SecondFactor::WebAuthn(Box::new(answer)))
                             .await
                     }
                     Err(failure) => {

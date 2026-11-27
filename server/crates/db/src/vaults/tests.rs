@@ -19,7 +19,7 @@ async fn key(db: &Db, user: UserId, credential_id: &[u8]) -> Uuid {
         id,
         credential_id,
         credential: r#"{"counter":0}"#,
-        kind: "passkey",
+        kind: protocol::WebAuthnKind::Passkey,
         rp_id: "files.example.com",
         name: "YubiKey",
     };
@@ -29,12 +29,16 @@ async fn key(db: &Db, user: UserId, credential_id: &[u8]) -> Uuid {
     id
 }
 
-fn security_key(credential: Uuid, epoch: i32) -> NewUnlocker<'static> {
+/// A folder key whose credential has the id `credential_id`.
+fn security_key(credential_id: &'static [u8], epoch: i32) -> NewUnlocker<'static> {
     NewUnlocker {
         id: Uuid::now_v7(),
-        kind: "security_key",
-        credential: Some(credential),
-        prf_salt: Some(&[3; 32]),
+        source: UnlockerSource::SecurityKey(FolderKey {
+            name: "YubiKey",
+            credential_id,
+            rp_id: "files.example.com",
+            prf_salt: &[3; 32],
+        }),
         wrapped_vault_key: &WRAPPED,
         epoch,
     }
@@ -43,9 +47,7 @@ fn security_key(credential: Uuid, epoch: i32) -> NewUnlocker<'static> {
 fn recovery(epoch: i32) -> NewUnlocker<'static> {
     NewUnlocker {
         id: Uuid::now_v7(),
-        kind: "recovery",
-        credential: None,
-        prf_salt: None,
+        source: UnlockerSource::Recovery,
         wrapped_vault_key: &WRAPPED,
         epoch,
     }
@@ -85,7 +87,6 @@ fn with_password() -> NewProtection<'static> {
 async fn password_folder(db: &Db, owner: UserId, node: NodeId) {
     db.protect_folder(owner, node, with_password())
         .await
-        .expect("db")
         .expect("password folder");
 }
 
@@ -100,7 +101,7 @@ async fn vault(db: &Db, user: UserId) {
 async fn the_first_unlocker_makes_the_vault_and_the_rest_need_its_epoch(pool: PgPool) {
     let db = Db::from_pool(pool);
     let alice = user(&db, "alice").await;
-    let yubikey = key(&db, alice, b"one").await;
+    let yubikey: &[u8] = b"one";
     assert!(db.vault(alice).await.expect("vault").is_none());
     assert!(matches!(
         db.add_vault_unlocker(alice, security_key(yubikey, 2)).await,
@@ -124,6 +125,7 @@ async fn the_first_unlocker_makes_the_vault_and_the_rest_need_its_epoch(pool: Pg
     let vault = db.vault(alice).await.expect("vault").expect("some");
     assert_eq!(vault.epoch, 1);
     assert_eq!(vault.unlockers.len(), 2);
+    assert_eq!(vault.unlockers[0].name.as_deref(), Some("YubiKey"));
     assert_eq!(
         vault.unlockers[0].credential_id.as_deref(),
         Some(&b"one"[..])
@@ -136,43 +138,46 @@ async fn the_first_unlocker_makes_the_vault_and_the_rest_need_its_epoch(pool: Pg
 }
 
 #[sqlx::test(migrations = "../../migrations")]
-async fn only_the_users_own_credentials_unlock_their_vault(pool: PgPool) {
+async fn folder_keys_are_apart_from_sign_in_credentials(pool: PgPool) {
     let db = Db::from_pool(pool);
     let alice = user(&db, "alice").await;
     let bob = user(&db, "bob").await;
-    let bobs = key(&db, bob, b"bob").await;
-    assert!(matches!(
-        db.add_vault_unlocker(alice, security_key(bobs, 1)).await,
-        Err(DbError::NotFound)
-    ));
+    let sign_in = key(&db, alice, b"one").await;
+    db.add_vault_unlocker(alice, security_key(b"one", 1))
+        .await
+        .expect("alice");
+    // Credential ids are unique per user only: the server cannot tell whose key made one.
+    db.add_vault_unlocker(bob, security_key(b"one", 1))
+        .await
+        .expect("bob");
+    db.remove_webauthn_credential(alice, sign_in)
+        .await
+        .expect("removed");
+    db.reset_second_factors(TenantId::DEFAULT, alice)
+        .await
+        .expect("reset");
+    let vault = db.vault(alice).await.expect("vault").expect("some");
+    assert_eq!(vault.unlockers.len(), 1);
 }
 
 #[sqlx::test(migrations = "../../migrations")]
 async fn the_last_unlocker_of_locked_folders_stays(pool: PgPool) {
     let db = Db::from_pool(pool);
     let alice = user(&db, "alice").await;
-    let yubikey = key(&db, alice, b"one").await;
-    let spare = key(&db, alice, b"two").await;
-    let first = security_key(yubikey, 1);
+    let first = security_key(b"one", 1);
     db.add_vault_unlocker(alice, first).await.expect("first");
     let papers = folder(&db, alice, None, "Papers").await;
     db.protect_folder(alice, papers, with_key(1))
         .await
-        .expect("db")
         .expect("protected");
 
     assert!(matches!(
         db.remove_vault_unlocker(alice, first.id).await,
         Err(DbError::Conflict)
     ));
-    assert!(matches!(
-        db.remove_webauthn_credential(alice, yubikey).await,
-        Err(DbError::Conflict)
-    ));
-    let second = security_key(spare, 1);
+    let second = security_key(b"two", 1);
     db.add_vault_unlocker(alice, second).await.expect("second");
-    // With another key, removing the sign-in credential removes its unlocker too.
-    db.remove_webauthn_credential(alice, yubikey)
+    db.remove_vault_unlocker(alice, first.id)
         .await
         .expect("removed");
     let vault = db.vault(alice).await.expect("vault").expect("some");
@@ -184,11 +189,9 @@ async fn the_last_unlocker_of_locked_folders_stays(pool: PgPool) {
 async fn a_vault_without_folders_goes_with_its_last_unlocker(pool: PgPool) {
     let db = Db::from_pool(pool);
     let alice = user(&db, "alice").await;
-    let yubikey = key(&db, alice, b"one").await;
-    db.add_vault_unlocker(alice, security_key(yubikey, 1))
-        .await
-        .expect("first");
-    db.remove_webauthn_credential(alice, yubikey)
+    let only = security_key(b"one", 1);
+    db.add_vault_unlocker(alice, only).await.expect("first");
+    db.remove_vault_unlocker(alice, only.id)
         .await
         .expect("removed");
     assert!(db.vault(alice).await.expect("vault").is_none());
@@ -198,16 +201,13 @@ async fn a_vault_without_folders_goes_with_its_last_unlocker(pool: PgPool) {
 async fn rotation_rewraps_everything_or_nothing(pool: PgPool) {
     let db = Db::from_pool(pool);
     let alice = user(&db, "alice").await;
-    let one = key(&db, alice, b"one").await;
-    let two = key(&db, alice, b"two").await;
-    let kept = security_key(one, 1);
-    let lost = security_key(two, 1);
+    let kept = security_key(b"one", 1);
+    let lost = security_key(b"two", 1);
     db.add_vault_unlocker(alice, kept).await.expect("kept");
     db.add_vault_unlocker(alice, lost).await.expect("lost");
     let papers = folder(&db, alice, None, "Papers").await;
     db.protect_folder(alice, papers, with_key(1))
         .await
-        .expect("db")
         .expect("protected");
     let notes = folder(&db, alice, None, "Notes").await;
     password_folder(&db, alice, notes).await;
@@ -282,8 +282,9 @@ async fn protection_never_overlaps_or_takes_special_folders(pool: PgPool) {
     let outer = folder(&db, alice, None, "Outer").await;
     let inner = folder(&db, alice, Some(outer), "Inner").await;
 
-    let refused = |result: Result<Result<StoredProtection, ProtectRefusal>, DbError>| {
-        result.expect("db").expect_err("refused")
+    let refused = |result: Result<StoredProtection, ProtectError>| match result {
+        Err(ProtectError::Refused(refusal)) => refusal,
+        other => panic!("expected a refusal, got {other:?}"),
     };
     // No vault yet.
     assert_eq!(
@@ -298,9 +299,8 @@ async fn protection_never_overlaps_or_takes_special_folders(pool: PgPool) {
     let stored = db
         .protect_folder(alice, inner, with_key(1))
         .await
-        .expect("db")
         .expect("inner");
-    assert_eq!(stored.state, "protected");
+    assert_eq!(stored.state, ProtectionState::Protected);
     assert_eq!(
         refused(db.protect_folder(alice, inner, with_key(1)).await),
         ProtectRefusal::Overlaps
@@ -329,9 +329,8 @@ async fn protection_never_overlaps_or_takes_special_folders(pool: PgPool) {
     let stored = db
         .protect_folder(alice, other, with_key(1))
         .await
-        .expect("db")
         .expect("other");
-    assert_eq!(stored.state, "protecting");
+    assert_eq!(stored.state, ProtectionState::Protecting);
     assert_eq!(db.protected_folders(alice).await.expect("list").len(), 2);
 }
 
@@ -345,33 +344,56 @@ async fn a_conversion_finishes_or_is_cancelled_but_a_protected_folder_stays(pool
     let stored = db
         .protect_folder(alice, papers, with_key(1))
         .await
-        .expect("db")
         .expect("protecting");
-    assert_eq!(stored.state, "protecting");
+    assert_eq!(stored.state, ProtectionState::Protecting);
     let finished = db
-        .set_protection_state(alice, papers, &["protecting"], "protected")
+        .set_protection_state(
+            alice,
+            papers,
+            &[ProtectionState::Protecting],
+            ProtectionState::Protected,
+        )
         .await
         .expect("finished");
-    assert_eq!(finished.state, "protected");
+    assert_eq!(finished.state, ProtectionState::Protected);
     assert!(matches!(
-        db.set_protection_state(alice, papers, &["protecting"], "protected")
-            .await,
+        db.set_protection_state(
+            alice,
+            papers,
+            &[ProtectionState::Protecting],
+            ProtectionState::Protected
+        )
+        .await,
         Err(DbError::Stale)
     ));
     // A protected folder is never just forgotten: its secret would be gone with it.
     assert!(matches!(
-        db.remove_protection(alice, papers, &["protecting", "unprotecting"])
-            .await,
+        db.remove_protection(
+            alice,
+            papers,
+            &[ProtectionState::Protecting, ProtectionState::Unprotecting]
+        )
+        .await,
         Err(DbError::Stale)
     ));
-    db.set_protection_state(alice, papers, &["protected"], "unprotecting")
-        .await
-        .expect("unprotecting");
-    db.remove_protection(alice, papers, &["protecting", "unprotecting"])
-        .await
-        .expect("removed");
+    db.set_protection_state(
+        alice,
+        papers,
+        &[ProtectionState::Protected],
+        ProtectionState::Unprotecting,
+    )
+    .await
+    .expect("unprotecting");
+    db.remove_protection(
+        alice,
+        papers,
+        &[ProtectionState::Protecting, ProtectionState::Unprotecting],
+    )
+    .await
+    .expect("removed");
     assert!(matches!(
-        db.remove_protection(alice, papers, &["unprotecting"]).await,
+        db.remove_protection(alice, papers, &[ProtectionState::Unprotecting])
+            .await,
         Err(DbError::NotFound)
     ));
 }
@@ -408,7 +430,7 @@ async fn a_password_folder_is_found_from_inside_and_lists_its_files(pool: PgPool
         .expect("db")
         .expect("inside");
     assert_eq!(found.node_id, notes);
-    assert_eq!(found.state, "protecting");
+    assert_eq!(found.state, ProtectionState::Protecting);
     assert_eq!(found.recipient, RECIPIENT);
     let files = db.folder_files(alice, notes).await.expect("files");
     assert_eq!(files.len(), 1);
@@ -418,7 +440,10 @@ async fn a_password_folder_is_found_from_inside_and_lists_its_files(pool: PgPool
         .converting_password_folders(TenantId::DEFAULT)
         .await
         .expect("converting");
-    assert_eq!(converting, vec![(alice, notes, "protecting".to_owned())]);
+    assert_eq!(
+        converting,
+        vec![(alice, notes, ProtectionState::Protecting)]
+    );
     let secrets = db
         .password_secrets(alice, notes)
         .await
@@ -480,4 +505,73 @@ async fn an_unlock_belongs_to_one_session_and_expires(pool: PgPool) {
             .expect("db")
     );
     assert_eq!(db.expire_folder_unlocks().await.expect("expire"), 1);
+}
+
+/// Security: protecting a folder waits for a store into it that is under way, and then sees
+/// what it stored, so the converter seals it; the store cannot land after the folder went
+/// straight to `protected` as an empty one.
+#[sqlx::test(migrations = "../../migrations")]
+async fn protecting_waits_for_a_store_in_progress_and_sees_what_it_stored(pool: PgPool) {
+    let db = Db::from_pool(pool);
+    let alice = user(&db, "alice").await;
+    let docs = folder(&db, alice, None, "docs").await;
+    let mut store = db.transaction(alice).await.expect("tx");
+    store.hold_protections().await.expect("hold");
+    assert!(
+        store
+            .password_folder_of(Some(docs))
+            .await
+            .expect("read")
+            .is_none()
+    );
+    let content = NewContent {
+        size: 1,
+        sha256: vec![1; 32],
+        mime: "text/plain".to_owned(),
+        modified_at: None,
+    };
+    store
+        .insert_file(Some(docs), "plain.txt", &content)
+        .await
+        .expect("file");
+
+    let protecting = tokio::spawn({
+        let db = db.clone();
+        async move { db.protect_folder(alice, docs, with_password()).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(!protecting.is_finished(), "protecting waits for the store");
+    store.commit().await.expect("commit");
+
+    let protected = protecting.await.expect("task").expect("protected");
+    assert_eq!(
+        protected.state,
+        ProtectionState::Protecting,
+        "the folder is no longer empty"
+    );
+}
+
+/// A store that holds the protections reads the protection as it is, and keeps it so.
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_store_after_protecting_sees_the_password_folder(pool: PgPool) {
+    let db = Db::from_pool(pool);
+    let alice = user(&db, "alice").await;
+    let docs = folder(&db, alice, None, "docs").await;
+    let inner = folder(&db, alice, Some(docs), "inner").await;
+    password_folder(&db, alice, docs).await;
+    let mut store = db.transaction(alice).await.expect("tx");
+    store.hold_protections().await.expect("hold");
+    let holder = store
+        .password_folder_of(Some(inner))
+        .await
+        .expect("read")
+        .expect("inside");
+    assert_eq!(holder.node_id, docs);
+    assert!(
+        store
+            .password_folder_of(None)
+            .await
+            .expect("root")
+            .is_none()
+    );
 }

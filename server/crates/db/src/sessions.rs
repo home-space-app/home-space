@@ -12,6 +12,18 @@ pub struct Authentication {
     /// The last time they proved it: at sign-in, or when they confirmed it was them later.
     /// Refreshing tokens does not move it.
     pub authenticated_at: OffsetDateTime,
+    /// The last time a second factor proved it, at sign-in or later; `None` when none has in
+    /// this session.
+    pub second_factor_at: Option<OffsetDateTime>,
+}
+
+/// What the user of a session proved who they are with, when they confirmed it again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Confirmation {
+    /// Their password, which proves it only for changes that leave how they sign in alone.
+    Password,
+    /// A second factor: an authenticator app's code, a passkey or a security key.
+    SecondFactor,
 }
 
 /// A session that has not ended.
@@ -35,14 +47,16 @@ impl Db {
     ) -> Result<(), DbError> {
         let mut tx = self.pool().begin().await?;
         sqlx::query(
-            "INSERT INTO sessions (id, user_id, device_id, auth_methods, authenticated_at, expires_at) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
+            "INSERT INTO sessions \
+             (id, user_id, device_id, auth_methods, authenticated_at, second_factor_at, expires_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(session_id)
         .bind(user_id)
         .bind(device_id)
         .bind(&authentication.auth_methods)
         .bind(authentication.authenticated_at)
+        .bind(authentication.second_factor_at)
         .bind(expires_at)
         .execute(&mut *tx)
         .await?;
@@ -114,7 +128,7 @@ impl Db {
         user_id: UserId,
     ) -> Result<Option<Authentication>, DbError> {
         let authentication = sqlx::query_as::<_, Authentication>(
-            "SELECT s.auth_methods, s.authenticated_at FROM sessions s \
+            "SELECT s.auth_methods, s.authenticated_at, s.second_factor_at FROM sessions s \
              JOIN users u ON u.id = s.user_id \
              WHERE s.id = $1 AND s.user_id = $2 AND s.expires_at > now() AND u.tenant_id = $3",
         )
@@ -127,18 +141,22 @@ impl Db {
     }
 
     /// Notes that the user of `session_id`, an unexpired session of `user_id`, just proved
-    /// again who they are. Returns `false` when the session has ended.
+    /// again who they are, `with` what. Returns `false` when the session has ended.
     pub async fn confirm_session(
         &self,
         session_id: Uuid,
         user_id: UserId,
+        with: Confirmation,
     ) -> Result<bool, DbError> {
+        let second_factor = with == Confirmation::SecondFactor;
         let confirmed = sqlx::query(
-            "UPDATE sessions SET authenticated_at = now() \
+            "UPDATE sessions SET authenticated_at = now(), \
+             second_factor_at = CASE WHEN $3 THEN now() ELSE second_factor_at END \
              WHERE id = $1 AND user_id = $2 AND expires_at > now()",
         )
         .bind(session_id)
         .bind(user_id)
+        .bind(second_factor)
         .execute(self.pool())
         .await?;
         Ok(confirmed.rows_affected() == 1)
@@ -206,8 +224,8 @@ impl Db {
         sqlx::query(
             "INSERT INTO sessions \
              (id, user_id, device_id, label, parent_session_id, auth_methods, authenticated_at, \
-              expires_at) \
-             SELECT $1, $2, $3, $4, id, auth_methods, authenticated_at, $5 \
+              second_factor_at, expires_at) \
+             SELECT $1, $2, $3, $4, id, auth_methods, authenticated_at, second_factor_at, $5 \
              FROM sessions WHERE id = $6",
         )
         .bind(session_id)
@@ -233,6 +251,13 @@ impl Db {
         Ok(())
     }
 
+    /// Ends every session of `user_id` but `keep`, the one asking, and the sessions `keep`
+    /// started for its extensions. When `keep` is an extension's session its app session stays
+    /// too, since ending that would end `keep` with it. Returns how many ended.
+    pub async fn end_other_sessions(&self, user_id: UserId, keep: Uuid) -> Result<u64, DbError> {
+        end_others(self.pool(), user_id, keep).await
+    }
+
     /// Ends every session of a user.
     pub async fn end_user_sessions(&self, user_id: UserId) -> Result<(), DbError> {
         sqlx::query("DELETE FROM sessions WHERE user_id = $1")
@@ -254,6 +279,27 @@ impl Db {
             .await?;
         Ok(pruned.rows_affected())
     }
+}
+
+/// Ends every session of `user_id` but `keep` and the sessions that stay with it, as
+/// [`Db::end_other_sessions`] says. Returns how many ended.
+pub(crate) async fn end_others<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    user_id: UserId,
+    keep: Uuid,
+) -> Result<u64, DbError> {
+    // Extensions are told apart by their parent, never by the device id, which any session
+    // can claim.
+    let ended = sqlx::query(
+        "DELETE FROM sessions s WHERE s.user_id = $1 AND s.id <> $2 \
+         AND s.parent_session_id IS DISTINCT FROM $2 \
+         AND s.id IS DISTINCT FROM (SELECT parent_session_id FROM sessions WHERE id = $2)",
+    )
+    .bind(user_id)
+    .bind(keep)
+    .execute(executor)
+    .await?;
+    Ok(ended.rows_affected())
 }
 
 async fn insert_token(
@@ -283,6 +329,7 @@ pub(crate) fn signed_in_now() -> Authentication {
     Authentication {
         auth_methods: vec!["pwd".to_owned()],
         authenticated_at: OffsetDateTime::now_utc(),
+        second_factor_at: None,
     }
 }
 

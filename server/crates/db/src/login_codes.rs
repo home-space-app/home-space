@@ -27,8 +27,8 @@ impl Db {
         sqlx::query(
             "INSERT INTO login_codes \
              (tenant_id, code_hash, user_id, client_challenge, auth_methods, authenticated_at, \
-              expires_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+              second_factor_at, expires_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(tenant)
         .bind(code_hash)
@@ -36,6 +36,7 @@ impl Db {
         .bind(&code.client_challenge)
         .bind(&code.authentication.auth_methods)
         .bind(code.authentication.authenticated_at)
+        .bind(code.authentication.second_factor_at)
         .bind(expires_at)
         .execute(self.pool())
         .await?;
@@ -52,7 +53,8 @@ impl Db {
         let code = sqlx::query_as::<_, LoginCode>(
             "DELETE FROM login_codes \
              WHERE tenant_id = $1 AND code_hash = $2 AND expires_at > now() \
-             RETURNING user_id, client_challenge, auth_methods, authenticated_at",
+             RETURNING user_id, client_challenge, auth_methods, authenticated_at, \
+             second_factor_at",
         )
         .bind(tenant)
         .bind(code_hash)
@@ -76,6 +78,7 @@ mod tests {
             authentication: Authentication {
                 auth_methods: vec!["pwd".to_owned()],
                 authenticated_at: OffsetDateTime::now_utc() - Duration::minutes(5),
+                second_factor_at: None,
             },
         }
     }

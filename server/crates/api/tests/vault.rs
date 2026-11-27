@@ -1,4 +1,4 @@
-//! The vault and protected folders: enabling security keys, the recovery key, rotation, and
+//! The vault and protected folders: enabling folder keys, the recovery key, rotation, and
 //! protecting folders with a security key or a password.
 
 #[path = "webauthn/authenticator.rs"]
@@ -61,7 +61,7 @@ fn problem(response: &common::Response) -> String {
         .to_owned()
 }
 
-/// Adds a security key made by `device`; returns its id.
+/// Adds a sign-in passkey made by `device`; returns its id.
 async fn add_key(app: &TestApp, token: &str, device: &mut Authenticator) -> String {
     let started = send(
         app,
@@ -89,27 +89,37 @@ async fn add_key(app: &TestApp, token: &str, device: &mut Authenticator) -> Stri
         .to_owned()
 }
 
-fn yubikey() -> Authenticator {
-    let mut key = Authenticator::new();
-    key.hmac_secret = true;
-    key
+/// A folder key made on [`HOST_A`], whose credential has the id `credential_id`.
+fn folder_key(credential_id: &[u8], epoch: i32) -> Value {
+    json!({
+        "kind": "security_key",
+        "name": "YubiKey",
+        "credential_id": b64(credential_id),
+        "rp_id": HOST_A,
+        "prf_salt": b64(&[3; 32]),
+        "wrapped_vault_key": wrapped(1),
+        "epoch": epoch,
+    })
 }
 
-async fn enable(app: &TestApp, token: &str, credential: &str, epoch: i32) -> common::Response {
+async fn add_unlocker(app: &TestApp, token: &str, unlocker: Value) -> common::Response {
     send(
         app,
         Method::POST,
         "/api/v1/vault/unlockers",
         token,
-        json!({
-            "kind": "security_key",
-            "credential": credential,
-            "prf_salt": b64(&[3; 32]),
-            "wrapped_vault_key": wrapped(1),
-            "epoch": epoch,
-        }),
+        unlocker,
     )
     .await
+}
+
+async fn enable(app: &TestApp, token: &str, credential_id: &[u8], epoch: i32) -> common::Response {
+    add_unlocker(app, token, folder_key(credential_id, epoch)).await
+}
+
+/// Where `response`, a refusal, says the fault is.
+fn pointer(response: &common::Response) -> Value {
+    response.json()["errors"][0]["pointer"].clone()
 }
 
 async fn folder(app: &TestApp, token: &str, name: &str) -> String {
@@ -161,8 +171,8 @@ async fn sign_in_long_ago(pool: &PgPool) {
 }
 
 #[sqlx::test(migrations = "../../migrations")]
-async fn a_security_key_with_prf_unlocks_the_vault_and_locks_folders(pool: PgPool) {
-    let app = setup(pool).await;
+async fn a_folder_key_unlocks_the_vault_and_locks_folders(pool: PgPool) {
+    let app = setup(pool.clone()).await;
     let token = app.user_token("alice").await;
     assert_eq!(
         app.get("/api/v1/vault", &token).await.status,
@@ -174,38 +184,52 @@ async fn a_security_key_with_prf_unlocks_the_vault_and_locks_folders(pool: PgPoo
         "{capabilities}"
     );
 
-    let mut old = Authenticator::new();
-    let old_key = add_key(&app, &token, &mut old).await;
-    let refused = enable(&app, &token, &old_key, 1).await;
-    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(refused.json()["errors"][0]["pointer"], "/credential");
+    let mut nameless = folder_key(b"yubikey", 1);
+    nameless["name"] = Value::Null;
+    let mut elsewhere = folder_key(b"yubikey", 1);
+    elsewhere["rp_id"] = json!("files.attacker.example");
+    let mut short_salt = folder_key(b"yubikey", 1);
+    short_salt["prf_salt"] = json!(b64(&[3; 16]));
+    let mut long_name = folder_key(b"yubikey", 1);
+    long_name["name"] = json!("k".repeat(65));
+    for (refused, at) in [
+        (nameless, "/name"),
+        (elsewhere, "/rp_id"),
+        (short_salt, "/prf_salt"),
+        (long_name, "/name"),
+        (folder_key(b"", 1), "/credential_id"),
+        (folder_key(&[1; 1024], 1), "/credential_id"),
+    ] {
+        let response = add_unlocker(&app, &token, refused).await;
+        assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(pointer(&response), at, "{}", response.json());
+    }
+    let named_recovery = json!({
+        "kind": "recovery", "name": "Paper", "wrapped_vault_key": wrapped(4), "epoch": 1,
+    });
+    assert_eq!(
+        pointer(&add_unlocker(&app, &token, named_recovery).await),
+        "/kind"
+    );
 
-    let mut yubikey = yubikey();
-    let key = add_key(&app, &token, &mut yubikey).await;
-    let enabled = enable(&app, &token, &key, 1).await;
+    let enabled = enable(&app, &token, b"yubikey", 1).await;
     assert_eq!(enabled.status, StatusCode::CREATED, "{}", enabled.json());
-    assert_eq!(enabled.json()["rp_id"], "files.example.com");
+    assert_eq!(enabled.json()["name"], "YubiKey");
+    assert_eq!(enabled.json()["credential_id"], b64(b"yubikey"));
+    assert_eq!(enabled.json()["rp_id"], HOST_A);
     assert_eq!(enabled.json()["prf_salt"], b64(&[3; 32]));
+    assert_eq!(
+        pointer(&enable(&app, &token, b"yubikey", 1).await),
+        "/credential_id"
+    );
 
     let vault = app.get("/api/v1/vault", &token).await.json();
     assert_eq!(vault["epoch"], 1);
-    assert_eq!(vault["unlockers"][0]["credential"], key);
+    assert_eq!(vault["unlockers"][0]["name"], "YubiKey");
+    assert!(vault["unlockers"][0].get("credential").is_none(), "{vault}");
 
     let papers = folder(&app, &token, "Papers").await;
-    let protected = send(
-        &app,
-        Method::POST,
-        "/api/v1/protected",
-        &token,
-        json!({
-            "node_id": papers,
-            "lock": "security_key",
-            "wrapped_secret": wrapped(2),
-            "recipient": RECIPIENT,
-            "epoch": 1,
-        }),
-    )
-    .await;
+    let protected = protect(&app, &token, &papers, 1).await;
     assert_eq!(
         protected.status,
         StatusCode::CREATED,
@@ -217,24 +241,26 @@ async fn a_security_key_with_prf_unlocks_the_vault_and_locks_folders(pool: PgPoo
     assert_eq!(listed[0]["node_id"], papers);
     assert_eq!(listed[0]["recipient"], RECIPIENT);
 
+    // Sign-in keys come and go without the vault.
+    let mut passkey = Authenticator::new();
+    let sign_in = add_key(&app, &token, &mut passkey).await;
+    // Removing a second factor takes a recent proof with one, as if confirmed with the key.
+    sqlx::query("UPDATE sessions SET second_factor_at = now()")
+        .execute(&pool)
+        .await
+        .expect("confirmed with the key");
+    let removed = delete(&app, &format!("/api/v1/me/webauthn/{sign_in}"), &token).await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.json());
+    assert_eq!(app.get("/api/v1/vault", &token).await.json(), vault);
+
     // The only key of a locked folder stays until another unlocks it too.
-    let removing = delete(&app, &format!("/api/v1/me/webauthn/{key}"), &token).await;
-    assert_eq!(removing.status, StatusCode::CONFLICT);
-    assert_eq!(problem(&removing), "last-unlocker");
     let unlocker = vault["unlockers"][0]["id"].as_str().expect("id");
     let removing = delete(&app, &format!("/api/v1/vault/unlockers/{unlocker}"), &token).await;
+    assert_eq!(removing.status, StatusCode::CONFLICT);
     assert_eq!(problem(&removing), "last-unlocker");
 
-    let recovery = send(
-        &app,
-        Method::POST,
-        "/api/v1/vault/unlockers",
-        &token,
-        json!({ "kind": "recovery", "wrapped_vault_key": wrapped(4), "epoch": 1 }),
-    )
-    .await;
-    assert_eq!(recovery.status, StatusCode::CREATED, "{}", recovery.json());
-    let removed = delete(&app, &format!("/api/v1/me/webauthn/{key}"), &token).await;
+    recovery_vault(&app, &token).await;
+    let removed = delete(&app, &format!("/api/v1/vault/unlockers/{unlocker}"), &token).await;
     assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.json());
     let vault = app.get("/api/v1/vault", &token).await.json();
     assert_eq!(vault["unlockers"].as_array().map(Vec::len), Some(1));
@@ -242,15 +268,47 @@ async fn a_security_key_with_prf_unlocks_the_vault_and_locks_folders(pool: PgPoo
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn an_administrators_reset_of_second_factors_keeps_the_vault(pool: PgPool) {
+    let app = setup(pool).await;
+    let token = app.user_token("alice").await;
+    let mut yubikey = Authenticator::new();
+    add_key(&app, &token, &mut yubikey).await;
+    let enabled = enable(&app, &token, b"yubikey", 1).await;
+    assert_eq!(enabled.status, StatusCode::CREATED, "{}", enabled.json());
+    let papers = folder(&app, &token, "Papers").await;
+    assert_eq!(
+        protect(&app, &token, &papers, 1).await.status,
+        StatusCode::CREATED
+    );
+
+    let admin = app.user_token("admin").await;
+    let admin_id = app.user_id("admin").await;
+    app.db.set_admin(admin_id, true).await.expect("admin");
+    let alice = app.user_id("alice").await;
+    let reset = app
+        .send(
+            Method::DELETE,
+            &format!("/api/v1/admin/users/{alice}/second-factors"),
+            Some(&admin),
+            Body::empty(),
+            None,
+        )
+        .await;
+    assert_eq!(reset.status, StatusCode::NO_CONTENT, "{}", reset.json());
+    let vault = app.db.vault(alice).await.expect("vault").expect("kept");
+    assert_eq!(vault.unlockers.len(), 1);
+    assert_eq!(
+        vault.unlockers[0].credential_id.as_deref(),
+        Some(&b"yubikey"[..])
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn rotation_needs_the_current_epoch_and_every_folder(pool: PgPool) {
     let app = setup(pool).await;
     let token = app.user_token("alice").await;
-    let mut one = yubikey();
-    let mut two = yubikey();
-    let first = add_key(&app, &token, &mut one).await;
-    let second = add_key(&app, &token, &mut two).await;
-    let kept = enable(&app, &token, &first, 1).await.json()["id"].clone();
-    let lost = enable(&app, &token, &second, 1).await.json()["id"].clone();
+    let kept = enable(&app, &token, b"one", 1).await.json()["id"].clone();
+    let lost = enable(&app, &token, b"two", 1).await.json()["id"].clone();
     let papers = folder(&app, &token, "Papers").await;
     send(
         &app,
@@ -302,10 +360,10 @@ async fn rotation_needs_the_current_epoch_and_every_folder(pool: PgPool) {
     assert_eq!(problem(&again), "vault-changed");
 
     // A key enabled now must be wrapped under the new epoch.
-    let stale = enable(&app, &token, &second, 1).await;
+    let stale = enable(&app, &token, b"two", 1).await;
     assert_eq!(problem(&stale), "vault-changed");
     assert_eq!(
-        enable(&app, &token, &second, 2).await.status,
+        enable(&app, &token, b"two", 2).await.status,
         StatusCode::CREATED
     );
     let listed = app.get("/api/v1/protected", &token).await.json();
@@ -396,13 +454,11 @@ async fn a_folder_with_content_is_protecting_until_the_client_has_replaced_it(po
 async fn changing_what_unlocks_needs_a_recent_sign_in(pool: PgPool) {
     let app = setup(pool.clone()).await;
     let token = app.user_token("alice").await;
-    let mut key = yubikey();
-    let credential = add_key(&app, &token, &mut key).await;
     let notes = folder(&app, &token, "Notes").await;
     sign_in_long_ago(&pool).await;
 
     assert_eq!(
-        problem(&enable(&app, &token, &credential, 1).await),
+        problem(&enable(&app, &token, b"one", 1).await),
         "reauthentication-required"
     );
     assert_eq!(

@@ -18,7 +18,8 @@ use protocol::{
 };
 
 use crate::{
-    ApiError, AppState, browser,
+    ApiError, AppState,
+    browser::WebAuthnSites,
     extract::{ApiJson, ApiPath, ApiQuery, AuthUser, ClientIp, Tenant},
 };
 
@@ -42,13 +43,14 @@ async fn start(
     if !state.serves_web {
         return Err(ApiError::BrowserLoginUnavailable);
     }
+    let sites = WebAuthnSites::of(&headers, &tenant);
     let page = tenant
         .auth
         .browser_start(
             &query.redirect_uri,
             &query.code_challenge,
             query.device_name.as_deref(),
-            browser::host_name(&headers, &tenant),
+            sites.rp_id(),
             address,
         )
         .await?;

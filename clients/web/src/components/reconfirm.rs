@@ -1,6 +1,8 @@
 //! Confirming it is the user before a sensitive change: when the server answers
 //! `reauthentication-required`, a dialog asks for the password, a code from the authenticator
-//! app, or a passkey or security key, and the change is sent again.
+//! app, or a passkey or security key, and the change is sent again. When the server names no
+//! way (the identity provider manages the account), the dialog offers to sign in again there
+//! and come back to the page.
 
 use std::future::Future;
 
@@ -8,18 +10,18 @@ use futures::channel::oneshot;
 use leptos::{ev::SubmitEvent, prelude::*, task::spawn_local};
 
 use api_client::{ApiError, Confirmation};
+use protocol::AuthMethod;
 
 use super::ErrorAlert;
 use crate::{session, webauthn};
 
-const PASSWORD: &str = "password";
-const TOTP: &str = "totp";
-const WEBAUTHN: &str = "webauthn";
+/// Where to sign in when the identity provider cannot be reached from here.
+const LOGIN_PATH: &str = "/login";
 
 /// What the dialog asks for, and where its answer goes.
 struct Question {
     message: String,
-    methods: Vec<String>,
+    methods: Vec<AuthMethod>,
     answer: oneshot::Sender<bool>,
 }
 
@@ -41,14 +43,15 @@ impl Reconfirm {
     }
 
     /// Runs `call`, and when the server wants the user to confirm it is them first, asks them
-    /// and runs it once more. `Ok(None)` when they cancelled.
+    /// and runs it once more. `Ok(None)` when they cancelled. When they can only confirm by
+    /// signing in again, the page goes to the sign-in and `call` is not run again.
     pub async fn confirmed<T, F, Fut>(self, call: F) -> Result<Option<T>, ApiError>
     where
         F: Fn() -> Fut,
         Fut: Future<Output = Result<T, ApiError>>,
     {
         match call().await {
-            Err(ApiError::ReauthenticationRequired { message, methods }) if !methods.is_empty() => {
+            Err(ApiError::ReauthenticationRequired { message, methods }) => {
                 let (answer, answered) = oneshot::channel();
                 self.0.set(Some(Question {
                     message,
@@ -83,11 +86,32 @@ async fn confirm_with_key() -> Result<bool, String> {
     client
         .reauthenticate(Confirmation::WebAuthn {
             challenge_id,
-            credential: &credential,
+            credential: Box::new(credential),
         })
         .await
         .map(|()| true)
         .map_err(|err| err.to_string())
+}
+
+/// Signs out and signs in again with the identity provider, coming back to this page: the
+/// only way to confirm it is them for a user whose account the provider manages.
+async fn sign_in_again() -> Result<(), String> {
+    let window = web_sys::window().ok_or("No browser window")?;
+    let location = window.location();
+    let here = format!(
+        "{}{}",
+        location.pathname().unwrap_or_default(),
+        location.search().unwrap_or_default()
+    );
+    session::return_after_sign_in(&here);
+    let _ = session::client().logout().await;
+    if session::Auth::start_oidc().is_err() {
+        // Signed out already: the sign-in page offers every way in, and comes back here.
+        location
+            .set_href(LOGIN_PATH)
+            .map_err(|_| "Could not open the sign-in page".to_owned())?;
+    }
+    Ok(())
 }
 
 /// The dialog, shown while a change waits for the user to confirm.
@@ -106,8 +130,24 @@ pub fn ReconfirmDialog() -> impl IntoView {
                 .unwrap_or_default()
         })
     };
-    let offers = move |method: &str| methods().iter().any(|offered| offered == method);
-    let by_code = move || use_code.get() || !offers(PASSWORD);
+    let offers = move |method: AuthMethod| methods().contains(&method);
+    // Changing how the account signs in may take a second factor only, without the password.
+    let typed = move || offers(AuthMethod::Password) || offers(AuthMethod::Totp);
+    let only_sign_in = move || methods().is_empty();
+    let use_sign_in = move |_| {
+        if busy.get_untracked() {
+            return;
+        }
+        busy.set(true);
+        error.set(None);
+        spawn_local(async move {
+            if let Err(message) = sign_in_again().await {
+                busy.set(false);
+                error.set(Some(message));
+            }
+        });
+    };
+    let by_code = move || use_code.get() || !offers(AuthMethod::Password);
     let close = move |confirmed: bool| {
         if let Some(asked) = question.write().take() {
             let _ = asked.answer.send(confirmed);
@@ -183,26 +223,35 @@ pub fn ReconfirmDialog() -> impl IntoView {
                         </header>
                         <p class="modal__subtitle">{message}</p>
                         <ErrorAlert message=error />
-                        <label class="field">
-                            <span class="field__label">
-                                {move || {
-                                    if by_code() { "Code from your authenticator app" } else { "Password" }
-                                }}
-                            </span>
-                            <input
-                                class="field__input"
-                                type=move || if by_code() { "text" } else { "password" }
-                                inputmode=move || by_code().then_some("numeric")
-                                autocomplete=move || {
-                                    if by_code() { "one-time-code" } else { "current-password" }
-                                }
-                                required
-                                autofocus
-                                prop:value=move || secret.get()
-                                on:input:target=move |event| secret.set(event.target().value())
-                            />
-                        </label>
-                        <Show when=move || offers(PASSWORD) && offers(TOTP)>
+                        <Show when=move || {
+                            offers(AuthMethod::Webauthn) && !typed() && !webauthn::available()
+                        }>
+                            <p class="modal__subtitle">
+                                "This browser cannot use your passkey or security key. Sign in again with it, or on another device."
+                            </p>
+                        </Show>
+                        <Show when=typed>
+                            <label class="field">
+                                <span class="field__label">
+                                    {move || {
+                                        if by_code() { "Code from your authenticator app" } else { "Password" }
+                                    }}
+                                </span>
+                                <input
+                                    class="field__input"
+                                    type=move || if by_code() { "text" } else { "password" }
+                                    inputmode=move || by_code().then_some("numeric")
+                                    autocomplete=move || {
+                                        if by_code() { "one-time-code" } else { "current-password" }
+                                    }
+                                    required
+                                    autofocus
+                                    prop:value=move || secret.get()
+                                    on:input:target=move |event| secret.set(event.target().value())
+                                />
+                            </label>
+                        </Show>
+                        <Show when=move || offers(AuthMethod::Password) && offers(AuthMethod::Totp)>
                             <button
                                 type="button"
                                 class="button button--ghost button--small"
@@ -220,7 +269,7 @@ pub fn ReconfirmDialog() -> impl IntoView {
                                 }}
                             </button>
                         </Show>
-                        <Show when=move || offers(WEBAUTHN) && webauthn::available()>
+                        <Show when=move || offers(AuthMethod::Webauthn) && webauthn::available()>
                             <button
                                 type="button"
                                 class="button button--block"
@@ -234,13 +283,25 @@ pub fn ReconfirmDialog() -> impl IntoView {
                             <button type="button" class="button" on:click=move |_| close(false)>
                                 "Cancel"
                             </button>
-                            <button
-                                type="submit"
-                                class="button button--primary"
-                                disabled=move || busy.get()
-                            >
-                                "Confirm"
-                            </button>
+                            <Show when=only_sign_in>
+                                <button
+                                    type="button"
+                                    class="button button--primary"
+                                    disabled=move || busy.get()
+                                    on:click=use_sign_in
+                                >
+                                    "Sign in again"
+                                </button>
+                            </Show>
+                            <Show when=typed>
+                                <button
+                                    type="submit"
+                                    class="button button--primary"
+                                    disabled=move || busy.get()
+                                >
+                                    "Confirm"
+                                </button>
+                            </Show>
                         </div>
                     </form>
                 </div>

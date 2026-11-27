@@ -3,12 +3,17 @@
 use age::x25519::{Identity, Recipient};
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::kdf::hkdf32;
+use crate::kdf::{hkdf_into, hkdf32};
 use crate::names::{self, NodeKind};
 use crate::secret::secret32;
 use crate::vault::VaultKey;
 use crate::wrap::{self, Purpose};
-use crate::{Error, Result};
+use crate::{Error, Internal, Result};
+
+const NAME_KEY_INFO: &[u8] = b"home-space name key v1";
+const AGE_IDENTITY_INFO: &[u8] = b"home-space age identity v1";
+/// The Bech32 prefix of an age X25519 identity's text form.
+const AGE_SECRET_KEY_HRP: &str = "AGE-SECRET-KEY-";
 
 secret32! {
     /// The random secret of one protected folder, wrapped by the vault key and bound to the
@@ -18,6 +23,7 @@ secret32! {
 
 /// What can wrap a folder secret: the vault key.
 pub trait FolderWrappingKey {
+    /// The raw key bytes.
     #[doc(hidden)]
     fn wrapping_bytes(&self) -> &[u8; 32];
 }
@@ -29,12 +35,13 @@ impl FolderWrappingKey for VaultKey {
 }
 
 impl FolderSecret {
+    /// A new random folder secret.
     pub fn generate() -> Self {
         Self::random()
     }
 
     /// Wraps the secret for `folder` (the protected folder's node id).
-    pub fn wrap(&self, key: &impl FolderWrappingKey, folder: &uuid::Uuid) -> Vec<u8> {
+    pub fn wrap(&self, key: &impl FolderWrappingKey, folder: &uuid::Uuid) -> Result<Vec<u8>> {
         wrap::wrap(
             key.wrapping_bytes(),
             self.expose(),
@@ -43,6 +50,7 @@ impl FolderSecret {
         )
     }
 
+    /// Opens a secret [`FolderSecret::wrap`] wrapped for `folder`.
     pub fn unwrap(
         key: &impl FolderWrappingKey,
         folder: &uuid::Uuid,
@@ -55,20 +63,17 @@ impl FolderSecret {
     }
 
     /// Derives the name key and the age identity.
-    pub fn keys(&self) -> FolderKeys {
+    pub fn keys(&self) -> Result<FolderKeys> {
         let mut name_key = Zeroizing::new([0u8; 64]);
-        hkdf::Hkdf::<sha2::Sha256>::new(None, self.expose())
-            .expand(b"home-space name key v1", name_key.as_mut())
-            .expect("64 bytes is a valid HKDF-SHA256 length");
-        let mut identity_bytes = hkdf32(self.expose(), b"home-space age identity v1");
-        let identity = identity_from_bytes(&identity_bytes);
-        identity_bytes.zeroize();
-        FolderKeys { name_key, identity }
+        hkdf_into(self.expose(), NAME_KEY_INFO, name_key.as_mut())?;
+        let identity_bytes = Zeroizing::new(hkdf32(self.expose(), AGE_IDENTITY_INFO)?);
+        let identity = identity_from_bytes(&identity_bytes)?;
+        Ok(FolderKeys { name_key, identity })
     }
 
     /// The folder's age recipient, the public key stored on the server.
-    pub fn recipient(&self) -> Recipient {
-        self.keys().recipient()
+    pub fn recipient(&self) -> Result<Recipient> {
+        self.keys().map(|keys| keys.recipient())
     }
 }
 
@@ -88,12 +93,13 @@ impl FolderSecret {
 }
 
 /// age has no constructor from raw bytes, only its Bech32 text form.
-fn identity_from_bytes(bytes: &[u8; 32]) -> Identity {
-    let hrp = bech32::Hrp::parse_unchecked("AGE-SECRET-KEY-");
-    let encoded = Zeroizing::new(age_core::primitives::bech32_encode(hrp, bytes).to_uppercase());
+fn identity_from_bytes(bytes: &[u8; 32]) -> Result<Identity> {
+    let hrp = bech32::Hrp::parse_unchecked(AGE_SECRET_KEY_HRP);
+    let lower = Zeroizing::new(age_core::primitives::bech32_encode(hrp, bytes));
+    let encoded = Zeroizing::new(lower.to_uppercase());
     encoded
         .parse()
-        .expect("32 bytes Bech32-encoded are an age identity")
+        .map_err(|_| Error::Internal(Internal::AgeIdentity))
 }
 
 /// The keys of an unlocked folder. Hold it only for the action at hand: it can open every name
@@ -127,6 +133,7 @@ impl FolderKeys {
         &self.identity
     }
 
+    /// The folder's age recipient, to encrypt files to.
     pub fn recipient(&self) -> Recipient {
         self.identity.to_public()
     }
@@ -154,7 +161,7 @@ mod tests {
     fn wrap_round_trip_bound_to_folder() {
         let vault = VaultKey::generate();
         let secret = FolderSecret::generate();
-        let wrapped = secret.wrap(&vault, &FOLDER);
+        let wrapped = secret.wrap(&vault, &FOLDER).unwrap();
         let back = FolderSecret::unwrap(&vault, &FOLDER, &wrapped).unwrap();
         assert_eq!(back.expose(), secret.expose());
         assert!(FolderSecret::unwrap(&vault, &uuid::Uuid::nil(), &wrapped).is_err());
@@ -165,15 +172,26 @@ mod tests {
     fn keys_are_deterministic() {
         let a = FolderSecret::from_bytes([4; 32]);
         let b = FolderSecret::from_bytes([4; 32]);
-        assert_eq!(a.recipient().to_string(), b.recipient().to_string());
-        assert!(a.recipient().to_string().starts_with("age1"));
-        assert_ne!(
-            a.recipient().to_string(),
-            FolderSecret::from_bytes([5; 32]).recipient().to_string()
+        assert_eq!(
+            a.recipient().unwrap().to_string(),
+            b.recipient().unwrap().to_string()
         );
-        let sealed = a.keys().seal_name(&FOLDER, NodeKind::File, "x").unwrap();
+        assert!(a.recipient().unwrap().to_string().starts_with("age1"));
+        assert_ne!(
+            a.recipient().unwrap().to_string(),
+            FolderSecret::from_bytes([5; 32])
+                .recipient()
+                .unwrap()
+                .to_string()
+        );
+        let sealed = a
+            .keys()
+            .unwrap()
+            .seal_name(&FOLDER, NodeKind::File, "x")
+            .unwrap();
         assert_eq!(
             b.keys()
+                .unwrap()
                 .open_name(&FOLDER, NodeKind::File, &sealed)
                 .unwrap(),
             "x"
@@ -182,10 +200,10 @@ mod tests {
 
     #[test]
     fn recipient_check() {
-        let keys = FolderSecret::generate().keys();
+        let keys = FolderSecret::generate().keys().unwrap();
         let listed = keys.recipient().to_string();
         assert!(keys.check_recipient(&listed).is_ok());
-        let other = FolderSecret::generate().recipient().to_string();
+        let other = FolderSecret::generate().recipient().unwrap().to_string();
         assert!(matches!(
             keys.check_recipient(&other),
             Err(Error::RecipientMismatch)

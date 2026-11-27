@@ -9,8 +9,9 @@ should be readable only on the user's own devices, or at least only after a seco
 
 The user picks a folder and clicks **Protect**, choosing one of two locks:
 
-- **Security key** (recommended): one of the security keys (a YubiKey or any FIDO2 key) the user
-  already enrolled for signing in (`local-accounts.md`). **End to end**: the client encrypts
+- **Security key** (recommended): one of the user's folder keys, security keys (a YubiKey or any
+  FIDO2 key) enabled for the vault (see [Folder keys](#folder-keys-credentials-of-their-own)).
+  **End to end**: the client encrypts
   names and content, and someone with the server and all its data still cannot decrypt the folder;
   the secret is on the key, behind its PIN.
 - **Password** (less secure): a password chosen for the folder. **Not end to end**: the server
@@ -30,7 +31,7 @@ Decided 2026-11-26.
 |---|---|---|
 | Who encrypts | The client (`shared/vault-core`) | The server |
 | What the server can read | Nothing: names and content are ciphertext it stores like any other bytes | Everything, while it has the key (always) |
-| Key | Folder secret wrapped by the user's vault, which each enabled security key (and an optional recovery key) unwraps through WebAuthn PRF / `hmac-secret` | Random folder key, kept sealed with the server's secrets key; the password is checked against an Argon2id hash |
+| Key | Folder secret wrapped by the user's vault, which each folder key (and an optional recovery key) unwraps through WebAuthn PRF / `hmac-secret` | Random folder key, kept sealed with the server's secrets key; the password is checked against an Argon2id hash |
 | Protecting an existing folder | The client downloads the files, deletes them from the server (for good, see below), and uploads them encrypted. **Their version history is lost**, and the user is warned first. | The server encrypts the content and every old version in place; history is kept. |
 | Names | Sealed by the client (AES-SIV), stored as base64url text in the normal `name` | Encrypted by the server, shown to sessions that unlocked the folder |
 | Unlock | PIN and touch; decrypts the names only. Every open, upload or rename needs another touch: **no key stays in the client's memory**. | Password, sent to the server; the session sees the folder until Lock or a timeout |
@@ -76,12 +77,14 @@ Does **not** protect against:
 - Plaintext from before protection that the server cannot erase: backups, snapshots, object
   storage versioning and freed disk blocks.
 
-## Security keys: reusing the sign-in credentials
+## Folder keys: credentials of their own
 
-Passkeys and security keys for signing in already exist (`local-accounts.md`,
-`server/migrations/0031_webauthn.sql`): one `user_webauthn` table, registered in the web
-client, used by the native apps through browser sign-in. Protected folders reuse those
-credentials instead of enrolling separate ones (decided 2026-11-26).
+Decided 2026-11-27: a security key unlocks protected folders through a **folder key**, a WebAuthn
+credential the client makes on the key for the vault alone, per user. It is never a sign-in
+credential (`user_webauthn`, `local-accounts.md`), though it may live on the same physical key
+as one, under another credential id. So removing a sign-in key, or an administrator's reset of
+the second factors (as when an account moves from single sign-on to a password), never touches
+the vault, and the vault never keeps a sign-in key from being removed.
 
 ### Why PRF and not RSA
 
@@ -93,55 +96,54 @@ There are three ways a YubiKey can protect a key:
 | Desktop (Linux, macOS, Windows) | Yes: CTAP2 over HID; on Windows through `webauthn.dll` | Yes, PC/SC | Yes, PC/SC or gpg-agent |
 | Android, iOS | Yes, Yubico's yubikit SDKs (USB-C, NFC) | Yes, yubikit | Partly |
 | YubiKey models | Every FIDO2 key from Yubico and other vendors | YubiKey 5 only | YubiKey 5 only |
-| Same credential as sign-in | **Yes** | No | No |
+| Same physical key as sign-in | **Yes** | Yes, another applet | Yes, another applet |
 | Setup on the key | Nothing | Generate a key in a slot, management key | Generate keys, admin PIN |
 
-PRF is the only mechanism that works in a browser, needs no setup, works with any FIDO2 key, and
-lets the sign-in credential also guard the folders. It is symmetric (the key is needed to read
+PRF is the only mechanism that works in a browser, needs no setup and works with any FIDO2 key,
+including the one the user signs in with. It is symmetric (the key is needed to read
 **and to write** names), which fits the "touch for every action" model below; writing content
 needs no key anyway, because every folder has a public age recipient.
 
-### Which credentials can lock folders
+### What a folder key is
 
-A `user_webauthn` row is **eligible** when:
+- A credential made with `navigator.credentials.create` (web) or CTAP2 `makeCredential`
+  (native) with a challenge the client makes itself: the server takes no part in its ceremonies
+  and never checks an attestation or an assertion. Not discoverable (`residentKey:
+  discouraged`), always with user verification, and with the `prf` extension (`hmac-secret`),
+  asked for the new salt at once. The user handle is random, never the account's, so a key that
+  keeps the credential anyway cannot replace a sign-in passkey with it.
+- On a hardware key: the web client asks for a security key (`hints: ["security-key"]`,
+  `cross-platform`) and refuses a new credential whose authenticator data says it is backed up
+  (a synced passkey), since the native apps cannot reach those.
+- The key needs a PIN (or fingerprint): `hmac-secret` gives a different secret with and without
+  user verification, so unlocking always asks for it.
+- The server keeps it as an unlocker (`vault_unlockers`): its name (at most 64 characters, like
+  a sign-in key's), credential id, RP id, PRF salt and wrapped vault key. The RP id must be one
+  of the tenant's names, the host of its `public_url` or one of its domains, or, for a tenant
+  with neither, the host the request was sent to (`browser::WebAuthnSites`, as for passkeys).
 
-- it was created with `hmac-secret`: the key says so in the authenticator data it signs at
-  registration, which webauthn-rs keeps in the stored `Credential`
-  (`extensions.hmac_create_secret`, unsolicited);
-- it lives on a hardware key: `backup_eligible` is false in the stored `Credential` (synced
-  passkeys are backup-eligible). Either `kind` is fine: a YubiKey registered as a passkey (with a
-  PIN) works as well as one registered as a second factor;
-- the key has a PIN (or fingerprint): unlocking always requires user verification, because
-  `hmac-secret` returns a different secret with and without it. A second-factor key without a
-  PIN can sign in but cannot lock folders; the settings say "Set a PIN on this key to use it for
-  protected folders".
+Sign-in ceremonies never ask for PRF, so a PRF value never reaches the server, and
+`GET /me/webauthn` says nothing about it.
 
-Registration changes in the web client: `webauthn-rs-proto` 0.6.2 has no `prf` field, so
-`clients/web/src/webauthn.rs` adds `extensions.prf = {}` to the creation options through
-`Reflect` (done). A security key then makes the credential with `hmac-secret`, and the server
-reads that from the signed data rather than from a flag the client sends, so no column is
-needed: `GET /me/webauthn` reports `prf` and `synced` for each key (feature
-`security_key_prf`), and `WebAuthnKey::can_protect_folders` combines them. Sign-in ceremonies
-never request PRF, so a PRF value never reaches the server. Still to verify with a real
-YubiKey in Chrome: that the browser sends `hmac-secret` on `makeCredential` for `prf` (the
-server tests sign it with a software key).
+### Enabling a key
 
-Keys registered before this change were created without `hmac-secret` and usually cannot give a
-secret. "Use for protected folders" tries one PRF assertion; when no secret comes back, the
-settings ask to register the key again (remove and add, a minute's work).
-
-### Enabling a key on the desktop
-
-Registration stays in the web client, like sign-in. The desktop settings get "Security keys for
-protected folders": it lists the account's credentials (`GET /me/webauthn`) with, for each one,
-"Enabled", "Enable", or why it cannot be used (synced passkey, no PRF, no PIN). **Enable** runs a
-native PRF assertion with that credential and wraps the vault key for it
-(`POST /vault/unlockers`). With no eligible key, the list shows "Add a security key" and opens the
-web security page in the browser.
+- **Web:** the security page lists **Sign-in keys** and **Folder keys** apart (done), and removes
+  a folder key (done). "Add a folder key" makes the credential
+  (`clients/web/src/webauthn/folder_key.rs`, done), takes its PRF secret from the answer to
+  `create` when the browser gives it, else from one more assertion, wraps the vault key for it and
+  sends `POST /vault/unlockers`. The vault key is new for the first key; for another, an existing
+  folder key opens the vault first (one assertion listing them all, each with its salt through
+  `evalByCredential`), or the recovery key. **To do:** the wrapping, which waits for
+  `vault-core` to take a PRF secret the browser gave (its `Authenticator` trait is synchronous,
+  `navigator.credentials` is not, and `PrfOutput` has no public constructor).
+- **Desktop:** "Security keys for protected folders" lists the folder keys (`GET /vault`).
+  **Enable** makes a new credential with CTAP2 `makeCredential` for the server's host, with
+  `hmac-secret`, then wraps the vault key for it as above. Until the native authenticators exist,
+  it opens the web security page in the browser.
 
 ### How a PRF secret is produced
 
-1. Enabling a credential stores a random 32-byte salt with it on the server (the unlocker row).
+1. Enabling a folder key stores a random 32-byte salt with it on the server (the unlocker row).
 2. To unlock, the client runs an assertion with that credential id, its stored RP id and the salt,
    using a challenge it generates itself: the server takes no part and never sees the answer. The
    user enters the PIN and touches the key. The key returns a 32-byte secret.
@@ -149,8 +151,8 @@ web security page in the browser.
 
 Rules that every client has to get exactly right, or one client cannot open what another wrote:
 
-- **The credential's own RP id.** A credential is bound to the RP id it was registered under
-  (the host of the page, stored in `user_webauthn.rp_id`). Native clients pass that stored value
+- **The credential's own RP id.** A credential is bound to the RP id it was made for (the host
+  of the page, stored in `vault_unlockers.rp_id`). Native clients pass that stored value
   as a plain string over CTAP2, so they work whatever address the app is configured with. The web
   client can use a credential only on the page of that host.
 - **The PRF salt transform.** Browsers do not hand the PRF input to the key as is: they send
@@ -193,20 +195,20 @@ Nothing is forced (decided 2026-11-26):
 
 - The Protect dialog offers **Security key (recommended)** and **Password (less secure, not end
   to end)**.
-  - No eligible key: the security-key choice is shown but disabled, with "This folder cannot be
+  - No folder key: the security-key choice is shown but disabled, with "This folder cannot be
     protected securely without a security key. Add one in your account's security settings." and
     a button that opens them.
-  - Exactly one enabled key: a warning, "If you lose this key, the files in this folder are lost.
+  - Exactly one folder key: a warning, "If you lose this key, the files in this folder are lost.
     Add a second key or create a recovery key.", with both actions next to it. Protect still
     works.
 - A **recovery key** can be created at any time: 32 random bytes shown once as a grouped Base32
   string (and a QR code) for printing. It is another unlocker of the vault, with
   `kek = HKDF(recovery bytes)`; no PRF. Being random and not on the server, it does not weaken the
   security-key lock against the server.
-- **Key management** (desktop settings, as above): enabled keys with their names, disable a key,
-  create or replace the recovery key.
-- **Removing a credential** on the web security page, or disabling it on the desktop, deletes its
-  wrapped vault key. When it is the **last unlocker** of a vault that still has folders, the
+- **Key management** (web security page and desktop settings, as above): folder keys with their
+  names, remove a key, create or replace the recovery key.
+- **Removing a folder key** deletes its wrapped vault key. Removing a sign-in key, or an
+  administrator's reset of the second factors, never does: folder keys are not sign-in keys. When it is the **last unlocker** of a vault that still has folders, the
   server refuses (`409 last-unlocker`) and the page names the folders; the user adds another key
   or a recovery key first, or unprotects or deletes the folders. Otherwise the desktop offers to
   **rotate** the vault key (`POST /vault/rotate`: re-wrap every folder secret with a new vault
@@ -487,11 +489,10 @@ In `server/migrations/0032_protected_folders.sql` (done):
   epoch is bumped by every rotation; unlockers and security-key folder secrets are always
   wrapped under the current one. A vault whose last unlocker goes while no folder is locked with
   it is removed, so the next key starts a new vault at epoch 1.
-- `vault_unlockers (id, user_id, kind, credential, prf_salt, wrapped_vault_key, created_at)`:
-  `kind` is `security_key` (with `credential → user_webauthn(id)` and a 32-byte `prf_salt`) or
-  `recovery` (at most one per user). `credential` has no `ON DELETE`: removing a credential
-  that is an unlocker removes the unlocker in the same transaction, or is refused when it is the
-  last one of a vault that folders are locked with.
+- `vault_unlockers (id, user_id, kind, name, credential_id, rp_id, prf_salt, wrapped_vault_key,
+  created_at)`: `kind` is `security_key`, a folder key (with its name, credential id, RP id and
+  a 32-byte `prf_salt`, the credential id unique per user), or `recovery` (at most one per
+  user). Nothing refers to `user_webauthn`.
 - `protected_folders (node_id, owner_id, lock, wrapped_secret, epoch, recipient, password_hash,
   sealed_key, format, state, created_at)`: a security-key folder has `wrapped_secret`, `epoch`
   and `recipient` (checked to look like `age1` and 58 bech32 characters); a password folder has
@@ -504,15 +505,18 @@ Nothing on `nodes` changes: names and content of security-key folders are stored
 
 Done (feature `protected_folders`):
 
-- `GET /vault`: the epoch and the unlockers, each security key with its `credential`,
-  `credential_id`, `rp_id` and `prf_salt` (all useless without the key); `404` before the first.
-- `POST /vault/unlockers` `{ kind, credential?, prf_salt?, wrapped_vault_key, epoch }`: enables
-  a security key (which must have `prf` and not be `synced`) or sets the recovery key (replacing
-  the one before). The first creates the vault and must say epoch 1; later ones the vault's
-  current epoch, else `409 vault-changed`.
-- `DELETE /vault/unlockers/{id}` and `DELETE /me/webauthn/{id}` of a credential that is an
-  unlocker: refused with `409 last-unlocker` while it is the last unlocker and folders are
-  locked with the vault. Clients should rotate after removing a key that may be lost.
+- `GET /vault`: the epoch and the unlockers, each folder key with its `name`, `credential_id`,
+  `rp_id` and `prf_salt` (what a client needs to ask the key, useless without it); `404`
+  before the first.
+- `POST /vault/unlockers` `{ kind, name?, credential_id?, rp_id?, prf_salt?, wrapped_vault_key,
+  epoch }`: enables a folder key (`name`, `credential_id`, `rp_id` of a host this server
+  answers on, `prf_salt`; `422` for one already enabled) or sets the recovery key (none of them;
+  it replaces the one before). The first creates the vault and must say epoch 1; later ones the
+  vault's current epoch, else `409 vault-changed`.
+- `DELETE /vault/unlockers/{id}`: refused with `409 last-unlocker` while it is the last unlocker
+  and folders are locked with the vault. Clients should rotate after removing a key that may be
+  lost. `DELETE /me/webauthn/{id}` and the administrator's reset of second factors leave the
+  vault alone.
 - `POST /vault/rotate` `{ epoch, unlockers: [{ id, wrapped_vault_key, prf_salt? }], folders:
   [{ node_id, wrapped_secret }], remove: [id] }`: one transaction; every unlocker that stays and
   every security-key folder must be listed exactly once (`422` otherwise).
@@ -527,7 +531,6 @@ Done (feature `protected_folders`):
   (`require_recent_sign_in`): adding or removing unlockers, rotating, protecting, unprotecting
   and removing a protection. With a stolen access token alone, nobody can add their own unlocker,
   lock the user's files with their own key, or throw away a folder's secret.
-- `GET /me/webauthn` returns `prf` and `synced` for each key (feature `security_key_prf`).
 - Clients do not put `protected_folders` in `REQUIRES`: without it they hide Protect.
 
 Done for password folders: `lock: "password"` in `POST /protected`, `POST` and `DELETE
@@ -556,7 +559,7 @@ Desktop `Authenticator`:
 - **Linux and macOS:** CTAP2 over USB HID with `hmac-secret`. Candidates: `ctap-hid-fido2` and
   `ctap-fido2` (both MIT; the latter documents `hmac-secret` and was tested on a YubiKey 5C), or
   `libfido2` through FFI. **Spike:** pick one; verify the PRF value matches Chrome's for the same
-  credential and salt, that a credential registered in the browser works, and that the PIN token
+  credential and salt, that a folder key made in the browser works, and that the PIN token
   can be reused for several assertions. Linux needs the usual udev rule for FIDO devices (shipped
   by `libfido2` and most distributions). The Flatpak build needs `--device=all` for hidraw access.
 - **Windows:** apps without admin rights cannot open FIDO devices directly, so the client must go
@@ -635,10 +638,11 @@ the web client like anywhere else, since the server decrypts them anyway. Phase 
 
 ## Phases
 
-1. **Foundation** (server + `vault-core`): the PRF registration change in the web client and
-   `prf` / `synced` in the key list (done); `vault-core` with fixed test vectors (done); schema,
-   vault and protected folder API, `409 last-unlocker`, the protecting states (done);
-   Authenticator spikes for Linux, macOS and Windows.
+1. **Foundation** (server + `vault-core`): `vault-core` with fixed test vectors (done); schema,
+   vault and protected folder API, folder keys apart from sign-in keys, `409 last-unlocker`, the
+   protecting states (done); the web client's folder key list and ceremonies (done) and enabling
+   one (waits for `vault-core`, see [Enabling a key](#enabling-a-key)); Authenticator spikes for
+   Linux, macOS and Windows.
 2. **Desktop, security keys**: enabling keys, recovery key, the Protect dialog, protecting new and
    existing folders, Unlock / Lock / Lock all, auto-lock, browse, open, upload, download, move and
    rename inside, deleting for good, hiding from on-demand files and sync.
@@ -654,13 +658,14 @@ the web client like anywhere else, since the server decrypts them anyway. Phase 
 
 - `vault-core`: fixed test vectors for the KEK derivation, PRF salt transform, name sealing and
   the folder recipient (done); round trips of names and content, including seeking (done).
-- The software authenticator of the server tests (`server/crates/api/tests/webauthn/authenticator.rs`)
-  signs `hmac-secret` at registration (done); a `vault-core` software `Authenticator` drives the
-  vault without hardware (done), so the e2e tests (`e2e/`) can drive the whole flow.
-- Cross-client check: a key registered in Chrome locks a folder on the desktop, and a file
+- A `vault-core` software `Authenticator` drives the vault without hardware (done), so the e2e
+  tests (`e2e/`) can drive the whole flow. The server takes no part in folder key ceremonies, so
+  its tests post unlockers as a client would.
+- Cross-client check: a folder key made in Chrome locks a folder on the desktop, and a file
   protected by the desktop opens in Chrome with the same key (manual, with a real YubiKey, before
   each phase ships).
-- Server tests (done for phase 1): unlockers only for keys with PRF, `409 last-unlocker`,
+- Server tests (done for phase 1): folder keys only whole and for this server's hosts, sign-in
+  keys and an administrator's reset of second factors leaving the vault alone, `409 last-unlocker`,
   rotation needing every folder and the current epoch, protection never overlapping, the states
   of a conversion, recent sign-in for every change of what unlocks.
 - Password folders: no plaintext blob, name or search entry left after the encryption job, every

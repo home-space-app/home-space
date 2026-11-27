@@ -83,7 +83,7 @@ async fn a_passkey_signs_in_with_its_answer_to_the_challenge() {
     assert_eq!(challenge.options.public_key.rp_id, "files.example.com");
     let credential: PublicKeyCredential = serde_json::from_value(answer()).expect("answer");
     let me = client
-        .passkey_finish(challenge.challenge_id.expect("id"), &credential)
+        .passkey_finish(challenge.challenge_id.expect("id"), credential)
         .await
         .expect("signed in");
     assert_eq!(me.second_factors.webauthn, 1);
@@ -128,13 +128,16 @@ async fn a_key_answers_the_second_step_and_confirms_it_is_the_user() {
     assert!(challenge.challenge_id.is_none());
     let credential: PublicKeyCredential = serde_json::from_value(answer()).expect("answer");
     client
-        .login_verify("pending", SecondFactor::WebAuthn(&credential))
+        .login_verify(
+            "pending",
+            SecondFactor::WebAuthn(Box::new(credential.clone())),
+        )
         .await
         .expect("signed in");
     client
         .reauthenticate(Confirmation::WebAuthn {
             challenge_id: challenge_id.parse().expect("uuid"),
-            credential: &credential,
+            credential: Box::new(credential),
         })
         .await
         .expect("confirmed");

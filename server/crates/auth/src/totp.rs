@@ -40,21 +40,15 @@ pub(crate) fn step_at(at: OffsetDateTime) -> i64 {
     at.unix_timestamp().div_euclid(STEP_SECONDS)
 }
 
-/// The code of `secret` for `step` (HOTP, RFC 4226).
-fn code(secret: &[u8], step: i64) -> u32 {
-    let Ok(mut mac) = Hmac::<Sha1>::new_from_slice(secret) else {
-        return 0;
-    };
+/// The code of `secret` for `step` (HOTP, RFC 4226); `None` for a secret HMAC does not
+/// take, which no secret of ours is.
+fn code(secret: &[u8], step: i64) -> Option<u32> {
+    let mut mac = Hmac::<Sha1>::new_from_slice(secret).ok()?;
     mac.update(&step.to_be_bytes());
     let digest = mac.finalize().into_bytes();
-    let offset = usize::from(digest[digest.len() - 1] & 0x0f);
-    let bytes = [
-        digest[offset] & 0x7f,
-        digest[offset + 1],
-        digest[offset + 2],
-        digest[offset + 3],
-    ];
-    u32::from_be_bytes(bytes) % MODULUS
+    let offset = usize::from(digest.last()? & 0x0f);
+    let bytes: [u8; 4] = digest.get(offset..offset + 4)?.try_into().ok()?;
+    Some((u32::from_be_bytes(bytes) & 0x7fff_ffff) % MODULUS)
 }
 
 /// The step whose code `given` is, among the current step at `now` and one on each side;
@@ -69,7 +63,7 @@ pub(crate) fn matching_step(secret: &[u8], given: &str, now: OffsetDateTime) -> 
     let current = step_at(now);
     let mut found = None;
     for step in current - DRIFT_STEPS..=current + DRIFT_STEPS {
-        if code(secret, step) == given {
+        if code(secret, step) == Some(given) {
             found = Some(step);
         }
     }
@@ -112,7 +106,7 @@ mod tests {
         ] {
             assert_eq!(
                 code(RFC_SECRET, step_at(at(seconds))),
-                expected,
+                Some(expected),
                 "{seconds}"
             );
         }
@@ -122,7 +116,7 @@ mod tests {
     fn a_code_counts_one_step_either_side_and_with_spaces() {
         let now = at(1_111_111_111);
         let step = step_at(now);
-        let code_of = |step| format!("{:06}", code(RFC_SECRET, step));
+        let code_of = |step| format!("{:06}", code(RFC_SECRET, step).expect("code"));
         assert_eq!(matching_step(RFC_SECRET, &code_of(step), now), Some(step));
         assert_eq!(
             matching_step(RFC_SECRET, &code_of(step - 1), now),

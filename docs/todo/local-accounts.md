@@ -62,7 +62,7 @@ did use a second factor ([Single sign-on users](#single-sign-on-users)).
 | Sign-in protocol | `/auth/login` stays as it is for apps. For a user with 2FA it answers `403 second-factor-required` with a readable detail. The web client opts in to the two-step flow (`two_step: true`) and finishes at `/auth/login/verify`. |
 | Sign-in on native apps | TOTP and WebAuthn only on the web. Apps open the server's web sign-in page in the system browser and get a session through PKCE, like single sign-on ("browser sign-in"). A server that reports `browser_login` gets only a "Sign in" button that opens the page; the native password form and the apps' use of `/auth/login` stay until 1.0.0 for older servers and servers without the web client. |
 | WebAuthn library | `webauthn-rs` on the server; `navigator.credentials` through `web-sys` in the web client. |
-| RP id | The tenant's primary domain host, as for protected folders. |
+| RP id | The host of the page that asks, which must be one of the tenant's names (its public URL's host or domains) where it has them. |
 | Secret storage | TOTP secrets encrypted with a new per-tenant key `HOMESPACE_SECRETS_KEY`. Recovery codes hashed. |
 | Sensitive changes | Need a recent sign-in (10 minutes) or re-confirming with password, code or passkey. |
 | Enforcement | Off by default. A tenant setting can require 2FA for administrators or everyone. |
@@ -111,11 +111,17 @@ replaces the TOTP code.
   two requests (feature `danger-allow-state-serialisation`; the state is not secret, only bound
   to the challenge), for 5 minutes, so it works with several server processes.
 - Attestation: `none`. HomeSpace does not need to know the brand of the key.
-- RP id (decided 2026-11-25): the host of the page that asks, not a configured name. The
-  request's `Origin` must be one of the server's own (as for the cookie), https or `localhost`,
-  and its host becomes the RP id; an IP address gets no passkeys, as WebAuthn allows none. So
-  single mode without a public URL works, and a server reached under two names has passkeys for
-  each. RP name: "Home Space". The RP id is stored with each credential, only credentials of the
+- RP id (decided 2026-11-25, narrowed 2026-11-27): the host of the page that asks. A tenant with
+  names of its own (the host of its public URL, its domains) takes only pages whose host is one
+  of them, https or a `localhost` name over http, whatever `Host` says, so a proxy that rewrites
+  `Host` changes nothing and nobody can probe passkeys under other names; only a tenant without
+  names (development, a bare LAN) goes by the `Host` the request was sent to, or another loopback
+  port. The page's host becomes the RP id; an IP address gets no passkeys, as WebAuthn allows
+  none. So a tenant reached under two of its names has passkeys for each. The rule lives in one
+  type (`api::browser::WebAuthnSites`), which also decides the RP ids of folder keys. Later
+  (option C): one RP id per tenant, its public URL's host, with the other names allowed through
+  [related origins](https://w3c.github.io/webauthn/#sctn-related-origins)
+  (`/.well-known/webauthn`), which changes only that type. RP name: "Home Space". The RP id is stored with each credential, only credentials of the
   page's RP id are offered, and the settings say "Works only on files.old.example" for others.
 - Stored: webauthn-rs's `Credential` as JSON, plus `kind` (`passkey` or `security_key`), so one
   credential type converts to `Passkey`, `SecurityKey` or `DiscoverableKey` per ceremony
@@ -130,14 +136,12 @@ replaces the TOTP code.
 - Signature counters are checked when the authenticator sends them (synced passkeys send 0).
 - A user may have up to 20 credentials.
 
-**Same key as protected folders?** Yes (changed 2026-11-26). A credential on a hardware key,
-registered with PRF (`hmac-secret` in its signed registration, reported as `prf`) and a PIN,
-can also be enabled as a vault unlocker (`vault_unlockers.credential` → `user_webauthn.id`, with
-its own `prf_salt`). Synced passkeys are not offered, since the native apps cannot reach them.
-Registration requests the `prf` extension; sign-in never does, so no PRF value reaches the
-server. Removing a credential that is the last unlocker of a vault with folders is refused
-(`409 last-unlocker`); removing another one removes its unlocker, and the desktop offers to
-rotate the vault key. See `docs/todo/protected-folders.md`.
+**Same key as protected folders?** The same physical key, never the same credential (changed
+2026-11-27). Protected folders use folder keys: credentials the client makes on a security key
+for the vault alone, kept in `vault_unlockers` with their own credential id, RP id and
+`prf_salt`, not in `user_webauthn`. Neither registration nor sign-in asks for PRF, so no PRF
+value reaches the server, and removing a sign-in key or resetting an account's second factors
+leaves the vault alone. See `docs/todo/protected-folders.md`.
 
 ### Recovery codes
 
@@ -341,16 +345,23 @@ apart (today it is an `Api { code: Forbidden }`) with the web dialog that answer
 
 ## Single sign-on users
 
-- Provider users (`password_hash IS NULL`, an identity row) do **not** get local TOTP or passkeys.
-  The provider is the place for them, and two places to manage factors would confuse people.
+- Provider users (an identity row: `Me.external`, `Account.external`) do **not** get local TOTP,
+  passkeys or recovery codes, nor sign in with a password, even one left from before (done:
+  `409 external-account`). The provider is the place for them, and two places to manage factors
+  would confuse people. They do protect folders: password folders and folder keys are not
+  sign-in factors. Re-confirming offers them no method, so they sign in at the provider again.
+- An administrator's `PUT /admin/users/{id}/password` (needs their recent sign-in) or
+  `homespace-ctl user passwd` makes a provider user local (done): in one transaction the
+  password is set, the identity rows, waiting login codes and sessions go. The provider's next
+  sign-in with that account then makes a new user, since accounts are matched on the subject.
 - `HOMESPACE_OIDC_REQUIRE_MFA=true` (per tenant): the ID token must carry an `amr` with `mfa`,
   `otp`, `hwk` or `swk`, else the sign-in is refused with `sso-mfa-required`. Auth0 sends
   `amr: ["mfa"]` when MFA ran; Keycloak only with a configured mapper, so the default stays off.
   The admin docs say how to set up each.
 - The session records `oidc` plus the provider's `amr`, so the admin pages can show "2FA: by
   provider" or "2FA: not reported".
-- A user who has a password **and** an identity (only possible through the CLI today) can use local
-  factors for the password route; the provider route is unchanged.
+- A user with a password **and** an identity (only from the CLI before 2026-11-27) is a provider
+  user: the password signs nothing in.
 
 ## Policy and administration
 
@@ -540,7 +551,7 @@ client falls back to plain password sign-in on older servers.
 ## Interaction with other plans
 
 - **Multi-tenancy**: everything is per tenant: tables carry `tenant_id` with the composite user
-  key, the RP id is the tenant's primary domain, `HOMESPACE_SECRETS_KEY_{TENANT}`. Moving a
+  key, the RP ids are the tenant's names, `HOMESPACE_SECRETS_KEY_{TENANT}`. Moving a
   tenant's primary domain breaks its passkeys (as it already does for protected folders);
   `homespace-ctl tenant domain` warns and counts them. WebAuthn
   [related origins](https://w3c.github.io/webauthn/#sctn-related-origins) (`/.well-known/webauthn`)
@@ -638,8 +649,8 @@ Each step is a release on its own and adds its feature name.
 5. **Password login off.** Decided 2026-11-25, following 1: passkeys count as a sign-in of their
    own, so with `HOMESPACE_PASSWORD_LOGIN=false` passkey sign-in stays available for local
    accounts; "off" turns off passwords only.
-6. **Provider users.** Leave 2FA to the provider (recommended), or also allow local TOTP/passkeys
-   for them as an extra layer?
+6. **Provider users.** Decided 2026-11-27: leave 2FA to the provider; they get no local factors.
+   An administrator can make one a local account by setting a password.
 7. **Account recovery.** Decided 2026-11-25: recovery codes plus an admin reset are enough; e-mail
    is not needed now.
 8. **Remember this device.** Decided 2026-11-25: no separate "remember this device". A sign-in

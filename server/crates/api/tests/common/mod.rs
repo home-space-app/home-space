@@ -93,6 +93,27 @@ pub async fn setup_with(
     .await
 }
 
+/// Like [`setup`], for a server whose tenant is reached at `public_url`, such as
+/// `https://files.example.com`, behind a proxy that may pass another `Host` on.
+pub async fn setup_at(pool: PgPool, public_url: &str) -> TestApp {
+    let db = Db::from_pool(pool);
+    let auth = AuthService::new(db.clone(), auth_config(TenantId::DEFAULT))
+        .expect("auth")
+        .with_secrets_key(Some(secrets_key()));
+    let public_url = public_url.to_owned();
+    build(db, auth.clone(), None, |shared| {
+        api::Tenants::single(api::TenantContext::new(
+            TenantId::DEFAULT,
+            "Tenant 1".to_owned(),
+            Vec::new(),
+            Some(public_url),
+            auth.clone(),
+            shared,
+        ))
+    })
+    .await
+}
+
 /// A server in host mode with two tenants: tenant 1 on [`HOST_A`] and another on
 /// [`HOST_B`], returned as each one's clients reach it. Both are given the same signing
 /// secret, which the server refuses at start-up, so that the tests show tokens are kept
@@ -148,8 +169,8 @@ fn domain(domain: &str, tenant_id: TenantId) -> TenantDomain {
     }
 }
 
-fn secrets_key() -> SecretBox {
-    SecretBox::new(SECRETS_KEY)
+fn secrets_key() -> Arc<SecretBox> {
+    Arc::new(SecretBox::new(SECRETS_KEY))
 }
 
 fn auth_config(tenant: TenantId) -> AuthConfig {

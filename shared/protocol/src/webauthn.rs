@@ -3,11 +3,13 @@
 //! The challenges and the browser's answers are the WebAuthn JSON of `webauthn-rs-proto`,
 //! which the web client hands to `navigator.credentials` as they are.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::DeviceInfo;
+use crate::{DeviceInfo, redact::Redacted};
 pub use webauthn_rs_proto::{
     CreationChallengeResponse, PublicKeyCredential, RegisterPublicKeyCredential,
     RequestChallengeResponse,
@@ -19,6 +21,11 @@ pub const MAX_KEY_NAME_LEN: usize = 64;
 /// What a credential can do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(
+    feature = "server",
+    derive(sqlx::Type),
+    sqlx(type_name = "text", rename_all = "snake_case")
+)]
 pub enum WebAuthnKind {
     /// Signs in on its own: the authenticator keeps the account and checks a PIN or biometrics
     /// (iCloud Keychain, Google Password Manager, Windows Hello, a YubiKey with a PIN).
@@ -32,15 +39,6 @@ impl WebAuthnKind {
         match self {
             Self::Passkey => "passkey",
             Self::SecurityKey => "security_key",
-        }
-    }
-
-    /// The kind stored as `name`, from [`Self::as_str`].
-    pub fn parse(name: &str) -> Option<Self> {
-        match name {
-            "passkey" => Some(Self::Passkey),
-            "security_key" => Some(Self::SecurityKey),
-            _ => None,
         }
     }
 
@@ -66,24 +64,6 @@ pub struct WebAuthnKey {
     pub created_at: OffsetDateTime,
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub last_used_at: Option<OffsetDateTime>,
-    /// The key made the credential with `hmac-secret` (WebAuthn PRF), as its signed
-    /// registration says, so it can derive the secret of protected folders. Keys added before
-    /// the web client asked for it usually cannot.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub prf: bool,
-    /// Backed up by its provider and synced between devices (iCloud Keychain, Google Password
-    /// Manager), rather than kept on one hardware key.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub synced: bool,
-}
-
-impl WebAuthnKey {
-    /// Whether the key can lock protected folders: a hardware key with PRF. Synced passkeys
-    /// cannot, since the native apps cannot reach them. It still needs a PIN, which only
-    /// asking the key tells.
-    pub fn can_protect_folders(&self) -> bool {
-        self.prf && !self.synced
-    }
 }
 
 /// `POST /me/webauthn/start`: begins adding a passkey or security key.
@@ -122,11 +102,20 @@ pub struct WebAuthnFinish {
 
 /// The added credential, and the account's recovery codes when it was its first second
 /// factor (shown only now).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WebAuthnAdded {
     pub key: WebAuthnKey,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recovery_codes: Vec<String>,
+}
+
+impl fmt::Debug for WebAuthnAdded {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WebAuthnAdded")
+            .field("key", &self.key)
+            .field("recovery_codes", &vec![Redacted; self.recovery_codes.len()])
+            .finish()
+    }
 }
 
 /// `PATCH /me/webauthn/{id}`.
@@ -165,14 +154,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn kinds_are_stored_by_name() {
+    fn kinds_are_sent_by_name() {
         for kind in [WebAuthnKind::Passkey, WebAuthnKind::SecurityKey] {
-            assert_eq!(WebAuthnKind::parse(kind.as_str()), Some(kind));
             assert_eq!(
                 serde_json::to_value(kind).expect("json"),
                 serde_json::Value::from(kind.as_str())
             );
         }
-        assert_eq!(WebAuthnKind::parse("phone"), None);
+        assert!(serde_json::from_str::<WebAuthnKind>(r#""phone""#).is_err());
     }
 }

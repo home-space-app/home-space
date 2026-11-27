@@ -118,7 +118,7 @@ async fn ancestors(
         .map(|mut node| {
             node.name = shown
                 .name(node.parent_id, node.kind, &node.name)
-                .ok_or(ApiError::from(accounts::AccountError::Locked))?;
+                .ok_or_else(|| ApiError::from(accounts::AccountError::Locked))?;
             Ok(Node::from(node))
         })
         .collect::<Result<_, ApiError>>()
@@ -167,11 +167,13 @@ async fn upload(
         .nodes
         .upload(
             user.actor(),
-            query.parent_id,
-            &query.name,
-            &names,
-            declared_type(&headers),
-            query.modified_at,
+            files::NewFile {
+                parent: query.parent_id,
+                name: &query.name,
+                names: &names,
+                content_type: declared_type(&headers),
+                modified_at: query.modified_at,
+            },
             body_stream(body),
         )
         .await?;

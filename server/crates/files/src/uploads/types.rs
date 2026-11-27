@@ -2,8 +2,10 @@
 
 use db::NodeId;
 
-use crate::{StoreOptions, StoreOutcome};
+use time::OffsetDateTime;
 use uuid::Uuid;
+
+use crate::{Names, StoreOptions, StoreOutcome};
 
 /// What a resumable upload stores once complete.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,6 +21,17 @@ pub enum UploadTarget {
     Replace(NodeId),
     /// The bytes of a file of a transfer the caller is sending.
     TransferItem(Uuid),
+}
+
+/// A resumable upload to start: `size` bytes for `target`, a new file's name kept as `names`
+/// stores the names of the folder it goes to, with what is known of the content.
+#[derive(Clone, Debug)]
+pub struct UploadRequest<'a> {
+    pub target: UploadTarget,
+    pub names: &'a Names,
+    pub size: u64,
+    pub content_type: Option<&'a str>,
+    pub modified_at: Option<OffsetDateTime>,
 }
 
 /// Where an upload stands.

@@ -56,14 +56,14 @@ pub use devices::{Device, NewDevice, TargetDevice};
 pub use duplicates::OutdatedRow;
 pub use error::DbError;
 pub use login_codes::LoginCode;
-pub use models::{FileVersion, Node, RefreshToken, User};
+pub use models::{FileVersion, Node, PasswordSet, RefreshToken, User};
 pub use nodes::{DeletedNodes, FOLDER_MIME, FileState, NewContent, NewNode, NodeProperties};
 pub use oidc::OidcPending;
 pub use protocol::{NodeId, NodeKind, OnConflict, Patch, SharePermission, UserId};
 pub use search::{ContentState, RankedNode};
 pub use second_factors::{PendingLogin, SecondFactorState, StoredTotp};
 pub use secrets_keys::{SealedFolderKey, SealedSecrets, SealedTotp, SecretsRotation};
-pub use sessions::{Authentication, LiveSession};
+pub use sessions::{Authentication, Confirmation, LiveSession};
 pub use shares::{
     NewShareLink, NewUserShare, OwnedShare, ReceivedShare, ShareLink, ShareRecipient, ShareUpdate,
     SharedAccess, SharedRoot,
@@ -78,12 +78,12 @@ pub use trash::{LOST_AND_FOUND, SpecialFolders, TrashedNode};
 pub use tx::Tx;
 pub use uploads::{NewUpload, Upload};
 pub use vaults::{
-    EnclosingPasswordFolder, FolderFile, FolderNode, KeyLock, NewProtection, NewUnlocker,
-    PasswordLock, PasswordSecrets, ProtectRefusal, Rewrapped, StoredProtection, StoredUnlocker,
-    StoredVault,
+    EnclosingPasswordFolder, FolderFile, FolderKey, FolderNode, KeyLock, NewProtection,
+    NewUnlocker, PasswordLock, PasswordSecrets, ProtectError, ProtectRefusal, Rewrapped,
+    StoredProtection, StoredUnlocker, StoredVault, UnlockerSource,
 };
 pub use webauthn::{
-    Ceremony, MAX_WEBAUTHN_CREDENTIALS, NewCeremony, NewCredential, StoredCredential,
+    Ceremony, CeremonyKind, MAX_WEBAUTHN_CREDENTIALS, NewCeremony, NewCredential, StoredCredential,
 };
 
 use sqlx::{

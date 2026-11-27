@@ -275,6 +275,16 @@ impl Validate for RenameWebAuthnKey {
     }
 }
 
+/// A folder key is named like a sign-in key; the vault service checks the rest, which depends
+/// on the kind and the host.
+impl Validate for crate::AddUnlocker {
+    fn validate(&self) -> Result<(), Vec<FieldError>> {
+        let mut found = Violations::default();
+        found.check("/name", self.name.as_deref().and_then(key_name_problem));
+        found.finish()
+    }
+}
+
 /// Requests whose shape is all there is to check here; the server's services check what
 /// depends on stored state.
 macro_rules! shape_only {
@@ -285,7 +295,6 @@ macro_rules! shape_only {
 
 // The vault's requests are checked by the server's vault service, which reports each field.
 shape_only!(
-    crate::AddUnlocker,
     crate::ProtectFolder,
     crate::RotateVault,
     crate::UnlockFolder,
@@ -434,5 +443,22 @@ mod tests {
         assert_eq!(pointers(rename("  ").validate()), ["/name"]);
         assert_eq!(pointers(rename(&"é".repeat(65)).validate()), ["/name"]);
         assert_eq!(rename(&"é".repeat(64)).validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_folder_key_is_named_like_a_sign_in_key() {
+        let add = |name: Option<&str>| crate::AddUnlocker {
+            kind: crate::UnlockerKind::SecurityKey,
+            name: name.map(str::to_owned),
+            credential_id: None,
+            rp_id: None,
+            prf_salt: None,
+            wrapped_vault_key: crate::encoding::Base64Url::from(vec![1; crate::WRAPPED_LEN]),
+            epoch: 1,
+        };
+        assert_eq!(add(Some("YubiKey 5C")).validate(), Ok(()));
+        assert_eq!(add(None).validate(), Ok(()));
+        assert_eq!(pointers(add(Some(" ")).validate()), ["/name"]);
+        assert_eq!(pointers(add(Some(&"k".repeat(65))).validate()), ["/name"]);
     }
 }

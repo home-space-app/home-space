@@ -12,7 +12,6 @@ publish = false
 api-client = { path = "api-client" }
 client-core = { path = "client-core" }
 protocol = { path = "../shared/protocol" }
-vault-core = { path = "../shared/vault-core" }
 pdf-core = { path = "pdf-core" }
 sync-core = { path = "sync-core" }
 

@@ -37,7 +37,9 @@ impl Client {
         .await
     }
 
-    /// Sets a new password for an account that has one; ends all its sessions.
+    /// Sets a new password for an account, ending all its sessions; one linked to the identity
+    /// provider becomes a local account. Needs the administrator to have signed in recently
+    /// ([`ApiError::ReauthenticationRequired`] otherwise).
     pub async fn set_account_password(&self, id: UserId, password: &str) -> Result<(), ApiError> {
         let request = SetPassword {
             password: password.to_owned(),

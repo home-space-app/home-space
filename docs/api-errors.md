@@ -37,7 +37,7 @@ Extension members, present only where they apply:
 | `limit` | bytes or items | `too-large`, `too-many-items` |
 | `quota`, `available` | bytes | `quota-exceeded` |
 | `current_offset` | bytes | `offset-mismatch` |
-| `methods` | names | `reauthentication-required`: the ways the user can confirm it is them, `password`, `totp` or `webauthn`; empty means sign in again. `second-factor-required`: the second factors the account can use, `totp`, `webauthn` and `recovery` |
+| `methods` | names | `reauthentication-required`: the ways the user can confirm it is them, `password`, `totp` or `webauthn`; empty means sign in again. Changes to how an account with a second factor signs in name only `totp` and `webauthn`: the password does not confirm those. `second-factor-required`: the second factors the account can use, `totp`, `webauthn` and `recovery` |
 | `login_token` | string | `second-factor-required`, when the sign-in asked for `two_step`: what `POST /auth/login/verify` takes, for 5 minutes and 5 wrong codes |
 | `errors` | `[{ "pointer", "detail" }]` | `validation-failed`: every field at fault, as a JSON Pointer into the body or query |
 
@@ -65,13 +65,14 @@ type, a bad id in the path, a missing header), **415** for a body in the wrong f
 | `username-taken` | 409 | `conflict` | The username is taken. |
 | `totp-exists` | 409 | `conflict` | An authenticator app is already set up; remove it before adding another. |
 | `too-many-keys` | 409 | `conflict` | The account has 20 passkeys and security keys, the most it may; remove one first. |
-| `last-unlocker` | 409 | `conflict` | The key is the last that unlocks the account's protected folders; add another key or a recovery key first. |
+| `last-unlocker` | 409 | `conflict` | The folder key or recovery key is the last that unlocks the account's protected folders; add another one first. |
 | `vault-changed` | 409 | `conflict` | The vault was created or rotated meanwhile (`epoch` is not its current one); read `GET /vault` again. |
-| `protected` | 409 | `conflict` | The item is a protected folder, is inside one, or holds one, and this is not possible with it. |
+| `protected` | 409 | `conflict` | The item is a protected folder, is inside one, or holds one, and this is not possible with it. Also a write that met the folder being protected or unprotected at that moment; sending it again works. |
 | `lost-and-found` | 409 | `conflict` | Lost & Found, or a folder holding it, cannot be deleted. |
 | `offset-mismatch` | 409 | `conflict` | A chunk does not start at `current_offset`, where the upload ends. |
 | `transfer-not-ready` | 409 | `conflict` | The transfer's files are still being uploaded. |
 | `marked-for-deletion` | 409 | `conflict` | An account marked for deletion cannot be enabled before its deletion is cancelled. |
+| `external-account` | 409 | `conflict` | The account is linked to the identity provider (`external` in `GET /me`): it signs in there, and its password, second factors and passkeys are managed there, so it can't sign in with a password or passkey, add an authenticator app, passkey or security key, or make recovery codes here. |
 | `gone` | 410 | `gone` | The share has expired. |
 | `changes-pruned` | 410 | `gone` | The changes asked for are no longer kept; list everything again. |
 | `transfer-gone` | 410 | `gone` | The transfer was declined, cancelled, saved or has expired. |

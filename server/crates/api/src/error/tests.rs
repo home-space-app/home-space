@@ -28,11 +28,11 @@ fn a_busy_server_asks_the_client_to_come_back() {
 
 #[test]
 fn a_change_that_needs_a_proof_says_which_ones_will_do() {
-    let methods = vec!["password"];
+    let methods = vec![protocol::AuthMethod::Password];
     let problem = ApiError::Auth(AuthError::ReauthenticationRequired { methods }).problem();
     assert_eq!(problem.kind(), Some(ProblemType::ReauthenticationRequired));
     assert_eq!(problem.status, Some(403));
-    assert_eq!(problem.methods, ["password"]);
+    assert_eq!(problem.methods, [protocol::AuthMethod::Password]);
     assert_eq!(
         problem.detail(),
         "Confirm it is you: enter your password again."

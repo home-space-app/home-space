@@ -128,11 +128,11 @@ pub(crate) async fn ranged_in_folder(
         let mut left = len;
         let mut buffer = vec![0u8; 64 * 1024];
         while left > 0 {
-            let want = usize::try_from(left.min(buffer.len() as u64)).unwrap_or(buffer.len());
+            let want = usize::try_from(left).map_or(buffer.len(), |left| left.min(buffer.len()));
             match reader.read(&mut buffer[..want]) {
                 Ok(0) => break,
                 Ok(read) => {
-                    left -= read as u64;
+                    left = left.saturating_sub(u64::try_from(read).unwrap_or(u64::MAX));
                     let chunk = bytes::Bytes::copy_from_slice(&buffer[..read]);
                     if sender.blocking_send(Ok(chunk)).is_err() {
                         return;

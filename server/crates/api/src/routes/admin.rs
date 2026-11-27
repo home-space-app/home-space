@@ -78,13 +78,20 @@ async fn update_account(
     Ok(Json(account(updated)))
 }
 
-/// Sets a new password for an account that has one, ending all its sessions.
+/// Sets a new password for an account, ending all its sessions. An account linked to the
+/// identity provider becomes a local one: the provider signs that person in as a new user from
+/// then on. The administrator must have signed in or confirmed it is them recently.
 async fn set_password(
     tenant: Tenant,
-    _admin: AdminUser,
+    admin: AdminUser,
     ApiPath(id): ApiPath<UserId>,
     ApiJson(request): ApiJson<SetPassword>,
 ) -> Result<StatusCode, ApiError> {
+    tenant.accounts.account(id).await?;
+    tenant
+        .auth
+        .require_recent_sign_in(admin.id, admin.session_id)
+        .await?;
     tenant.accounts.set_password(id, &request.password).await?;
     Ok(StatusCode::NO_CONTENT)
 }

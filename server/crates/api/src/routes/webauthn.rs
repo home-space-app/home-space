@@ -1,8 +1,8 @@
 //! Passkeys and security keys: the user's own, the second step of a sign-in with one, a
 //! passkey sign-in, and confirming it is the user with one.
 //!
-//! Every challenge is for the page that asks, named by `Origin`, which must be one of this
-//! server's own (see [`RelyingParty`]).
+//! Every challenge is for the page that asks, named by `Origin`, which must be one of the
+//! tenant's sites (see [`WebAuthnSites`] and [`RelyingParty`]).
 
 use axum::{
     Json, Router,
@@ -21,7 +21,7 @@ use protocol::{
 use super::auth::{browser, session};
 use crate::{
     ApiError, AppState,
-    browser::own_origin,
+    browser::WebAuthnSites,
     extract::{ApiJson, ApiPath, AuthUser, ClientIp, Tenant},
 };
 
@@ -39,9 +39,12 @@ pub fn routes() -> Router<AppState> {
 
 /// The relying party of the page the request comes from.
 fn relying_party(headers: &HeaderMap, tenant: &Tenant) -> Result<RelyingParty, ApiError> {
-    let origin = own_origin(headers, tenant).ok_or(AuthError::WebAuthnUnavailable(
-        "Passkeys work only on the server's own pages.",
-    ))?;
+    let origin =
+        WebAuthnSites::of(headers, tenant)
+            .origin()
+            .ok_or(AuthError::WebAuthnUnavailable(
+                "Passkeys work only on the server's own address.",
+            ))?;
     Ok(RelyingParty::new(origin)?)
 }
 
@@ -92,7 +95,7 @@ async fn rename(
 ) -> Result<Json<WebAuthnKey>, ApiError> {
     let key = tenant
         .auth
-        .rename_webauthn(user.id, id, &request.name)
+        .rename_webauthn(user.id, user.session_id, id, &request.name)
         .await?;
     Ok(Json(key))
 }

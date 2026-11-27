@@ -51,6 +51,8 @@ pub enum AccountError {
     Files(#[from] FilesError),
     #[error(transparent)]
     Db(DbError),
+    #[error(transparent)]
+    Vault(#[from] vault_core::Error),
 }
 
 /// A missing row is a missing account or device; anything else is the server's fault.
@@ -78,7 +80,7 @@ impl AsProblem for AccountError {
             Self::Locked => ProblemType::Locked,
             Self::Auth(err) => err.problem_type(),
             Self::Files(err) => err.problem_type(),
-            Self::Db(_) => ProblemType::Internal,
+            Self::Db(_) | Self::Vault(_) => ProblemType::Internal,
         }
     }
 

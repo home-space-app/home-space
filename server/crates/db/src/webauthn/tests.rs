@@ -7,7 +7,7 @@ async fn user(db: &Db, tenant: TenantId, name: &str) -> UserId {
     db.create_user(tenant, name, "hash").await.expect("user").id
 }
 
-fn key<'a>(id: Uuid, credential_id: &'a [u8], kind: &'a str) -> NewCredential<'a> {
+fn key(id: Uuid, credential_id: &[u8], kind: WebAuthnKind) -> NewCredential<'_> {
     NewCredential {
         id,
         credential_id,
@@ -32,7 +32,7 @@ async fn the_first_key_brings_recovery_codes_and_the_last_takes_them(pool: PgPoo
         db.add_webauthn_credential(
             TenantId::DEFAULT,
             alice,
-            key(first, b"one", "passkey"),
+            key(first, b"one", WebAuthnKind::Passkey),
             &codes()
         )
         .await
@@ -42,7 +42,7 @@ async fn the_first_key_brings_recovery_codes_and_the_last_takes_them(pool: PgPoo
         !db.add_webauthn_credential(
             TenantId::DEFAULT,
             alice,
-            key(second, b"two", "security_key"),
+            key(second, b"two", WebAuthnKind::SecurityKey),
             &[b"c".to_vec()]
         )
         .await
@@ -91,7 +91,7 @@ async fn removing_the_app_keeps_the_codes_while_a_key_remains(pool: PgPool) {
     db.add_webauthn_credential(
         TenantId::DEFAULT,
         alice,
-        key(Uuid::now_v7(), b"one", "passkey"),
+        key(Uuid::now_v7(), b"one", WebAuthnKind::Passkey),
         &codes(),
     )
     .await
@@ -120,11 +120,11 @@ async fn a_user_has_at_most_twenty_keys_each_registered_once_per_tenant(pool: Pg
     let alice = user(&db, TenantId::DEFAULT, "alice").await;
     let bob = user(&db, other, "bob").await;
     for n in 0..MAX_WEBAUTHN_CREDENTIALS {
-        let id = n.to_be_bytes();
+        let id = i64::from(n).to_be_bytes();
         db.add_webauthn_credential(
             TenantId::DEFAULT,
             alice,
-            key(Uuid::now_v7(), &id, "passkey"),
+            key(Uuid::now_v7(), &id, WebAuthnKind::Passkey),
             &[],
         )
         .await
@@ -134,16 +134,21 @@ async fn a_user_has_at_most_twenty_keys_each_registered_once_per_tenant(pool: Pg
         db.add_webauthn_credential(
             TenantId::DEFAULT,
             alice,
-            key(Uuid::now_v7(), b"more", "passkey"),
+            key(Uuid::now_v7(), b"more", WebAuthnKind::Passkey),
             &[]
         )
         .await,
         Err(DbError::Conflict)
     ));
     let taken = 0_i64.to_be_bytes();
-    db.add_webauthn_credential(other, bob, key(Uuid::now_v7(), &taken, "passkey"), &[])
-        .await
-        .expect("another tenant may hold the same credential id");
+    db.add_webauthn_credential(
+        other,
+        bob,
+        key(Uuid::now_v7(), &taken, WebAuthnKind::Passkey),
+        &[],
+    )
+    .await
+    .expect("another tenant may hold the same credential id");
     let found = db
         .webauthn_credential_by_id(other, &taken)
         .await
@@ -195,7 +200,7 @@ async fn a_ceremony_is_answered_once_by_its_kind_and_tenant_before_it_expires(po
     let ceremony = |id, expires_at| NewCeremony {
         id,
         user: Some(alice),
-        kind: "add_passkey",
+        kind: CeremonyKind::AddPasskey,
         origin: "https://files.example.com",
         state: r#"{"challenge":"x"}"#,
         expires_at,
@@ -212,32 +217,32 @@ async fn a_ceremony_is_answered_once_by_its_kind_and_tenant_before_it_expires(po
     .expect("insert");
 
     assert!(
-        db.take_webauthn_ceremony(other, id, &["add_passkey"])
+        db.take_webauthn_ceremony(other, id, &[CeremonyKind::AddPasskey])
             .await
             .expect("db")
             .is_none()
     );
     assert!(
-        db.take_webauthn_ceremony(TenantId::DEFAULT, id, &["sign_in"])
+        db.take_webauthn_ceremony(TenantId::DEFAULT, id, &[CeremonyKind::SignIn])
             .await
             .expect("db")
             .is_none()
     );
     assert!(
-        db.take_webauthn_ceremony(TenantId::DEFAULT, old, &["add_passkey"])
+        db.take_webauthn_ceremony(TenantId::DEFAULT, old, &[CeremonyKind::AddPasskey])
             .await
             .expect("db")
             .is_none()
     );
     let taken = db
-        .take_webauthn_ceremony(TenantId::DEFAULT, id, &["add_passkey"])
+        .take_webauthn_ceremony(TenantId::DEFAULT, id, &[CeremonyKind::AddPasskey])
         .await
         .expect("db")
         .expect("waiting");
     assert_eq!(taken.user_id, Some(alice));
     assert_eq!(taken.origin, "https://files.example.com");
     assert!(
-        db.take_webauthn_ceremony(TenantId::DEFAULT, id, &["add_passkey"])
+        db.take_webauthn_ceremony(TenantId::DEFAULT, id, &[CeremonyKind::AddPasskey])
             .await
             .expect("db")
             .is_none()
@@ -258,7 +263,7 @@ async fn an_administrators_reset_removes_the_keys(pool: PgPool) {
     db.add_webauthn_credential(
         TenantId::DEFAULT,
         alice,
-        key(Uuid::now_v7(), b"one", "passkey"),
+        key(Uuid::now_v7(), b"one", WebAuthnKind::Passkey),
         &codes(),
     )
     .await
@@ -285,7 +290,7 @@ async fn a_tenant_has_passkeys_only_for_the_address_they_were_made_on(pool: PgPo
     db.add_webauthn_credential(
         TenantId::DEFAULT,
         alice,
-        key(Uuid::now_v7(), b"key", "security_key"),
+        key(Uuid::now_v7(), b"key", WebAuthnKind::SecurityKey),
         &codes(),
     )
     .await
@@ -295,7 +300,7 @@ async fn a_tenant_has_passkeys_only_for_the_address_they_were_made_on(pool: PgPo
     db.add_webauthn_credential(
         TenantId::DEFAULT,
         alice,
-        key(Uuid::now_v7(), b"passkey", "passkey"),
+        key(Uuid::now_v7(), b"passkey", WebAuthnKind::Passkey),
         &codes(),
     )
     .await
@@ -313,7 +318,7 @@ async fn a_use_is_recorded_only_while_the_counter_goes_up(pool: PgPool) {
     db.add_webauthn_credential(
         TenantId::DEFAULT,
         alice,
-        key(id, b"key", "passkey"),
+        key(id, b"key", WebAuthnKind::Passkey),
         &codes(),
     )
     .await

@@ -11,6 +11,8 @@
 //! [`vault::with_folder_keys`]) instead of returning them. Every key type wipes itself on drop
 //! and implements neither `Clone` nor a `Debug` that shows its bytes.
 
+#![warn(missing_docs)]
+
 pub mod authenticator;
 pub mod content;
 mod error;
@@ -24,12 +26,15 @@ pub mod vault;
 mod vectors;
 pub mod wrap;
 
-pub use authenticator::{Authenticator, CredentialRef, PrfOutput, SoftAuthenticator};
-pub use error::Error;
+#[cfg(any(test, feature = "testing"))]
+pub use authenticator::SoftAuthenticator;
+pub use authenticator::{Authenticator, CredentialRef, PrfOutput};
+pub use error::{ContentError, Error, Internal, NameProblem};
 pub use folder::{FolderKeys, FolderSecret};
 pub use kdf::Kek;
 pub use names::NodeKind;
 pub use recovery::RecoveryKey;
 pub use vault::VaultKey;
 
+/// This crate's result, with [`Error`] by default.
 pub type Result<T, E = Error> = std::result::Result<T, E>;

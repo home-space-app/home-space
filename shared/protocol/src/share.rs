@@ -7,14 +7,19 @@
 //! [`SHARE_ACCESS`](crate::paths::SHARE_ACCESS) header, or the `access` query parameter where
 //! headers cannot be sent. An expired link answers 410 Gone, a removed one 404.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{Node, NodeId, NodeKind, Patch, UserId, UserRef};
+use crate::{
+    Node, NodeId, NodeKind, Patch, UserId, UserRef,
+    redact::{Redacted, redacted},
+};
 
 /// Body of `POST /shares`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateShare {
     /// The owner's files and folders to share; folders are shared with everything inside.
     pub node_ids: Vec<NodeId>,
@@ -33,9 +38,20 @@ pub struct CreateShare {
     pub recipients: Vec<UserId>,
 }
 
+impl fmt::Debug for CreateShare {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CreateShare")
+            .field("node_ids", &self.node_ids)
+            .field("password", &redacted(self.password.as_ref()))
+            .field("expires_at", &self.expires_at)
+            .field("recipients", &self.recipients)
+            .finish()
+    }
+}
+
 /// Body of `PATCH /shares/{id}`. A missing field is left as it is; `null` removes the
 /// password or the expiry.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateShare {
     #[serde(default, skip_serializing_if = "Patch::is_keep")]
     pub password: Patch<String>,
@@ -48,6 +64,21 @@ pub struct UpdateShare {
     /// Everyone a share with users is for from now on; never empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recipients: Option<Vec<UserId>>,
+}
+
+impl fmt::Debug for UpdateShare {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let password = match self.password {
+            Patch::Keep => Patch::Keep,
+            Patch::Clear => Patch::Clear,
+            Patch::Set(_) => Patch::Set(Redacted),
+        };
+        f.debug_struct("UpdateShare")
+            .field("password", &password)
+            .field("expires_at", &self.expires_at)
+            .field("recipients", &self.recipients)
+            .finish()
+    }
 }
 
 /// Query of `GET /shares`.
@@ -166,9 +197,17 @@ pub struct CopyShared {
 }
 
 /// Body of `POST /public/shares/{token}/unlock`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnlockShare {
     pub password: String,
+}
+
+impl fmt::Debug for UnlockShare {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UnlockShare")
+            .field("password", &Redacted)
+            .finish()
+    }
 }
 
 /// Answer of `POST /public/shares/{token}/unlock`: proof that the password was given. It stops

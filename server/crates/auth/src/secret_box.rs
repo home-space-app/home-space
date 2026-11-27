@@ -27,8 +27,8 @@ const KEY_INFO: &[u8] = b"homespace secret box v1";
 /// What the check of a tenant's key seals: any value works, as only the key opens it.
 const CHECK_PLAIN: &[u8] = b"homespace secrets key check v1";
 
-/// The tenant's secrets key.
-#[derive(Clone)]
+/// The tenant's secrets key. Not `Clone`, so the key is not copied around: share it in an
+/// `Arc`.
 pub struct SecretBox {
     cipher: Aes256Gcm,
 }

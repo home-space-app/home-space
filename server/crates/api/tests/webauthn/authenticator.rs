@@ -14,7 +14,6 @@ const USER_VERIFIED: u8 = 0x04;
 const BACKUP_ELIGIBLE: u8 = 0x08;
 const BACKUP_STATE: u8 = 0x10;
 const ATTESTED_DATA: u8 = 0x40;
-const EXTENSION_DATA: u8 = 0x80;
 
 struct Account {
     credential_id: Vec<u8>,
@@ -31,9 +30,6 @@ pub struct Authenticator {
     pub synced: bool,
     /// Checks a PIN or biometrics.
     pub verifies_user: bool,
-    /// Makes credentials with `hmac-secret` (what a security key does when the browser asks for
-    /// PRF), and says so in the authenticator data it signs.
-    pub hmac_secret: bool,
 }
 
 impl Authenticator {
@@ -42,7 +38,6 @@ impl Authenticator {
             accounts: Vec::new(),
             synced: false,
             verifies_user: true,
-            hmac_secret: false,
         }
     }
 
@@ -75,8 +70,7 @@ impl Authenticator {
             (cbor_int(-3), cbor_bytes(point.y().expect("y"))),
         ]);
         let mut auth_data = Sha256::digest(rp_id.as_bytes()).to_vec();
-        let extension_flag = if self.hmac_secret { EXTENSION_DATA } else { 0 };
-        auth_data.push(self.flags() | ATTESTED_DATA | extension_flag);
+        auth_data.push(self.flags() | ATTESTED_DATA);
         auth_data.extend(0u32.to_be_bytes());
         auth_data.extend([0u8; 16]);
         auth_data.extend(
@@ -86,10 +80,6 @@ impl Authenticator {
         );
         auth_data.extend(&credential_id);
         auth_data.extend(cose_key);
-        if self.hmac_secret {
-            // CBOR `true` is 0xf5.
-            auth_data.extend(cbor_map(&[(cbor_text("hmac-secret"), vec![0xf5])]));
-        }
         let attestation = cbor_map(&[
             (cbor_text("fmt"), cbor_text("none")),
             (cbor_text("attStmt"), cbor_map(&[])),

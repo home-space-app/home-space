@@ -17,7 +17,10 @@ use webauthn_rs::prelude::{
 };
 use webauthn_rs_proto::ResidentKeyRequirement;
 
-use db::{DbError, MAX_WEBAUTHN_CREDENTIALS, NewCeremony, NewCredential, StoredCredential, UserId};
+use db::{
+    CeremonyKind, DbError, MAX_WEBAUTHN_CREDENTIALS, NewCeremony, NewCredential, StoredCredential,
+    UserId,
+};
 use protocol::{RegistrationChallenge, WebAuthnAdded, WebAuthnKey, WebAuthnKind};
 
 use super::AuthService;
@@ -32,13 +35,13 @@ use crate::{
 
 /// How long the browser and the user have to answer a challenge.
 const CEREMONY_TTL: Duration = Duration::minutes(5);
-const ADDING: [&str; 2] = ["add_passkey", "add_security_key"];
+const ADDING: [CeremonyKind; 2] = [CeremonyKind::AddPasskey, CeremonyKind::AddSecurityKey];
 
 impl AuthService {
     /// The passkeys and security keys of `user_id`, oldest first.
     pub async fn webauthn_keys(&self, user_id: UserId) -> Result<Vec<WebAuthnKey>, AuthError> {
         let stored = self.db.webauthn_credentials(user_id).await?;
-        Ok(stored.into_iter().filter_map(key_of).collect())
+        Ok(stored.into_iter().map(key_of).collect())
     }
 
     /// Starts adding a passkey or security key for the user of `session_id`, who must have
@@ -50,13 +53,11 @@ impl AuthService {
         kind: WebAuthnKind,
         party: &RelyingParty,
     ) -> Result<RegistrationChallenge, AuthError> {
-        self.require_recent_sign_in(user_id, session_id).await?;
-        let user = self.user(user_id).await?;
-        if user.password_hash.is_none() {
-            return Err(AuthError::NoPassword);
-        }
+        self.require_recent_second_factor(user_id, session_id)
+            .await?;
+        let user = self.local_user(user_id).await?;
         let existing = self.db.webauthn_credentials(user_id).await?;
-        if existing.len() >= usize::try_from(MAX_WEBAUTHN_CREDENTIALS).unwrap_or(usize::MAX) {
+        if at_key_limit(existing.len()) {
             return Err(AuthError::TooManyKeys);
         }
         let handle = self.db.webauthn_handle(user_id, random_id()).await?;
@@ -74,7 +75,7 @@ impl AuthService {
                     selection.resident_key = Some(ResidentKeyRequirement::Required);
                     selection.require_resident_key = true;
                 }
-                (options, state_json(&state))
+                (options, state_json(&state)?)
             }
             WebAuthnKind::SecurityKey => {
                 let (options, state) = webauthn
@@ -87,13 +88,13 @@ impl AuthService {
                         Some(AuthenticatorAttachment::CrossPlatform),
                     )
                     .map_err(|_| AuthError::WebAuthnFailed)?;
-                (options, state_json(&state))
+                (options, state_json(&state)?)
             }
         };
         let challenge_id = random_id();
         let ceremony_kind = match kind {
-            WebAuthnKind::Passkey => ADDING[0],
-            WebAuthnKind::SecurityKey => ADDING[1],
+            WebAuthnKind::Passkey => CeremonyKind::AddPasskey,
+            WebAuthnKind::SecurityKey => CeremonyKind::AddSecurityKey,
         };
         self.store_ceremony(challenge_id, Some(user_id), ceremony_kind, party, &state)
             .await?;
@@ -114,7 +115,8 @@ impl AuthService {
         answer: &RegisterPublicKeyCredential,
         name: Option<&str>,
     ) -> Result<WebAuthnAdded, AuthError> {
-        self.require_recent_sign_in(user_id, session_id).await?;
+        self.require_recent_second_factor(user_id, session_id)
+            .await?;
         let ceremony = self
             .db
             .take_webauthn_ceremony(self.tenant, challenge_id, &ADDING)
@@ -123,18 +125,21 @@ impl AuthService {
             .ok_or(AuthError::LoginExpired)?;
         let party = RelyingParty::new(&ceremony.origin)?;
         let webauthn = party.webauthn()?;
-        let (kind, credential): (WebAuthnKind, Credential) = if ceremony.kind == ADDING[0] {
-            let state: PasskeyRegistration = parse_state(&ceremony.state)?;
-            let made = webauthn
-                .finish_passkey_registration(answer, &state)
-                .map_err(failed)?;
-            (WebAuthnKind::Passkey, made.into())
-        } else {
-            let state: SecurityKeyRegistration = parse_state(&ceremony.state)?;
-            let made = webauthn
-                .finish_securitykey_registration(answer, &state)
-                .map_err(failed)?;
-            (WebAuthnKind::SecurityKey, made.into())
+        let (kind, credential): (WebAuthnKind, Credential) = match ceremony.kind {
+            CeremonyKind::AddPasskey => {
+                let state: PasskeyRegistration = parse_state(&ceremony.state)?;
+                let made = webauthn
+                    .finish_passkey_registration(answer, &state)
+                    .map_err(failed)?;
+                (WebAuthnKind::Passkey, made.into())
+            }
+            CeremonyKind::AddSecurityKey | CeremonyKind::SignIn | CeremonyKind::Reauthenticate => {
+                let state: SecurityKeyRegistration = parse_state(&ceremony.state)?;
+                let made = webauthn
+                    .finish_securitykey_registration(answer, &state)
+                    .map_err(failed)?;
+                (WebAuthnKind::SecurityKey, made.into())
+            }
         };
         let name = name
             .map(str::trim)
@@ -153,7 +158,7 @@ impl AuthService {
         name: &str,
     ) -> Result<WebAuthnAdded, AuthError> {
         let id = Uuid::now_v7();
-        let json = credential_json(credential);
+        let json = credential_json(credential)?;
         let codes = recovery_codes::new_set();
         let hashes: Vec<Vec<u8>> = codes
             .iter()
@@ -163,7 +168,7 @@ impl AuthService {
             id,
             credential_id: &credential.cred_id,
             credential: &json,
-            kind: kind.as_str(),
+            kind,
             rp_id: party.id(),
             name,
         };
@@ -192,24 +197,24 @@ impl AuthService {
     /// registered it.
     async fn why_not_added(&self, user_id: UserId) -> AuthError {
         match self.db.webauthn_credentials(user_id).await {
-            Ok(keys)
-                if keys.len()
-                    >= usize::try_from(MAX_WEBAUTHN_CREDENTIALS).unwrap_or(usize::MAX) =>
-            {
-                AuthError::TooManyKeys
-            }
+            Ok(keys) if at_key_limit(keys.len()) => AuthError::TooManyKeys,
             Ok(_) => AuthError::WebAuthnFailed,
             Err(err) => err.into(),
         }
     }
 
-    /// Renames the user's passkey or security key `id`.
+    /// Renames the passkey or security key `id` of the user of `session_id`, who must have
+    /// confirmed it is them recently as for removing it: a name is what tells the user which
+    /// key to remove.
     pub async fn rename_webauthn(
         &self,
         user_id: UserId,
+        session_id: Uuid,
         id: Uuid,
         name: &str,
     ) -> Result<WebAuthnKey, AuthError> {
+        self.require_recent_second_factor(user_id, session_id)
+            .await?;
         match self
             .db
             .rename_webauthn_credential(user_id, id, name.trim())
@@ -226,21 +231,24 @@ impl AuthService {
     }
 
     /// Removes the passkey or security key `id` of the user of `session_id`, who must have
-    /// signed in or confirmed it is them recently; with the last second factor the recovery
-    /// codes go too, and the vault unlocker it was. Refused while it is the last unlocker of
-    /// protected folders. Their sessions stay.
+    /// signed in or confirmed it is them recently with a second factor (see
+    /// [`require_recent_second_factor`](Self::require_recent_second_factor)); with the last
+    /// second factor the recovery codes go too. Their other sessions end, so that one signed in
+    /// with the key does not outlive it; `session_id` stays, and so does the vault: folder keys
+    /// are credentials of their own.
     pub async fn remove_webauthn(
         &self,
         user_id: UserId,
         session_id: Uuid,
         id: Uuid,
     ) -> Result<(), AuthError> {
-        self.require_recent_sign_in(user_id, session_id).await?;
+        self.require_recent_second_factor(user_id, session_id)
+            .await?;
         match self.db.remove_webauthn_credential(user_id, id).await {
             Err(DbError::NotFound) => return Err(AuthError::UnknownKey),
-            Err(DbError::Conflict) => return Err(AuthError::LastUnlocker),
             other => other?,
         }
+        self.sessions.end_others(user_id, session_id).await?;
         tracing::info!(user = %user_id, "passkey or security key removed");
         Ok(())
     }
@@ -270,7 +278,7 @@ impl AuthService {
             .map_err(failed)?;
         // Passkeys on the phone or computer may answer as well as a key in the USB port.
         options.public_key.hints = None;
-        Ok((options, state_json(&state)))
+        Ok((options, state_json(&state)?))
     }
 
     /// Checks `answer` to the challenge `state` that `origin` was sent for one of the user's
@@ -311,7 +319,7 @@ impl AuthService {
     ) -> Result<(), AuthError> {
         let mut key = passkey(credential);
         let changed = key.update_credential(result) == Some(true);
-        let json = changed.then(|| credential_json(&key.into()));
+        let json = changed.then(|| credential_json(&key.into())).transpose()?;
         let touched = self
             .db
             .touch_webauthn_credential(stored.id, json.as_deref(), result.counter())
@@ -331,7 +339,7 @@ impl AuthService {
         &self,
         id: Uuid,
         user: Option<UserId>,
-        kind: &str,
+        kind: CeremonyKind,
         party: &RelyingParty,
         state: &str,
     ) -> Result<(), AuthError> {
@@ -360,36 +368,20 @@ pub(super) fn key_method(result: &AuthenticationResult) -> &'static str {
     }
 }
 
-fn key_of(stored: StoredCredential) -> Option<WebAuthnKey> {
-    let (prf, synced) = prf_and_synced(&stored.credential);
-    Some(WebAuthnKey {
+fn key_of(stored: StoredCredential) -> WebAuthnKey {
+    WebAuthnKey {
         id: stored.id,
-        kind: WebAuthnKind::parse(&stored.kind)?,
+        kind: stored.kind,
         name: stored.name,
         rp_id: stored.rp_id,
         created_at: stored.created_at,
         last_used_at: stored.last_used_at,
-        prf,
-        synced,
-    })
+    }
 }
 
-/// Whether a stored credential has `hmac-secret` and whether it syncs. Both come from the
-/// authenticator data the key signed at registration (the browser asks for `prf`, which a
-/// security key answers with `hmac-secret`; webauthn-rs keeps it as unsolicited), and the
-/// backup flag as last seen. An unreadable credential has neither.
-fn prf_and_synced(json: &str) -> (bool, bool) {
-    use webauthn_rs_proto::ExtnState;
-    match parse_credential(json) {
-        Ok(credential) => (
-            matches!(
-                credential.extensions.hmac_create_secret,
-                ExtnState::Set(true) | ExtnState::Unsolicited(true)
-            ),
-            credential.backup_eligible,
-        ),
-        Err(_) => (false, false),
-    }
+/// Whether a user with `count` passkeys and security keys may add no more.
+fn at_key_limit(count: usize) -> bool {
+    count >= usize::from(MAX_WEBAUTHN_CREDENTIALS)
 }
 
 /// A wrong or unusable answer; the details stay in the log.

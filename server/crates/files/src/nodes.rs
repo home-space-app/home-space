@@ -16,6 +16,18 @@ use crate::{
     emitted, tree,
 };
 
+/// A file to store with [`NodeService::upload`]: in `parent` (the root when `None`) as `name`,
+/// kept as `names` stores the names of that folder. A missing `content_type` is guessed from the
+/// name; `modified_at` is when the content last changed, if the client knows.
+#[derive(Clone, Copy, Debug)]
+pub struct NewFile<'a> {
+    pub parent: Option<NodeId>,
+    pub name: &'a str,
+    pub names: &'a Names,
+    pub content_type: Option<&'a str>,
+    pub modified_at: Option<OffsetDateTime>,
+}
+
 /// A user's folders and files.
 #[derive(Clone, Debug)]
 pub struct NodeService {
@@ -63,7 +75,12 @@ impl NodeService {
         names: &Names,
     ) -> Result<Node, FilesError> {
         self.acting(actor.device)
-            .create_folder_as(actor.user, parent, &names.store(NodeKind::Folder, name)?)
+            .create_folder_as(
+                actor.user,
+                parent,
+                &names.store(NodeKind::Folder, name)?,
+                names,
+            )
             .await
     }
 
@@ -72,30 +89,17 @@ impl NodeService {
     /// A new name creates the file, identical content under an existing name changes nothing,
     /// and different content becomes a new version of the existing file. Content last changed
     /// at `modified_at`, before the existing file, is kept as one of its versions instead.
-    #[allow(clippy::too_many_arguments)]
     pub async fn upload<S>(
         &self,
         actor: Actor,
-        parent: Option<NodeId>,
-        name: &str,
-        names: &Names,
-        content_type: Option<&str>,
-        modified_at: Option<OffsetDateTime>,
+        file: NewFile<'_>,
         body: S,
     ) -> Result<StoreOutcome, FilesError>
     where
         S: Stream<Item = Result<Bytes, BodyError>>,
     {
         self.acting(actor.device)
-            .upload_as(
-                actor.user,
-                parent,
-                name,
-                names,
-                content_type,
-                modified_at,
-                body,
-            )
+            .upload_as(actor.user, file, body)
             .await
     }
 
@@ -176,7 +180,7 @@ impl NodeService {
             update.name = Some(names.store(kind, &name)?);
         }
         self.acting(actor.device)
-            .update_as(actor.user, id, update)
+            .update_as(actor.user, id, update, names)
             .await
     }
 
@@ -199,8 +203,12 @@ impl NodeService {
         owner: UserId,
         parent: Option<NodeId>,
         name: &str,
+        names: &Names,
     ) -> Result<Node, FilesError> {
-        let folder = self.content.insert_folder(owner, parent, name).await?;
+        let folder = self
+            .content
+            .insert_folder(owner, parent, name, names)
+            .await?;
         self.content
             .events
             .publish_one(DomainEvent::NodeCreated(folder.clone()))
@@ -208,20 +216,22 @@ impl NodeService {
         Ok(folder)
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn upload_as<S>(
         &self,
         owner: UserId,
-        parent: Option<NodeId>,
-        name: &str,
-        names: &Names,
-        content_type: Option<&str>,
-        modified_at: Option<OffsetDateTime>,
+        file: NewFile<'_>,
         body: S,
     ) -> Result<StoreOutcome, FilesError>
     where
         S: Stream<Item = Result<Bytes, BodyError>>,
     {
+        let NewFile {
+            parent,
+            name,
+            names,
+            content_type,
+            modified_at,
+        } = file;
         if let Some(parent) = parent {
             self.content.db.get_node(owner, parent).await?;
         }
@@ -280,8 +290,9 @@ impl NodeService {
         owner: UserId,
         id: NodeId,
         update: NodeUpdate,
+        names: &Names,
     ) -> Result<MoveOutcome, FilesError> {
-        let outcome = tree::update_node(&self.content.db, owner, id, update).await?;
+        let outcome = tree::update_node(&self.content.db, owner, id, update, names).await?;
         self.content.apply_blob_ops(owner, &outcome.blob_ops).await;
         self.content.events.publish(emitted::moved(&outcome)).await;
         Ok(outcome)

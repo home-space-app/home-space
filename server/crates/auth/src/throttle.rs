@@ -10,6 +10,7 @@
 use std::net::{IpAddr, Ipv6Addr};
 
 use time::{Duration, OffsetDateTime};
+use uuid::Uuid;
 
 use db::{Db, TenantId};
 
@@ -33,6 +34,16 @@ pub(crate) const FREE_ADDRESS_FAILURES: u32 = 20;
 pub(crate) const MAX_ADDRESS_BLOCK: Duration = Duration::minutes(15);
 /// How long after its last wrong password an address starts from nothing again.
 const ADDRESS_ATTEMPTS_MEMORY: Duration = Duration::hours(1);
+/// The source that wrong guesses at one secret are counted under from every source together.
+/// No address is written like it, so it never mixes with the count of one.
+const ALL_SOURCES: &str = "*";
+/// Wrong guesses one secret, such as a folder's password, may get from all sources together
+/// before every attempt at it waits. Well above what its owner mistypes on their devices, since
+/// only the owner's own sessions can try it.
+pub(crate) const FREE_SECRET_FAILURES: u32 = 10;
+/// The longest wait of a secret over all sources. Short, because it holds up the owner too,
+/// and it is what keeps someone guessing from many addresses at one try an hour.
+pub(crate) const MAX_SECRET_BLOCK: Duration = Duration::hours(1);
 /// The key started sign-ins from one address are counted under. No user has it: it is only
 /// ever counted under [`TenantId::SHARED`], which no user belongs to.
 const SIGN_IN_STARTS: &str = "sign-in-starts";
@@ -62,6 +73,8 @@ enum Scope {
     Key,
     /// One address, over every username of every tenant.
     Address,
+    /// One secret of one tenant, from every source together.
+    AllSources,
     /// Sign-ins started from one address, in the browser or with single sign-on.
     Starts,
 }
@@ -88,6 +101,18 @@ impl Counter {
         }
     }
 
+    /// Wrong guesses at `key` of `tenant` from every source together, so that spreading them
+    /// over many addresses gains nothing. The right one only takes its own attempt back, so
+    /// the owner getting it right does not start a guesser afresh.
+    pub(crate) fn all_sources(tenant: TenantId, key: impl Into<String>) -> Self {
+        Self {
+            tenant,
+            key: key.into(),
+            source: ALL_SOURCES.to_owned(),
+            scope: Scope::AllSources,
+        }
+    }
+
     /// Sign-ins started from `source`, over every tenant. Each start stays counted, whether
     /// or not it is ever finished.
     pub(crate) fn sign_in_starts(source: impl Into<String>) -> Self {
@@ -101,7 +126,7 @@ impl Counter {
 
     fn memory(&self) -> Duration {
         match self.scope {
-            Scope::Key => LOGIN_ATTEMPTS_MEMORY,
+            Scope::Key | Scope::AllSources => LOGIN_ATTEMPTS_MEMORY,
             Scope::Address => ADDRESS_ATTEMPTS_MEMORY,
             Scope::Starts => SIGN_IN_STARTS_MEMORY,
         }
@@ -111,6 +136,7 @@ impl Counter {
         match self.scope {
             Scope::Key => login_block,
             Scope::Address => address_block,
+            Scope::AllSources => secret_block,
             Scope::Starts => sign_in_starts_block,
         }
     }
@@ -193,7 +219,7 @@ impl Attempt {
                         .clear_login_attempts(counter.tenant, &counter.key, &counter.source)
                         .await?;
                 }
-                Scope::Address => self.take_back_one(counter).await?,
+                Scope::Address | Scope::AllSources => self.take_back_one(counter).await?,
                 Scope::Starts => {}
             }
         }
@@ -242,6 +268,13 @@ pub(crate) fn address_block(failures: u32) -> Option<Duration> {
     doubling_block(failures, FREE_ADDRESS_FAILURES, MAX_ADDRESS_BLOCK)
 }
 
+/// How long every attempt at a secret must wait after `failures` wrong guesses from all
+/// sources together: not at all for the first [`FREE_SECRET_FAILURES`], then in the same steps
+/// as [`login_block`], up to [`MAX_SECRET_BLOCK`].
+pub(crate) fn secret_block(failures: u32) -> Option<Duration> {
+    doubling_block(failures, FREE_SECRET_FAILURES, MAX_SECRET_BLOCK)
+}
+
 /// How long an address must wait after starting `starts` sign-ins: not at all for the first
 /// [`FREE_SIGN_IN_STARTS`], then in the same steps as [`login_block`], up to 15 minutes.
 pub(crate) fn sign_in_starts_block(starts: u32) -> Option<Duration> {
@@ -257,6 +290,16 @@ fn doubling_block(failures: u32, free: u32, longest: Duration) -> Option<Duratio
         .and_then(|factor| FIRST_LOGIN_BLOCK.checked_mul(factor))
         .unwrap_or(longest);
     Some(wait.min(longest))
+}
+
+/// The source of attempts made through a session, such as confirming it is the user.
+pub(crate) fn session_source(session_id: Uuid) -> String {
+    format!("session:{session_id}")
+}
+
+/// The source of attempts from a device the user signed in from before.
+pub(crate) fn device_source(device_id: Uuid) -> String {
+    format!("device:{device_id}")
 }
 
 /// What failed sign-ins from `address` are counted under: the address itself for IPv4 and

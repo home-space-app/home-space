@@ -29,18 +29,22 @@ fn prf_salt_transform() {
 #[test]
 fn keks() {
     assert_eq!(
-        hex(Kek::from_prf(&PrfOutput::from_bytes([0x01; 32])).expose()),
+        hex(Kek::from_prf(&PrfOutput::from_bytes([0x01; 32]))
+            .unwrap()
+            .expose()),
         "74c795a97a17da504db4dcbecdb65a46944309b565566b91690ff04a46a7137e"
     );
     assert_eq!(
-        hex(Kek::from_recovery(&RecoveryKey::from_bytes([0x02; 32])).expose()),
+        hex(Kek::from_recovery(&RecoveryKey::from_bytes([0x02; 32]))
+            .unwrap()
+            .expose()),
         "1240aeb8c3667c9bffee4cc72d8bf6eda317fc843dddb26877aa3924ccb0fec5"
     );
 }
 
 #[test]
 fn folder_keys() {
-    let keys = FolderSecret::from_bytes([0x04; 32]).keys();
+    let keys = FolderSecret::from_bytes([0x04; 32]).keys().unwrap();
     assert_eq!(
         keys.recipient().to_string(),
         "age1fauk43xvke3myu0vg0syaflnwhlslwxd2504jfdjwejkjc50pcysgcf5gf"

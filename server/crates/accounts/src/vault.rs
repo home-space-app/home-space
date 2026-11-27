@@ -13,16 +13,17 @@ use std::net::IpAddr;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
-use auth::{AuthError, AuthService};
+use auth::{AuthError, AuthService, FolderSecretKind};
 use db::{
-    Db, DbError, KeyLock, NewProtection, NewUnlocker, NodeId, PasswordLock, ProtectRefusal,
-    Rewrapped, StoredProtection, StoredUnlocker, StoredVault, UserId,
+    Db, DbError, FolderKey, KeyLock, NewProtection, NewUnlocker, NodeId, PasswordLock,
+    ProtectError, ProtectRefusal, Rewrapped, StoredProtection, StoredUnlocker, StoredVault,
+    UnlockerSource, UserId,
 };
 use protocol::{
     AddUnlocker, ChangeFolderPassword, FolderLock, FolderPasswordChanged, FolderUnlocked,
-    PRF_SALT_LEN, ProtectFolder, ProtectedFolder, ProtectionState, RotateVault, UnlockerKind,
-    Vault, VaultUnlocker, WRAPPED_LEN, encoding::Base64Url, is_age_recipient,
-    rules::password_problem,
+    MAX_CREDENTIAL_ID_LEN, PRF_SALT_LEN, ProtectFolder, ProtectedFolder, ProtectionState,
+    RotateVault, UnlockerKind, Vault, VaultUnlocker, WRAPPED_LEN, encoding::Base64Url,
+    is_age_recipient, rules::password_problem,
 };
 use vault_core::{FolderKeys, FolderSecret, RecoveryKey};
 
@@ -34,6 +35,14 @@ use crate::AccountError;
 mod names;
 
 pub use names::Shown;
+
+/// A password folder the server still has to encrypt or decrypt, with its keys.
+pub struct ConvertingFolder {
+    pub user: UserId,
+    pub node: NodeId,
+    pub state: ProtectionState,
+    pub keys: FolderKeys,
+}
 
 /// The vault and protected folders of one tenant's users.
 #[derive(Clone, Debug)]
@@ -53,64 +62,39 @@ impl VaultService {
         Ok(vault_of(stored))
     }
 
-    /// Enables a security key or sets the recovery key, for the user of `session`.
+    /// Enables a folder key or sets the recovery key, for the user of `session`. A folder key's
+    /// `rp_id` must be a host `own_host` accepts, where the tenant's pages are.
     pub async fn add_unlocker(
         &self,
         user: UserId,
         session: Uuid,
         request: &AddUnlocker,
+        own_host: impl Fn(&str) -> bool,
     ) -> Result<VaultUnlocker, AccountError> {
         self.auth.require_recent_sign_in(user, session).await?;
         check_wrapped("/wrapped_vault_key", &request.wrapped_vault_key)?;
-        match request.kind {
+        let source = match request.kind {
             UnlockerKind::SecurityKey => {
-                let credential = request.credential.ok_or(AccountError::Invalid {
-                    field: "/credential",
-                    message: "A security key needs its credential.",
-                })?;
-                let salt = request.prf_salt.as_ref().ok_or(AccountError::Invalid {
-                    field: "/prf_salt",
-                    message: "A security key needs its PRF salt.",
-                })?;
-                if salt.len() != PRF_SALT_LEN {
-                    return Err(AccountError::Invalid {
-                        field: "/prf_salt",
-                        message: "The PRF salt must be 32 bytes.",
-                    });
-                }
-                let key = self
-                    .auth
-                    .webauthn_keys(user)
-                    .await?
-                    .into_iter()
-                    .find(|key| key.id == credential)
-                    .ok_or(AccountError::Invalid {
-                        field: "/credential",
-                        message: "There is no such passkey or security key.",
-                    })?;
-                if !key.can_protect_folders() {
-                    return Err(AccountError::Invalid {
-                        field: "/credential",
-                        message: "Only a security key made with PRF can unlock protected \
-                                  folders. Add the key again from this server's web page.",
-                    });
-                }
+                UnlockerSource::SecurityKey(folder_key(request, own_host)?)
             }
             UnlockerKind::Recovery => {
-                if request.credential.is_some() || request.prf_salt.is_some() {
+                if request.name.is_some()
+                    || request.credential_id.is_some()
+                    || request.rp_id.is_some()
+                    || request.prf_salt.is_some()
+                {
                     return Err(AccountError::Invalid {
                         field: "/kind",
-                        message: "A recovery key has no credential or PRF salt.",
+                        message: "A recovery key has no name, credential or PRF salt.",
                     });
                 }
+                UnlockerSource::Recovery
             }
-        }
+        };
         let id = Uuid::now_v7();
         let new = NewUnlocker {
             id,
-            kind: request.kind.as_str(),
-            credential: request.credential,
-            prf_salt: request.prf_salt.as_ref().map(Base64Url::as_bytes),
+            source,
             wrapped_vault_key: request.wrapped_vault_key.as_bytes(),
             epoch: request.epoch,
         };
@@ -118,14 +102,8 @@ impl VaultService {
             Err(DbError::Stale) => return Err(AccountError::VaultChanged),
             Err(DbError::Conflict) => {
                 return Err(AccountError::Invalid {
-                    field: "/credential",
+                    field: "/credential_id",
                     message: "This key already unlocks the protected folders.",
-                });
-            }
-            Err(DbError::NotFound) => {
-                return Err(AccountError::Invalid {
-                    field: "/credential",
-                    message: "There is no such passkey or security key.",
                 });
             }
             other => other?,
@@ -178,8 +156,11 @@ impl VaultService {
             }
             unlockers.push(Rewrapped {
                 id: unlocker.id,
-                prf_salt: unlocker.prf_salt.clone().map(|salt| salt.0),
-                wrapped: unlocker.wrapped_vault_key.0.clone(),
+                prf_salt: unlocker
+                    .prf_salt
+                    .as_ref()
+                    .map(|salt| salt.as_bytes().to_vec()),
+                wrapped: unlocker.wrapped_vault_key.as_bytes().to_vec(),
             });
         }
         let mut folders = Vec::with_capacity(request.folders.len());
@@ -188,7 +169,7 @@ impl VaultService {
             folders.push(Rewrapped {
                 id: folder.node_id.0,
                 prf_salt: None,
-                wrapped: folder.wrapped_secret.0.clone(),
+                wrapped: folder.wrapped_secret.as_bytes().to_vec(),
             });
         }
         let rotated = self
@@ -213,12 +194,8 @@ impl VaultService {
 
     /// The user's protected folders.
     pub async fn folders(&self, user: UserId) -> Result<Vec<ProtectedFolder>, AccountError> {
-        self.db
-            .protected_folders(user)
-            .await?
-            .into_iter()
-            .map(folder_of)
-            .collect()
+        let stored = self.db.protected_folders(user).await?;
+        Ok(stored.into_iter().map(folder_of).collect())
     }
 
     /// Protects one of the user's folders. An empty one is protected at once. One with
@@ -295,9 +272,9 @@ impl VaultService {
             });
         }
         let secret = FolderSecret::generate();
-        self.check_names_fit(user, request.node_id, secret.keys())
+        self.check_names_fit(user, request.node_id, secret.keys()?)
             .await?;
-        let recipient = secret.recipient().to_string();
+        let recipient = secret.recipient()?.to_string();
         let sealed = self
             .auth
             .seal_folder_key(user, secret.to_raw().as_slice())?;
@@ -346,19 +323,20 @@ impl VaultService {
         let stored = self
             .db
             .protect_folder(user, node, lock)
-            .await?
-            .map_err(|refusal| match refusal {
-                ProtectRefusal::NotFound => AccountError::NotFound,
-                ProtectRefusal::SpecialFolder => {
+            .await
+            .map_err(|err| match err {
+                ProtectError::Refused(ProtectRefusal::NotFound) => AccountError::NotFound,
+                ProtectError::Refused(ProtectRefusal::SpecialFolder) => {
                     AccountError::Protected("The recycle bin and Lost & Found cannot be protected.")
                 }
-                ProtectRefusal::Overlaps => AccountError::Protected(
+                ProtectError::Refused(ProtectRefusal::Overlaps) => AccountError::Protected(
                     "The folder is protected, is inside a protected folder, or holds one.",
                 ),
-                ProtectRefusal::VaultChanged => AccountError::VaultChanged,
+                ProtectError::Refused(ProtectRefusal::VaultChanged) => AccountError::VaultChanged,
+                ProtectError::Db(err) => err.into(),
             })?;
-        tracing::info!(user = %user, folder = %node, lock = %stored.lock, "folder protected");
-        folder_of(stored)
+        tracing::info!(user = %user, folder = %node, lock = stored.lock.as_str(), "folder protected");
+        Ok(folder_of(stored))
     }
 
     /// Unlocks the password folder `node` for `session` with its `password`.
@@ -377,7 +355,13 @@ impl VaultService {
             .ok_or(AccountError::NotFound)?;
         match self
             .auth
-            .check_folder_password(node, secrets.password_hash, password, address)
+            .check_folder_password(
+                node,
+                FolderSecretKind::Password,
+                secrets.password_hash,
+                password,
+                address,
+            )
             .await
         {
             Err(AuthError::InvalidCredentials) => {
@@ -443,7 +427,7 @@ impl VaultService {
             .as_slice()
             .try_into()
             .map_err(|_| AccountError::Auth(AuthError::Unsealing))?;
-        Ok(FolderSecret::from_raw(bytes).keys())
+        Ok(FolderSecret::from_raw(bytes).keys()?)
     }
 
     /// Refuses to move `sources` into `target` (or the root) across the edge of a password
@@ -479,20 +463,20 @@ impl VaultService {
 
     /// The password folders of this tenant the server still has to encrypt or decrypt, with
     /// their keys.
-    pub async fn converting(
-        &self,
-    ) -> Result<Vec<(UserId, NodeId, ProtectionState, FolderKeys)>, AccountError> {
+    pub async fn converting(&self) -> Result<Vec<ConvertingFolder>, AccountError> {
         let mut found = Vec::new();
         for (user, node, state) in self
             .db
             .converting_password_folders(self.auth.tenant())
             .await?
         {
-            let Some(state) = ProtectionState::parse(&state) else {
-                continue;
-            };
             match self.folder_keys(user, node).await {
-                Ok(keys) => found.push((user, node, state, keys)),
+                Ok(keys) => found.push(ConvertingFolder {
+                    user,
+                    node,
+                    state,
+                    keys,
+                }),
                 Err(err) => {
                     tracing::error!(user = %user, folder = %node, error = %err, "password folder key cannot be opened");
                 }
@@ -506,7 +490,13 @@ impl VaultService {
     /// Safe to run again, and at the same time as another run.
     pub async fn convert_folders(&self, nodes: &files::NodeService) -> Result<usize, AccountError> {
         let mut finished = 0;
-        for (user, node, state, keys) in self.converting().await? {
+        for ConvertingFolder {
+            user,
+            node,
+            state,
+            keys,
+        } in self.converting().await?
+        {
             if state == ProtectionState::Unprotecting {
                 if self
                     .decrypt_folder(nodes, user, node, files::Names::unsealing(node, keys))
@@ -544,7 +534,7 @@ impl VaultService {
         }
         match self
             .db
-            .remove_protection(user, node, &[ProtectionState::Unprotecting.as_str()])
+            .remove_protection(user, node, &[ProtectionState::Unprotecting])
             .await
         {
             Ok(()) => {
@@ -606,7 +596,7 @@ impl VaultService {
             .protected_folder(user, node)
             .await?
             .ok_or(AccountError::NotFound)?;
-        if folder.lock == FolderLock::Password.as_str() {
+        if folder.lock == FolderLock::Password {
             // The server decrypts it, for a session that knows the password.
             self.require_unlocked(session, node).await?;
         }
@@ -688,7 +678,8 @@ impl VaultService {
         }
         let new_recovery = match (&request.current_password, &request.recovery_key) {
             (Some(current), None) => {
-                self.check_folder_secret(node, secrets.password_hash, current, address)
+                let kind = FolderSecretKind::Password;
+                self.check_folder_secret(node, kind, secrets.password_hash, current, address)
                     .await?;
                 None
             }
@@ -697,7 +688,8 @@ impl VaultService {
                     field: "/recovery_key",
                     message: "That is not a recovery key: 55 letters and digits in 11 groups.",
                 })?;
-                self.check_folder_secret(node, secrets.recovery_hash, &key.to_display(), address)
+                let (kind, typed) = (FolderSecretKind::RecoveryKey, key.to_display());
+                self.check_folder_secret(node, kind, secrets.recovery_hash, &typed, address)
                     .await?;
                 Some(RecoveryKey::generate().to_display())
             }
@@ -729,13 +721,14 @@ impl VaultService {
     async fn check_folder_secret(
         &self,
         node: NodeId,
+        kind: FolderSecretKind,
         hash: String,
         typed: &str,
         address: Option<IpAddr>,
     ) -> Result<(), AccountError> {
         match self
             .auth
-            .check_folder_password(node, hash, typed, address)
+            .check_folder_password(node, kind, hash, typed, address)
             .await
         {
             Err(AuthError::InvalidCredentials) => Err(AccountError::Auth(AuthError::WrongPassword)),
@@ -759,10 +752,7 @@ impl VaultService {
             "The server drops a password folder's protection itself once it is decrypted.",
         )
         .await?;
-        let states = [
-            ProtectionState::Protecting.as_str(),
-            ProtectionState::Unprotecting.as_str(),
-        ];
+        let states = [ProtectionState::Protecting, ProtectionState::Unprotecting];
         match self.db.remove_protection(user, node, &states).await {
             Err(DbError::Stale) => {
                 return Err(AccountError::Protected(
@@ -788,7 +778,7 @@ impl VaultService {
             .protected_folder(user, node)
             .await?
             .ok_or(AccountError::NotFound)?;
-        if folder.lock == FolderLock::Password.as_str() {
+        if folder.lock == FolderLock::Password {
             return Err(AccountError::Protected(refusal));
         }
         Ok(())
@@ -801,10 +791,7 @@ impl VaultService {
         from: ProtectionState,
         to: ProtectionState,
     ) -> Result<ProtectedFolder, AccountError> {
-        let changed = self
-            .db
-            .set_protection_state(user, node, &[from.as_str()], to.as_str())
-            .await;
+        let changed = self.db.set_protection_state(user, node, &[from], to).await;
         let stored = match changed {
             Err(DbError::Stale) => {
                 return Err(AccountError::Protected(match from {
@@ -815,8 +802,53 @@ impl VaultService {
             other => other?,
         };
         tracing::info!(user = %user, folder = %node, state = to.as_str(), "folder protection changed");
-        folder_of(stored)
+        Ok(folder_of(stored))
     }
+}
+
+/// The folder key `request` enables, once each of its fields is there and fits.
+fn folder_key<'a>(
+    request: &'a AddUnlocker,
+    own_host: impl Fn(&str) -> bool,
+) -> Result<FolderKey<'a>, AccountError> {
+    let missing = |field| AccountError::Invalid {
+        field,
+        message: "A folder key needs its name, credential id, RP id and PRF salt.",
+    };
+    let name = request.name.as_deref().ok_or_else(|| missing("/name"))?;
+    let credential_id = request
+        .credential_id
+        .as_ref()
+        .ok_or_else(|| missing("/credential_id"))?;
+    let rp_id = request.rp_id.as_deref().ok_or_else(|| missing("/rp_id"))?;
+    let prf_salt = request
+        .prf_salt
+        .as_ref()
+        .ok_or_else(|| missing("/prf_salt"))?;
+    if credential_id.is_empty() || credential_id.len() > MAX_CREDENTIAL_ID_LEN {
+        return Err(AccountError::Invalid {
+            field: "/credential_id",
+            message: "A credential id is 1 to 1023 bytes.",
+        });
+    }
+    if !own_host(rp_id) {
+        return Err(AccountError::Invalid {
+            field: "/rp_id",
+            message: "The key must be made for an address of this server.",
+        });
+    }
+    if prf_salt.len() != PRF_SALT_LEN {
+        return Err(AccountError::Invalid {
+            field: "/prf_salt",
+            message: "The PRF salt must be 32 bytes.",
+        });
+    }
+    Ok(FolderKey {
+        name: name.trim(),
+        credential_id: credential_id.as_bytes(),
+        rp_id,
+        prf_salt: prf_salt.as_bytes(),
+    })
 }
 
 fn check_wrapped(field: &'static str, wrapped: &Base64Url) -> Result<(), AccountError> {
@@ -833,38 +865,33 @@ fn check_wrapped(field: &'static str, wrapped: &Base64Url) -> Result<(), Account
 fn vault_of(stored: StoredVault) -> Vault {
     Vault {
         epoch: stored.epoch,
-        unlockers: stored
-            .unlockers
-            .into_iter()
-            .filter_map(unlocker_of)
-            .collect(),
+        unlockers: stored.unlockers.into_iter().map(unlocker_of).collect(),
     }
 }
 
-fn unlocker_of(stored: StoredUnlocker) -> Option<VaultUnlocker> {
-    Some(VaultUnlocker {
+fn unlocker_of(stored: StoredUnlocker) -> VaultUnlocker {
+    VaultUnlocker {
         id: stored.id,
-        kind: UnlockerKind::parse(&stored.kind)?,
-        credential: stored.credential,
-        credential_id: stored.credential_id.map(Base64Url),
+        kind: stored.kind,
+        name: stored.name,
+        credential_id: stored.credential_id.map(Base64Url::from),
         rp_id: stored.rp_id,
-        prf_salt: stored.prf_salt.map(Base64Url),
-        wrapped_vault_key: Base64Url(stored.wrapped_vault_key),
+        prf_salt: stored.prf_salt.map(Base64Url::from),
+        wrapped_vault_key: Base64Url::from(stored.wrapped_vault_key),
         created_at: stored.created_at,
-    })
+    }
 }
 
-fn folder_of(stored: StoredProtection) -> Result<ProtectedFolder, AccountError> {
-    let broken = || AccountError::Db(DbError::Invalid);
-    Ok(ProtectedFolder {
+fn folder_of(stored: StoredProtection) -> ProtectedFolder {
+    ProtectedFolder {
         node_id: stored.node_id,
-        lock: FolderLock::parse(&stored.lock).ok_or_else(broken)?,
-        wrapped_secret: stored.wrapped_secret.map(Base64Url),
+        lock: stored.lock,
+        wrapped_secret: stored.wrapped_secret.map(Base64Url::from),
         epoch: stored.epoch,
         recipient: stored.recipient,
         format: stored.format,
-        state: ProtectionState::parse(&stored.state).ok_or_else(broken)?,
+        state: stored.state,
         created_at: stored.created_at,
         recovery_key: None,
-    })
+    }
 }

@@ -60,11 +60,13 @@ async fn upload_then_download_returns_same_content(pool: PgPool) {
         .nodes
         .upload(
             Actor::user(fx.alice),
-            None,
-            "note.txt",
-            &Names::Plain,
-            None,
-            None,
+            crate::NewFile {
+                parent: None,
+                name: "note.txt",
+                names: &Names::Plain,
+                content_type: None,
+                modified_at: None,
+            },
             body("hello"),
         )
         .await
@@ -102,11 +104,13 @@ async fn ancestors_run_from_root_to_parent(pool: PgPool) {
         .nodes
         .upload(
             Actor::user(fx.alice),
-            Some(b.id),
-            "f.txt",
-            &Names::Plain,
-            None,
-            None,
+            crate::NewFile {
+                parent: Some(b.id),
+                name: "f.txt",
+                names: &Names::Plain,
+                content_type: None,
+                modified_at: None,
+            },
             body("x"),
         )
         .await
@@ -155,11 +159,13 @@ async fn other_users_cannot_access_a_node(pool: PgPool) {
         .nodes
         .upload(
             Actor::user(fx.alice),
-            None,
-            "note.txt",
-            &Names::Plain,
-            None,
-            None,
+            crate::NewFile {
+                parent: None,
+                name: "note.txt",
+                names: &Names::Plain,
+                content_type: None,
+                modified_at: None,
+            },
             body("hello"),
         )
         .await
@@ -193,11 +199,13 @@ async fn cannot_upload_into_another_users_folder(pool: PgPool) {
         .nodes
         .upload(
             Actor::user(fx.bob),
-            Some(folder.id),
-            "x.txt",
-            &Names::Plain,
-            None,
-            None,
+            crate::NewFile {
+                parent: Some(folder.id),
+                name: "x.txt",
+                names: &Names::Plain,
+                content_type: None,
+                modified_at: None,
+            },
             body("hi"),
         )
         .await;
@@ -209,11 +217,13 @@ async fn put(fx: &Fixture, parent: Option<NodeId>, name: &str, text: &'static st
         .nodes
         .upload(
             Actor::user(fx.alice),
-            parent,
-            name,
-            &Names::Plain,
-            None,
-            None,
+            crate::NewFile {
+                parent,
+                name,
+                names: &Names::Plain,
+                content_type: None,
+                modified_at: None,
+            },
             body(text),
         )
         .await
@@ -233,11 +243,13 @@ async fn put_at(fx: &Fixture, name: &str, text: &'static str, at: OffsetDateTime
         .nodes
         .upload(
             Actor::user(fx.alice),
-            None,
-            name,
-            &Names::Plain,
-            None,
-            Some(at),
+            crate::NewFile {
+                parent: None,
+                name,
+                names: &Names::Plain,
+                content_type: None,
+                modified_at: Some(at),
+            },
             body(text),
         )
         .await
@@ -289,11 +301,13 @@ async fn uploading_identical_content_changes_nothing(pool: PgPool) {
         .nodes
         .upload(
             Actor::user(fx.alice),
-            None,
-            "a.txt",
-            &Names::Plain,
-            None,
-            None,
+            crate::NewFile {
+                parent: None,
+                name: "a.txt",
+                names: &Names::Plain,
+                content_type: None,
+                modified_at: None,
+            },
             body("same"),
         )
         .await
@@ -653,11 +667,13 @@ async fn oversized_upload_is_rejected(pool: PgPool) {
         .nodes
         .upload(
             Actor::user(fx.alice),
-            None,
-            "a.txt",
-            &Names::Plain,
-            None,
-            None,
+            crate::NewFile {
+                parent: None,
+                name: "a.txt",
+                names: &Names::Plain,
+                content_type: None,
+                modified_at: None,
+            },
             body("hello"),
         )
         .await;
@@ -863,11 +879,13 @@ async fn the_recycle_bin_folder_is_not_reachable(pool: PgPool) {
             .nodes
             .upload(
                 Actor::user(fx.alice),
-                Some(trash),
-                "b.txt",
-                &Names::Plain,
-                None,
-                None,
+                crate::NewFile {
+                    parent: Some(trash),
+                    name: "b.txt",
+                    names: &Names::Plain,
+                    content_type: None,
+                    modified_at: None,
+                },
                 body("x"),
             )
             .await
@@ -1411,11 +1429,13 @@ async fn emptying_the_bin_removes_every_binned_file_and_blob(pool: PgPool) {
         .nodes
         .upload(
             Actor::user(fx.bob),
-            None,
-            "bob.txt",
-            &Names::Plain,
-            None,
-            None,
+            crate::NewFile {
+                parent: None,
+                name: "bob.txt",
+                names: &Names::Plain,
+                content_type: None,
+                modified_at: None,
+            },
             body("bob"),
         )
         .await
@@ -1511,11 +1531,13 @@ async fn replace_content_updates_size_and_hash(pool: PgPool) {
         .nodes
         .upload(
             Actor::user(fx.alice),
-            None,
-            "a.txt",
-            &Names::Plain,
-            None,
-            None,
+            crate::NewFile {
+                parent: None,
+                name: "a.txt",
+                names: &Names::Plain,
+                content_type: None,
+                modified_at: None,
+            },
             body("hi"),
         )
         .await

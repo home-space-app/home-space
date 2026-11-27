@@ -47,7 +47,6 @@ async fn folder(db: &Db, owner: UserId, with: &SecretBox, plain: &[u8]) -> NodeI
     });
     db.protect_folder(owner, node, lock)
         .await
-        .expect("db")
         .expect("protected");
     node
 }

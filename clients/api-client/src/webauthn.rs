@@ -43,12 +43,12 @@ impl Client {
     pub async fn finish_webauthn(
         &self,
         challenge_id: Uuid,
-        credential: &RegisterPublicKeyCredential,
+        credential: RegisterPublicKeyCredential,
         name: Option<&str>,
     ) -> Result<WebAuthnAdded, ApiError> {
         let request = WebAuthnFinish {
             challenge_id,
-            credential: credential.clone(),
+            credential,
             name: name.map(str::to_owned),
         };
         self.send_json(|| {
@@ -123,11 +123,11 @@ impl Client {
     pub async fn passkey_finish(
         &self,
         challenge_id: Uuid,
-        credential: &PublicKeyCredential,
+        credential: PublicKeyCredential,
     ) -> Result<Me, ApiError> {
         let request = PasskeyFinish {
             challenge_id,
-            credential: credential.clone(),
+            credential,
             device: self.device().cloned(),
             cookie: self.cookie_session(),
         };

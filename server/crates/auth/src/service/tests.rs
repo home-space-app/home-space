@@ -1017,4 +1017,5 @@ async fn an_overlong_client_version_is_refused(pool: PgPool) {
     assert!(matches!(result, Err(AuthError::InvalidInput(_))));
 }
 
+mod folders;
 mod reauth;

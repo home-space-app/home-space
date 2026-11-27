@@ -1,4 +1,4 @@
-use protocol::{AsProblem, Problem, ProblemType};
+use protocol::{AsProblem, AuthMethod, Problem, ProblemType};
 
 /// Errors returned by the authentication layer.
 ///
@@ -33,10 +33,17 @@ pub enum AuthError {
     /// the last minutes. `methods` are the ways they can confirm, such as `password`; with
     /// none they have to sign in again.
     #[error("{}", describe_reauthentication(.methods))]
-    ReauthenticationRequired { methods: Vec<&'static str> },
+    ReauthenticationRequired { methods: Vec<AuthMethod> },
     /// The account signs in through single sign-on and has no password to change.
     #[error("This account signs in through single sign-on and has no password.")]
     NoPassword,
+    /// The account is linked to the identity provider, which signs it in and keeps its second
+    /// factors and passkeys: it can't sign in with a password or passkey here, nor add them.
+    #[error(
+        "This account signs in through single sign-on. Its password, two-factor sign-in and \
+         passkeys are managed there."
+    )]
+    ExternalAccount,
     /// The account is disabled or marked for deletion, so it may not sign in.
     #[error("This account is disabled.")]
     AccountDisabled,
@@ -64,7 +71,7 @@ pub enum AuthError {
     #[error("This account uses two-factor sign-in. Sign in in the browser, or update the app.")]
     SecondFactorRequired {
         login_token: Option<String>,
-        methods: Vec<&'static str>,
+        methods: Vec<AuthMethod>,
     },
     /// The authenticator app's code, or the recovery code, is wrong or was used already.
     #[error("The code is wrong. Check it and try again.")]
@@ -82,6 +89,9 @@ pub enum AuthError {
     /// from a credential the account does not have here.
     #[error("The passkey or security key could not be verified. Try again.")]
     WebAuthnFailed,
+    /// A WebAuthn credential or ceremony state could not be written down to be stored.
+    #[error("a WebAuthn value could not be encoded: {0}")]
+    WebAuthnEncoding(#[source] serde_json::Error),
     /// Passkeys and security keys can't be used from where the request came; says why.
     #[error("{0}")]
     WebAuthnUnavailable(&'static str),
@@ -94,11 +104,6 @@ pub enum AuthError {
     /// A passkey or security key of the account that does not exist.
     #[error("There is no such passkey or security key.")]
     UnknownKey,
-    /// The key is the last that unlocks the account's protected folders.
-    #[error(
-        "This is the last key that unlocks your protected folders. Add another key or a recovery key first."
-    )]
-    LastUnlocker,
     /// A sealed secret opens with none of the configured keys.
     #[error(
         "an authenticator app secret could not be opened; is HOMESPACE_SECRETS_KEY the key it was sealed with?"
@@ -128,6 +133,7 @@ impl AsProblem for AuthError {
             Self::WrongPassword => ProblemType::WrongPassword,
             Self::ReauthenticationRequired { .. } => ProblemType::ReauthenticationRequired,
             Self::NoPassword => ProblemType::NoPassword,
+            Self::ExternalAccount => ProblemType::ExternalAccount,
             Self::SecondFactorRequired { .. } => ProblemType::SecondFactorRequired,
             Self::InvalidCode => ProblemType::InvalidCode,
             Self::TotpExists => ProblemType::TotpExists,
@@ -136,7 +142,6 @@ impl AsProblem for AuthError {
             Self::WebAuthnUnavailable(_) => ProblemType::WebAuthnUnavailable,
             Self::TooManyKeys => ProblemType::TooManyKeys,
             Self::UnknownKey => ProblemType::NotFound,
-            Self::LastUnlocker => ProblemType::LastUnlocker,
             Self::AccountDisabled => ProblemType::AccountDisabled,
             Self::UsernameTaken => ProblemType::UsernameTaken,
             Self::InvalidInput(_) => ProblemType::ValidationFailed,
@@ -146,6 +151,7 @@ impl AsProblem for AuthError {
             Self::Oidc(_) => ProblemType::IdentityProviderFailed,
             Self::Unsealing
             | Self::Sealing
+            | Self::WebAuthnEncoding(_)
             | Self::Hashing(_)
             | Self::Token(_)
             | Self::Join(_)
@@ -159,14 +165,14 @@ impl AsProblem for AuthError {
                 problem.retry_after = Some(*retry_after);
             }
             Self::ReauthenticationRequired { methods } => {
-                problem.methods = methods.iter().map(|&method| method.to_owned()).collect();
+                problem.methods.clone_from(methods);
             }
             Self::SecondFactorRequired {
                 login_token,
                 methods,
             } => {
                 problem.login_token.clone_from(login_token);
-                problem.methods = methods.iter().map(|&method| method.to_owned()).collect();
+                problem.methods.clone_from(methods);
             }
             _ => {}
         }
@@ -174,11 +180,11 @@ impl AsProblem for AuthError {
 }
 
 /// What the user is asked to do to confirm it is them, given the ways they can.
-fn describe_reauthentication(methods: &[&str]) -> String {
+fn describe_reauthentication(methods: &[AuthMethod]) -> String {
     let ways: Vec<&str> = [
-        ("password", "enter your password again"),
-        ("totp", "enter a code from your authenticator app"),
-        ("webauthn", "use your passkey or security key"),
+        (AuthMethod::Password, "enter your password again"),
+        (AuthMethod::Totp, "enter a code from your authenticator app"),
+        (AuthMethod::Webauthn, "use your passkey or security key"),
     ]
     .into_iter()
     .filter(|(method, _)| methods.contains(method))

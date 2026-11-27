@@ -1,10 +1,11 @@
-//! The user's passkeys and security keys in the settings: the list, renaming and removing one,
-//! and adding one through the browser.
+//! The user's keys in the settings. Sign-in keys (passkeys and security keys): the list,
+//! renaming and removing one, and adding one through the browser. Folder keys, which unlock
+//! the protected folders and never sign in: the list and removing one.
 
 use leptos::{ev::SubmitEvent, prelude::*, task::spawn_local};
 use uuid::Uuid;
 
-use protocol::{WebAuthnAdded, WebAuthnKey, WebAuthnKind};
+use protocol::{UnlockerKind, Vault, VaultUnlocker, WebAuthnAdded, WebAuthnKey, WebAuthnKind};
 
 use crate::{
     components::reconfirm::Reconfirm,
@@ -62,7 +63,7 @@ pub fn KeysSection(
     };
 
     view! {
-        <h3 class="card__heading">"Passkeys and security keys"</h3>
+        <h3 class="card__heading">"Sign-in keys"</h3>
         <p class="card__text">
             "A passkey signs you in on its own, with your fingerprint, face or PIN. A security key, such as a YubiKey, takes the place of the app's code after your password."
         </p>
@@ -124,7 +125,7 @@ async fn add_key(
         Err(failure) => return failure.message().map_or(Ok(None), Err),
     };
     client
-        .finish_webauthn(challenge.challenge_id, &credential, None)
+        .finish_webauthn(challenge.challenge_id, credential, None)
         .await
         .map(Some)
         .map_err(|err| auth.fail(&err))
@@ -141,7 +142,6 @@ fn KeyRow(
 ) -> impl IntoView {
     let id = key.id;
     let editing = RwSignal::new(false);
-    let confirm_removal = RwSignal::new(false);
     let name = RwSignal::new(key.name.clone());
     let reconfirm = Reconfirm::get();
     let rename = move |event: SubmitEvent| {
@@ -149,14 +149,17 @@ fn KeyRow(
         editing.set(false);
         let new_name = name.get_untracked();
         spawn_local(async move {
-            match session::client().rename_webauthn(id, &new_name).await {
+            let client = session::client();
+            match reconfirm
+                .confirmed(|| client.rename_webauthn(id, &new_name))
+                .await
+            {
                 Ok(_) => changed(),
                 Err(err) => error.set(Some(auth.fail(&err))),
             }
         });
     };
-    let remove = move |_| {
-        confirm_removal.set(false);
+    let remove = move || {
         busy.set(true);
         spawn_local(async move {
             let result = remove_key(reconfirm, id).await;
@@ -197,33 +200,130 @@ fn KeyRow(
                 <button class="button button--ghost button--small" on:click=move |_| editing.update(|on| *on = !*on)>
                     "Rename"
                 </button>
-                <Show
-                    when=move || confirm_removal.get()
-                    fallback=move || {
-                        view! {
-                            <button
-                                class="button button--ghost button--small"
-                                on:click=move |_| confirm_removal.set(true)
-                            >
-                                "Remove"
-                            </button>
-                        }
+                <RemoveButton busy remove />
+            </span>
+        </li>
+    }
+}
+
+/// "Remove", which asks once more before it runs `remove`.
+#[component]
+fn RemoveButton(
+    busy: RwSignal<bool>,
+    remove: impl Fn() + Copy + Send + Sync + 'static,
+) -> impl IntoView {
+    let confirm = RwSignal::new(false);
+    view! {
+        <Show
+            when=move || confirm.get()
+            fallback=move || {
+                view! {
+                    <button class="button button--ghost button--small" on:click=move |_| confirm.set(true)>
+                        "Remove"
+                    </button>
+                }
+            }
+        >
+            <span class="card__confirm">
+                "Remove it?"
+                <button class="button button--small" on:click=move |_| confirm.set(false)>
+                    "Keep it"
+                </button>
+                <button
+                    class="button button--danger button--small"
+                    disabled=move || busy.get()
+                    on:click=move |_| {
+                        confirm.set(false);
+                        remove();
                     }
                 >
-                    <span class="card__confirm">
-                        "Remove it?"
-                        <button class="button button--small" on:click=move |_| confirm_removal.set(false)>
-                            "Keep it"
-                        </button>
-                        <button
-                            class="button button--danger button--small"
-                            disabled=move || busy.get()
-                            on:click=remove
-                        >
-                            "Remove"
-                        </button>
-                    </span>
-                </Show>
+                    "Remove"
+                </button>
+            </span>
+        </Show>
+    }
+}
+
+/// The folder keys: security keys that unlock the protected folders through the vault. Each is
+/// a credential of its own, made for the vault alone, so it never signs in, even on a key that
+/// holds a sign-in key too.
+#[component]
+pub fn FolderKeysSection(auth: Auth, error: RwSignal<Option<String>>) -> impl IntoView {
+    let keys = RwSignal::new(Vec::<VaultUnlocker>::new());
+    let busy = RwSignal::new(false);
+    let load = move || {
+        spawn_local(async move {
+            match session::client().vault().await {
+                Ok(vault) => keys.set(folder_keys(vault)),
+                Err(err) => error.set(Some(auth.fail(&err))),
+            }
+        });
+    };
+    load();
+
+    view! {
+        <h3 class="card__heading">"Folder keys"</h3>
+        <p class="card__text">
+            "Security keys that unlock your protected folders. They never sign you in, even when they are on the same key as a sign-in key."
+        </p>
+        <Show when=move || keys.with(Vec::is_empty)>
+            <p class="card__text">"No folder keys yet."</p>
+        </Show>
+        <ul class="key-list">
+            <For each=move || keys.get() key=|key| key.id let(key)>
+                <FolderKeyRow key auth error busy removed=load />
+            </For>
+        </ul>
+    }
+}
+
+/// The vault's folder keys, oldest first; none before the vault exists.
+fn folder_keys(vault: Option<Vault>) -> Vec<VaultUnlocker> {
+    vault
+        .map(|vault| {
+            vault
+                .unlockers
+                .into_iter()
+                .filter(|unlocker| unlocker.kind == UnlockerKind::SecurityKey)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// One folder key, removed after a confirmation. The server refuses to remove the last one
+/// while folders are locked with the vault, and says so.
+#[component]
+fn FolderKeyRow(
+    key: VaultUnlocker,
+    auth: Auth,
+    error: RwSignal<Option<String>>,
+    busy: RwSignal<bool>,
+    removed: impl Fn() + Copy + Send + Sync + 'static,
+) -> impl IntoView {
+    let id = key.id;
+    let reconfirm = Reconfirm::get();
+    let remove = move || {
+        busy.set(true);
+        spawn_local(async move {
+            let client = session::client();
+            let result = reconfirm.confirmed(|| client.remove_unlocker(id)).await;
+            busy.set(false);
+            match result {
+                Ok(_) => removed(),
+                Err(err) => error.set(Some(auth.fail(&err))),
+            }
+        });
+    };
+    let elsewhere = key.rp_id.as_deref().and_then(other_site);
+    view! {
+        <li class="key-list__item">
+            <span class="key-list__name">{key.name.unwrap_or_default()}</span>
+            <span class="key-list__details">
+                {format!("Folder key · added {}", locale::short_date(key.created_at))}
+            </span>
+            {elsewhere.map(|site| view! { <span class="card__text--warning">{site}</span> })}
+            <span class="card__actions">
+                <RemoveButton busy remove />
             </span>
         </li>
     }

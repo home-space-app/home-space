@@ -2,13 +2,16 @@
 //! removing the authenticator app (TOTP), new recovery codes, and an administrator's reset.
 //! Passkeys and security keys are in `webauthn`.
 
-use std::net::IpAddr;
+use std::{fmt, net::IpAddr, sync::Arc};
 
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use db::{DbError, PendingLogin, SecondFactorState, User, UserId};
-use protocol::{DeviceInfo, PublicKeyCredential, RecoveryCodes, TokenPair, TotpEnrolment};
+use protocol::{
+    AuthMethod, DeviceInfo, PublicKeyCredential, RecoveryCodes, TokenPair, TotpEnrolment,
+    redact::Redacted,
+};
 
 use super::AuthService;
 use crate::{
@@ -29,13 +32,9 @@ const MAX_CODE_FAILURES: i32 = 5;
 const SECOND_FACTOR_SOURCE: &str = "2fa";
 /// The issuer an authenticator app shows next to the account.
 const TOTP_ISSUER: &str = "Home Space";
-/// The second factors a sign-in can finish with, as clients are told them.
-const TOTP_FACTOR: &str = "totp";
-const WEBAUTHN_FACTOR: &str = "webauthn";
-const RECOVERY_FACTOR: &str = "recovery";
 
 /// What finishes a sign-in that waits for its second factor.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub enum SecondFactorProof<'a> {
     /// A code from the authenticator app.
     Totp(&'a str),
@@ -46,11 +45,21 @@ pub enum SecondFactorProof<'a> {
     WebAuthn(&'a PublicKeyCredential),
 }
 
+impl fmt::Debug for SecondFactorProof<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Totp(_) => f.debug_tuple("Totp").field(&Redacted).finish(),
+            Self::Recovery(_) => f.debug_tuple("Recovery").field(&Redacted).finish(),
+            Self::WebAuthn(answer) => f.debug_tuple("WebAuthn").field(answer).finish(),
+        }
+    }
+}
+
 impl AuthService {
     /// Keeps authenticator app secrets with `keys`, the tenant's `HOMESPACE_SECRETS_KEY`;
     /// without them no app can be added, and apps added before can't be used.
     #[must_use]
-    pub fn with_secrets_key(mut self, keys: Option<SecretBox>) -> Self {
+    pub fn with_secrets_key(mut self, keys: Option<Arc<SecretBox>>) -> Self {
         self.secret_box = keys;
         self
     }
@@ -196,7 +205,9 @@ impl AuthService {
     }
 
     /// Starts adding an authenticator app for the user of `session_id`, who must have signed
-    /// in or confirmed it is them recently. `account` names the account in the app, such as
+    /// in or confirmed it is them recently, with a second factor once the account has one (see
+    /// [`require_recent_second_factor`](Self::require_recent_second_factor)). `account` names
+    /// the account in the app, such as
     /// `alice@files.example.com`. The app counts only once a code from it is confirmed with
     /// [`confirm_totp`](Self::confirm_totp).
     pub async fn start_totp(
@@ -205,11 +216,9 @@ impl AuthService {
         session_id: Uuid,
         account: &str,
     ) -> Result<TotpEnrolment, AuthError> {
-        self.require_recent_sign_in(user_id, session_id).await?;
-        let user = self.user(user_id).await?;
-        if user.password_hash.is_none() {
-            return Err(AuthError::NoPassword);
-        }
+        self.require_recent_second_factor(user_id, session_id)
+            .await?;
+        self.local_user(user_id).await?;
         let keys = self.secret_box()?;
         let secret = totp::new_secret();
         let sealed = keys.seal(self.tenant, user_id, &secret)?;
@@ -232,7 +241,8 @@ impl AuthService {
         session_id: Uuid,
         code: &str,
     ) -> Result<RecoveryCodes, AuthError> {
-        self.require_recent_sign_in(user_id, session_id).await?;
+        self.require_recent_second_factor(user_id, session_id)
+            .await?;
         let stored = self.db.totp(user_id).await?.ok_or(AuthError::InvalidCode)?;
         if stored.confirmed_at.is_some() {
             return Err(AuthError::TotpExists);
@@ -259,23 +269,29 @@ impl AuthService {
     }
 
     /// Removes the authenticator app of the user of `session_id`, who must have signed in or
-    /// confirmed it is them recently; with the last second factor the recovery codes go too.
-    /// Their sessions stay.
+    /// confirmed it is them recently with a second factor (see
+    /// [`require_recent_second_factor`](Self::require_recent_second_factor)); with the last
+    /// second factor the recovery codes go too. Their other sessions end, so that one signed in
+    /// with the app does not outlive it; `session_id` stays.
     pub async fn remove_totp(&self, user_id: UserId, session_id: Uuid) -> Result<(), AuthError> {
-        self.require_recent_sign_in(user_id, session_id).await?;
+        self.require_recent_second_factor(user_id, session_id)
+            .await?;
         self.db.remove_totp(user_id).await?;
+        self.sessions.end_others(user_id, session_id).await?;
         tracing::info!(user = %user_id, "authenticator app removed");
         Ok(())
     }
 
     /// A new set of recovery codes for the user of `session_id`, voiding the old ones. They
-    /// must have a second factor, and have signed in or confirmed it is them recently.
+    /// must have a second factor, and have signed in or confirmed it is them recently with one.
     pub async fn new_recovery_codes(
         &self,
         user_id: UserId,
         session_id: Uuid,
     ) -> Result<RecoveryCodes, AuthError> {
-        self.require_recent_sign_in(user_id, session_id).await?;
+        self.require_recent_second_factor(user_id, session_id)
+            .await?;
+        self.local_user(user_id).await?;
         if !self.db.second_factors(user_id).await?.any() {
             return Err(AuthError::InvalidInput(
                 "recovery codes need a second factor",
@@ -300,7 +316,9 @@ impl AuthService {
     }
 
     pub(super) fn secret_box(&self) -> Result<&SecretBox, AuthError> {
-        self.secret_box.as_ref().ok_or(AuthError::SecretsKeyMissing)
+        self.secret_box
+            .as_deref()
+            .ok_or(AuthError::SecretsKeyMissing)
     }
 
     pub(super) async fn user(&self, user_id: UserId) -> Result<User, AuthError> {
@@ -310,6 +328,19 @@ impl AuthService {
             .filter(|user| user.tenant_id == self.tenant)
             .ok_or(AuthError::InvalidCredentials)
     }
+
+    /// `user_id`, when they sign in here and so may have second factors of their own: not
+    /// linked to the identity provider, which keeps theirs, and with a password.
+    pub(super) async fn local_user(&self, user_id: UserId) -> Result<User, AuthError> {
+        let user = self.user(user_id).await?;
+        if user.external {
+            return Err(AuthError::ExternalAccount);
+        }
+        if user.password_hash.is_none() {
+            return Err(AuthError::NoPassword);
+        }
+        Ok(user)
+    }
 }
 
 /// Whether `err` is a wrong second factor, which counts as a failed attempt.
@@ -318,11 +349,11 @@ fn is_wrong_factor(err: &AuthError) -> bool {
 }
 
 /// The second factors a sign-in of an account with `factors` can finish with.
-fn factor_names(factors: SecondFactorState) -> Vec<&'static str> {
+fn factor_names(factors: SecondFactorState) -> Vec<AuthMethod> {
     [
-        (factors.totp, TOTP_FACTOR),
-        (factors.webauthn > 0, WEBAUTHN_FACTOR),
-        (factors.recovery_codes_left > 0, RECOVERY_FACTOR),
+        (factors.totp, AuthMethod::Totp),
+        (factors.webauthn > 0, AuthMethod::Webauthn),
+        (factors.recovery_codes_left > 0, AuthMethod::Recovery),
     ]
     .into_iter()
     .filter_map(|(has, name)| has.then_some(name))

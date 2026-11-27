@@ -17,7 +17,7 @@ use super::{
     shell::{Tab, Tabs},
 };
 use crate::{
-    components::{ErrorAlert, StorageBar},
+    components::{ErrorAlert, StorageBar, reconfirm::Reconfirm},
     events,
     icon::Icon,
     load, route,
@@ -187,6 +187,7 @@ fn PasswordCard(auth: Auth) -> impl IntoView {
     let error = RwSignal::new(None::<String>);
     let done = RwSignal::new(false);
     let busy = RwSignal::new(false);
+    let reconfirm = Reconfirm::get();
 
     let submit = move |event: SubmitEvent| {
         event.prevent_default();
@@ -198,10 +199,14 @@ fn PasswordCard(auth: Auth) -> impl IntoView {
         }
         busy.set(true);
         spawn_local(async move {
-            let result = session::client().change_password(&old, &fresh).await;
+            let client = session::client();
+            let result = reconfirm
+                .confirmed(|| client.change_password(&old, &fresh))
+                .await;
             busy.set(false);
             match result {
-                Ok(()) => {
+                Ok(None) => {}
+                Ok(Some(())) => {
                     error.set(None);
                     done.set(true);
                     current.set(String::new());

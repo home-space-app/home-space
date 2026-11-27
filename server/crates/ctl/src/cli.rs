@@ -118,7 +118,8 @@ pub enum UserCommand {
         #[command(flatten)]
         tenant: TenantArg,
     },
-    /// Change a user's password (revokes their sessions); the password is prompted for.
+    /// Change a user's password (revokes their sessions); a single sign-on user becomes a local
+    /// account. The password is prompted for.
     Passwd {
         username: String,
         /// Read the password from the first line of standard input instead of prompting.

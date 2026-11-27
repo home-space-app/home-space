@@ -1,6 +1,6 @@
 //! The settings that may differ per tenant.
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
 
@@ -43,7 +43,7 @@ pub struct TenantConfig {
     pub jwt_secret: Vec<u8>,
     /// Seals authenticator app secrets and password-folder keys; `None` without
     /// `HOMESPACE_SECRETS_KEY`.
-    pub secrets_key: Option<auth::SecretBox>,
+    pub secrets_key: Option<Arc<auth::SecretBox>>,
     pub public_url: Option<String>,
     pub oidc: Option<auth::OidcConfig>,
     pub password_login: bool,
@@ -55,7 +55,7 @@ impl TenantSettings {
         self.refuse_previous_secrets()?;
         Ok(TenantConfig {
             jwt_secret: self.jwt_secret()?,
-            secrets_key: self.secrets_key()?,
+            secrets_key: self.secrets_key()?.map(Arc::new),
             public_url: non_empty(&self.public_url).map(str::to_owned),
             oidc: self.oidc()?,
             password_login: self.password_login,

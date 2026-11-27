@@ -5,7 +5,7 @@ use wiremock::{
 };
 
 use api_client::{ApiError, Client, Confirmation, SecondFactor, SecondFactorStep, SignIn};
-use protocol::{ErrorCode, paths};
+use protocol::{AuthMethod, ErrorCode, paths};
 
 fn me() -> serde_json::Value {
     json!({
@@ -67,7 +67,7 @@ async fn a_sign_in_that_needs_a_code_finishes_with_it() {
         step,
         SignIn::SecondFactor(SecondFactorStep {
             login_token: "pending".to_owned(),
-            methods: vec!["totp".to_owned(), "recovery".to_owned()],
+            methods: vec![AuthMethod::Totp, AuthMethod::Recovery],
         })
     );
     let me = client
@@ -134,7 +134,7 @@ async fn a_change_that_needs_a_proof_says_which_and_takes_a_code() {
         error,
         ApiError::ReauthenticationRequired {
             message: "Confirm it is you.".to_owned(),
-            methods: vec!["password".to_owned(), "totp".to_owned()],
+            methods: vec![AuthMethod::Password, AuthMethod::Totp],
         }
     );
     assert_eq!(error.code(), "forbidden");

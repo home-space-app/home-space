@@ -1,9 +1,11 @@
 //! Account management by administrators (`/admin/users`).
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use crate::{Patch, StorageUsage, UserId};
+use crate::{AuthMethod, Patch, StorageUsage, UserId, auth::known_methods, redact::Redacted};
 
 /// One account, as the administration lists it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -11,7 +13,8 @@ pub struct Account {
     pub id: UserId,
     pub username: String,
     pub is_admin: bool,
-    /// Signs in through the identity provider rather than with a password.
+    /// Linked to the identity provider, which signs it in; [`SetPassword`] makes it a local
+    /// account.
     pub external: bool,
     /// Signing in takes a second factor, such as an authenticator app; older servers leave it
     /// out.
@@ -19,8 +22,8 @@ pub struct Account {
     pub two_factor: bool,
     /// Which second factors: `totp` and `webauthn` (passkeys and security keys); older servers
     /// leave it out.
-    #[serde(default)]
-    pub factors: Vec<String>,
+    #[serde(default, deserialize_with = "known_methods")]
+    pub factors: Vec<AuthMethod>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     /// The account exists but may not sign in. Always so while it is marked for deletion.
@@ -47,7 +50,7 @@ impl Account {
 }
 
 /// `POST /admin/users`: a new account that signs in with a password.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateAccount {
     pub username: String,
     pub password: String,
@@ -55,6 +58,17 @@ pub struct CreateAccount {
     pub is_admin: bool,
     #[serde(default)]
     pub quota_bytes: Option<u64>,
+}
+
+impl fmt::Debug for CreateAccount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CreateAccount")
+            .field("username", &self.username)
+            .field("password", &Redacted)
+            .field("is_admin", &self.is_admin)
+            .field("quota_bytes", &self.quota_bytes)
+            .finish()
+    }
 }
 
 /// `PATCH /admin/users/{id}`: the fields to change; absent ones stay as they are.
@@ -69,11 +83,21 @@ pub struct UpdateAccount {
     pub quota_bytes: Patch<u64>,
 }
 
-/// `PUT /admin/users/{id}/password`: a new password for an account that has one. Ends all of
-/// the user's sessions.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// `PUT /admin/users/{id}/password`: a new password for an account. An account linked to the
+/// identity provider becomes a local one: the link goes, so the provider signs that person in
+/// as a new user from then on. Ends all of the user's sessions, and needs the administrator to
+/// have signed in or confirmed it is them recently (`403 reauthentication-required`).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetPassword {
     pub password: String,
+}
+
+impl fmt::Debug for SetPassword {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SetPassword")
+            .field("password", &Redacted)
+            .finish()
+    }
 }
 
 /// A device of an account, for the administration.
