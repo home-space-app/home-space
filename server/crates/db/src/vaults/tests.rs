@@ -1,7 +1,13 @@
+use protocol::ProtectionState;
 use sqlx::PgPool;
+use time::OffsetDateTime;
+use uuid::Uuid;
 
 use super::*;
-use crate::{FOLDER_MIME, NewContent, NewCredential, NewNode, NodeKind, TenantId};
+use crate::{
+    Db, DbError, FOLDER_MIME, NewContent, NewCredential, NewNode, NodeId, NodeKind, TenantId,
+    UserId,
+};
 
 const RECIPIENT: &str = "age1fauk43xvke3myu0vg0syaflnwhlslwxd2504jfdjwejkjc50pcysgcf5gf";
 const WRAPPED: [u8; 73] = [7; 73];

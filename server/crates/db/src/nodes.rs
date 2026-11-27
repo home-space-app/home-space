@@ -158,6 +158,27 @@ impl Db {
         let mut conn = self.pool().acquire().await?;
         require_folder(&mut conn, owner, id).await
     }
+
+    /// Renames the user's node `node` from `from` to `to`; `false` when its name is no longer
+    /// `from`, and `Conflict` when `to` is taken.
+    pub async fn rename_node_from(
+        &self,
+        user: UserId,
+        node: NodeId,
+        from: &str,
+        to: &str,
+    ) -> Result<bool, DbError> {
+        let renamed =
+            sqlx::query("UPDATE nodes SET name = $4 WHERE id = $1 AND owner_id = $2 AND name = $3")
+                .bind(node)
+                .bind(user)
+                .bind(from)
+                .bind(to)
+                .execute(self.pool())
+                .await?
+                .rows_affected();
+        Ok(renamed == 1)
+    }
 }
 
 pub(crate) async fn require_folder(
