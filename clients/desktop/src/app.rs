@@ -1,11 +1,13 @@
-use iced::{Element, Length, Subscription, Task, Theme, theme::Mode, widget::container};
+use iced::{Element, Length, Subscription, Task, Theme, theme::Mode, widget::container, window};
 
-use crate::{browser, login, theme};
+use crate::{app_link, app_link::AppLink, browser, login, protected, theme};
 
 pub struct App {
     screen: Screen,
     /// The system's colour scheme, once it is known.
     mode: Mode,
+    /// A `home-space://` link to open once the user is signed in.
+    link: Option<AppLink>,
 }
 
 enum Screen {
@@ -18,14 +20,20 @@ pub enum Message {
     Login(login::Message),
     Browser(browser::Message),
     Mode(Mode),
+    /// The window is asked to close, which ends the app.
+    CloseRequested,
+    /// A `home-space://` link, handed over by a later start.
+    Link(AppLink),
 }
 
 impl App {
-    pub fn new() -> (Self, Task<Message>) {
+    /// The app, opening `link` once signed in.
+    pub fn new(link: Option<AppLink>) -> (Self, Task<Message>) {
         let (state, task) = login::State::restoring();
         let app = Self {
             screen: Screen::Login(state),
             mode: Mode::None,
+            link,
         };
         let mode = iced::system::theme().map(Message::Mode);
         (app, Task::batch([task.map(Message::Login), mode]))
@@ -37,12 +45,36 @@ impl App {
                 self.mode = mode;
                 Task::none()
             }
+            (screen, Message::CloseRequested) => {
+                // The keys of unlocked folders go with the screen; the copies with the sweep.
+                *screen = Screen::Login(login::State::default());
+                protected::files::sweep();
+                iced::exit()
+            }
+            (Screen::Browser(state), Message::Link(link)) => {
+                let task = match state.update(browser::Message::OpenLink(link)) {
+                    browser::Update::Task(task) => task.map(Message::Browser),
+                    browser::Update::SignedOut { .. } => Task::none(),
+                };
+                Task::batch([task, focus()])
+            }
+            (Screen::Login(_), Message::Link(link)) => {
+                self.link = Some(link);
+                focus()
+            }
             (Screen::Login(state), Message::Login(message)) => match state.update(message) {
                 login::Update::Task(task) => task.map(Message::Login),
                 login::Update::SignedIn { client, me } => {
-                    let (state, task) = browser::State::open(*client, me);
+                    let (mut state, task) = browser::State::open(*client, me);
+                    let link = match self.link.take() {
+                        Some(link) => match state.update(browser::Message::OpenLink(link)) {
+                            browser::Update::Task(task) => task,
+                            browser::Update::SignedOut { .. } => Task::none(),
+                        },
+                        None => Task::none(),
+                    };
                     self.screen = Screen::Browser(Box::new(state));
-                    task.map(Message::Browser)
+                    Task::batch([task, link]).map(Message::Browser)
                 }
             },
             (Screen::Browser(state), Message::Browser(message)) => match state.update(message) {
@@ -62,7 +94,12 @@ impl App {
             Screen::Login(_) => login::subscription().map(Message::Login),
             Screen::Browser(state) => state.subscription().map(Message::Browser),
         };
-        Subscription::batch([iced::system::theme_changes().map(Message::Mode), screen])
+        Subscription::batch([
+            iced::system::theme_changes().map(Message::Mode),
+            window::close_requests().map(|_| Message::CloseRequested),
+            app_link::listen().map(Message::Link),
+            screen,
+        ])
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -85,4 +122,9 @@ impl App {
             Mode::Dark => Some(theme::app(true)),
         }
     }
+}
+
+/// Brings the window to the front, for a link opened from the browser.
+fn focus() -> Task<Message> {
+    window::latest().and_then(window::gain_focus)
 }

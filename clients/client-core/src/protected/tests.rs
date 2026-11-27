@@ -158,6 +158,23 @@ fn keys_past_their_idle_limit_are_not_handed_out_even_before_the_timer() {
 }
 
 #[test]
+fn shared_keys_are_the_folder_keys_and_count_as_activity() {
+    let mut unlocked = UnlockedFolders::default();
+    let keys = keys();
+    let recipient = keys.recipient().to_string();
+    unlocked
+        .unlock(FOLDER, keys, &recipient, Duration::ZERO)
+        .expect("unlocked");
+    let shared = unlocked
+        .shared_keys(FOLDER, 10 * MINUTE)
+        .expect("unlocked keys");
+    assert_eq!(shared.recipient().to_string(), recipient);
+    assert!(unlocked.is_unlocked(FOLDER, 20 * MINUTE));
+    unlocked.lock(FOLDER);
+    assert!(unlocked.shared_keys(FOLDER, 20 * MINUTE).is_none());
+}
+
+#[test]
 fn lock_all_wipes_every_folder() {
     let mut unlocked = UnlockedFolders::default();
     for folder in [FOLDER, OTHER] {

@@ -27,6 +27,7 @@ use crate::{
     ellipsis::{ellipsized, text_width},
     icons::{ICON_SIZE, Icon, Tint, node_icon},
     locale::short_date,
+    protected::Protected,
     sync::{Badge, Item, Status},
     theme,
 };
@@ -151,6 +152,7 @@ pub fn rows<'a>(
     folder: Option<NodeId>,
     selection: &Selection,
     sync: &'a Status,
+    protected: &Protected,
     columns: Columns,
 ) -> Element<'a, Message> {
     let listed: HashSet<&str> = nodes.iter().map(|node| node.name.as_str()).collect();
@@ -173,7 +175,14 @@ pub fn rows<'a>(
                     sync.location(Some(node.id)),
                     sync.location(folder),
                 );
-                node_row(node, selection.contains(node.id), badge, line, columns)
+                node_row(
+                    node,
+                    selection.contains(node.id),
+                    badge,
+                    line,
+                    columns,
+                    protected.lock_of(node.id),
+                )
             })
             .chain(waiting.into_iter().map(|item| pending_row(item, columns)));
         // The scrollbar floats over the padding right of the menu buttons.
@@ -215,19 +224,23 @@ fn second_line(
     (!inside).then(|| format!("Syncs to {}", display_path(location)))
 }
 
+/// One row of the listing; `lock` says whether a protected folder is unlocked.
 fn node_row(
     node: &Node,
     selected: bool,
     badge: Option<Badge>,
     second_line: Option<String>,
     columns: Columns,
+    lock: Option<bool>,
 ) -> Element<'_, Message> {
-    let icon = match (node_icon(node), badge) {
-        (Icon::Folder, Some(Badge::Disabled)) => Icon::FolderOutline,
-        (icon, _) => icon,
+    let icon = match (node_icon(node), badge, lock) {
+        (_, _, Some(true)) => Icon::LockOpen,
+        (_, _, Some(false)) => Icon::Lock,
+        (Icon::Folder, Some(Badge::Disabled), None) => Icon::FolderOutline,
+        (icon, _, None) => icon,
     };
     let tint = match icon {
-        Icon::Folder => Tint::Accent,
+        Icon::Folder | Icon::Lock | Icon::LockOpen => Tint::Accent,
         Icon::FolderOutline => Tint::AccentFaded,
         _ => Tint::Text,
     };

@@ -2,10 +2,12 @@
 Type=Application
 Name=Home Space
 Comment=Browse and transfer your Home Space files
-Exec=HomeSpace
+Exec=HomeSpace %u
 Icon=home-space
 Terminal=false
 StartupNotify=true
 StartupWMClass=home-space
 Categories=Network;FileTransfer;
 Keywords=files;sync;cloud;storage;self-hosted;
+# home-space:// links, which the web client opens folders in the app with.
+MimeType=x-scheme-handler/home-space;

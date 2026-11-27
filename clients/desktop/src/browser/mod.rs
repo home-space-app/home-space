@@ -12,6 +12,7 @@ mod layout;
 mod lost_and_found;
 pub(crate) mod parts;
 mod people_picker;
+mod protect;
 mod search;
 mod selection;
 mod send;
@@ -48,22 +49,28 @@ use client_core::{
     send::files_to_upload,
     viewers,
 };
-use protocol::{Me, Node, NodeId, NodeKind, paths};
+use protocol::{Me, Node, NodeId, NodeKind, ProtectionState, TrashItem, paths};
 use uuid::Uuid;
 
 use self::{
     context_menu::Placement,
-    dialogs::{Dialog, Outcome},
+    dialogs::{Dialog, Outcome, Within},
     folder::{Folder, Listing},
     input::{Shortcut, input},
     lost_and_found::LostAndFound,
     search::Search,
     syncing::Syncing,
-    toolbar::Action,
+    toolbar::{Action, Limits},
     transfer_list::TransferList,
 };
 use crate::{
-    events, sync,
+    app_link::AppLink,
+    events,
+    protected::{
+        self, Inside, LOCK_CHECK, LOCKED_MEANWHILE, Protected, Protection,
+        convert::{self, Stopped},
+    },
+    sync,
     transfers::{self, Batch, Direction, DownloadFile, Transfers, UploadPlan},
     viewers::viewers,
 };
@@ -71,6 +78,15 @@ use crate::{
 const DEFAULT_WINDOW: Size = Size::new(1280.0, 800.0);
 /// How often the Transfers page says the times left again.
 const CLOCK_TICK: std::time::Duration = std::time::Duration::from_secs(60);
+const LOCKED: &str = "This folder is locked. Unlock it first.";
+const FROZEN: &str =
+    "This folder is being unprotected; nothing can change in it until that is done.";
+const ENCRYPTING: &str = "Encrypting the files of this folder…";
+const DECRYPTING: &str = "Decrypting the files of this folder…";
+const PROTECT_STOPPED: &str =
+    "Encrypting the files of this folder stopped; choose Finish protecting to go on.";
+const UNPROTECT_STOPPED: &str =
+    "Decrypting the files of this folder stopped; choose Finish unprotecting to go on.";
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -136,6 +152,24 @@ pub enum Message {
     Sync(syncing::Message),
     OpenInWeb(Option<NodeId>),
     Viewer(viewer::Message),
+    /// The protected folders the server lists.
+    ProtectedLoaded(Result<protected::Listed, ApiError>),
+    /// Opens the dialog protecting this folder with a password.
+    ProtectFolder(Node),
+    /// Asks for the password of this protected folder.
+    UnlockFolder(NodeId),
+    LockFolder(NodeId),
+    LockAll,
+    ChangeFolderPassword(NodeId),
+    UnprotectFolder(NodeId),
+    /// Goes on with protecting or unprotecting this folder where it stopped.
+    FinishConversion(NodeId),
+    Converting(NodeId, convert::Progress),
+    /// Locks the folders past their time without activity.
+    LockIdle,
+    Protect(protect::Message),
+    /// Opens what a `home-space://` link names, such as a folder handed over by the browser.
+    OpenLink(AppLink),
 }
 
 pub enum Update {
@@ -212,6 +246,29 @@ pub struct State {
     /// Where the user went from unsaved edits in the viewer, while asked whether to drop them.
     leave_to: Option<Box<Message>>,
     versions: version::Versions,
+    /// The protected folders and the keys of the unlocked ones.
+    protected: Protected,
+    /// The dialog protecting, unlocking or unprotecting a folder, while it is open.
+    protect: Option<protect::Dialog>,
+    /// A folder whose content is being encrypted or decrypted, or whose conversion stopped.
+    converting: Option<Conversion>,
+    /// Plain files of a newly protected folder found in the recycle bin, to offer deleting once
+    /// the dialog showing its recovery key closes.
+    binned: Option<(String, Vec<TrashItem>)>,
+    /// A folder opened from a link, which asks to be unlocked once it is listed locked.
+    unlock_when_listed: Option<NodeId>,
+    /// Whether the server's list of protected folders came, so a listing says for sure whether
+    /// it is protected.
+    protected_listed: bool,
+}
+
+/// A protected folder whose content is being converted.
+#[derive(Debug, Clone)]
+struct Conversion {
+    folder: NodeId,
+    direction: convert::Direction,
+    message: String,
+    failed: bool,
 }
 
 impl State {
@@ -239,6 +296,12 @@ impl State {
             search: Search::default(),
             syncing: Syncing::default(),
             leave_to: None,
+            protected: Protected::default(),
+            protect: None,
+            converting: None,
+            binned: None,
+            unlock_when_listed: None,
+            protected_listed: false,
         };
         // The window may have been resized before the browser opened.
         let size = window::latest()
@@ -247,6 +310,7 @@ impl State {
         let transfers = state.transfer_list.load(&state.client);
         let task = Task::batch([
             state.folder.load(&state.client),
+            state.load_protected(),
             state.load_lost_and_found(),
             transfers.map(Message::Transfers),
             check.map(Message::Version),
@@ -257,12 +321,16 @@ impl State {
 
     pub fn update(&mut self, message: Message) -> Update {
         match message {
-            Message::SignedOut => Update::SignedOut {
-                server: self.client.base_url().to_owned(),
-            },
+            Message::SignedOut => {
+                self.forget_protected();
+                Update::SignedOut {
+                    server: self.client.base_url().to_owned(),
+                }
+            }
             message => {
                 let task = self.handle(message);
                 if self.session_ended() {
+                    self.forget_protected();
                     return Update::SignedOut {
                         server: self.client.base_url().to_owned(),
                     };
@@ -329,8 +397,35 @@ impl State {
                 Task::batch([self.folder.reload(&self.client), self.load_lost_and_found()])
             }
             Message::Loaded(folder, result) => {
+                let result = result.map(|listing| self.open_listing(folder, listing));
                 self.folder.loaded(folder, result);
-                Task::none()
+                // Only the protected folder itself shows that it is locked.
+                match &self.folder.protection {
+                    Protection::Locked(locked)
+                        if folder == self.folder.id && folder != Some(locked.node_id) =>
+                    {
+                        let root = locked.node_id;
+                        if self.unlock_when_listed == folder {
+                            self.unlock_when_listed = Some(root);
+                        }
+                        self.open_folder(Some(root))
+                    }
+                    Protection::Locked(locked)
+                        if folder == self.folder.id
+                            && self.unlock_when_listed == Some(locked.node_id)
+                            && self.protect.is_none() =>
+                    {
+                        self.unlock_when_listed = None;
+                        let root = locked.node_id;
+                        self.handle(Message::UnlockFolder(root))
+                    }
+                    _ => {
+                        if folder == self.folder.id && self.protected_listed {
+                            self.unlock_when_listed = None;
+                        }
+                        Task::none()
+                    }
+                }
             }
             Message::Click(id) => self.click(id),
             Message::OpenFolderLink(id) => self.open_folder_link(id),
@@ -380,19 +475,40 @@ impl State {
                 self.act(action)
             }
             Message::NewFolder if self.in_lost_and_found() => Task::none(),
-            Message::NewFolder => {
-                let (dialog, task) = Dialog::new_folder(self.folder_name());
-                self.dialog = Some(dialog);
-                task.map(Message::Dialog)
-            }
+            Message::NewFolder => match self.adding_inside() {
+                Ok(inside) => {
+                    let (dialog, task) = Dialog::new_folder(self.folder_name(), inside);
+                    self.dialog = Some(dialog);
+                    task.map(Message::Dialog)
+                }
+                Err(err) => {
+                    self.folder.error = Some(err.to_owned());
+                    Task::none()
+                }
+            },
             Message::Upload => self.pick_upload(),
             Message::SendLocal => self.open_send(send::Source::Local),
             Message::Send(message) => self.send_update(message),
             Message::Share(message) => self.share_update(message),
-            Message::UploadPlanned(parent, Ok(plan)) if !plan.is_empty() => self
-                .transfers
-                .enqueue(&self.client, Batch::Upload { parent, plan })
-                .map(Message::Transfer),
+            Message::UploadPlanned(parent, Ok(plan)) if !plan.is_empty() => {
+                match self.upload_inside(parent) {
+                    Ok(inside) => self
+                        .transfers
+                        .enqueue(
+                            &self.client,
+                            Batch::Upload {
+                                parent,
+                                plan,
+                                inside,
+                            },
+                        )
+                        .map(Message::Transfer),
+                    Err(err) => {
+                        self.folder.error = Some(err.to_owned());
+                        Task::none()
+                    }
+                }
+            }
             Message::DownloadPlanned(Ok(files)) if !files.is_empty() => self
                 .transfers
                 .enqueue(&self.client, Batch::Download(files))
@@ -485,7 +601,9 @@ impl State {
                 self.dropping = self.dialog.is_none()
                     && self.send.is_none()
                     && self.share.is_none()
-                    && !self.in_lost_and_found();
+                    && self.protect.is_none()
+                    && !self.in_lost_and_found()
+                    && self.adding_inside().is_ok();
                 Task::none()
             }
             Message::FilesHoveredLeft => {
@@ -496,7 +614,11 @@ impl State {
                 self.dropping = false;
                 if let Some(send) = &self.send {
                     send.add_paths(vec![path]).map(Message::Send)
-                } else if self.dialog.is_none() && !self.in_lost_and_found() {
+                } else if self.dialog.is_none()
+                    && self.protect.is_none()
+                    && !self.in_lost_and_found()
+                    && self.adding_inside().is_ok()
+                {
                     files::plan_upload(self.folder.id, vec![path])
                 } else {
                     Task::none()
@@ -512,8 +634,20 @@ impl State {
                 } else {
                     Task::none()
                 };
-                let listing = if self.folder.apply(&event) {
+                // Names in a protected folder are sealed in the event: the listing is opened again.
+                let listing = if self.folder.protection.folder().is_some() {
+                    if self.touches_listing(&event) {
+                        self.folder.load(&self.client)
+                    } else {
+                        Task::none()
+                    }
+                } else if self.folder.apply(&event) {
                     self.folder.load(&self.client)
+                } else {
+                    Task::none()
+                };
+                let protected = if matches!(event, protocol::Event::Resync) {
+                    self.load_protected()
                 } else {
                     Task::none()
                 };
@@ -546,7 +680,7 @@ impl State {
                         .map(Message::Transfers),
                     _ => Task::none(),
                 };
-                Task::batch([details, viewer, found, listing, trash, transfers])
+                Task::batch([details, viewer, found, listing, protected, trash, transfers])
             }
             Message::Sync(message) => {
                 if matches!(
@@ -558,7 +692,8 @@ impl State {
                 ) {
                     self.menu = None;
                 }
-                match self
+                let status = matches!(message, syncing::Message::Engine(sync::Update::Status(_)));
+                let task = match self
                     .syncing
                     .update(message, |id| self.folder.listing.name_of(id))
                 {
@@ -567,7 +702,11 @@ impl State {
                         self.folder.error = Some(err);
                         Task::none()
                     }
+                };
+                if status {
+                    self.keep_out_of_sync();
                 }
+                task
             }
             Message::OpenInWeb(folder) => {
                 self.menu = None;
@@ -583,6 +722,7 @@ impl State {
             },
             Message::SignOut => {
                 self.menu = None;
+                self.forget_protected();
                 let client = self.client.clone();
                 Task::perform(
                     async move {
@@ -593,6 +733,380 @@ impl State {
             }
             Message::SignedOut => Task::none(),
             Message::Viewer(message) => self.viewer_update(message),
+            Message::ProtectedLoaded(Ok(listed)) => {
+                self.protected_listed = true;
+                let gone = self.protected.loaded(listed);
+                self.keep_out_of_sync();
+                let locked: Vec<Task<Message>> =
+                    gone.into_iter().map(|id| self.locked(id)).collect();
+                Task::batch(locked.into_iter().chain([self.folder.load(&self.client)]))
+            }
+            // Until the list comes, folders show as they are stored.
+            Message::ProtectedLoaded(Err(_)) => {
+                self.protected_listed = true;
+                Task::none()
+            }
+            Message::ProtectFolder(node) => {
+                self.menu = None;
+                let (dialog, task) = protect::Dialog::protect(node);
+                self.protect = Some(dialog);
+                task.map(Message::Protect)
+            }
+            Message::UnlockFolder(id) => self.open_protect(id, protect::Dialog::unlock),
+            Message::ChangeFolderPassword(id) => {
+                self.open_protect(id, protect::Dialog::change_password)
+            }
+            Message::UnprotectFolder(id) => self.open_protect(id, |folder, name| {
+                (protect::Dialog::unprotect(folder, name), Task::none())
+            }),
+            Message::LockFolder(id) => {
+                self.menu = None;
+                self.protected.lock(id);
+                self.locked(id)
+            }
+            Message::LockAll => {
+                self.menu = None;
+                let locked = self.protected.lock_all();
+                Task::batch(
+                    locked
+                        .into_iter()
+                        .map(|id| self.locked(id))
+                        .collect::<Vec<_>>(),
+                )
+            }
+            Message::LockIdle => {
+                let locked = self.protected.lock_idle();
+                Task::batch(
+                    locked
+                        .into_iter()
+                        .map(|id| self.locked(id))
+                        .collect::<Vec<_>>(),
+                )
+            }
+            Message::FinishConversion(id) => {
+                self.menu = None;
+                let direction = match self.protected.get(id).map(|folder| folder.state) {
+                    Some(ProtectionState::Protecting) => convert::Direction::Protect,
+                    Some(ProtectionState::Unprotecting) => convert::Direction::Unprotect,
+                    _ => return Task::none(),
+                };
+                self.start_conversion(id, direction)
+            }
+            Message::Converting(id, progress) => self.conversion_update(id, progress),
+            Message::Protect(message) => self.protect_update(message),
+            Message::OpenLink(AppLink::Folder { server, folder }) => {
+                if !same_server(server.as_str(), self.client.base_url()) {
+                    self.folder.error = Some(format!(
+                        "The link is for the folder of another server, {server}. This app is \
+                         signed in to {}.",
+                        self.client.base_url()
+                    ));
+                    return Task::none();
+                }
+                self.unlock_when_listed = Some(folder);
+                self.handle(Message::Jump(Some(folder)))
+            }
+        }
+    }
+
+    /// Lists the protected folders.
+    fn load_protected(&self) -> Task<Message> {
+        Task::perform(
+            protected::fetch(self.client.clone()),
+            Message::ProtectedLoaded,
+        )
+    }
+
+    /// Keeps the sync out of the protected folders: one that a synced folder holds, or that is
+    /// synced itself, is set to not sync, which stops following it and leaves its local copy
+    /// as it is. Its names and files on the server are sealed, and mean nothing on disk.
+    fn keep_out_of_sync(&self) {
+        let status = self.syncing.status();
+        for id in self.protected.ids() {
+            let reached = status.location(Some(id)).is_some();
+            if reached && status.badge(Some(id)) != Some(sync::Badge::Disabled) {
+                self.syncing.send(sync::Command::Map(sync::Mapping {
+                    remote: Some(id),
+                    local: None,
+                }));
+            }
+        }
+    }
+
+    /// Locks every folder and deletes the decrypted copies, as signing out does.
+    fn forget_protected(&mut self) {
+        self.protected.lock_all();
+        protected::files::sweep();
+    }
+
+    /// The listing of `folder`, with the names opened when it is in an unlocked protected
+    /// folder, and nothing of it listed when that is locked. Notes which it is when it is the
+    /// folder shown.
+    fn open_listing(&mut self, folder: Option<NodeId>, listing: Listing) -> Listing {
+        if folder != self.folder.id {
+            return listing;
+        }
+        let Some(protection) = self.protected.enclosing(&listing.path).cloned() else {
+            self.folder.protection = Protection::None;
+            return listing;
+        };
+        match self.protected.inside(protection.node_id) {
+            Some(inside) => {
+                self.folder.protection = Protection::Unlocked(protection);
+                Listing {
+                    path: inside.open_path(listing.path),
+                    nodes: inside.open_listing(listing.nodes),
+                }
+            }
+            None => {
+                self.folder.protection = Protection::Locked(protection);
+                Listing {
+                    path: listing.path,
+                    nodes: Vec::new(),
+                }
+            }
+        }
+    }
+
+    /// What work in the folder shown needs when it is in an unlocked protected folder; counts
+    /// as activity in it.
+    fn current_inside(&mut self) -> Option<Inside> {
+        let root = match &self.folder.protection {
+            Protection::Unlocked(folder) => folder.node_id,
+            Protection::None | Protection::Locked(_) => return None,
+        };
+        self.protected.inside(root)
+    }
+
+    /// Whether files and folders may be added to the folder shown, and the keys that seal them
+    /// when it is in a protected folder.
+    fn adding_inside(&mut self) -> Result<Option<Inside>, &'static str> {
+        match &self.folder.protection {
+            Protection::None => Ok(None),
+            Protection::Locked(_) => Err(LOCKED),
+            protection if protection.is_frozen() => Err(FROZEN),
+            Protection::Unlocked(_) => self.current_inside().map(Some).ok_or(LOCKED_MEANWHILE),
+        }
+    }
+
+    /// The keys an upload into `parent` needs. One planned for another folder than the one
+    /// shown goes as it is, unless that is a protected folder: the server refuses plain files
+    /// inside one anyway.
+    fn upload_inside(&mut self, parent: Option<NodeId>) -> Result<Option<Inside>, &'static str> {
+        if parent == self.folder.id {
+            return self.adding_inside();
+        }
+        match parent.filter(|id| self.protected.get(*id).is_some()) {
+            Some(root) => self.protected.inside(root).map(Some).ok_or(LOCKED),
+            None => Ok(None),
+        }
+    }
+
+    /// What protected folders keep the selection from.
+    fn limits(&self, selected: &[&Node]) -> Limits {
+        Limits {
+            protected: self.folder.protection.folder().is_some()
+                || selected
+                    .iter()
+                    .any(|node| self.protected.is_or_holds(node.id)),
+            frozen: self.folder.protection.is_frozen(),
+        }
+    }
+
+    /// Whether `event` changes what the folder shown lists.
+    fn touches_listing(&self, event: &protocol::Event) -> bool {
+        let listed = |id: NodeId| self.folder.node(id).is_some();
+        match event {
+            protocol::Event::NodeCreated { node } => node.parent_id == self.folder.id,
+            protocol::Event::NodeUpdated { node } => {
+                node.parent_id == self.folder.id || listed(node.id)
+            }
+            protocol::Event::NodeDeleted { id, parent_id } => {
+                *parent_id == self.folder.id || listed(*id)
+            }
+            protocol::Event::Resync => true,
+            _ => false,
+        }
+    }
+
+    /// Opens a dialog about the protected folder `id`, which `open` makes from it and its name.
+    fn open_protect(
+        &mut self,
+        id: NodeId,
+        open: impl FnOnce(
+            protocol::ProtectedFolder,
+            String,
+        ) -> (protect::Dialog, Task<protect::Message>),
+    ) -> Task<Message> {
+        self.menu = None;
+        let Some(folder) = self.protected.get(id).cloned() else {
+            return Task::none();
+        };
+        let name = self
+            .folder
+            .listing
+            .name_of(id)
+            .unwrap_or_else(|| HOME.to_owned());
+        let (dialog, task) = open(folder, name);
+        self.protect = Some(dialog);
+        task.map(Message::Protect)
+    }
+
+    /// Takes in that the protected folder `id` locked: what showed it goes back to the folder,
+    /// which shows that it is locked.
+    fn locked(&mut self, id: NodeId) -> Task<Message> {
+        if self.dialog.as_ref().and_then(Dialog::protected_root) == Some(id) {
+            self.dialog = None;
+        }
+        let viewing =
+            matches!(&self.page, Page::Viewer(viewer) if viewer.protected_root() == Some(id));
+        if self.folder.protection.root() != Some(id) && !viewing {
+            return Task::none();
+        }
+        if viewing || matches!(self.page, Page::Folder) {
+            self.open_folder(Some(id))
+        } else {
+            // Elsewhere, such as in the recycle bin: the folder is listed again on the way back.
+            self.folder.listing.nodes.clear();
+            self.folder.selection.clear();
+            Task::none()
+        }
+    }
+
+    /// Starts converting the content of the unlocked protected folder `id`.
+    fn start_conversion(&mut self, id: NodeId, direction: convert::Direction) -> Task<Message> {
+        if self
+            .converting
+            .as_ref()
+            .is_some_and(|conversion| !conversion.failed)
+        {
+            return Task::none();
+        }
+        let Some(inside) = self.protected.inside(id) else {
+            self.folder.error = Some(LOCKED.to_owned());
+            return Task::none();
+        };
+        let message = match direction {
+            convert::Direction::Protect => ENCRYPTING,
+            convert::Direction::Unprotect => DECRYPTING,
+        };
+        self.converting = Some(Conversion {
+            folder: id,
+            direction,
+            message: message.to_owned(),
+            failed: false,
+        });
+        Task::run(
+            convert::run(self.client.clone(), inside, direction),
+            move |progress| Message::Converting(id, progress),
+        )
+    }
+
+    fn conversion_update(&mut self, id: NodeId, progress: convert::Progress) -> Task<Message> {
+        let Some(conversion) = self.converting.as_mut().filter(|known| known.folder == id) else {
+            return Task::none();
+        };
+        let direction = conversion.direction;
+        match progress {
+            convert::Progress::File(name) => {
+                conversion.message = match direction {
+                    convert::Direction::Protect => format!("Encrypting “{name}”…"),
+                    convert::Direction::Unprotect => format!("Decrypting “{name}”…"),
+                };
+                Task::none()
+            }
+            convert::Progress::Done(Ok(finished)) => {
+                self.converting = None;
+                match finished.folder {
+                    Some(folder) => self.protected.remember(folder),
+                    None => self.protected.forget(id),
+                }
+                if !finished.binned.is_empty() {
+                    let name = self
+                        .folder
+                        .listing
+                        .name_of(id)
+                        .unwrap_or_else(|| HOME.to_owned());
+                    self.binned = Some((name, finished.binned));
+                    self.offer_binned();
+                }
+                Task::batch([self.folder.load(&self.client), self.load_protected()])
+            }
+            convert::Progress::Done(Err(stopped)) => {
+                let stopped_text = match direction {
+                    convert::Direction::Protect => PROTECT_STOPPED,
+                    convert::Direction::Unprotect => UNPROTECT_STOPPED,
+                };
+                conversion.failed = true;
+                conversion.message = format!("{stopped_text} {stopped}");
+                if let Stopped::Api(ApiError::ReauthenticationRequired { message, methods }) =
+                    stopped
+                    && self.protect.is_none()
+                {
+                    let (dialog, task) = protect::Dialog::confirm_removal(id, message, methods);
+                    self.protect = Some(dialog);
+                    return task.map(Message::Protect);
+                }
+                self.folder.load(&self.client)
+            }
+        }
+    }
+
+    /// Offers to delete for good the plain files of a newly protected folder that are in the
+    /// recycle bin, once no other dialog about protection is open.
+    fn offer_binned(&mut self) {
+        if self.protect.is_none()
+            && let Some((name, items)) = self.binned.take()
+        {
+            self.protect = Some(protect::Dialog::binned(name, items));
+        }
+    }
+
+    fn protect_update(&mut self, message: protect::Message) -> Task<Message> {
+        let Some(dialog) = &mut self.protect else {
+            return Task::none();
+        };
+        match dialog.update(&self.client, message) {
+            protect::Outcome::Task(task) => task.map(Message::Protect),
+            protect::Outcome::Closed => {
+                self.protect = None;
+                self.offer_binned();
+                Task::none()
+            }
+            protect::Outcome::Opened {
+                folder,
+                keys,
+                close,
+            } => {
+                if close {
+                    self.protect = None;
+                }
+                self.protected.remember(folder.clone());
+                if let Err(err) = self.protected.unlock(&folder, keys) {
+                    self.protect = None;
+                    self.folder.error = Some(err.to_string());
+                    return Task::none();
+                }
+                let convert = if folder.state == ProtectionState::Protecting {
+                    self.start_conversion(folder.node_id, convert::Direction::Protect)
+                } else {
+                    Task::none()
+                };
+                Task::batch([convert, self.folder.load(&self.client)])
+            }
+            protect::Outcome::Unprotecting(folder) => {
+                self.protect = None;
+                let id = folder.node_id;
+                self.protected.remember(folder);
+                let convert = self.start_conversion(id, convert::Direction::Unprotect);
+                Task::batch([convert, self.folder.load(&self.client)])
+            }
+            protect::Outcome::Removed(id) => {
+                self.protect = None;
+                self.converting = None;
+                self.protected.forget(id);
+                Task::batch([self.folder.load(&self.client), self.load_protected()])
+            }
         }
     }
 
@@ -600,6 +1114,10 @@ impl State {
         let Page::Viewer(viewer) = &mut self.page else {
             return Task::none();
         };
+        // Reading and editing count as activity in the protected folder.
+        if let Some(root) = viewer.protected_root() {
+            self.protected.inside(root);
+        }
         match viewer.update(&self.client, message) {
             viewer::Outcome::Task(task) => task.map(Message::Viewer),
             viewer::Outcome::Open(node) => {
@@ -817,6 +1335,7 @@ impl State {
             return self.show_in_viewer(node, viewer, None);
         }
         let listed = !self.folder.loading && node.parent_id == self.folder.id;
+        let inside = self.current_inside();
         if listed {
             let gallery = Gallery::new(
                 viewers(),
@@ -827,7 +1346,7 @@ impl State {
             self.show_in_viewer(node, viewer, gallery)
         } else {
             let show = self.show_in_viewer(node, viewer, None);
-            let list = list_gallery(&self.client, node.clone(), self.folder.sort);
+            let list = list_gallery(&self.client, node.clone(), self.folder.sort, inside);
             Task::batch([show, list])
         }
     }
@@ -843,16 +1362,25 @@ impl State {
         self.details = None;
         self.menu = None;
         let synced = self.synced_copy(node);
+        let inside = self.current_inside();
         let (state, task) =
-            viewer::State::open(&self.client, node.clone(), viewer, synced, gallery);
+            viewer::State::open(&self.client, node.clone(), viewer, synced, gallery, inside);
         self.page = Page::Viewer(Box::new(state));
         task.map(Message::Viewer)
     }
 
     /// Opens the file `node` with the default app, from a local copy that is the server's version
-    /// or else from a fresh download.
-    fn open_externally(&self, node: &Node) -> Task<Message> {
-        files::open(&self.client, node.clone(), self.synced_copy(node))
+    /// or else from a fresh download; in a protected folder, from a copy decrypted into the
+    /// private folder.
+    fn open_externally(&mut self, node: &Node) -> Task<Message> {
+        match &self.folder.protection {
+            Protection::None => files::open(&self.client, node.clone(), self.synced_copy(node)),
+            Protection::Locked(_) => Task::none(),
+            Protection::Unlocked(_) => match self.current_inside() {
+                Some(inside) => files::open_protected(node, inside),
+                None => Task::none(),
+            },
+        }
     }
 
     fn synced_copy(&self, node: &Node) -> Option<files::SyncedCopy> {
@@ -873,6 +1401,15 @@ impl State {
 
     fn act(&mut self, action: Action) -> Task<Message> {
         let selected = self.folder.selected();
+        let limits = self.limits(&selected.iter().collect::<Vec<_>>());
+        let refused = match action {
+            Action::Send | Action::Share | Action::Details => limits.protected,
+            Action::Rename | Action::Move | Action::Delete => limits.frozen,
+            Action::Open | Action::OpenFile | Action::OpenWith | Action::Download => false,
+        };
+        if refused {
+            return Task::none();
+        }
         match (action, selected.as_slice()) {
             (_, []) => Task::none(),
             (Action::Open, [node]) => self.activate(node.id),
@@ -880,9 +1417,13 @@ impl State {
                 let node = node.clone();
                 self.open_file(&node)
             }
-            (Action::OpenWith, [node]) => self.open_externally(node),
+            (Action::OpenWith, [node]) => {
+                let node = node.clone();
+                self.open_externally(&node)
+            }
             (Action::Rename, [node]) => {
-                let (dialog, task) = Dialog::rename(node.clone());
+                let inside = self.current_inside();
+                let (dialog, task) = Dialog::rename(node.clone(), inside);
                 self.dialog = Some(dialog);
                 task.map(Message::Dialog)
             }
@@ -899,7 +1440,13 @@ impl State {
                 | Action::Details,
                 _,
             ) => Task::none(),
-            (Action::Download, _) => files::download(&self.client, selected),
+            (Action::Download, _) => {
+                let inside = self.current_inside();
+                if self.folder.protection.folder().is_some() && inside.is_none() {
+                    return Task::none();
+                }
+                files::download(&self.client, selected, inside)
+            }
             (Action::Send, _) => self.open_send(send::Source::Nodes(selected)),
             (Action::Share, _) => {
                 let (dialog, task) =
@@ -908,8 +1455,20 @@ impl State {
                 task.map(Message::Share)
             }
             (Action::Move, _) => {
-                let (dialog, task) =
-                    Dialog::move_nodes(&self.client, selected, self.me.lost_and_found_id);
+                let within = self.current_inside().map(|inside| Within {
+                    inside,
+                    trail: self.folder.listing.path.clone(),
+                });
+                if self.folder.protection.folder().is_some() && within.is_none() {
+                    return Task::none();
+                }
+                let (dialog, task) = Dialog::move_nodes(
+                    &self.client,
+                    selected,
+                    self.me.lost_and_found_id,
+                    self.protected.ids(),
+                    within,
+                );
                 self.dialog = Some(dialog);
                 task.map(Message::Dialog)
             }
@@ -921,7 +1480,11 @@ impl State {
                 Task::none()
             }
             (Action::Delete, _) => {
-                self.dialog = Some(Dialog::delete(selected));
+                let for_good = self.folder.protection.folder().is_some()
+                    || selected
+                        .iter()
+                        .any(|node| self.protected.is_or_holds(node.id));
+                self.dialog = Some(Dialog::delete(selected, for_good));
                 Task::none()
             }
         }
@@ -949,7 +1512,7 @@ impl State {
                 };
             }
             details::Message::DownloadNode => {
-                return files::download(&self.client, vec![details.node().clone()]);
+                return files::download(&self.client, vec![details.node().clone()], None);
             }
             _ => {}
         }
@@ -1110,6 +1673,12 @@ impl State {
             match shortcut {
                 Shortcut::Escape => self.send_update(send::Message::Cancel),
                 Shortcut::Activate => self.send_update(send::Message::Submit),
+                _ => Task::none(),
+            }
+        } else if self.protect.is_some() {
+            match shortcut {
+                Shortcut::Escape => self.protect_update(protect::Message::Cancel),
+                Shortcut::Activate => self.protect_update(protect::Message::Submit),
                 _ => Task::none(),
             }
         } else if self.dialog.is_some() {
@@ -1290,8 +1859,15 @@ impl State {
         } else {
             Subscription::none()
         };
+        // Folders lock after their time without activity even when nothing else happens.
+        let lock = if self.protected.any_unlocked() {
+            iced::time::every(LOCK_CHECK).map(|_| Message::LockIdle)
+        } else {
+            Subscription::none()
+        };
         Subscription::batch([
             clock,
+            lock,
             event::listen_with(input),
             events::subscription(&self.client).map(|live| match live {
                 events::Live::Event(event) => Message::Server(*event),
@@ -1300,6 +1876,15 @@ impl State {
             sync::subscription(&self.client, self.me.id)
                 .map(|update| Message::Sync(syncing::Message::Engine(update))),
         ])
+    }
+}
+
+/// Whether `link` and `signed_in`, two server addresses, are the same server: the same scheme,
+/// host and port, whatever the path or a trailing slash.
+fn same_server(link: &str, signed_in: &str) -> bool {
+    match (url::Url::parse(link), url::Url::parse(signed_in)) {
+        (Ok(link), Ok(signed_in)) => link.origin() == signed_in.origin(),
+        _ => false,
     }
 }
 
@@ -1336,8 +1921,9 @@ fn leaves_page(message: &Message) -> bool {
     )
 }
 
-/// Lists the folder of `node` for the viewer to step through, in `sort` order.
-fn list_gallery(client: &Client, node: Node, sort: Sort) -> Task<Message> {
+/// Lists the folder of `node` for the viewer to step through, in `sort` order; with the names
+/// opened in a protected folder.
+fn list_gallery(client: &Client, node: Node, sort: Sort, inside: Option<Inside>) -> Task<Message> {
     let client = client.clone();
     Task::perform(
         async move {
@@ -1345,6 +1931,10 @@ fn list_gallery(client: &Client, node: Node, sort: Sort) -> Task<Message> {
                 .list(node.parent_id)
                 .await
                 .map_err(|err| err.to_string())?;
+            let listing = match &inside {
+                Some(inside) => inside.open_listing(listing),
+                None => listing,
+            };
             Gallery::new(viewers(), &listing, &node, sort)
                 .ok_or_else(|| format!("{} has no viewer to step through", node.name))
         },

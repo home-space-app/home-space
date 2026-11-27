@@ -8,15 +8,16 @@ use iced::{
 };
 
 use client_core::{labels::HOME, listing::collapsed_crumbs, received::SHARED_WITH_ME};
-use protocol::Node;
+use protocol::{FolderLock, Node, NodeKind, ProtectionState};
 
 use super::{
     Menu, Message, Page, State, anchor::Anchor, context_menu, context_menu::Placement, devices,
-    dialogs, grid, parts, search, send, share, shared, sidebar, sync_queue, syncing, toolbar,
-    toolbar::SyncChip, transfer_list, transfer_save, viewer,
+    dialogs, grid, parts, protect, search, send, share, shared, sidebar, sync_queue, syncing,
+    toolbar, toolbar::SyncChip, transfer_list, transfer_save, viewer,
 };
 use crate::{
     icons::{ICON_SIZE, Icon, Tint},
+    protected::Protection,
     sync, theme,
 };
 
@@ -59,6 +60,9 @@ const SYNC_QUEUE: &str = "Sync queue";
 const SYNC_SETTINGS: &str = "Sync settings";
 const DEVICES: &str = "Devices";
 const TRANSFERS: &str = "Transfers";
+const LOCKED_ICON: f32 = 48.0;
+const LOCKED_GAP: f32 = 12.0;
+const LOCKED_TEXT_WIDTH: f32 = 420.0;
 const CRUMB_SEPARATOR: &str = "›";
 const CRUMB_OVERFLOW: &str = "…";
 
@@ -124,6 +128,12 @@ impl State {
             layers.push(modal(
                 dialog.view().map(Message::Dialog),
                 Message::Dialog(dialogs::Message::Cancel),
+            ));
+        }
+        if let Some(dialog) = &self.protect {
+            layers.push(modal(
+                dialog.view().map(Message::Protect),
+                Message::Protect(protect::Message::Cancel),
             ));
         }
         if let Some(send) = &self.send {
@@ -294,7 +304,9 @@ impl State {
             top(self.breadcrumbs(), self.search_box()),
             toolbar::view(
                 selected,
-                !self.in_lost_and_found(),
+                !self.in_lost_and_found()
+                    && !self.folder.protection.is_locked()
+                    && !self.folder.protection.is_frozen(),
                 self.folder.id,
                 self.sync_chip(),
                 self.content_width(),
@@ -303,6 +315,12 @@ impl State {
         .spacing(SPACING);
         if let Some(error) = &self.folder.error {
             page = page.push(parts::alert_error(Icon::Error, error.as_str(), None));
+        }
+        page = page.push(self.conversion_banner());
+        if let Protection::Locked(folder) = &self.folder.protection {
+            return page
+                .push(parts::list_box(self.locked_placeholder(folder)))
+                .into();
         }
         let grid = responsive(move |size| {
             let columns = grid::Columns::fitting(size.width);
@@ -317,6 +335,7 @@ impl State {
                     self.folder.id,
                     &self.folder.selection,
                     self.syncing.status(),
+                    &self.protected,
                     columns,
                 ),
             ]
@@ -353,14 +372,18 @@ impl State {
                 context_menu::view(
                     selected,
                     self.me.lost_and_found_id,
-                    self.syncing.entries(selected),
+                    self.limits(selected),
+                    self.menu_entries(selected),
                 ),
             ),
             Menu::Crumbs(placement) => (
                 placement,
                 context_menu::folders(self.folder.hidden_crumbs()),
             ),
-            Menu::Account(placement) => (placement, context_menu::account()),
+            Menu::Account(placement) => (
+                placement,
+                context_menu::account(self.protected.any_unlocked()),
+            ),
             Menu::Device(id, placement) => {
                 let (can_sign_out, can_remove) = match &self.page {
                     Page::Devices(devices) => (devices.can_sign_out(id), devices.can_remove(id)),
@@ -375,6 +398,188 @@ impl State {
             Menu::Users(placement) | Menu::SharePeople(placement) => (placement, space().into()),
         };
         menu_layers(panel, placement)
+    }
+
+    /// The entries of the context menu below the actions: about protection, then the sync's.
+    /// Nothing about a protected folder syncs.
+    pub(super) fn menu_entries(&self, selected: &[&Node]) -> Vec<context_menu::Entry> {
+        let mut entries = self.protect_entries(selected);
+        if !self.limits(selected).protected {
+            entries.extend(self.syncing.entries(selected));
+        }
+        entries
+    }
+
+    /// Protect, Unlock, Lock and the rest, for a single selected folder.
+    pub(super) fn protect_entries(&self, selected: &[&Node]) -> Vec<context_menu::Entry> {
+        let [node] = selected else {
+            return Vec::new();
+        };
+        if node.kind != NodeKind::Folder {
+            return Vec::new();
+        }
+        let entry = |icon, label, message| context_menu::Entry {
+            icon,
+            label,
+            message,
+        };
+        let id = node.id;
+        let Some(folder) = self.protected.get(id) else {
+            // A synced folder would sync its sealed names and encrypted files to this computer.
+            let protectable = self.folder.protection.folder().is_none()
+                && id != self.me.lost_and_found_id
+                && !self.protected.is_or_holds(id)
+                && self.syncing.status().location(Some(id)).is_none()
+                && self.client.supports(protocol::features::PROTECTED_FOLDERS);
+            return protectable
+                .then(|| {
+                    entry(
+                        Icon::Lock,
+                        "Protect with password…",
+                        Message::ProtectFolder((*node).clone()),
+                    )
+                })
+                .into_iter()
+                .collect();
+        };
+        if !self.protected.is_unlocked(id) {
+            return vec![entry(Icon::LockOpen, "Unlock…", Message::UnlockFolder(id))];
+        }
+        let mut entries = vec![entry(Icon::Lock, "Lock", Message::LockFolder(id))];
+        match folder.state {
+            ProtectionState::Protected => {
+                if folder.lock == FolderLock::Password {
+                    entries.push(entry(
+                        Icon::Key,
+                        "Change password…",
+                        Message::ChangeFolderPassword(id),
+                    ));
+                }
+                entries.push(entry(
+                    Icon::LockOpen,
+                    "Unprotect…",
+                    Message::UnprotectFolder(id),
+                ));
+            }
+            ProtectionState::Protecting => entries.push(entry(
+                Icon::Lock,
+                "Finish protecting",
+                Message::FinishConversion(id),
+            )),
+            ProtectionState::Unprotecting => entries.push(entry(
+                Icon::LockOpen,
+                "Finish unprotecting",
+                Message::FinishConversion(id),
+            )),
+        }
+        entries
+    }
+
+    /// What is going on with the protection of the folder shown: a conversion running or
+    /// stopped, or that it is unlocked, with Lock.
+    fn conversion_banner(&self) -> Option<Element<'_, Message>> {
+        if let Some(conversion) = &self.converting {
+            let finish = conversion.failed.then(|| {
+                parts::small_outlined("Finish", Some(Message::FinishConversion(conversion.folder)))
+            });
+            let icon = if conversion.failed {
+                Icon::Error
+            } else {
+                Icon::Sync
+            };
+            return Some(if conversion.failed {
+                parts::alert_error(icon, conversion.message.as_str(), finish)
+            } else {
+                parts::alert_info(icon, conversion.message.as_str(), finish)
+            });
+        }
+        let Protection::Unlocked(folder) = &self.folder.protection else {
+            return None;
+        };
+        let id = folder.node_id;
+        let name = self
+            .folder
+            .listing
+            .name_of(id)
+            .unwrap_or_else(|| HOME.to_owned());
+        let (text_line, finish) = match folder.state {
+            ProtectionState::Protected => (
+                format!("“{name}” is unlocked. It locks after 15 minutes without activity."),
+                None,
+            ),
+            ProtectionState::Protecting => (
+                format!("“{name}” is not fully encrypted yet."),
+                Some(parts::small_outlined(
+                    "Finish protecting",
+                    Some(Message::FinishConversion(id)),
+                )),
+            ),
+            ProtectionState::Unprotecting => (
+                format!(
+                    "“{name}” is being unprotected; nothing can change in it until that is done."
+                ),
+                Some(parts::small_outlined(
+                    "Finish unprotecting",
+                    Some(Message::FinishConversion(id)),
+                )),
+            ),
+        };
+        let lock_all = (self.protected.unlocked_count() > 1)
+            .then(|| parts::small_outlined("Lock all", Some(Message::LockAll)));
+        let actions = row![]
+            .push(finish)
+            .push(lock_all)
+            .push(parts::small_outlined_icon(
+                Icon::Lock,
+                "Lock",
+                Some(Message::LockFolder(id)),
+            ))
+            .spacing(GRID_SPACING * 2.0);
+        Some(parts::alert_info(
+            Icon::LockOpen,
+            text_line,
+            Some(actions.into()),
+        ))
+    }
+
+    /// What a locked protected folder shows instead of its listing.
+    fn locked_placeholder(&self, folder: &protocol::ProtectedFolder) -> Element<'_, Message> {
+        let name = self
+            .folder
+            .listing
+            .name_of(folder.node_id)
+            .unwrap_or_else(|| HOME.to_owned());
+        let (explain, unlock) = match folder.lock {
+            FolderLock::Password => (
+                "Its files and names are encrypted. Unlock it with its password to see them."
+                    .to_owned(),
+                Some(parts::primary(
+                    Some(Icon::LockOpen),
+                    "Unlock…",
+                    Some(Message::UnlockFolder(folder.node_id)),
+                )),
+            ),
+            FolderLock::SecurityKey => (
+                "It is protected with a security key. Security keys come to the desktop app in \
+                 a later version; until then this folder cannot be opened here."
+                    .to_owned(),
+                None,
+            ),
+        };
+        center(
+            column![
+                Icon::Lock.view(LOCKED_ICON, Tint::Muted),
+                heading(format!("“{name}” is locked")),
+                text(explain)
+                    .style(theme::muted_text)
+                    .width(LOCKED_TEXT_WIDTH)
+                    .align_x(Horizontal::Center),
+            ]
+            .push(unlock)
+            .spacing(LOCKED_GAP)
+            .align_x(Horizontal::Center),
+        )
+        .into()
     }
 
     /// What the chip above the listing says about the folder shown, if it takes part in the sync.

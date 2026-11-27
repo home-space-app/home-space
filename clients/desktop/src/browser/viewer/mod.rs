@@ -21,7 +21,12 @@ use client_core::{
 use protocol::{Node, NodeId};
 
 use super::{files::SyncedCopy, parts};
-use crate::{icons::Icon, theme, viewers::viewers};
+use crate::{
+    icons::Icon,
+    protected::{Inside, files as protected_files},
+    theme,
+    viewers::viewers,
+};
 
 pub use self::text::Mode;
 
@@ -110,19 +115,23 @@ pub struct State {
     changed_elsewhere: bool,
     /// The files of the folder that the viewer steps through, once they are listed.
     gallery: Option<Gallery>,
+    /// The unlocked protected folder the file is in, whose keys decrypt it.
+    inside: Option<Inside>,
 }
 
 impl State {
     /// Opens `node` in `viewer`, reading the synced copy when it is the server's version.
-    /// `gallery` holds the files to step through, when they are already listed.
+    /// `gallery` holds the files to step through, when they are already listed. A file of an
+    /// unlocked protected folder is decrypted with the keys `inside` holds.
     pub fn open(
         client: &Client,
         node: Node,
         viewer: Viewer,
         synced: Option<SyncedCopy>,
         gallery: Option<Gallery>,
+        inside: Option<Inside>,
     ) -> (Self, Task<Message>) {
-        let task = load(client, node.clone(), viewer, synced);
+        let task = load(client, node.clone(), viewer, synced, inside.clone());
         let state = Self {
             node,
             viewer,
@@ -131,8 +140,14 @@ impl State {
             error: None,
             changed_elsewhere: false,
             gallery,
+            inside,
         };
         (state, task)
+    }
+
+    /// The protected folder the file is in, when it is in one.
+    pub fn protected_root(&self) -> Option<NodeId> {
+        self.inside.as_ref().map(|inside| inside.root)
     }
 
     pub fn node_id(&self) -> NodeId {
@@ -151,7 +166,10 @@ impl State {
     /// Applies a live event to the files the viewer steps through.
     pub fn gallery_changed(&mut self, event: &protocol::Event) {
         if let Some(gallery) = &mut self.gallery {
-            gallery.apply_event(viewers(), event);
+            match &self.inside {
+                Some(inside) => gallery.apply_event(viewers(), &inside.open_event(event)),
+                None => gallery.apply_event(viewers(), event),
+            }
         }
     }
 
@@ -228,7 +246,13 @@ impl State {
                 {
                     self.saving = true;
                     self.error = None;
-                    return Outcome::Task(save(client, self.node.id, text.text(), text.encoded()));
+                    return Outcome::Task(save(
+                        client,
+                        self.node.id,
+                        text.text(),
+                        text.encoded(),
+                        self.inside.clone(),
+                    ));
                 }
             }
             Message::Saved(Ok((node, saved))) => {
@@ -271,7 +295,10 @@ impl State {
     /// it is being edited.
     pub fn changed(&mut self, client: &Client, node: &Node) -> Task<Message> {
         if self.saving || node.sha256 == self.node.sha256 {
-            self.node = node.clone();
+            self.node = match &self.inside {
+                Some(inside) => inside.open_node(node.clone()),
+                None => node.clone(),
+            };
             return Task::none();
         }
         if self.is_editing() {
@@ -284,7 +311,13 @@ impl State {
 
     fn reload(&mut self, client: &Client) -> Task<Message> {
         self.body = Body::Loading;
-        load(client, self.node.clone(), self.viewer, None)
+        load(
+            client,
+            self.node.clone(),
+            self.viewer,
+            None,
+            self.inside.clone(),
+        )
     }
 
     /// The buttons at the top right of the page.
@@ -383,11 +416,21 @@ impl State {
 }
 
 /// Fetches the current version of `node`: from the synced copy when it is that version, or
-/// while the server can't be reached; otherwise from the server.
-fn load(client: &Client, node: Node, viewer: Viewer, synced: Option<SyncedCopy>) -> Task<Message> {
+/// while the server can't be reached; otherwise from the server. A file of a protected folder,
+/// which never syncs, is decrypted with the keys `inside` holds.
+fn load(
+    client: &Client,
+    node: Node,
+    viewer: Viewer,
+    synced: Option<SyncedCopy>,
+    inside: Option<Inside>,
+) -> Task<Message> {
     let client = client.clone();
     Task::perform(
         async move {
+            if let Some(inside) = inside {
+                return download_protected(&client, node.id, viewer, &inside).await;
+            }
             let current = match client.get(node.id).await {
                 Ok(current) => current,
                 Err(err) if err.is_unreachable() => {
@@ -425,6 +468,25 @@ async fn download(client: &Client, node: Node, viewer: Viewer) -> Result<Loaded,
     within_limit(node, bytes.to_vec(), viewer)
 }
 
+/// Downloads file `id` of a protected folder and decrypts it.
+async fn download_protected(
+    client: &Client,
+    id: NodeId,
+    viewer: Viewer,
+    inside: &Inside,
+) -> Result<Loaded, String> {
+    let current = inside.open_node(client.get(id).await.map_err(|err| err.to_string())?);
+    let sealed = client
+        .download(id)
+        .await
+        .map_err(|err| err.to_string())?
+        .bytes()
+        .await
+        .map_err(|err| err.to_string())?;
+    let plain = protected_files::decrypt_bytes(inside, &sealed)?;
+    within_limit(current, plain, viewer)
+}
+
 fn within_limit(node: Node, bytes: Vec<u8>, viewer: Viewer) -> Result<Loaded, String> {
     let fits = u64::try_from(bytes.len()).is_ok_and(|len| len <= viewer.max_bytes);
     if fits {
@@ -440,10 +502,25 @@ fn within_limit(node: Node, bytes: Vec<u8>, viewer: Viewer) -> Result<Loaded, St
     }
 }
 
-fn save(client: &Client, id: NodeId, text: String, bytes: Vec<u8>) -> Task<Message> {
+/// Stores the edited `text`, encoded as `bytes`, as the content of file `id`; encrypted
+/// first in a protected folder.
+fn save(
+    client: &Client,
+    id: NodeId,
+    text: String,
+    bytes: Vec<u8>,
+    inside: Option<Inside>,
+) -> Task<Message> {
     let client = client.clone();
     Task::perform(
-        async move { store(&client, id, bytes).await.map(|node| (node, text)) },
+        async move {
+            let Some(inside) = inside else {
+                return store(&client, id, bytes).await.map(|node| (node, text));
+            };
+            let sealed = protected_files::encrypt_bytes(&inside, &bytes)?;
+            let node = store(&client, id, sealed).await?;
+            Ok((inside.open_node(node), text))
+        },
         Message::Saved,
     )
 }
@@ -494,7 +571,7 @@ mod tests {
     }
 
     fn loaded(client: &Client, bytes: &[u8]) -> State {
-        let (mut state, _task) = State::open(client, node(1, "a"), text_viewer(), None, None);
+        let (mut state, _task) = State::open(client, node(1, "a"), text_viewer(), None, None, None);
         let _ = state.update(
             client,
             Message::Loaded(Ok(Loaded {
@@ -710,7 +787,7 @@ mod tests {
             .viewer_for_node(&current)
             .expect("images have a viewer");
         let gallery = Gallery::new(viewers(), &listing, &current, Default::default());
-        let (state, _task) = State::open(&client, current, viewer, None, gallery);
+        let (state, _task) = State::open(&client, current, viewer, None, gallery, None);
         (client, state)
     }
 
@@ -760,7 +837,7 @@ mod tests {
             &current,
             Default::default(),
         );
-        let (state, _task) = State::open(&client, current, viewer, None, gallery);
+        let (state, _task) = State::open(&client, current, viewer, None, gallery, None);
         assert!(simulator(state.action()).find(NEXT).is_err());
     }
 

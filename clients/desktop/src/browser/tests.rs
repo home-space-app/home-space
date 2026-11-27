@@ -1584,3 +1584,237 @@ fn the_share_picker_follows_its_field_when_the_dialog_grows() {
     };
     assert_ne!(followed, opened);
 }
+
+mod protected_folders {
+    use std::{collections::HashMap, sync::Arc};
+
+    use protocol::{FolderLock, ProtectedFolder, ProtectionState};
+    use vault_core::{FolderKeys, FolderSecret};
+
+    use super::*;
+    use crate::protected::Listed;
+
+    fn keys() -> FolderKeys {
+        FolderSecret::generate().keys().expect("keys")
+    }
+
+    fn protection(keys: &FolderKeys) -> ProtectedFolder {
+        ProtectedFolder {
+            node_id: id(FOLDER_ID),
+            lock: FolderLock::Password,
+            wrapped_secret: Vec::new().into(),
+            epoch: None,
+            kdf: None,
+            recovery_wrapped_secret: None,
+            recipient: keys.recipient().to_string(),
+            format: 1,
+            state: ProtectionState::Protected,
+            created_at: OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    /// The browser in the protected folder "Folder B", listing one file named `stored`.
+    fn in_protected_folder(keys: Option<FolderKeys>, stored: &str) -> State {
+        let mut state = state_with_listing();
+        let folder = protection(keys.as_ref().unwrap_or(&self::keys()));
+        let _ = state.update(Message::ProtectedLoaded(Ok(Listed {
+            folders: vec![folder.clone()],
+            ancestors: HashMap::new(),
+        })));
+        if let Some(keys) = keys {
+            state
+                .protected
+                .unlock(&folder, Arc::new(keys))
+                .expect("unlocked");
+        }
+        let _ = state.update(Message::Jump(Some(id(FOLDER_ID))));
+        let mut file = node(stored, NodeKind::File, FILE_ID);
+        file.parent_id = Some(id(FOLDER_ID));
+        let listing = Listing {
+            path: vec![node(FOLDER_NAME, NodeKind::Folder, FOLDER_ID)],
+            nodes: vec![file],
+        };
+        let _ = state.update(Message::Loaded(Some(id(FOLDER_ID)), Ok(listing)));
+        state
+    }
+
+    fn sealed(keys: &FolderKeys, name: &str) -> String {
+        client_core::protected::seal_name(keys, id(FOLDER_ID), NodeKind::File, name)
+            .expect("sealed")
+    }
+
+    #[test]
+    fn a_locked_folder_lists_nothing_and_offers_unlock() {
+        let state = in_protected_folder(None, "c2VhbGVk");
+
+        assert!(state.folder.listing.nodes.is_empty());
+        let mut ui = simulator(state.view());
+        assert!(ui.find("“Folder B” is locked").is_ok());
+        ui.click("Unlock…").expect("the button is shown");
+        assert!(ui.into_messages().any(
+            |message| matches!(message, Message::UnlockFolder(folder) if folder == id(FOLDER_ID))
+        ));
+    }
+
+    #[test]
+    fn nothing_is_added_to_a_locked_folder() {
+        let mut state = in_protected_folder(None, "c2VhbGVk");
+        assert_eq!(state.adding_inside().err(), Some(LOCKED));
+    }
+
+    #[test]
+    fn an_unlocked_folder_lists_its_names_opened() {
+        let keys = keys();
+        let stored = sealed(&keys, FILE_NAME);
+        let state = in_protected_folder(Some(keys), &stored);
+
+        let names: Vec<&str> = state
+            .folder
+            .listing
+            .nodes
+            .iter()
+            .map(|node| node.name.as_str())
+            .collect();
+        assert_eq!(names, [FILE_NAME]);
+        let mut ui = simulator(state.view());
+        assert!(ui.find(FILE_NAME).is_ok());
+        assert!(ui.find("Lock").is_ok());
+    }
+
+    #[test]
+    fn locking_wipes_the_keys_and_lists_nothing_again() {
+        let keys = keys();
+        let stored = sealed(&keys, FILE_NAME);
+        let mut state = in_protected_folder(Some(keys), &stored);
+
+        let _ = state.update(Message::LockFolder(id(FOLDER_ID)));
+        assert!(!state.protected.is_unlocked(id(FOLDER_ID)));
+
+        let mut file = node(&stored, NodeKind::File, FILE_ID);
+        file.parent_id = Some(id(FOLDER_ID));
+        let listing = Listing {
+            path: vec![node(FOLDER_NAME, NodeKind::Folder, FOLDER_ID)],
+            nodes: vec![file],
+        };
+        let _ = state.update(Message::Loaded(Some(id(FOLDER_ID)), Ok(listing)));
+        assert!(state.folder.listing.nodes.is_empty());
+        assert!(state.folder.protection.is_locked());
+    }
+
+    #[test]
+    fn deleting_inside_says_it_is_for_good() {
+        let keys = keys();
+        let stored = sealed(&keys, FILE_NAME);
+        let mut state = in_protected_folder(Some(keys), &stored);
+        let _ = state.update(Message::Toggle(id(FILE_ID)));
+
+        let _ = state.update(Message::Act(Action::Delete));
+
+        assert!(simulator(state.view()).find("Delete for good").is_ok());
+    }
+
+    #[test]
+    fn what_is_inside_is_never_shared_nor_sent() {
+        let keys = keys();
+        let stored = sealed(&keys, FILE_NAME);
+        let mut state = in_protected_folder(Some(keys), &stored);
+        let _ = state.update(Message::Toggle(id(FILE_ID)));
+        let selected = state.folder.selected();
+        let selected: Vec<&Node> = selected.iter().collect();
+
+        let enabled: Vec<Action> =
+            toolbar::actions(&selected, id(FOUND_ID), state.limits(&selected))
+                .into_iter()
+                .filter(|(_, enabled)| *enabled)
+                .map(|(action, _)| action)
+                .collect();
+        assert!(!enabled.contains(&Action::Share));
+        assert!(!enabled.contains(&Action::Send));
+        assert!(enabled.contains(&Action::Download));
+    }
+
+    #[test]
+    fn the_menu_of_a_protected_folder_unlocks_it_or_locks_it() {
+        let keys = keys();
+        let mut state = state_with_listing();
+        let folder = protection(&keys);
+        let _ = state.update(Message::ProtectedLoaded(Ok(Listed {
+            folders: vec![folder.clone()],
+            ancestors: HashMap::new(),
+        })));
+        let listed = node(FOLDER_NAME, NodeKind::Folder, FOLDER_ID);
+        let labels = |state: &State| -> Vec<&'static str> {
+            state
+                .protect_entries(&[&listed])
+                .into_iter()
+                .map(|entry| entry.label)
+                .collect()
+        };
+        assert_eq!(labels(&state), ["Unlock…"]);
+
+        state
+            .protected
+            .unlock(&folder, Arc::new(keys))
+            .expect("unlocked");
+        assert_eq!(labels(&state), ["Lock", "Change password…", "Unprotect…"]);
+    }
+
+    #[test]
+    fn a_link_to_a_locked_folder_opens_it_and_asks_for_its_password() {
+        let mut state = state_with_listing();
+        let folder = protection(&keys());
+        let _ = state.update(Message::ProtectedLoaded(Ok(Listed {
+            folders: vec![folder],
+            ancestors: HashMap::new(),
+        })));
+        let link = AppLink::folder("http://localhost", id(FOLDER_ID)).expect("link");
+
+        let _ = state.update(Message::OpenLink(link));
+        assert_eq!(state.folder.id, Some(id(FOLDER_ID)));
+        let listing = Listing {
+            path: vec![node(FOLDER_NAME, NodeKind::Folder, FOLDER_ID)],
+            nodes: Vec::new(),
+        };
+        let _ = state.update(Message::Loaded(Some(id(FOLDER_ID)), Ok(listing)));
+
+        assert!(state.protect.is_some());
+        assert!(simulator(state.view()).find("Unlock “Folder B”").is_ok());
+    }
+
+    #[test]
+    fn a_link_to_another_server_opens_nothing_and_says_so() {
+        let mut state = state_with_listing();
+        let link = AppLink::folder("https://elsewhere.example.com", id(FOLDER_ID)).expect("link");
+
+        let _ = state.update(Message::OpenLink(link));
+
+        assert_eq!(state.folder.id, None);
+        assert!(
+            state
+                .folder
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("another server"))
+        );
+    }
+
+    #[test]
+    fn a_link_names_the_same_server_whatever_its_path() {
+        assert!(same_server(
+            "https://files.example.com/",
+            "https://files.example.com"
+        ));
+        assert!(same_server(
+            "http://localhost:8080/x",
+            "http://localhost:8080"
+        ));
+        assert!(!same_server(
+            "https://files.example.com",
+            "http://files.example.com"
+        ));
+        assert!(!same_server(
+            "https://a.example.com",
+            "https://b.example.com"
+        ));
+    }
+}

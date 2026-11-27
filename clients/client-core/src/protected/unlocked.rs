@@ -4,6 +4,7 @@
 //! in the browser), given as the time since a fixed origin of the caller's choosing.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use protocol::NodeId;
@@ -24,7 +25,7 @@ pub struct UnlockedFolders {
 
 #[derive(Debug)]
 struct Unlocked {
-    keys: FolderKeys,
+    keys: Arc<FolderKeys>,
     recipient: Recipient,
     last_active: Duration,
 }
@@ -49,10 +50,11 @@ impl UnlockedFolders {
     pub fn unlock(
         &mut self,
         folder: NodeId,
-        keys: FolderKeys,
+        keys: impl Into<Arc<FolderKeys>>,
         listed_recipient: &str,
         now: Duration,
     ) -> Result<(), ProtectedError> {
+        let keys = keys.into();
         let recipient = keys.check_recipient(listed_recipient)?;
         self.folders.insert(
             folder,
@@ -81,8 +83,18 @@ impl UnlockedFolders {
         }
         self.folders.get_mut(&folder).map(|unlocked| {
             unlocked.last_active = now;
-            &unlocked.keys
+            &*unlocked.keys
         })
+    }
+
+    /// The keys of `folder` for work that outlives this call, such as a download that decrypts,
+    /// counting as activity; `None` when it is locked. The work keeps its copy until it ends,
+    /// even when the folder locks meanwhile.
+    pub fn shared_keys(&mut self, folder: NodeId, now: Duration) -> Option<Arc<FolderKeys>> {
+        self.use_keys(folder, now)?;
+        self.folders
+            .get(&folder)
+            .map(|unlocked| Arc::clone(&unlocked.keys))
     }
 
     /// The checked public key of `folder`, to encrypt an upload to. Counts as activity. The

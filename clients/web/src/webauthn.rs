@@ -1,6 +1,6 @@
 //! Passkeys and security keys through `navigator.credentials`: making a credential for a
-//! challenge of the server, and answering one with it. Folder keys, which never sign in, are
-//! in [`folder_key`].
+//! challenge of the server, and answering one with it. Folder keys are made in the desktop and
+//! mobile apps only.
 //!
 //! The server's challenges and the browser's answers convert through `webauthn-rs-proto`, which
 //! turns the base64url fields into the buffers the browser wants and back.
@@ -13,13 +13,6 @@ use protocol::{
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{AbortSignal, CredentialCreationOptions, CredentialRequestOptions};
-
-#[expect(
-    dead_code,
-    reason = "enabling a folder key also wraps the vault key, which waits for vault-core to take \
-              a PRF secret from the browser"
-)]
-pub mod folder_key;
 
 const PUBLIC_KEY_CREDENTIAL: &str = "PublicKeyCredential";
 const CONDITIONAL_CHECK: &str = "isConditionalMediationAvailable";
