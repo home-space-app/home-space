@@ -47,7 +47,8 @@ const LOADING: &str = "Loading…";
 pub(super) const NO_VIEWER: &str = "This file cannot be shown here. Download it to open it.";
 const UNREACHABLE: &str = "could not reach the server";
 const DELETED: &str = "This file was deleted.";
-const LOCKED: &str = "This file is in a protected folder that is locked. Unlock the folder to see it.";
+const LOCKED: &str =
+    "This file is in a protected folder that is locked. Unlock the folder to see it.";
 const CLOSE: &str = "Close";
 const KEY_ESCAPE: &str = "Escape";
 /// Set on the document while the popup is open, so the page under it does not scroll.
@@ -204,7 +205,11 @@ fn OwnViewer(auth: Auth, id: Memo<Option<NodeId>>, close: Memo<String>) -> impl 
     let vault = use_vault();
     // The protected folder the file is in.
     let inside = RwSignal::new(None::<NodeId>);
-    let locked = Memo::new(move |_| inside.get().is_some_and(|folder| !vault.is_unlocked(folder)));
+    let locked = Memo::new(move |_| {
+        inside
+            .get()
+            .is_some_and(|folder| !vault.is_unlocked(folder))
+    });
 
     let resource = load::load(
         move || {

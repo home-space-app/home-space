@@ -231,11 +231,19 @@ fn a_folder_being_converted_shows_its_plain_names_as_they_are() {
 
 #[test]
 fn a_name_too_long_to_seal_says_so() {
-    let long = "a".repeat(vault_core::names::MAX_NAME_BYTES + 1);
+    let long = "a".repeat(vault_core::names::MAX_NAME_CHARS + 1);
     assert!(matches!(
         seal_name(&keys(), FOLDER, NodeKind::File, &long),
         Err(ProtectedError::Name(_))
     ));
+}
+
+#[test]
+fn the_server_takes_the_longest_sealed_name_inside_a_protected_folder() {
+    assert_eq!(
+        vault_core::names::MAX_SEALED_CHARS,
+        protocol::rules::MAX_SEALED_NODE_NAME_CHARS
+    );
 }
 
 #[test]

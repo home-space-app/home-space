@@ -20,6 +20,15 @@ pub enum AppLink {
 }
 
 impl AppLink {
+    /// A link to `folder` on `server`, an `http` or `https` address such as the page's origin;
+    /// `None` when it is not one.
+    pub fn folder(server: &str, folder: NodeId) -> Option<Self> {
+        let server = Url::parse(server)
+            .ok()
+            .filter(|server| matches!(server.scheme(), "http" | "https"))?;
+        Some(Self::Folder { server, folder })
+    }
+
     /// The link, to hand to the browser.
     pub fn to_url(&self) -> String {
         match self {

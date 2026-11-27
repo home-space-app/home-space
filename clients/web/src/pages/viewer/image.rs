@@ -52,16 +52,18 @@ pub fn ImageViewer(
 
     let show = move |file: Node| {
         spawn_local(async move {
-            let loaded = file_content(auth, &file, protected).await.and_then(|bytes| {
-                if u64::try_from(bytes.len()).is_ok_and(|len| len <= viewer.max_bytes) {
-                    object_url(&bytes, &file.mime)
-                } else {
-                    Err(format!(
-                        "{} is too large to show here. Download it to open it.",
-                        file.name
-                    ))
-                }
-            });
+            let loaded = file_content(auth, &file, protected)
+                .await
+                .and_then(|bytes| {
+                    if u64::try_from(bytes.len()).is_ok_and(|len| len <= viewer.max_bytes) {
+                        object_url(&bytes, &file.mime)
+                    } else {
+                        Err(format!(
+                            "{} is too large to show here. Download it to open it.",
+                            file.name
+                        ))
+                    }
+                });
             let current = node.with_untracked(|shown| shown.as_ref().map(|shown| shown.id));
             if current != Some(file.id) {
                 if let Ok(stale) = loaded {

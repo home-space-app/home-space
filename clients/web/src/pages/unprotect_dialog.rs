@@ -9,7 +9,11 @@ use crate::{components::ErrorAlert, protected::MAX_IN_MEMORY_LABEL, session};
 
 /// Asks before unprotecting `node`; `on_confirm` starts it.
 #[component]
-pub fn UnprotectDialog(node: Node, on_close: Callback<()>, on_confirm: Callback<Node>) -> impl IntoView {
+pub fn UnprotectDialog(
+    node: Node,
+    on_close: Callback<()>,
+    on_confirm: Callback<Node>,
+) -> impl IntoView {
     let target = StoredValue::new(node.clone());
     view! {
         <div class="modal" on:click=move |_| on_close.run(())>

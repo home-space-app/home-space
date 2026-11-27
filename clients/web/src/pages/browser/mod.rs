@@ -12,7 +12,7 @@ use web_sys::File;
 
 use client_core::{labels::HOME, protected::seal_name};
 use protocol::{
-    Node, NodeId, NodeKind, ProtectedFolder, ProtectionState, TicketRequest, TrashItem,
+    FolderLock, Node, NodeId, NodeKind, ProtectedFolder, ProtectionState, TicketRequest, TrashItem,
 };
 
 use self::{
@@ -74,9 +74,8 @@ fn Explorer(auth: Auth) -> impl IntoView {
             .is_some_and(|folder| folder.state == ProtectionState::Unprotecting)
     });
     // Lock all, when a folder other than the open one is unlocked.
-    let others_unlocked = Signal::derive(move || {
-        vault.unlocked_count() > usize::from(lockable.get())
-    });
+    let others_unlocked =
+        Signal::derive(move || vault.unlocked_count() > usize::from(lockable.get()));
     let protecting = RwSignal::new(None::<Node>);
     // Where the folder being protected is, as the recycle bin writes it: `/Photos/2024`.
     let protecting_path = StoredValue::new(String::new());
@@ -296,11 +295,21 @@ fn Explorer(auth: Auth) -> impl IntoView {
             }
         });
     });
-    let ask_password = move |node: Node, action: PasswordAction| {
-        if let Some(folder) = vault.protection_now(node.id) {
-            password_dialog.set(Some((folder, node.name, action)));
+    let ask_password = move |node: Node, action: PasswordAction| match vault.protection_now(node.id)
+    {
+        // Only the apps can use a security key.
+        Some(folder) if folder.lock == FolderLock::SecurityKey => {
+            vault_files::open_in_desktop(folder.node_id);
         }
+        Some(folder) => password_dialog.set(Some((folder, node.name, action))),
+        None => {}
     };
+    let security_key = Signal::derive(move || {
+        protection
+            .read()
+            .as_ref()
+            .is_some_and(|folder| folder.lock == FolderLock::SecurityKey)
+    });
     let unlock = Callback::new(move |node: Node| ask_password(node, PasswordAction::Unlock));
     let change_password =
         Callback::new(move |node: Node| ask_password(node, PasswordAction::Change));
@@ -479,9 +488,15 @@ fn Explorer(auth: Auth) -> impl IntoView {
                                 view! {
                                     <div class="explorer__locked">
                                         <Icon name="lock" />
-                                        <p>"This folder is protected. Unlock it to see what it holds."</p>
+                                        <p>
+                                            {move || if security_key.get() {
+                                                "This folder is protected with a security key, which only the desktop and mobile apps can use."
+                                            } else {
+                                                "This folder is protected. Unlock it to see what it holds."
+                                            }}
+                                        </p>
                                         <button class="button button--primary" on:click=unlock_open>
-                                            "Unlock…"
+                                            {move || if security_key.get() { "Open in the desktop app" } else { "Unlock…" }}
                                         </button>
                                     </div>
                                 }
