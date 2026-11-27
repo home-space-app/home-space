@@ -1,4 +1,4 @@
-use db::{Db, DbError, TenantId, User, UserId};
+use db::{Db, DbError, PasswordSet, TenantId, User, UserId};
 
 use crate::{AuthError, password};
 
@@ -19,15 +19,15 @@ pub async fn create_user(
     insert_user(db, tenant, username, &hashed).await
 }
 
-/// Replaces a user's password and ends all their sessions.
+/// Replaces a user's password and ends all their sessions. A user linked to the identity
+/// provider becomes a local one, which this says.
 ///
 /// # Errors
 /// [`AuthError::InvalidInput`] for a password that breaks the rules, and database or hashing
 /// failures.
-pub async fn set_password(db: &Db, user: UserId, password: &str) -> Result<(), AuthError> {
+pub async fn set_password(db: &Db, user: UserId, password: &str) -> Result<PasswordSet, AuthError> {
     let hashed = hash_new(password).await?;
-    db.set_password_hash(user, &hashed).await?;
-    Ok(())
+    Ok(db.set_password_hash(user, &hashed).await?)
 }
 
 pub(crate) fn check_username(username: &str) -> Result<(), AuthError> {

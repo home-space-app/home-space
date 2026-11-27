@@ -135,7 +135,7 @@ async fn load_single(
     let tenant = single_tenant(tenants)?;
     let settings = config.tenant_settings();
     let tenant_config = settings.validate()?;
-    check_secrets_key(db, tenant.id, tenant_config.secrets_key.as_ref()).await?;
+    check_secrets_key(db, tenant.id, tenant_config.secrets_key.as_deref()).await?;
     let base = base.with_secrets_key(tenant_config.secrets_key.clone());
     let auth = match tenant_config.oidc.clone() {
         Some(oidc_config) => {
@@ -243,7 +243,7 @@ async fn validate_tenant(
         settings.public_url = primary.map(|domain| public_url(&domain.domain));
     }
     let tenant_config = settings.validate()?;
-    check_secrets_key(db, tenant.id, tenant_config.secrets_key.as_ref()).await?;
+    check_secrets_key(db, tenant.id, tenant_config.secrets_key.as_deref()).await?;
     Ok(tenant_config)
 }
 

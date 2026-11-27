@@ -17,22 +17,27 @@ pub const REAUTHENTICATION: &str = "reauthentication";
 
 /// Accounts can add an authenticator app (`/me/totp`) and recovery codes
 /// (`/me/recovery-codes`); a sign-in with `two_step` may then finish at `/auth/login/verify`,
-/// and `/me/reauthenticate` takes a `code` too.
+/// and `/me/reauthenticate` takes a `code` too. An account linked to the identity provider
+/// (`external` in `/me` and `/admin/users`) gets `409 external-account` for these, for passkeys
+/// and for a password sign-in; `PUT /admin/users/{id}/password` makes it a local account and
+/// needs the administrator's recent sign-in. Once an account has a second factor, changing its
+/// password, authenticator app, recovery codes, passkeys or security keys takes a recent
+/// sign-in or confirmation with one, so `reauthentication-required` names only `totp` and
+/// `webauthn` there; removing a second factor ends the account's other sessions.
 pub const TWO_FACTOR: &str = "two_factor";
 
 /// Accounts can add passkeys and security keys (`/me/webauthn`), which count as a second
 /// factor; a passkey signs in on its own (`/auth/passkey/start`, `finish`, and `passkeys` in
 /// `GET /auth/providers`); `/auth/login/verify` and `/me/reauthenticate` take `webauthn`.
+/// Renaming one needs a recent confirmation, as adding and removing do.
 pub const PASSKEYS: &str = "passkeys";
-
-/// `GET /me/webauthn` says for each key whether it made a PRF (`hmac-secret`) secret and
-/// whether it is synced (`prf`, `synced`), so clients can tell which keys can lock protected
-/// folders.
-pub const SECURITY_KEY_PRF: &str = "security_key_prf";
 
 /// Folders can be protected, locked with a security key (end to end) or a password (encrypted
 /// by the server): `/vault` (unlockers, rotation) and `/protected` (unlock, password, unprotect).
-/// Clients without it hide Protect.
+/// The vault's security keys are folder keys, credentials a client makes for the vault alone
+/// (`name`, `credential_id`, `rp_id`, `prf_salt`), never sign-in credentials. A write that
+/// meets a folder being protected or unprotected at that moment gets `409 protected` and
+/// succeeds when sent again. Clients without it hide Protect.
 pub const PROTECTED_FOLDERS: &str = "protected_folders";
 
 /// Every feature this server provides, each added with the release that introduced it.
@@ -41,7 +46,6 @@ pub const ALL: &[&str] = &[
     PASSKEYS,
     PROTECTED_FOLDERS,
     REAUTHENTICATION,
-    SECURITY_KEY_PRF,
     TWO_FACTOR,
 ];
 
@@ -51,7 +55,6 @@ const DISPLAY_NAMES: &[(&str, &str)] = &[
     (PASSKEYS, "Passkeys"),
     (PROTECTED_FOLDERS, "Protected folders"),
     (REAUTHENTICATION, "Confirming sensitive changes"),
-    (SECURITY_KEY_PRF, "Security keys for protected folders"),
     (TWO_FACTOR, "Two-factor sign-in"),
 ];
 

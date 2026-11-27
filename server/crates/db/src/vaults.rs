@@ -8,19 +8,32 @@
 
 use std::collections::HashSet;
 
+use std::fmt;
+
+use protocol::{FolderLock, ProtectionState, UnlockerKind, redact::Redacted};
 use sqlx::{FromRow, PgConnection};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{Db, DbError, NodeId, NodeKind, UserId};
+use crate::{Db, DbError, NodeId, NodeKind, Tx, UserId};
 
-/// A vault unlocker as stored, with its security key's credential id and RP id.
+/// The class of the advisory locks that hold one user's folder protections in place; the user
+/// is the second key.
+const PROTECTIONS_LOCK: i32 = 0x7072_6f74;
+/// The password folder that is `$1`, a node of the user `$2`, or holds it.
+const ENCLOSING_PASSWORD_FOLDER: &str = "WITH RECURSIVE up AS ( \
+         SELECT id, parent_id FROM nodes WHERE id = $1 AND owner_id = $2 \
+         UNION ALL \
+         SELECT n.id, n.parent_id FROM nodes n JOIN up ON n.id = up.parent_id \
+     ) SELECT p.node_id, p.recipient, p.state FROM protected_folders p \
+     JOIN up ON p.node_id = up.id WHERE p.lock = 'password' LIMIT 1";
+
+/// A vault unlocker as stored; a folder key has its name, credential id, RP id and PRF salt.
 #[derive(Clone, Debug, PartialEq, Eq, FromRow)]
 pub struct StoredUnlocker {
     pub id: Uuid,
-    /// `security_key` or `recovery`.
-    pub kind: String,
-    pub credential: Option<Uuid>,
+    pub kind: UnlockerKind,
+    pub name: Option<String>,
     pub credential_id: Option<Vec<u8>>,
     pub rp_id: Option<String>,
     pub prf_salt: Option<Vec<u8>>,
@@ -35,14 +48,28 @@ pub struct StoredVault {
     pub unlockers: Vec<StoredUnlocker>,
 }
 
+/// A folder key to add: a credential the client made for the vault alone.
+#[derive(Clone, Copy, Debug)]
+pub struct FolderKey<'a> {
+    pub name: &'a str,
+    pub credential_id: &'a [u8],
+    pub rp_id: &'a str,
+    pub prf_salt: &'a [u8],
+}
+
+/// What a new unlocker is.
+#[derive(Clone, Copy, Debug)]
+pub enum UnlockerSource<'a> {
+    SecurityKey(FolderKey<'a>),
+    /// The recovery key, which replaces the one before.
+    Recovery,
+}
+
 /// An unlocker to add.
 #[derive(Clone, Copy, Debug)]
 pub struct NewUnlocker<'a> {
     pub id: Uuid,
-    /// `security_key` or `recovery`.
-    pub kind: &'a str,
-    pub credential: Option<Uuid>,
-    pub prf_salt: Option<&'a [u8]>,
+    pub source: UnlockerSource<'a>,
     pub wrapped_vault_key: &'a [u8],
     /// The epoch the key is wrapped under: the vault's, or 1 to create it.
     pub epoch: i32,
@@ -60,16 +87,14 @@ pub struct Rewrapped {
 #[derive(Clone, Debug, PartialEq, Eq, FromRow)]
 pub struct StoredProtection {
     pub node_id: NodeId,
-    /// `security_key` or `password`.
-    pub lock: String,
+    pub lock: FolderLock,
     /// Security keys: the folder secret wrapped with the vault key of `epoch`.
     pub wrapped_secret: Option<Vec<u8>>,
     pub epoch: Option<i32>,
     /// The age recipient content is encrypted to.
     pub recipient: String,
     pub format: i32,
-    /// `protecting`, `protected` or `unprotecting`.
-    pub state: String,
+    pub state: ProtectionState,
     pub created_at: OffsetDateTime,
 }
 
@@ -84,13 +109,24 @@ pub struct KeyLock<'a> {
 
 /// The lock of a folder the server encrypts: the hash its password is checked against, its
 /// secret sealed with the server's key, and the recipient derived from that secret.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct PasswordLock<'a> {
     pub password_hash: &'a str,
     /// The hash of the folder's recovery key.
     pub recovery_hash: &'a str,
     pub sealed_key: &'a [u8],
     pub recipient: &'a str,
+}
+
+impl fmt::Debug for PasswordLock<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PasswordLock")
+            .field("password_hash", &Redacted)
+            .field("recovery_hash", &Redacted)
+            .field("sealed_key", &Redacted)
+            .field("recipient", &self.recipient)
+            .finish()
+    }
 }
 
 /// How a folder is protected.
@@ -101,11 +137,21 @@ pub enum NewProtection<'a> {
 }
 
 /// A password folder's secrets, to check a password and open its key.
-#[derive(Clone, Debug, PartialEq, Eq, FromRow)]
+#[derive(Clone, PartialEq, Eq, FromRow)]
 pub struct PasswordSecrets {
     pub password_hash: String,
     pub recovery_hash: String,
     pub sealed_key: Vec<u8>,
+}
+
+impl fmt::Debug for PasswordSecrets {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PasswordSecrets")
+            .field("password_hash", &Redacted)
+            .field("recovery_hash", &Redacted)
+            .field("sealed_key", &Redacted)
+            .finish()
+    }
 }
 
 /// The password folder that holds a node.
@@ -113,8 +159,7 @@ pub struct PasswordSecrets {
 pub struct EnclosingPasswordFolder {
     pub node_id: NodeId,
     pub recipient: String,
-    /// `protecting`, `protected` or `unprotecting`.
-    pub state: String,
+    pub state: ProtectionState,
 }
 
 /// A stored file to convert: its node and the ids of its older versions.
@@ -134,16 +179,35 @@ pub struct FolderNode {
 }
 
 /// Why a folder cannot be protected.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ProtectRefusal {
     /// Not a live folder of the user.
+    #[error("not a folder of the user")]
     NotFound,
     /// The recycle bin or Lost & Found, or a folder holding one.
+    #[error("a special folder or one holding it")]
     SpecialFolder,
     /// Already protected, inside a protected folder, or holding one.
+    #[error("overlaps another protection")]
     Overlaps,
     /// A security-key lock whose epoch is not the vault's, or with no vault.
+    #[error("the vault changed")]
     VaultChanged,
+}
+
+/// Why [`Db::protect_folder`] did not protect a folder.
+#[derive(Debug, thiserror::Error)]
+pub enum ProtectError {
+    #[error("folder not protected: {0}")]
+    Refused(#[from] ProtectRefusal),
+    #[error(transparent)]
+    Db(#[from] DbError),
+}
+
+impl From<sqlx::Error> for ProtectError {
+    fn from(err: sqlx::Error) -> Self {
+        Self::Db(err.into())
+    }
 }
 
 macro_rules! protection_select {
@@ -164,10 +228,8 @@ impl Db {
             return Ok(None);
         };
         let unlockers = sqlx::query_as::<_, StoredUnlocker>(
-            "SELECT u.id, u.kind, u.credential, w.credential_id, w.rp_id, u.prf_salt, \
-             u.wrapped_vault_key, u.created_at \
-             FROM vault_unlockers u LEFT JOIN user_webauthn w ON w.id = u.credential \
-             WHERE u.user_id = $1 ORDER BY u.created_at, u.id",
+            "SELECT id, kind, name, credential_id, rp_id, prf_salt, wrapped_vault_key, created_at \
+             FROM vault_unlockers WHERE user_id = $1 ORDER BY created_at, id",
         )
         .bind(user)
         .fetch_all(self.pool())
@@ -177,8 +239,7 @@ impl Db {
 
     /// Adds an unlocker, creating the vault at epoch 1 when the user has none; a recovery key
     /// replaces the one before. `Stale` when `epoch` is not the vault's (or not 1 for a new
-    /// one), `NotFound` when the credential is not the user's, `Conflict` when it already
-    /// unlocks the vault.
+    /// one), `Conflict` when the folder key's credential already unlocks the vault.
     pub async fn add_vault_unlocker(
         &self,
         user: UserId,
@@ -196,34 +257,29 @@ impl Db {
             }
             None => return Err(DbError::Stale),
         }
-        if let Some(credential) = new.credential {
-            let owned: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM user_webauthn WHERE id = $1 AND user_id = $2)",
-            )
-            .bind(credential)
-            .bind(user)
-            .fetch_one(&mut *tx)
-            .await?;
-            if !owned {
-                return Err(DbError::NotFound);
+        let (kind, key) = match new.source {
+            UnlockerSource::SecurityKey(key) => (UnlockerKind::SecurityKey, Some(key)),
+            UnlockerSource::Recovery => {
+                sqlx::query("DELETE FROM vault_unlockers WHERE user_id = $1 AND kind = $2")
+                    .bind(user)
+                    .bind(UnlockerKind::Recovery)
+                    .execute(&mut *tx)
+                    .await?;
+                (UnlockerKind::Recovery, None)
             }
-        }
-        if new.kind == "recovery" {
-            sqlx::query("DELETE FROM vault_unlockers WHERE user_id = $1 AND kind = 'recovery'")
-                .bind(user)
-                .execute(&mut *tx)
-                .await?;
-        }
+        };
         sqlx::query(
             "INSERT INTO vault_unlockers \
-             (id, user_id, kind, credential, prf_salt, wrapped_vault_key) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
+             (id, user_id, kind, name, credential_id, rp_id, prf_salt, wrapped_vault_key) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(new.id)
         .bind(user)
-        .bind(new.kind)
-        .bind(new.credential)
-        .bind(new.prf_salt)
+        .bind(kind)
+        .bind(key.map(|key| key.name))
+        .bind(key.map(|key| key.credential_id))
+        .bind(key.map(|key| key.rp_id))
+        .bind(key.map(|key| key.prf_salt))
         .bind(new.wrapped_vault_key)
         .execute(&mut *tx)
         .await?;
@@ -379,15 +435,16 @@ impl Db {
         user: UserId,
         node: NodeId,
         protection: NewProtection<'_>,
-    ) -> Result<Result<StoredProtection, ProtectRefusal>, DbError> {
+    ) -> Result<StoredProtection, ProtectError> {
         let mut tx = self.begin().await?;
+        lock_protections(&mut tx, user).await?;
         if let Some(refusal) = protection_refusal(&mut tx, user, node).await? {
-            return Ok(Err(refusal));
+            return Err(refusal.into());
         }
         if let NewProtection::SecurityKey(lock) = protection
             && lock_vault(&mut tx, user).await? != Some(lock.epoch)
         {
-            return Ok(Err(ProtectRefusal::VaultChanged));
+            return Err(ProtectRefusal::VaultChanged.into());
         }
         let empty: bool =
             sqlx::query_scalar("SELECT NOT EXISTS (SELECT 1 FROM nodes WHERE parent_id = $1)")
@@ -405,7 +462,11 @@ impl Db {
         .bind(node)
         .execute(&mut *tx)
         .await?;
-        let state = if empty { "protected" } else { "protecting" };
+        let state = if empty {
+            ProtectionState::Protected
+        } else {
+            ProtectionState::Protecting
+        };
         let insert = match protection {
             NewProtection::SecurityKey(lock) => sqlx::query_as::<_, StoredProtection>(
                 "INSERT INTO protected_folders \
@@ -438,7 +499,7 @@ impl Db {
         };
         let stored = insert.fetch_one(&mut *tx).await?;
         tx.commit().await?;
-        Ok(Ok(stored))
+        Ok(stored)
     }
 
     /// Moves the protected folder `node` from state `from` to `to`. `NotFound` if it is not
@@ -447,11 +508,12 @@ impl Db {
         &self,
         user: UserId,
         node: NodeId,
-        from: &[&str],
-        to: &str,
+        from: &[ProtectionState],
+        to: ProtectionState,
     ) -> Result<StoredProtection, DbError> {
         let mut tx = self.begin().await?;
-        let state: String = sqlx::query_scalar(
+        lock_protections(&mut tx, user).await?;
+        let state: ProtectionState = sqlx::query_scalar(
             "SELECT state FROM protected_folders WHERE owner_id = $1 AND node_id = $2 FOR UPDATE",
         )
         .bind(user)
@@ -459,7 +521,7 @@ impl Db {
         .fetch_optional(&mut *tx)
         .await?
         .ok_or(DbError::NotFound)?;
-        if !from.contains(&state.as_str()) {
+        if !from.contains(&state) {
             return Err(DbError::Stale);
         }
         let changed = sqlx::query_as::<_, StoredProtection>(
@@ -481,16 +543,19 @@ impl Db {
         &self,
         user: UserId,
         node: NodeId,
-        from: &[&str],
+        from: &[ProtectionState],
     ) -> Result<(), DbError> {
+        let mut tx = self.begin().await?;
+        lock_protections(&mut tx, user).await?;
         let removed = sqlx::query(
             "DELETE FROM protected_folders WHERE owner_id = $1 AND node_id = $2 AND state = ANY($3)",
         )
         .bind(user)
         .bind(node)
         .bind(from)
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         if removed.rows_affected() == 1 {
             return Ok(());
         }
@@ -523,18 +588,11 @@ impl Db {
         user: UserId,
         node: NodeId,
     ) -> Result<Option<EnclosingPasswordFolder>, DbError> {
-        let found = sqlx::query_as::<_, EnclosingPasswordFolder>(
-            "WITH RECURSIVE up AS ( \
-                 SELECT id, parent_id FROM nodes WHERE id = $1 AND owner_id = $2 \
-                 UNION ALL \
-                 SELECT n.id, n.parent_id FROM nodes n JOIN up ON n.id = up.parent_id \
-             ) SELECT p.node_id, p.recipient, p.state FROM protected_folders p \
-             JOIN up ON p.node_id = up.id WHERE p.lock = 'password' LIMIT 1",
-        )
-        .bind(node)
-        .bind(user)
-        .fetch_optional(self.pool())
-        .await?;
+        let found = sqlx::query_as::<_, EnclosingPasswordFolder>(ENCLOSING_PASSWORD_FOLDER)
+            .bind(node)
+            .bind(user)
+            .fetch_optional(self.pool())
+            .await?;
         Ok(found)
     }
 
@@ -600,7 +658,7 @@ impl Db {
     pub async fn converting_password_folders(
         &self,
         tenant: crate::TenantId,
-    ) -> Result<Vec<(UserId, NodeId, String)>, DbError> {
+    ) -> Result<Vec<(UserId, NodeId, ProtectionState)>, DbError> {
         let folders = sqlx::query_as(
             "SELECT p.owner_id, p.node_id, p.state FROM protected_folders p \
              JOIN users u ON u.id = p.owner_id \
@@ -814,6 +872,51 @@ impl Db {
     }
 }
 
+impl Tx {
+    /// Keeps which of the owner's folders are protected, and in what state, as it is until the
+    /// transaction ends. Stores into the tree take it first, before any row lock, then read
+    /// with [`Tx::password_folder_of`] how the names they write must be stored: names chosen
+    /// before a folder was protected, or stopped being, are refused rather than written in the
+    /// wrong form. Stores do not wait for each other; protecting or unprotecting a folder waits
+    /// for the stores in progress, and they for it.
+    pub async fn hold_protections(&mut self) -> Result<(), DbError> {
+        sqlx::query("SELECT pg_advisory_xact_lock_shared($1, hashtext($2::text))")
+            .bind(PROTECTIONS_LOCK)
+            .bind(self.owner)
+            .execute(&mut *self.conn)
+            .await?;
+        Ok(())
+    }
+
+    /// The password folder that is `node` or holds it; `None` for the root.
+    pub async fn password_folder_of(
+        &mut self,
+        node: Option<NodeId>,
+    ) -> Result<Option<EnclosingPasswordFolder>, DbError> {
+        let Some(node) = node else {
+            return Ok(None);
+        };
+        let found = sqlx::query_as::<_, EnclosingPasswordFolder>(ENCLOSING_PASSWORD_FOLDER)
+            .bind(node)
+            .bind(self.owner)
+            .fetch_optional(&mut *self.conn)
+            .await?;
+        Ok(found)
+    }
+}
+
+/// Takes `user`'s protections for the transaction, once the stores holding them (see
+/// [`Tx::hold_protections`]) are done. First in the transaction, before any row lock, so that
+/// it never waits for a store that waits for it.
+async fn lock_protections(conn: &mut PgConnection, user: UserId) -> Result<(), DbError> {
+    sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2::text))")
+        .bind(PROTECTIONS_LOCK)
+        .bind(user)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
 /// Takes the user's vault row for the transaction; its epoch, or `None` without a vault.
 async fn lock_vault(conn: &mut PgConnection, user: UserId) -> Result<Option<i32>, DbError> {
     let epoch = sqlx::query_scalar("SELECT epoch FROM vaults WHERE user_id = $1 FOR UPDATE")
@@ -824,10 +927,7 @@ async fn lock_vault(conn: &mut PgConnection, user: UserId) -> Result<Option<i32>
 }
 
 /// Removes the vault once it has no unlocker left; `Conflict` if folders still need it.
-pub(crate) async fn drop_vault_if_unused(
-    conn: &mut PgConnection,
-    user: UserId,
-) -> Result<(), DbError> {
+async fn drop_vault_if_unused(conn: &mut PgConnection, user: UserId) -> Result<(), DbError> {
     let (unlockers, folders): (i64, i64) = sqlx::query_as(
         "SELECT (SELECT COUNT(*) FROM vault_unlockers WHERE user_id = $1), \
          (SELECT COUNT(*) FROM protected_folders WHERE owner_id = $1 AND lock = 'security_key')",
@@ -896,7 +996,7 @@ async fn enclosing_protection(
     conn: &mut PgConnection,
     user: UserId,
     node: NodeId,
-) -> Result<Option<(NodeId, String)>, DbError> {
+) -> Result<Option<(NodeId, ProtectionState)>, DbError> {
     let found = sqlx::query_as(
         "WITH RECURSIVE up AS ( \
              SELECT id, parent_id FROM nodes WHERE id = $1 AND owner_id = $2 \

@@ -19,7 +19,7 @@ use auth::ReauthProof;
 use crate::extract::{ApiJson, ApiQuery};
 use crate::{
     ApiError, AppState,
-    browser::{Browser, refresh_cookie},
+    browser::{Browser, WebAuthnSites, refresh_cookie},
     extract::{AuthUser, ClientIp, Tenant},
 };
 
@@ -50,7 +50,7 @@ async fn providers(
     headers: HeaderMap,
 ) -> Json<Providers> {
     let mut providers = tenant.auth.providers();
-    providers.passkeys = crate::browser::sent_to_a_name(&headers, &tenant);
+    providers.passkeys = WebAuthnSites::of(&headers, &tenant).rp_id().is_some();
     providers.browser_login = state.serves_web && (providers.password || providers.oidc.is_some());
     // Apps from before browser sign-in only know a provider's button: give them one that signs
     // in on the web page, through `oidc_start` and `oidc_exchange` below.

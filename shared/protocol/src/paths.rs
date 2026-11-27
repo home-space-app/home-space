@@ -46,6 +46,10 @@ pub const ME_REAUTHENTICATE_WEBAUTHN: &str = "/api/v1/me/reauthenticate/webauthn
 pub const LOGIN_WEBAUTHN: &str = "/api/v1/auth/login/webauthn";
 pub const PASSKEY_START: &str = "/api/v1/auth/passkey/start";
 pub const PASSKEY_FINISH: &str = "/api/v1/auth/passkey/finish";
+/// `GET` the caller's vault of protected folders.
+pub const VAULT: &str = "/api/v1/vault";
+/// `POST` enables a folder key or sets the recovery key.
+pub const VAULT_UNLOCKERS: &str = "/api/v1/vault/unlockers";
 pub const NODES: &str = "/api/v1/nodes";
 pub const NODES_MOVE: &str = "/api/v1/nodes/move";
 pub const FOLDERS: &str = "/api/v1/folders";
@@ -107,6 +111,11 @@ pub fn admin_user_password(id: crate::UserId) -> String {
 /// `PATCH` renames, `DELETE` removes one of the user's passkeys and security keys.
 pub fn me_webauthn_key(id: uuid::Uuid) -> String {
     format!("{ME_WEBAUTHN}/{id}")
+}
+
+/// `DELETE` removes one of the vault's unlockers.
+pub fn vault_unlocker(id: uuid::Uuid) -> String {
+    format!("{VAULT_UNLOCKERS}/{id}")
 }
 
 pub fn admin_user_second_factors(id: crate::UserId) -> String {
@@ -237,6 +246,16 @@ pub fn file_content(id: NodeId) -> String {
     format!("{FILES}/{id}/content")
 }
 
+/// An id as it appears in web client URLs: 22-char base64url instead of hyphenated hex.
+pub fn short_id(id: NodeId) -> String {
+    URL_SAFE_NO_PAD.encode(id.0.as_bytes())
+}
+
+/// The web client page of a folder, or of Home for `None`.
+pub fn web_folder(id: Option<NodeId>) -> String {
+    id.map_or_else(|| "/".to_owned(), |id| format!("/folder/{}", short_id(id)))
+}
+
 #[cfg(test)]
 mod tests {
     use uuid::Uuid;
@@ -252,14 +271,4 @@ mod tests {
         );
         assert!(ancestors(id).ends_with("/ancestors"));
     }
-}
-
-/// An id as it appears in web client URLs: 22-char base64url instead of hyphenated hex.
-pub fn short_id(id: NodeId) -> String {
-    URL_SAFE_NO_PAD.encode(id.0.as_bytes())
-}
-
-/// The web client page of a folder, or of Home for `None`.
-pub fn web_folder(id: Option<NodeId>) -> String {
-    id.map_or_else(|| "/".to_owned(), |id| format!("/folder/{}", short_id(id)))
 }

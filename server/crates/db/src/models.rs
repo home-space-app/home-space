@@ -14,6 +14,9 @@ pub struct User {
     pub username: String,
     /// `None` for users who only sign in through an identity provider.
     pub password_hash: Option<String>,
+    /// Linked to an identity provider account (a row in `user_identities`): the provider signs
+    /// them in, so a password they may still have from before signs nothing in.
+    pub external: bool,
     pub created_at: OffsetDateTime,
     /// Sees the server status; gets no access to other users' files.
     pub is_admin: bool,
@@ -31,6 +34,16 @@ impl User {
     pub fn may_sign_in(&self) -> bool {
         self.disabled_at.is_none()
     }
+}
+
+/// What setting a user's password did to the account.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PasswordSet {
+    /// A local account got a new password.
+    Replaced,
+    /// An account linked to an identity provider became a local one: the link is gone, so the
+    /// provider's next sign-in with that account makes a new user.
+    MadeLocal,
 }
 
 /// A stored refresh token (only its hash is kept).

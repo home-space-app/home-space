@@ -4,7 +4,7 @@ use time::{Duration, OffsetDateTime};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use db::{Authentication, Db, LiveSession, NewDevice, TenantId, UserId};
+use db::{Authentication, Confirmation, Db, LiveSession, NewDevice, TenantId, UserId};
 use protocol::{DEVICE_SESSION_LABELS, DeviceInfo, TokenPair, rules::device_name};
 
 use crate::{
@@ -42,6 +42,8 @@ pub(crate) const HWK_METHOD: &str = "hwk";
 pub(crate) const SWK_METHOD: &str = "swk";
 /// What a session records when the authenticator checked a PIN or biometrics (RFC 8176 `user`).
 pub(crate) const USER_METHOD: &str = "user";
+/// The methods that are a second factor: a sign-in with any of them proved one.
+const SECOND_FACTOR_METHODS: [&str; 4] = [OTP_METHOD, RECOVERY_METHOD, HWK_METHOD, SWK_METHOD];
 
 /// A sign-in with `method` that happens now.
 pub(crate) fn signed_in_now(method: &str) -> Authentication {
@@ -50,9 +52,14 @@ pub(crate) fn signed_in_now(method: &str) -> Authentication {
 
 /// A sign-in with all of `methods` that happens now.
 pub(crate) fn signed_in_now_with(methods: &[&str]) -> Authentication {
+    let now = OffsetDateTime::now_utc();
+    let second_factor = methods
+        .iter()
+        .any(|method| SECOND_FACTOR_METHODS.contains(method));
     Authentication {
         auth_methods: methods.iter().map(|&method| method.to_owned()).collect(),
-        authenticated_at: OffsetDateTime::now_utc(),
+        authenticated_at: now,
+        second_factor_at: second_factor.then_some(now),
     }
 }
 
@@ -310,13 +317,27 @@ impl Sessions {
             .ok_or(AuthError::InvalidCredentials)
     }
 
-    /// Notes that the user of the live session `session_id` just proved again who they are.
-    pub(crate) async fn confirm(&self, session_id: Uuid, user_id: UserId) -> Result<(), AuthError> {
-        if self.db.confirm_session(session_id, user_id).await? {
+    /// Notes that the user of the live session `session_id` just proved again who they are,
+    /// `with` what.
+    pub(crate) async fn confirm(
+        &self,
+        session_id: Uuid,
+        user_id: UserId,
+        with: Confirmation,
+    ) -> Result<(), AuthError> {
+        if self.db.confirm_session(session_id, user_id, with).await? {
             Ok(())
         } else {
             Err(AuthError::InvalidCredentials)
         }
+    }
+
+    /// Ends every session of `user_id` but `keep` and the sessions that stay with it (see
+    /// [`Db::end_other_sessions`]), and tells open websockets.
+    pub(crate) async fn end_others(&self, user_id: UserId, keep: Uuid) -> Result<(), AuthError> {
+        self.db.end_other_sessions(user_id, keep).await?;
+        self.ended(user_id);
+        Ok(())
     }
 
     /// The device of `grant`'s session. A session that names none takes `device`, which is

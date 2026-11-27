@@ -16,7 +16,9 @@ use client_core::{
     shared_link::initial,
     storage::{bytes, usage_breakdown},
 };
-use protocol::{Account, AccountDevice, CreateAccount, Patch, ServerStatus, UpdateAccount, UserId};
+use protocol::{
+    Account, AccountDevice, AuthMethod, CreateAccount, Patch, ServerStatus, UpdateAccount, UserId,
+};
 
 use crate::{
     components::{ErrorAlert, Menu, MenuItem, reconfirm},
@@ -36,6 +38,17 @@ const FILTERS: [AccountFilter; 3] = [
 ];
 const FOOTNOTE: &str = "Usage counts current files, previous versions and the recycle bin. \
                         Admins manage accounts here but cannot open other users' files.";
+
+/// The switch an administrator turns on to give an account of the identity provider a password.
+const MAKE_LOCAL: &str = "Make it a local account";
+
+/// What saving the account panel did.
+enum Saved {
+    /// Every change, with the account as it is now when it changed.
+    All(Option<Account>),
+    /// All but the password: the administrator did not confirm it is them.
+    PasswordLeft(Option<Account>),
+}
 
 /// The state pill of an account: its class and label.
 fn state_pill(account: &Account) -> (&'static str, &'static str) {
@@ -377,6 +390,7 @@ fn AccountRow(
     let note_account = account.clone();
     let deletion = move || deletion_note(&note_account, clock.get());
     let is_admin = account.is_admin;
+    let external = account.external;
     let disabled = account.disabled;
     let delete_target = account.clone();
 
@@ -397,6 +411,14 @@ fn AccountRow(
                 } else {
                     view! { <span class="pill">"Member"</span> }.into_any()
                 }}
+                {external
+                    .then(|| {
+                        view! {
+                            <span class="pill" title="Signs in through the identity provider">
+                                "External"
+                            </span>
+                        }
+                    })}
             </td>
             <td class="data-table__storage">
                 <span class="usage">
@@ -765,7 +787,7 @@ fn EditUserPanel(
     let id = first.id;
     let you = me == Some(id);
     let name = first.username.clone();
-    let has_password = !first.external;
+    let external = first.external;
     let method = sign_in_method(&first, provider.as_deref());
     let created = medium_date(first.created_at);
     let header_provider = provider.clone();
@@ -777,9 +799,11 @@ fn EditUserPanel(
     let is_admin = RwSignal::new(first.is_admin);
     let password = RwSignal::new(String::new());
     let repeat = RwSignal::new(String::new());
+    let make_local = RwSignal::new(false);
     let problem = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
     let devices = RwSignal::new(None::<Vec<AccountDevice>>);
+    let reconfirm = reconfirm::Reconfirm::get();
     load::load(
         move || async move { session::client().account_devices(id).await },
         move |result| match result {
@@ -827,9 +851,16 @@ fn EditUserPanel(
         };
         let new_password = password.get_untracked();
         let repeated = repeat.get_untracked();
-        let change_password = has_password && !(new_password.is_empty() && repeated.is_empty());
+        let change_password = !(new_password.is_empty() && repeated.is_empty());
         if change_password && let Some(message) = password_problem(&new_password, &repeated) {
             problem.set(Some(message.to_owned()));
+            return;
+        }
+        if change_password && external && !make_local.get_untracked() {
+            problem.set(Some(format!(
+                "Turn on \"{MAKE_LOCAL}\" to give {} a password.",
+                account.with_untracked(|account| account.username.clone())
+            )));
             return;
         }
         let admin = is_admin.get_untracked();
@@ -847,21 +878,34 @@ fn EditUserPanel(
         spawn_local(async move {
             let client = session::client();
             let result = async {
-                let updated = if change == UpdateAccount::default() {
+                let mut updated = if change == UpdateAccount::default() {
                     None
                 } else {
                     Some(client.update_account(id, &change).await?)
                 };
                 if change_password {
-                    client.set_account_password(id, &new_password).await?;
+                    let set = reconfirm
+                        .confirmed(|| client.set_account_password(id, &new_password))
+                        .await?;
+                    if set.is_none() {
+                        return Ok(Saved::PasswordLeft(updated));
+                    }
+                    if external {
+                        updated = Some(client.account(id).await?);
+                    }
                 }
-                Ok::<_, ApiError>(updated)
+                Ok::<_, ApiError>(Saved::All(updated))
             }
             .await;
             busy.set(false);
             match result {
-                Ok(updated) => {
+                Ok(Saved::All(updated)) => {
                     on_close.run(());
+                    if let Some(updated) = updated {
+                        on_saved.run(updated);
+                    }
+                }
+                Ok(Saved::PasswordLeft(updated)) => {
                     if let Some(updated) = updated {
                         on_saved.run(updated);
                     }
@@ -951,47 +995,56 @@ fn EditUserPanel(
                     </section>
                     <section class="sheet__section">
                         <h3 class="sheet__heading">"Password"</h3>
-                        {if has_password {
+                        {if external {
                             view! {
                                 <p class="sheet__text">
                                     {format!(
-                                        "Leave empty to keep the current password. A new password signs {name} out on every device.",
+                                        "{name} signs in through {method} and has no password here. A password makes them a local account: the link to {method} goes, so signing in there makes a new, empty account from then on. They are signed out on every device.",
                                     )}
                                 </p>
-                                <label class="field">
-                                    <span class="field__label">"New password"</span>
-                                    <input
-                                        class="field__input"
-                                        type="password"
-                                        autocomplete="new-password"
-                                        prop:value=move || password.get()
-                                        on:input:target=move |event| password.set(event.target().value())
-                                    />
-                                </label>
-                                <label class="field">
-                                    <span class="field__label">"Repeat new password"</span>
-                                    <input
-                                        class="field__input"
-                                        type="password"
-                                        autocomplete="new-password"
-                                        prop:value=move || repeat.get()
-                                        on:input:target=move |event| repeat.set(event.target().value())
-                                    />
-                                </label>
+                                <div class="setting-row">
+                                    <span class="setting-row__text">
+                                        <span class="setting-row__title">{MAKE_LOCAL}</span>
+                                        <span class="setting-row__detail">
+                                            "Their files stay with this account."
+                                        </span>
+                                    </span>
+                                    <Switch checked=make_local label=MAKE_LOCAL />
+                                </div>
                             }
                                 .into_any()
                         } else {
                             view! {
                                 <p class="sheet__text">
                                     {format!(
-                                        "{name} signs in through {method} and has no password here. Manage it at the provider.",
+                                        "Leave empty to keep the current password. A new password signs {name} out on every device.",
                                     )}
                                 </p>
                             }
                                 .into_any()
                         }}
+                        <label class="field">
+                            <span class="field__label">"New password"</span>
+                            <input
+                                class="field__input"
+                                type="password"
+                                autocomplete="new-password"
+                                prop:value=move || password.get()
+                                on:input:target=move |event| password.set(event.target().value())
+                            />
+                        </label>
+                        <label class="field">
+                            <span class="field__label">"Repeat new password"</span>
+                            <input
+                                class="field__input"
+                                type="password"
+                                autocomplete="new-password"
+                                prop:value=move || repeat.get()
+                                on:input:target=move |event| repeat.set(event.target().value())
+                            />
+                        </label>
                     </section>
-                    {has_password
+                    {(!external)
                         .then(|| {
                             view! { <SecondFactorSection auth account problem on_saved /> }
                         })}
@@ -1170,8 +1223,11 @@ fn DeleteUserDialog(
 
 /// The second factors of `account`, as words for a sentence.
 fn factors_said(account: &Account) -> &'static str {
-    let has = |factor: &str| account.factors.iter().any(|named| named == factor);
-    match (has("totp") || account.factors.is_empty(), has("webauthn")) {
+    let has = |factor| account.factors.contains(&factor);
+    match (
+        has(AuthMethod::Totp) || account.factors.is_empty(),
+        has(AuthMethod::Webauthn),
+    ) {
         (true, true) => "a code from an authenticator app, or a passkey or security key",
         (false, true) => "a passkey or security key",
         _ => "a code from an authenticator app",

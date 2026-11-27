@@ -154,11 +154,13 @@ async fn create(
         .create_upload(
             user.id,
             user.device_id,
-            target,
-            &names,
-            request.size,
-            request.mime.as_deref(),
-            request.modified_at,
+            files::UploadRequest {
+                target,
+                names: &names,
+                size: request.size,
+                content_type: request.mime.as_deref(),
+                modified_at: request.modified_at,
+            },
         )
         .await?;
     let body = Json(session(status, state.files.uploads.chunk_bytes()));

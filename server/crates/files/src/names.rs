@@ -13,10 +13,15 @@
 
 use std::sync::Arc;
 
-use db::{Node, NodeId, NodeKind};
+use db::{EnclosingPasswordFolder, Node, NodeId, NodeKind};
+use protocol::ProtectionState;
 use vault_core::FolderKeys;
 
 use crate::FilesError;
+
+/// Why a write is refused whose names were chosen for another protection than the folder has
+/// by the time it is written. Choosing them again gets it right.
+const PROTECTION_CHANGED: &str = "The folder was protected or unprotected meanwhile. Try again.";
 
 /// How the names of the nodes in one folder are stored.
 #[derive(Clone, Debug, Default)]
@@ -100,6 +105,29 @@ impl Names {
         }
     }
 
+    /// Refuses a write into a folder that `holder` holds now, the password folder read under
+    /// the transaction's hold on protections (see [`db::Tx::hold_protections`]), unless these
+    /// names are still that folder's: it was protected, or stopped being, since they were
+    /// chosen, and they would land in the wrong form.
+    pub(crate) fn check_holder(
+        &self,
+        holder: Option<&EnclosingPasswordFolder>,
+    ) -> Result<(), FilesError> {
+        let current = match (self, holder) {
+            (Self::Plain, None) => true,
+            (Self::Sealed(sealed), Some(holder)) => {
+                holder.node_id == sealed.folder
+                    && (sealed.read_only || holder.state != ProtectionState::Unprotecting)
+            }
+            _ => false,
+        };
+        if current {
+            Ok(())
+        } else {
+            Err(FilesError::Protected(PROTECTION_CHANGED))
+        }
+    }
+
     /// Whether `stored` is already sealed with these names' keys.
     pub fn is_stored(&self, kind: NodeKind, stored: &str) -> bool {
         match self {
@@ -151,7 +179,7 @@ mod tests {
     fn sealed() -> (Names, NodeId) {
         let folder = NodeId::new();
         (
-            Names::sealed(folder, FolderSecret::from_raw([7; 32]).keys()),
+            Names::sealed(folder, FolderSecret::from_raw([7; 32]).keys().unwrap()),
             folder,
         )
     }

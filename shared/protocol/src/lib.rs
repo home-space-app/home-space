@@ -18,6 +18,7 @@ pub mod patch;
 pub mod paths;
 mod problem;
 mod problem_type;
+pub mod redact;
 pub mod rules;
 mod search;
 mod share;
@@ -33,11 +34,12 @@ mod webauthn;
 
 pub use admin::{Account, AccountDevice, CreateAccount, SetPassword, UpdateAccount};
 pub use auth::{
-    BrowserLoginApp, BrowserLoginDecision, BrowserLoginExchangeRequest, BrowserLoginFlow,
-    BrowserLoginRedirect, BrowserLoginStartQuery, ChangePasswordRequest, DEVICE_SESSION_LABELS,
-    DeviceSessionRequest, LoginRequest, LoginVerifyRequest, Me, OidcCallbackQuery,
-    OidcExchangeRequest, OidcProvider, OidcStartQuery, Providers, ReauthenticateRequest,
-    RecoveryCodes, RefreshRequest, SecondFactors, TokenPair, TotpConfirmRequest, TotpEnrolment,
+    AuthMethod, BrowserLoginApp, BrowserLoginDecision, BrowserLoginExchangeRequest,
+    BrowserLoginFlow, BrowserLoginRedirect, BrowserLoginStartQuery, ChangePasswordRequest,
+    DEVICE_SESSION_LABELS, DeviceSessionRequest, LoginRequest, LoginVerifyRequest, Me,
+    OidcCallbackQuery, OidcExchangeRequest, OidcProvider, OidcStartQuery, Providers,
+    ReauthenticateRequest, RecoveryCodes, RefreshRequest, SecondFactors, TokenPair,
+    TotpConfirmRequest, TotpEnrolment,
 };
 pub use capabilities::Capabilities;
 pub use change::{Change, ChangesQuery, ChangesResponse};
@@ -79,9 +81,9 @@ pub use upload::{ChunkResult, CreateUpload, UploadInfo, UploadSession, UploadsQu
 pub use validate::Validate;
 pub use vault::{
     AddUnlocker, ChangeFolderPassword, FolderLock, FolderPasswordChanged, FolderUnlocked,
-    PRF_SALT_LEN, ProtectFolder, ProtectedFolder, ProtectionState, RewrappedFolder,
-    RewrappedUnlocker, RotateVault, UnlockFolder, UnlockerKind, Vault, VaultUnlocker, WRAPPED_LEN,
-    is_age_recipient,
+    MAX_CREDENTIAL_ID_LEN, PRF_SALT_LEN, ProtectFolder, ProtectedFolder, ProtectionState,
+    RewrappedFolder, RewrappedUnlocker, RotateVault, UnlockFolder, UnlockerKind, Vault,
+    VaultUnlocker, WRAPPED_LEN, is_age_recipient,
 };
 pub use version::Version;
 pub use webauthn::{

@@ -10,17 +10,18 @@ use crate::{ApiError, Client, client::expect_success};
 
 /// How the user confirms it is them: one of the `methods` of
 /// [`ApiError::ReauthenticationRequired`].
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum Confirmation<'a> {
-    /// `password`: their current password.
+    /// [`AuthMethod::Password`](protocol::AuthMethod::Password): their current password.
     Password(&'a str),
-    /// `totp`: a code from their authenticator app.
+    /// [`AuthMethod::Totp`](protocol::AuthMethod::Totp): a code from their authenticator app.
     Code(&'a str),
-    /// `webauthn`: a passkey's or security key's answer to the challenge of
+    /// [`AuthMethod::Webauthn`](protocol::AuthMethod::Webauthn): a passkey's or security key's
+    /// answer to the challenge of
     /// [`reauth_webauthn_options`](Client::reauth_webauthn_options).
     WebAuthn {
         challenge_id: Uuid,
-        credential: &'a PublicKeyCredential,
+        credential: Box<PublicKeyCredential>,
     },
 }
 
@@ -63,7 +64,7 @@ impl Client {
             } => ReauthenticateRequest {
                 webauthn: Some(WebAuthnAnswer {
                     challenge_id,
-                    credential: credential.clone(),
+                    credential: *credential,
                 }),
                 ..ReauthenticateRequest::default()
             },

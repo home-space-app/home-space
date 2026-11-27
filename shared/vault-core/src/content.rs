@@ -9,11 +9,14 @@ use std::io::{self, Read, Write};
 use age::stream::{StreamReader, StreamWriter};
 pub use age::x25519::{Identity, Recipient};
 
-use crate::{Error, Result};
+use crate::{ContentError, Result};
 
 /// Every age v1 file starts with this line; the server checks it on uploads into protected
 /// folders.
 pub const AGE_HEADER_PREFIX: &[u8] = b"age-encryption.org/v1\n";
+/// Room for the age header and the per-chunk tags of a small file, so encrypting a buffer does
+/// not reallocate.
+const AGE_OVERHEAD_HINT: usize = 256;
 
 /// Whether `prefix` (the first bytes of a blob) starts like an age v1 file.
 pub fn looks_like_age(prefix: &[u8]) -> bool {
@@ -24,7 +27,7 @@ pub fn looks_like_age(prefix: &[u8]) -> bool {
 pub fn parse_recipient(text: &str) -> Result<Recipient> {
     text.trim()
         .parse()
-        .map_err(|e: &str| Error::Content(e.to_owned()))
+        .map_err(|reason| ContentError::Recipient(reason).into())
 }
 
 /// A writer that encrypts into `output`. Call [`StreamWriter::finish`] at the end, or the last
@@ -32,7 +35,7 @@ pub fn parse_recipient(text: &str) -> Result<Recipient> {
 pub fn encryptor<W: Write>(recipient: &Recipient, output: W) -> Result<StreamWriter<W>> {
     let encryptor =
         age::Encryptor::with_recipients(std::iter::once(recipient as &dyn age::Recipient))
-            .map_err(|e| Error::Content(e.to_string()))?;
+            .map_err(ContentError::from)?;
     Ok(encryptor.wrap_output(output)?)
 }
 
@@ -46,7 +49,7 @@ pub fn encrypt<R: Read, W: Write>(recipient: &Recipient, mut input: R, output: W
 
 /// Encrypts a buffer.
 pub fn encrypt_bytes(recipient: &Recipient, plain: &[u8]) -> Result<Vec<u8>> {
-    let mut out = Vec::with_capacity(plain.len() + 256);
+    let mut out = Vec::with_capacity(plain.len() + AGE_OVERHEAD_HINT);
     encrypt(recipient, plain, &mut out)?;
     Ok(out)
 }
@@ -54,10 +57,10 @@ pub fn encrypt_bytes(recipient: &Recipient, plain: &[u8]) -> Result<Vec<u8>> {
 /// Opens an age file. The reader decrypts as it is read; with an `input` that implements `Seek`
 /// it seeks too (range reads, for video), decrypting only the chunks it needs.
 pub fn decrypt<R: Read>(identity: &Identity, input: R) -> Result<StreamReader<R>> {
-    let decryptor = age::Decryptor::new(input).map_err(|e| Error::Content(e.to_string()))?;
-    decryptor
+    let decryptor = age::Decryptor::new(input).map_err(ContentError::from)?;
+    Ok(decryptor
         .decrypt(std::iter::once(identity as &dyn age::Identity))
-        .map_err(|e| Error::Content(e.to_string()))
+        .map_err(ContentError::from)?)
 }
 
 /// Decrypts a buffer.
@@ -84,8 +87,8 @@ mod tests {
 
     #[test]
     fn only_its_own_files_open_with_an_identity() {
-        let ours = FolderSecret::generate().keys();
-        let theirs = FolderSecret::generate().keys();
+        let ours = FolderSecret::generate().keys().unwrap();
+        let theirs = FolderSecret::generate().keys().unwrap();
         let sealed = encrypt_bytes(&ours.recipient(), b"scan").unwrap();
         assert!(opens_with(ours.identity(), sealed.as_slice()));
         assert!(!opens_with(theirs.identity(), sealed.as_slice()));
@@ -95,7 +98,7 @@ mod tests {
 
     #[test]
     fn round_trip_with_only_the_recipient_to_encrypt() {
-        let keys = FolderSecret::generate().keys();
+        let keys = FolderSecret::generate().keys().unwrap();
         let recipient: Recipient = keys.recipient().to_string().parse().unwrap();
         let plain: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
         let encrypted = encrypt_bytes(&recipient, &plain).unwrap();
@@ -110,7 +113,7 @@ mod tests {
 
     #[test]
     fn range_reads_after_dropping_the_keys() {
-        let keys = FolderSecret::generate().keys();
+        let keys = FolderSecret::generate().keys().unwrap();
         let plain: Vec<u8> = (0..300_000u32).map(|i| (i % 253) as u8).collect();
         let encrypted = encrypt_bytes(&keys.recipient(), &plain).unwrap();
         let mut reader = decrypt(keys.identity(), Cursor::new(encrypted)).unwrap();
@@ -123,9 +126,15 @@ mod tests {
 
     #[test]
     fn wrong_identity_and_tampering_fail() {
-        let keys = FolderSecret::generate().keys();
+        let keys = FolderSecret::generate().keys().unwrap();
         let mut encrypted = encrypt_bytes(&keys.recipient(), b"secret").unwrap();
-        assert!(decrypt_bytes(FolderSecret::generate().keys().identity(), &encrypted).is_err());
+        assert!(
+            decrypt_bytes(
+                FolderSecret::generate().keys().unwrap().identity(),
+                &encrypted
+            )
+            .is_err()
+        );
         let last = encrypted.len() - 1;
         encrypted[last] ^= 1;
         assert!(decrypt_bytes(keys.identity(), &encrypted).is_err());

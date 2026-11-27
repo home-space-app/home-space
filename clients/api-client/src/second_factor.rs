@@ -2,8 +2,9 @@
 //! two steps, and the signed-in user's authenticator app and recovery codes.
 
 use protocol::{
-    LoginRequest, LoginVerifyRequest, Me, Problem, ProblemType, PublicKeyCredential, RecoveryCodes,
-    TokenPair, TotpConfirmRequest, TotpEnrolment, UserId, paths,
+    AuthMethod, ErrorCode, LoginRequest, LoginVerifyRequest, Me, Problem, ProblemType,
+    PublicKeyCredential, RecoveryCodes, TokenPair, TotpConfirmRequest, TotpEnrolment, UserId,
+    paths,
 };
 use reqwest::StatusCode;
 
@@ -27,12 +28,13 @@ pub enum SignIn {
 pub struct SecondFactorStep {
     /// What [`login_verify`](Client::login_verify) takes; valid for a few minutes.
     pub login_token: String,
-    /// What the account can finish with: `totp`, `webauthn` and `recovery`.
-    pub methods: Vec<String>,
+    /// What the account can finish with: an authenticator app, a passkey or security key, and
+    /// recovery codes.
+    pub methods: Vec<AuthMethod>,
 }
 
 /// What finishes a sign-in that waits for its second factor.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum SecondFactor<'a> {
     /// A code from the authenticator app.
     Code(&'a str),
@@ -41,7 +43,7 @@ pub enum SecondFactor<'a> {
     /// A passkey's or security key's answer to the challenge of
     /// [`login_webauthn_options`](Client::login_webauthn_options) (feature
     /// [`PASSKEYS`](protocol::features::PASSKEYS)).
-    WebAuthn(&'a PublicKeyCredential),
+    WebAuthn(Box<PublicKeyCredential>),
 }
 
 impl Client {
@@ -62,19 +64,19 @@ impl Client {
             .send()
             .await?;
         if response.status() == StatusCode::FORBIDDEN {
-            let problem: Problem = response.json().await?;
-            return match (problem.kind(), problem.login_token) {
-                (Some(ProblemType::SecondFactorRequired), Some(login_token)) => {
-                    Ok(SignIn::SecondFactor(SecondFactorStep {
-                        login_token,
-                        methods: problem.methods,
-                    }))
-                }
-                (_, _) => Err(ApiError::Api {
-                    code: protocol::ErrorCode::Forbidden,
-                    message: problem.detail.or(problem.message).unwrap_or(problem.title),
-                }),
-            };
+            let mut problem: Problem = response.json().await?;
+            if problem.kind() == Some(ProblemType::SecondFactorRequired)
+                && let Some(login_token) = problem.login_token.take()
+            {
+                return Ok(SignIn::SecondFactor(SecondFactorStep {
+                    login_token,
+                    methods: problem.methods,
+                }));
+            }
+            return Err(ApiError::Api {
+                code: problem.code().unwrap_or(ErrorCode::Forbidden),
+                message: problem.detail().to_owned(),
+            });
         }
         if !response.status().is_success() {
             return Err(sign_in_error_from(response).await);
@@ -95,7 +97,7 @@ impl Client {
         let (code, recovery_code, webauthn) = match factor {
             SecondFactor::Code(code) => (Some(code.to_owned()), None, None),
             SecondFactor::RecoveryCode(code) => (None, Some(code.to_owned()), None),
-            SecondFactor::WebAuthn(answer) => (None, None, Some(answer.clone())),
+            SecondFactor::WebAuthn(answer) => (None, None, Some(*answer)),
         };
         let request = LoginVerifyRequest {
             login_token: login_token.to_owned(),

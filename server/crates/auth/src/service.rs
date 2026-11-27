@@ -2,13 +2,13 @@
 //! is made of: [`PasswordHasher`], [`LoginThrottle`], [`Sessions`], [`Tickets`],
 //! [`OidcLogin`] and [`BrowserLogin`].
 
-use std::net::IpAddr;
+use std::{net::IpAddr, sync::Arc};
 
 use time::Duration;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use db::{Db, TenantId, User, UserId};
+use db::{Db, PasswordSet, TenantId, User, UserId};
 use protocol::{
     DeviceInfo, OidcProvider, Providers, TicketRequest, TicketResponse, TokenPair,
     rules::MAX_USERNAME_LEN,
@@ -22,7 +22,7 @@ use crate::{
     oidc_login::OidcLogin,
     password::MAX_PASSWORD_LEN,
     sessions::{PASSWORD_METHOD, Sessions, signed_in_now},
-    throttle::{Counter, LoginThrottle, attempt_source},
+    throttle::{Counter, LoginThrottle, attempt_source, device_source},
     tickets::Tickets,
     token::Keys,
 };
@@ -78,7 +78,7 @@ pub struct AuthService {
     browser: BrowserLogin,
     password_login: bool,
     /// Keeps authenticator app secrets; `None` without `HOMESPACE_SECRETS_KEY`.
-    secret_box: Option<SecretBox>,
+    secret_box: Option<Arc<SecretBox>>,
 }
 
 impl AuthService {
@@ -169,17 +169,26 @@ impl AuthService {
         offline::insert_user(&self.db, self.tenant, username, &hashed).await
     }
 
-    /// Changes a user's password and revokes their sessions.
-    pub async fn set_password(&self, user_id: UserId, password: &str) -> Result<(), AuthError> {
+    /// Changes a user's password and revokes their sessions. A user linked to the identity
+    /// provider becomes a local one, which this says.
+    pub async fn set_password(
+        &self,
+        user_id: UserId,
+        password: &str,
+    ) -> Result<PasswordSet, AuthError> {
         let hashed = self.hasher.hash_new(password).await?;
-        self.db.set_password_hash(user_id, &hashed).await?;
+        let set = self.db.set_password_hash(user_id, &hashed).await?;
         self.sessions_ended(user_id);
-        Ok(())
+        if set == PasswordSet::MadeLocal {
+            tracing::info!(user = %user_id, "account unlinked from the identity provider");
+        }
+        Ok(set)
     }
 
     /// Replaces the password of a signed-in user after checking the current one, and ends
     /// their other sessions; `session_id` is the session asking, which stays signed in, and
-    /// counts as just confirmed (see [`reauthenticate`](Self::reauthenticate)).
+    /// counts as just confirmed (see [`reauthenticate`](Self::reauthenticate)). Once the
+    /// account has a second factor, a recent proof with one is needed too.
     pub async fn change_password(
         &self,
         user_id: UserId,
@@ -188,6 +197,11 @@ impl AuthService {
         new: &str,
     ) -> Result<(), AuthError> {
         crate::password::check_new(new)?;
+        if self.user(user_id).await?.external {
+            return Err(AuthError::ExternalAccount);
+        }
+        self.require_second_factor_if_enrolled(user_id, session_id)
+            .await?;
         self.check_current_password(user_id, session_id, current)
             .await?;
         let hashed = self.hasher.hash(new).await?;
@@ -292,7 +306,7 @@ impl AuthService {
         };
         let mut counters = Vec::with_capacity(2);
         let source = match (device, address) {
-            (Some(device), _) if known_device => format!("device:{}", device.id),
+            (Some(device), _) if known_device => device_source(device.id),
             (_, Some(address)) => {
                 let source = attempt_source(address);
                 counters.push(Counter::address(source.clone()));
@@ -314,7 +328,12 @@ impl AuthService {
             .and_then(|user| user.password_hash.clone())
             .filter(|_| self.password_login);
         let verified = self.hasher.verify_or_pretend(password, hash).await?;
-        user.filter(|_| verified).ok_or(AuthError::WrongLogin)
+        let user = user.filter(|_| verified).ok_or(AuthError::WrongLogin)?;
+        // Only the right password learns that the provider signs this account in.
+        if user.external {
+            return Err(AuthError::ExternalAccount);
+        }
+        Ok(user)
     }
 
     /// Exchanges a refresh token for a new pair, revoking the old token.
@@ -465,6 +484,7 @@ mod reauth;
 mod second_factor;
 mod webauthn;
 
+pub use folders::FolderSecretKind;
 pub use reauth::ReauthProof;
 pub use second_factor::SecondFactorProof;
 #[cfg(test)]

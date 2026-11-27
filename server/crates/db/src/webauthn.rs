@@ -4,6 +4,7 @@
 //! Credentials and ceremony states are webauthn-rs values stored as JSON text; this crate does
 //! not look inside them.
 
+use protocol::WebAuthnKind;
 use sqlx::FromRow;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -11,11 +12,22 @@ use uuid::Uuid;
 #[cfg(test)]
 use crate::SecondFactorState;
 use crate::second_factors::{has_totp, has_webauthn, remove_factors, replace_codes};
-use crate::vaults::drop_vault_if_unused;
 use crate::{Db, DbError, TenantId, UserId};
 
 /// The most passkeys and security keys one user may have.
-pub const MAX_WEBAUTHN_CREDENTIALS: i64 = 20;
+pub const MAX_WEBAUTHN_CREDENTIALS: u16 = 20;
+
+/// What a WebAuthn ceremony waiting for its second request is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, sqlx::Type)]
+#[sqlx(type_name = "text", rename_all = "snake_case")]
+pub enum CeremonyKind {
+    AddPasskey,
+    AddSecurityKey,
+    /// A passkey sign-in, without a username.
+    SignIn,
+    /// Confirming it is the user before a sensitive change.
+    Reauthenticate,
+}
 
 /// A passkey or security key as stored.
 #[derive(Clone, Debug, PartialEq, Eq, FromRow)]
@@ -25,8 +37,7 @@ pub struct StoredCredential {
     pub credential_id: Vec<u8>,
     /// The webauthn-rs credential, as JSON.
     pub credential: String,
-    /// `passkey` or `security_key`.
-    pub kind: String,
+    pub kind: WebAuthnKind,
     /// The host it was made for.
     pub rp_id: String,
     pub name: String,
@@ -41,7 +52,7 @@ pub struct NewCredential<'a> {
     pub credential_id: &'a [u8],
     /// The webauthn-rs credential, as JSON.
     pub credential: &'a str,
-    pub kind: &'a str,
+    pub kind: WebAuthnKind,
     pub rp_id: &'a str,
     pub name: &'a str,
 }
@@ -53,8 +64,7 @@ pub struct NewCeremony<'a> {
     pub id: Uuid,
     /// `None` for a passkey sign-in.
     pub user: Option<UserId>,
-    /// `add_passkey`, `add_security_key`, `sign_in` or `reauthenticate`.
-    pub kind: &'a str,
+    pub kind: CeremonyKind,
     pub origin: &'a str,
     /// The webauthn-rs state, as JSON.
     pub state: &'a str,
@@ -64,7 +74,7 @@ pub struct NewCeremony<'a> {
 /// A ceremony waiting for its second request.
 #[derive(Clone, Debug, PartialEq, Eq, FromRow)]
 pub struct Ceremony {
-    pub kind: String,
+    pub kind: CeremonyKind,
     /// `None` for a passkey sign-in, which learns the user from the answer.
     pub user_id: Option<UserId>,
     /// The page that started it.
@@ -185,7 +195,7 @@ impl Db {
                 .bind(user)
                 .fetch_one(&mut *tx)
                 .await?;
-        if count >= MAX_WEBAUTHN_CREDENTIALS {
+        if count >= i64::from(MAX_WEBAUTHN_CREDENTIALS) {
             return Err(DbError::Conflict);
         }
         let first = count == 0 && !has_totp(&mut tx, user).await?;
@@ -232,20 +242,9 @@ impl Db {
     }
 
     /// Removes the user's credential `id`, and with it the recovery codes when it was their
-    /// last second factor, and the vault unlocker it was. `NotFound` if they have no such
-    /// credential, `Conflict` when it is the last unlocker of a vault that folders are locked
-    /// with.
+    /// last second factor. `NotFound` if they have no such credential.
     pub async fn remove_webauthn_credential(&self, user: UserId, id: Uuid) -> Result<(), DbError> {
         let mut tx = self.pool().begin().await?;
-        let unlocked =
-            sqlx::query("DELETE FROM vault_unlockers WHERE user_id = $1 AND credential = $2")
-                .bind(user)
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
-        if unlocked.rows_affected() > 0 {
-            drop_vault_if_unused(&mut tx, user).await?;
-        }
         let removed = sqlx::query("DELETE FROM user_webauthn WHERE user_id = $1 AND id = $2")
             .bind(user)
             .bind(id)
@@ -313,7 +312,7 @@ impl Db {
         &self,
         tenant: TenantId,
         id: Uuid,
-        kinds: &[&str],
+        kinds: &[CeremonyKind],
     ) -> Result<Option<Ceremony>, DbError> {
         let ceremony = sqlx::query_as::<_, Ceremony>(
             "DELETE FROM webauthn_ceremonies \

@@ -37,11 +37,15 @@ pub fn authority_host(authority: &str) -> &str {
 
 /// Bytes that travel as unpadded base64url text, such as wrapped keys and sealed names.
 #[derive(Clone, PartialEq, Eq, Hash, Default)]
-pub struct Base64Url(pub Vec<u8>);
+pub struct Base64Url(Vec<u8>);
 
 impl Base64Url {
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
+    }
+
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.0
     }
 
     pub fn len(&self) -> usize {
@@ -95,7 +99,7 @@ mod tests {
 
     #[test]
     fn base64url_round_trips_and_takes_padding() {
-        let bytes = Base64Url(vec![0xfb, 0xff, 0x01]);
+        let bytes = Base64Url::from(vec![0xfb, 0xff, 0x01]);
         let text = serde_json::to_string(&bytes).expect("encode");
         assert_eq!(text, "\"-_8B\"");
         let back: Base64Url = serde_json::from_str(&text).expect("decode");

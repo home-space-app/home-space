@@ -87,11 +87,13 @@ async fn upload(fx: &Fixture, parent: Option<NodeId>, name: &str, text: &'static
         .nodes
         .upload(
             Actor::user(fx.alice),
-            parent,
-            name,
-            &Names::Plain,
-            None,
-            None,
+            files::NewFile {
+                parent,
+                name,
+                names: &Names::Plain,
+                content_type: None,
+                modified_at: None,
+            },
             body(text),
         )
         .await
@@ -195,11 +197,13 @@ async fn catch_up_indexes_nodes_created_without_the_index(pool: PgPool) {
         .nodes
         .upload(
             Actor::user(fx.alice),
-            None,
-            "legacy.txt",
-            &Names::Plain,
-            None,
-            None,
+            files::NewFile {
+                parent: None,
+                name: "legacy.txt",
+                names: &Names::Plain,
+                content_type: None,
+                modified_at: None,
+            },
             body("x"),
         )
         .await
@@ -247,11 +251,13 @@ async fn files_without_a_matching_provider_keep_name_only_entries(pool: PgPool) 
         .nodes
         .upload(
             Actor::user(fx.alice),
-            None,
-            "photo.jpg",
-            &Names::Plain,
-            Some("image/jpeg"),
-            None,
+            files::NewFile {
+                parent: None,
+                name: "photo.jpg",
+                names: &Names::Plain,
+                content_type: Some("image/jpeg"),
+                modified_at: None,
+            },
             body("zebra"),
         )
         .await
@@ -300,11 +306,13 @@ async fn a_new_version_replaces_the_indexed_content(pool: PgPool) {
         .nodes
         .upload(
             Actor::user(fx.alice),
-            None,
-            "notes.txt",
-            &Names::Plain,
-            None,
-            None,
+            files::NewFile {
+                parent: None,
+                name: "notes.txt",
+                names: &Names::Plain,
+                content_type: None,
+                modified_at: None,
+            },
             body("bravo"),
         )
         .await

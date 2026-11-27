@@ -2,7 +2,12 @@ use sqlx::PgPool;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use db::{Db, NewContent, NewNode, Node, NodeId, NodeKind, OnConflict, Patch, TenantId, UserId};
+use db::{
+    Db, NewContent, NewNode, NewProtection, Node, NodeId, NodeKind, OnConflict, PasswordLock,
+    Patch, TenantId, UserId,
+};
+use protocol::ProtectionState;
+use vault_core::FolderSecret;
 
 use super::{NodeUpdate, StoreOptions, move_nodes, store_file, update_node};
 use crate::{FilesError, Names};
@@ -366,7 +371,7 @@ async fn a_file_names_the_device_that_wrote_it_and_a_rename_keeps_it(pool: PgPoo
         parent_id: Patch::Keep,
     };
 
-    let renamed = update_node(&db, alice, written.id, update)
+    let renamed = update_node(&db, alice, written.id, update, &Names::Plain)
         .await
         .expect("rename");
 
@@ -418,4 +423,121 @@ async fn older_content_is_kept_as_a_version_of_the_device_that_sent_it(pool: PgP
         versions.iter().map(|v| v.edited_on).collect::<Vec<_>>(),
         [Some(phone)]
     );
+}
+
+/// Protects `folder` with a password straight in the database; empty, it is `protected` at once.
+async fn protect(db: &Db, owner: UserId, folder: NodeId) {
+    let lock = NewProtection::Password(PasswordLock {
+        password_hash: "$argon2id$...",
+        recovery_hash: "$argon2id$...",
+        sealed_key: &[1, 2, 3],
+        recipient: "age1fauk43xvke3myu0vg0syaflnwhlslwxd2504jfdjwejkjc50pcysgcf5gf",
+    });
+    db.protect_folder(owner, folder, lock)
+        .await
+        .expect("protected");
+}
+
+fn refused_as_stale<T: std::fmt::Debug>(result: Result<T, FilesError>) {
+    assert!(
+        matches!(result, Err(FilesError::Protected(_))),
+        "expected a refusal, got {result:?}"
+    );
+}
+
+/// Security: names a request chose before the folder was protected are plain; written after
+/// it was, they would stay plain in a password folder. They are refused instead.
+#[sqlx::test(migrations = "../../migrations")]
+async fn plain_names_chosen_before_a_folder_was_protected_are_refused(pool: PgPool) {
+    let db = Db::from_pool(pool);
+    let alice = db
+        .create_user(TenantId::DEFAULT, "alice", "x")
+        .await
+        .expect("alice")
+        .id;
+    let docs = folder(&db, alice, None, "docs").await;
+    let outside = store(&db, alice, "a.txt", content(1)).await;
+    let stale = Names::Plain;
+    protect(&db, alice, docs.id).await;
+
+    let stored = store_file(
+        &db,
+        alice,
+        Some(docs.id),
+        "b.txt",
+        &stale,
+        content(2),
+        StoreOptions::default(),
+    )
+    .await;
+    refused_as_stale(stored);
+
+    let moved = move_nodes(&db, alice, &[outside.id], Some(docs.id), OnConflict::Abort).await;
+    refused_as_stale(moved);
+
+    let update = NodeUpdate {
+        name: None,
+        parent_id: Patch::Set(docs.id),
+    };
+    refused_as_stale(update_node(&db, alice, outside.id, update, &stale).await);
+    let listed = db.list_children(alice, Some(docs.id)).await.expect("list");
+    assert!(listed.is_empty(), "nothing landed: {listed:?}");
+}
+
+/// Names sealed for a password folder that is no longer one, or is being unprotected, are
+/// refused too.
+#[sqlx::test(migrations = "../../migrations")]
+async fn sealed_names_for_a_folder_that_is_not_protected_are_refused(pool: PgPool) {
+    let db = Db::from_pool(pool);
+    let alice = db
+        .create_user(TenantId::DEFAULT, "alice", "x")
+        .await
+        .expect("alice")
+        .id;
+    let docs = folder(&db, alice, None, "docs").await;
+    let keys = FolderSecret::from_raw([7; 32]).keys().expect("keys");
+    let sealed = Names::sealed(docs.id, keys);
+    let stored = store_file(
+        &db,
+        alice,
+        Some(docs.id),
+        "b.txt",
+        &sealed,
+        content(2),
+        StoreOptions::default(),
+    )
+    .await;
+    refused_as_stale(stored);
+
+    protect(&db, alice, docs.id).await;
+    store_file(
+        &db,
+        alice,
+        Some(docs.id),
+        "b.txt",
+        &sealed,
+        content(2),
+        StoreOptions::default(),
+    )
+    .await
+    .expect("the names are the folder's");
+    db.set_protection_state(
+        alice,
+        docs.id,
+        &[ProtectionState::Protected],
+        ProtectionState::Unprotecting,
+    )
+    .await
+    .expect("unprotecting");
+    let stored = store_file(
+        &db,
+        alice,
+        Some(docs.id),
+        "c.txt",
+        &sealed,
+        content(3),
+        StoreOptions::default(),
+    )
+    .await;
+    refused_as_stale(stored);
 }

@@ -5,8 +5,9 @@
 use db::NodeKind;
 use files::{MoveBatch, Names};
 use protocol::{
-    Account, Conflict, MoveResponse, Node, PublicShare, ReceivedShare, Share, ShareRecipient,
-    SharedNode, StorageUsage, TransferItem, TransferSummary, UserRef, encoding::to_hex,
+    Account, AuthMethod, Conflict, MoveResponse, Node, PublicShare, ReceivedShare, Share,
+    ShareRecipient, SharedNode, StorageUsage, TransferItem, TransferSummary, UserRef,
+    encoding::to_hex,
 };
 use shares::{LinkView, ReceivedDetails, ShareDetails};
 
@@ -115,12 +116,11 @@ pub(crate) fn account(found: db::Account) -> Account {
         external: found.external,
         two_factor: found.authenticator_app || found.webauthn,
         factors: [
-            (found.authenticator_app, "totp"),
-            (found.webauthn, "webauthn"),
+            (found.authenticator_app, AuthMethod::Totp),
+            (found.webauthn, AuthMethod::Webauthn),
         ]
         .into_iter()
-        .filter(|&(has, _)| has)
-        .map(|(_, name)| name.to_owned())
+        .filter_map(|(has, method)| has.then_some(method))
         .collect(),
         created_at: found.created_at,
         disabled: found.disabled_at.is_some(),

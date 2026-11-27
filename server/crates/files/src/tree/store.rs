@@ -6,7 +6,7 @@ use time::OffsetDateTime;
 use db::{Db, NewContent, Node, NodeId, NodeKind, Tx, UserId};
 
 use super::{
-    StoreOptions, StoreOutcome,
+    StoreOptions, StoreOutcome, guard,
     rules::{ContentFate, not_after, numbered_file_name, same_content},
 };
 use crate::{FilesError, Names};
@@ -28,7 +28,9 @@ pub(crate) async fn store_file(
     let content = not_after(content, OffsetDateTime::now_utc());
     let stored = names.store(NodeKind::File, name)?;
     let mut tx = db.transaction(owner).await?;
+    guard::hold(&mut tx).await?;
     tx.require_folder(parent).await?;
+    guard::check_names(&mut tx, parent, names).await?;
     let existing = tx
         .find_sibling(parent, NodeKind::File, &stored, None)
         .await?;

@@ -1,8 +1,12 @@
 -- How a session's user proved who they are, with the `amr` names of RFC 8176 (`pwd`, `oidc`,
 -- later `otp`, `hwk`, `swk`, `user`), and the last time they did: at sign-in, or when they
 -- confirmed it was them for a sensitive change. Refreshing tokens does not move it.
+-- `second_factor_at` is the last of those times that a second factor (an authenticator app's
+-- code, a recovery code, a passkey or a security key) did it; changing how the account signs
+-- in needs a recent one once the account has a second factor.
 ALTER TABLE sessions ADD COLUMN auth_methods TEXT[] NOT NULL DEFAULT '{pwd}';
 ALTER TABLE sessions ADD COLUMN authenticated_at TIMESTAMPTZ;
+ALTER TABLE sessions ADD COLUMN second_factor_at TIMESTAMPTZ;
 
 -- Sessions from before were started with a password, or by single sign-on for users who have
 -- none, when they were created.
@@ -17,5 +21,6 @@ ALTER TABLE sessions ALTER COLUMN auth_methods DROP DEFAULT;
 -- with a password; they last a minute, so the first is close enough.
 ALTER TABLE login_codes ADD COLUMN auth_methods TEXT[] NOT NULL DEFAULT '{oidc}';
 ALTER TABLE login_codes ADD COLUMN authenticated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE login_codes ADD COLUMN second_factor_at TIMESTAMPTZ;
 ALTER TABLE login_codes ALTER COLUMN auth_methods DROP DEFAULT;
 ALTER TABLE login_codes ALTER COLUMN authenticated_at DROP DEFAULT;

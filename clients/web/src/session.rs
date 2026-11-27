@@ -201,7 +201,7 @@ impl Auth {
             Err(failure) => return failure.message().map_or(Ok(false), Err),
         };
         let me = client()
-            .passkey_finish(challenge_id, &answer)
+            .passkey_finish(challenge_id, answer)
             .await
             .map_err(|err| err.to_string())?;
         self.user.set(Some(me));

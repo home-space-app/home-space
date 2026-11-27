@@ -1,5 +1,6 @@
 //! Passkeys and security keys through `navigator.credentials`: making a credential for a
-//! challenge of the server, and answering one with it.
+//! challenge of the server, and answering one with it. Folder keys, which never sign in, are
+//! in [`folder_key`].
 //!
 //! The server's challenges and the browser's answers convert through `webauthn-rs-proto`, which
 //! turns the base64url fields into the buffers the browser wants and back.
@@ -13,9 +14,15 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{AbortSignal, CredentialCreationOptions, CredentialRequestOptions};
 
+#[expect(
+    dead_code,
+    reason = "enabling a folder key also wraps the vault key, which waits for vault-core to take \
+              a PRF secret from the browser"
+)]
+pub mod folder_key;
+
 const PUBLIC_KEY_CREDENTIAL: &str = "PublicKeyCredential";
 const CONDITIONAL_CHECK: &str = "isConditionalMediationAvailable";
-
 /// Why the browser gave no credential.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Failure {
@@ -83,7 +90,6 @@ pub async fn create(
     challenge: CreationChallengeResponse,
 ) -> Result<RegisterPublicKeyCredential, Failure> {
     let options = CredentialCreationOptions::from(challenge);
-    request_prf(&options).map_err(failure)?;
     let promise = credentials()?
         .create_with_options(&options)
         .map_err(failure)?;
@@ -113,21 +119,6 @@ pub async fn get(
         .dyn_into::<web_sys::PublicKeyCredential>()
         .map_err(|_| Failure::Cancelled)?;
     Ok(PublicKeyCredential::from(credential))
-}
-
-/// Asks for the PRF extension on a new credential, which `webauthn-rs-proto` cannot express. A
-/// security key then makes the credential with `hmac-secret` and says so in the data it signs,
-/// which is how the server learns that it can lock protected folders. Only new credentials ask:
-/// sign-in never requests a PRF value, so none ever reaches the server.
-fn request_prf(options: &CredentialCreationOptions) -> Result<(), JsValue> {
-    let public_key = Reflect::get(options, &"publicKey".into())?;
-    let mut extensions = Reflect::get(&public_key, &"extensions".into())?;
-    if !extensions.is_object() {
-        extensions = js_sys::Object::new().into();
-        Reflect::set(&public_key, &"extensions".into(), &extensions)?;
-    }
-    Reflect::set(&extensions, &"prf".into(), &js_sys::Object::new())?;
-    Ok(())
 }
 
 fn credentials() -> Result<web_sys::CredentialsContainer, Failure> {

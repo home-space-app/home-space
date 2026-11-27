@@ -186,33 +186,67 @@ async fn an_administrator_sets_a_password_and_signs_the_user_out(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "../../migrations")]
-async fn a_password_less_user_gets_no_password(pool: PgPool) {
-    let app = setup(pool).await;
+async fn a_password_makes_a_provider_user_a_local_account(pool: PgPool) {
+    let app = setup(pool.clone()).await;
     let token = admin(&app, "sam").await;
+    let issuer = "https://idp.example";
     let user = app
         .db
-        .create_user_with_identity(
-            db::TenantId::DEFAULT,
-            "maria",
-            "https://idp.example",
-            "sub",
-            None,
-        )
+        .create_user_with_identity(db::TenantId::DEFAULT, "maria", issuer, "sub", None)
         .await
         .expect("user");
-
-    let response = app
-        .json(
+    let listed = app
+        .get(&format!("{USERS}/{}", user.id), &token)
+        .await
+        .json();
+    assert_eq!(listed["external"], true);
+    assert_eq!(
+        login(&app, "maria", NEW_PASSWORD).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let password_uri = format!("{USERS}/{}/password", user.id);
+    let set_password = || {
+        app.json(
             Method::PUT,
-            &format!("{USERS}/{}/password", user.id),
+            &password_uri,
             Some(&token),
             json!({ "password": NEW_PASSWORD }),
         )
-        .await;
+    };
 
-    assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY);
+    // Taking an account from the provider needs the administrator to have signed in recently.
+    sqlx::query("UPDATE sessions SET authenticated_at = now() - interval '1 hour'")
+        .execute(&pool)
+        .await
+        .expect("backdate");
+    let stale = set_password().await;
+    assert_eq!(stale.status, StatusCode::FORBIDDEN);
+    assert_eq!(stale.json()["methods"], json!(["password"]));
+    let confirmed = app
+        .json(
+            Method::POST,
+            "/api/v1/me/reauthenticate",
+            Some(&token),
+            json!({ "password": PASSWORD }),
+        )
+        .await;
+    assert_eq!(confirmed.status, StatusCode::NO_CONTENT);
+
+    assert_eq!(set_password().await.status, StatusCode::NO_CONTENT);
     let found = app.db.find_user(user.id).await.expect("db").expect("user");
-    assert!(found.password_hash.is_none());
+    assert!(!found.external && found.password_hash.is_some());
+    let linked = app
+        .db
+        .find_user_by_identity(db::TenantId::DEFAULT, issuer, "sub")
+        .await
+        .expect("db");
+    assert!(linked.is_none());
+    assert_eq!(login(&app, "maria", NEW_PASSWORD).await, StatusCode::OK);
+    let listed = app
+        .get(&format!("{USERS}/{}", user.id), &token)
+        .await
+        .json();
+    assert_eq!(listed["external"], false);
 }
 
 #[sqlx::test(migrations = "../../migrations")]

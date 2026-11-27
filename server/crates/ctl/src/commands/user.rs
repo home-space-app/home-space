@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 
-use db::{Db, TenantId, User};
+use db::{Db, PasswordSet, TenantId, User};
 
 use crate::{
     cli::{TenantArg, UserCommand},
@@ -100,10 +100,16 @@ async fn set_password(
 ) -> Result<()> {
     let user = find(db, tenant, username).await?;
     let password = read_new_password(password_stdin)?;
-    auth::offline::set_password(db, user.id, &password)
+    let set = auth::offline::set_password(db, user.id, &password)
         .await
         .context("changing password")?;
-    println!("password updated for {username}");
+    match set {
+        PasswordSet::Replaced => println!("password updated for {username}"),
+        PasswordSet::MadeLocal => println!(
+            "{username} is now a local account with this password; the identity provider \
+             signs that person in as a new user from now on"
+        ),
+    }
     Ok(())
 }
 

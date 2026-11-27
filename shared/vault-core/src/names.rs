@@ -13,23 +13,31 @@ use data_encoding::BASE64URL_NOPAD;
 use unicode_normalization::{UnicodeNormalization, is_nfc};
 use zeroize::Zeroizing;
 
-use crate::{Error, Result};
+use crate::{Error, NameProblem, Result};
 
 /// The server's limit for a node name, in characters, which a sealed name must fit.
 pub const SERVER_NAME_CHARS: usize = 255;
 /// Names are padded to a multiple of this many bytes.
 pub const PAD_TO: usize = 32;
+/// Most padded blocks a sealed name holds.
+const MAX_BLOCKS: usize = 5;
+/// AES-SIV's synthetic IV, which comes first in a sealed name.
+const SIV_TAG_LEN: usize = 16;
+/// Ends a name inside its padding.
+const PAD_MARK: u8 = 0x80;
 /// Longest sealed name in bytes: the 16-byte tag and five padded blocks, which in base64url is
 /// 235 characters, the most that fits [`SERVER_NAME_CHARS`].
-pub const MAX_SEALED_LEN: usize = 5 * PAD_TO + 16;
+pub const MAX_SEALED_LEN: usize = MAX_BLOCKS * PAD_TO + SIV_TAG_LEN;
 /// Longest name in a protected folder, in UTF-8 bytes after NFC: the padded blocks less the
 /// `0x80` that ends it. Shorter than elsewhere (255 characters), the price of hiding names.
-pub const MAX_NAME_BYTES: usize = 5 * PAD_TO - 1;
+pub const MAX_NAME_BYTES: usize = MAX_BLOCKS * PAD_TO - 1;
 
 /// File or folder; bound into the sealed name like the server's unique key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NodeKind {
+    /// A folder.
     Folder,
+    /// A file.
     File,
 }
 
@@ -55,23 +63,22 @@ pub(crate) fn seal(
 ) -> Result<String> {
     let name: Zeroizing<String> = Zeroizing::new(name.nfc().collect());
     if name.is_empty() {
-        return Err(Error::Name("empty"));
+        return Err(Error::Name(NameProblem::Empty));
     }
     if name.len() > MAX_NAME_BYTES {
-        return Err(Error::Name("longer than 159 bytes"));
+        return Err(Error::Name(NameProblem::TooLong));
     }
     let mut padded = Zeroizing::new(Vec::with_capacity(name.len() + PAD_TO));
     padded.extend_from_slice(name.as_bytes());
-    padded.push(0x80);
-    while padded.len() % PAD_TO != 0 {
-        padded.push(0);
-    }
+    padded.push(PAD_MARK);
+    let padded_len = padded.len().next_multiple_of(PAD_TO);
+    padded.resize(padded_len, 0);
     let sealed = cipher(key)
         .encrypt(
             [parent.as_bytes().as_slice(), kind.as_str().as_bytes()],
             &padded,
         )
-        .map_err(|_| Error::Name("cannot be sealed"))?;
+        .map_err(|_| Error::Name(NameProblem::Unsealable))?;
     debug_assert!(sealed.len() <= MAX_SEALED_LEN);
     Ok(BASE64URL_NOPAD.encode(&sealed))
 }
@@ -100,7 +107,7 @@ pub(crate) fn open(
         .iter()
         .rposition(|&b| b != 0)
         .ok_or(Error::SealedName)?;
-    if padded[end] != 0x80 || padded.len() % PAD_TO != 0 {
+    if padded[end] != PAD_MARK || padded.len() % PAD_TO != 0 {
         return Err(Error::SealedName);
     }
     let name = std::str::from_utf8(&padded[..end]).map_err(|_| Error::SealedName)?;
@@ -166,7 +173,12 @@ mod tests {
 
     #[test]
     fn the_longest_name_fits_the_server() {
-        assert!(seal(&KEY, &PARENT, NodeKind::File, "").is_err());
+        assert_eq!(
+            seal(&KEY, &PARENT, NodeKind::File, "")
+                .unwrap_err()
+                .to_string(),
+            "invalid name: empty"
+        );
         let longest = "a".repeat(MAX_NAME_BYTES);
         let sealed = seal(&KEY, &PARENT, NodeKind::File, &longest).unwrap();
         assert_eq!(sealed.len(), 235);
@@ -177,7 +189,12 @@ mod tests {
         );
         // 39 four-byte characters are 156 bytes; 40 are too many.
         assert!(seal(&KEY, &PARENT, NodeKind::File, &"😀".repeat(39)).is_ok());
-        assert!(seal(&KEY, &PARENT, NodeKind::File, &"😀".repeat(40)).is_err());
+        assert_eq!(
+            seal(&KEY, &PARENT, NodeKind::File, &"😀".repeat(40))
+                .unwrap_err()
+                .to_string(),
+            "invalid name: longer than 159 bytes"
+        );
         assert!(
             seal(
                 &KEY,

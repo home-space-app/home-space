@@ -28,7 +28,7 @@ mod slots;
 mod types;
 
 use slots::{Hashing, Uploads};
-pub use types::{ChunkOutcome, UploadStatus, UploadTarget};
+pub use types::{ChunkOutcome, UploadRequest, UploadStatus, UploadTarget};
 
 /// Where an upload's bytes go once they have all arrived.
 #[derive(Default)]
@@ -79,17 +79,19 @@ impl UploadService {
 
     /// Starts a resumable upload of `size` bytes from `device`, when the client named one. A new
     /// file's name is kept as `names` stores it, the names of the folder it goes to.
-    #[allow(clippy::too_many_arguments)]
     pub async fn create_upload(
         &self,
         owner: UserId,
         device: Option<Uuid>,
-        target: UploadTarget,
-        names: &Names,
-        size: u64,
-        content_type: Option<&str>,
-        modified_at: Option<OffsetDateTime>,
+        request: UploadRequest<'_>,
     ) -> Result<UploadStatus, FilesError> {
+        let UploadRequest {
+            target,
+            names,
+            size,
+            content_type,
+            modified_at,
+        } = request;
         if size > self.content.max_upload_bytes {
             return Err(FilesError::TooLarge {
                 limit: self.content.max_upload_bytes,

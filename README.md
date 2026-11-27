@@ -161,14 +161,14 @@ one.
 | POST | `/auth/device-sessions` | `{label}` (`files` or `share`): the app's own session on a named device starts a second session there for one of its extensions (a File Provider, a share extension), which keeps its own refresh token; returns a `TokenPair` (never a cookie). An app session has one session per label, so a new one ends the earlier one it started; signing the app out, or the device, ends them; 400 for an unknown label, a session without a device, or an extension's own session |
 | GET | `/auth/providers` | how users can sign in: `{password, oidc: {name}?}` |
 | GET / GET / POST | `/auth/oidc/start`, `/auth/oidc/callback`, `/auth/oidc/exchange` | single sign-on, see [Single sign-on](#single-sign-on) |
-| GET | `/me` | current user: `{id, username, lost_and_found_id, is_admin, external}` (`external`: signs in only through the identity provider) |
-| POST | `/me/password` | `{current_password, new_password}` → 204; ends the user's other sessions, this one stays signed in. A wrong current password is 400 and counts towards the sign-in throttle (429). Not for single sign-on accounts (400) |
+| GET | `/me` | current user: `{id, username, lost_and_found_id, is_admin, external}` (`external`: linked to the identity provider, which signs it in and keeps its second factors and passkeys) |
+| POST | `/me/password` | `{current_password, new_password}` → 204; ends the user's other sessions, this one stays signed in. A wrong current password is 400 and counts towards the sign-in throttle (429). Not for single sign-on accounts (409 `external-account`) |
 | GET | `/storage` | the user's bytes `{usage: {files, versions, trash}, disk: {total, available}?}`; versions count binned files too |
 | GET | `/admin/status` | administrators only (403 `forbidden` otherwise): version, start time, the storage root's disk, every user's `usage`, the read-only configuration and the database version |
 | GET | `/admin/users` | administrators only: every account with its role, sign-in method, `disabled`, `quota_bytes`, `delete_at`, `usage`, device count and `last_seen_at` |
 | POST | `/admin/users` | `{username, password, is_admin?, quota_bytes?}`: creates a password account (201; 409 `conflict` if the name is taken) |
 | PATCH | `/admin/users/{id}` | `{is_admin?, disabled?, quota_bytes?}` (`null` removes the quota; see [Uploads](#uploads) for how it is enforced). Disabling signs the user out and refuses sign-in (403 `forbidden`). Administrators cannot demote or disable themselves |
-| PUT | `/admin/users/{id}/password` | `{password}`: a new password for an account that has one (400 for single sign-on accounts); signs the user out everywhere |
+| PUT | `/admin/users/{id}/password` | `{password}`: a new password; signs the user out everywhere. A single sign-on account becomes a local one (see [Single sign-on](#single-sign-on)). Needs the administrator's recent sign-in (403 `reauthentication-required`) |
 | GET | `/admin/users/{id}/devices` | the account's devices, most recently seen first |
 | DELETE | `/admin/users/{id}` | marks the account for deletion `HOMESPACE_USER_DELETION_DELAY_MINUTES` from now and signs it out; a background job then deletes it with all its files |
 | DELETE | `/admin/users/{id}/deletion` | cancels a pending deletion |
@@ -327,8 +327,15 @@ The issuer and public URL must use https (plain http is accepted for `localhost`
 
 A user is created on first sign-in, named after `preferred_username`, then the e-mail's local
 part, then the subject (a number is added if the name is taken). Accounts are matched on the
-provider's stable subject id, never on e-mail. They have no password, so they cannot use password
-login, and the CLI can still give them one (`user passwd`).
+provider's stable subject id, never on e-mail. The provider signs them in and keeps their
+two-factor sign-in and passkeys, so they get no password, authenticator app, recovery codes or
+passkeys here (409 `external-account`); folder keys for protected folders they do get. To confirm
+a sensitive change they sign in at the provider again.
+
+An administrator who sets a password for such a user, in the user's panel or with
+`homespace-ctl user passwd`, turns them into a local account: the link to the provider is removed
+and they are signed out everywhere. Their next sign-in through the provider then creates a new,
+empty user (with a number added to the name), so tell them to sign in with the password instead.
 
 Desktop clients open the system browser and receive the result on a loopback port; the web client
 is redirected to `/login/callback`. In both, the server hands back a 60 second, single-use code
@@ -397,8 +404,13 @@ administrator in the user's panel, or with `homespace-ctl user reset-2fa <userna
 
 Passkeys and security keys need no setting, but they need the web client on the server's https
 address, or on `localhost` for development: browsers allow them nowhere else, and never on an IP
-address. A passkey belongs to the host name it was made on, so one made on
-`files.example.com` does not work when the server is reached as `cloud.example.com`.
+address. A site with names of its own, the host of `HOMESPACE_PUBLIC_URL` or its domains in host
+mode, takes them only on pages of those names, whatever `Host` a proxy passes on (http only for a
+`localhost` name); the address a request was sent to counts only on a server with neither, for
+development or on a bare LAN. A passkey belongs to the host name it was made on, so one made on
+`files.example.com` does not work when the server is reached as `cloud.example.com`, even when
+both are names of the site. (One RP id per site, the host of its public URL, with its other names
+allowed through WebAuthn related origins, `/.well-known/webauthn`, may come later.)
 
 Access tokens and tickets are signed with the same secret and each names its kind in a `typ`
 claim, so neither is accepted in place of the other.

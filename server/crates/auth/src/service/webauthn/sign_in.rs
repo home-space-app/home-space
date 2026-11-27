@@ -6,7 +6,7 @@ use std::net::IpAddr;
 use uuid::Uuid;
 use webauthn_rs::prelude::{DiscoverableAuthentication, PublicKeyCredential};
 
-use db::{PendingLogin, User, UserId};
+use db::{CeremonyKind, PendingLogin, User, UserId};
 use protocol::{AssertionChallenge, DeviceInfo, TokenPair, WebAuthnKind};
 
 use super::{failed, key_method, random_id};
@@ -18,9 +18,6 @@ use crate::{
     token::hash_refresh_token,
     webauthn::{RelyingParty, parse_credential, parse_state, state_json},
 };
-
-const SIGN_IN: &str = "sign_in";
-const REAUTHENTICATE: &str = "reauthenticate";
 
 impl AuthService {
     /// The challenge for a passkey or security key as the second step of the sign-in
@@ -72,8 +69,14 @@ impl AuthService {
         self.sessions.authentication(session_id, user_id).await?;
         let (options, state) = self.assertion_for(user_id, party).await?;
         let challenge_id = random_id();
-        self.store_ceremony(challenge_id, Some(user_id), REAUTHENTICATE, party, &state)
-            .await?;
+        self.store_ceremony(
+            challenge_id,
+            Some(user_id),
+            CeremonyKind::Reauthenticate,
+            party,
+            &state,
+        )
+        .await?;
         Ok(AssertionChallenge {
             challenge_id: Some(challenge_id),
             options,
@@ -90,7 +93,7 @@ impl AuthService {
     ) -> Result<(), AuthError> {
         let ceremony = self
             .db
-            .take_webauthn_ceremony(self.tenant, challenge_id, &[REAUTHENTICATE])
+            .take_webauthn_ceremony(self.tenant, challenge_id, &[CeremonyKind::Reauthenticate])
             .await?
             .filter(|ceremony| ceremony.user_id == Some(user_id))
             .ok_or(AuthError::WebAuthnFailed)?;
@@ -116,7 +119,8 @@ impl AuthService {
         // The page decides: a button asks at once, the username field's autofill quietly.
         options.mediation = None;
         let challenge_id = random_id();
-        self.store_ceremony(challenge_id, None, SIGN_IN, party, &state_json(&state))
+        let state = state_json(&state)?;
+        self.store_ceremony(challenge_id, None, CeremonyKind::SignIn, party, &state)
             .await?;
         Ok(AssertionChallenge {
             challenge_id: Some(challenge_id),
@@ -154,7 +158,7 @@ impl AuthService {
     ) -> Result<(User, Vec<&'static str>), AuthError> {
         let ceremony = self
             .db
-            .take_webauthn_ceremony(self.tenant, challenge_id, &[SIGN_IN])
+            .take_webauthn_ceremony(self.tenant, challenge_id, &[CeremonyKind::SignIn])
             .await?
             .ok_or(AuthError::LoginExpired)?;
         let party = RelyingParty::new(&ceremony.origin)?;
@@ -174,7 +178,7 @@ impl AuthService {
             .await?
             .filter(|stored| {
                 stored.user_id == user_id
-                    && stored.kind == WebAuthnKind::Passkey.as_str()
+                    && stored.kind == WebAuthnKind::Passkey
                     && stored.rp_id == party.id()
             })
             .ok_or(AuthError::WebAuthnFailed)?;
@@ -183,10 +187,14 @@ impl AuthService {
             .finish_discoverable_authentication_v2(answer, state, &credential)
             .map_err(failed)?;
         self.record_use(&stored, credential, &result).await?;
+        let user = self.user(user_id).await?;
+        if user.external {
+            return Err(AuthError::ExternalAccount);
+        }
         let mut methods = vec![key_method(&result)];
         if result.user_verified() {
             methods.push(USER_METHOD);
         }
-        Ok((self.user(user_id).await?, methods))
+        Ok((user, methods))
     }
 }

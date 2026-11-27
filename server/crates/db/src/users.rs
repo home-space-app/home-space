@@ -1,11 +1,15 @@
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
-use crate::{Db, DbError, FOLDER_MIME, LOST_AND_FOUND, NodeId, TenantId, User, UserId};
+use crate::{
+    Db, DbError, FOLDER_MIME, LOST_AND_FOUND, NodeId, PasswordSet, TenantId, User, UserId, sessions,
+};
 
 macro_rules! user_columns {
     () => {
-        "id, tenant_id, username, password_hash, created_at, is_admin, disabled_at, quota_bytes, delete_at"
+        "id, tenant_id, username, password_hash, \
+         EXISTS (SELECT 1 FROM user_identities i WHERE i.user_id = users.id) AS external, \
+         created_at, is_admin, disabled_at, quota_bytes, delete_at"
     };
 }
 
@@ -48,7 +52,10 @@ impl Db {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(user)
+        Ok(User {
+            external: true,
+            ..user
+        })
     }
 
     /// Finds the user of `tenant` linked to an identity provider account.
@@ -130,8 +137,14 @@ impl Db {
         Ok(())
     }
 
-    /// Replaces a user's password hash and ends all their sessions.
-    pub async fn set_password_hash(&self, id: UserId, password_hash: &str) -> Result<(), DbError> {
+    /// Replaces a user's password hash and ends all their sessions, at once. A user linked to an
+    /// identity provider becomes a local one: the links go, with the one-time sign-in codes
+    /// the provider got them.
+    pub async fn set_password_hash(
+        &self,
+        id: UserId,
+        password_hash: &str,
+    ) -> Result<PasswordSet, DbError> {
         let mut tx = self.pool().begin().await?;
         let updated = sqlx::query("UPDATE users SET password_hash = $2 WHERE id = $1")
             .bind(id)
@@ -141,12 +154,23 @@ impl Db {
         if updated.rows_affected() == 0 {
             return Err(DbError::NotFound);
         }
-        sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+        let unlinked = sqlx::query("DELETE FROM user_identities WHERE user_id = $1")
             .bind(id)
             .execute(&mut *tx)
             .await?;
+        for ended in [
+            "DELETE FROM login_codes WHERE user_id = $1",
+            "DELETE FROM pending_logins WHERE user_id = $1",
+            "DELETE FROM sessions WHERE user_id = $1",
+        ] {
+            sqlx::query(ended).bind(id).execute(&mut *tx).await?;
+        }
         tx.commit().await?;
-        Ok(())
+        Ok(if unlinked.rows_affected() == 0 {
+            PasswordSet::Replaced
+        } else {
+            PasswordSet::MadeLocal
+        })
     }
 }
 
@@ -162,7 +186,8 @@ impl Db {
     ) -> Result<(), DbError> {
         let mut tx = self.pool().begin().await?;
         let updated = sqlx::query(
-            "UPDATE users SET password_hash = $2 WHERE id = $1 AND password_hash IS NOT NULL",
+            "UPDATE users SET password_hash = $2 WHERE id = $1 AND password_hash IS NOT NULL \
+             AND NOT EXISTS (SELECT 1 FROM user_identities WHERE user_id = $1)",
         )
         .bind(id)
         .bind(password_hash)
@@ -171,19 +196,7 @@ impl Db {
         if updated.rows_affected() == 0 {
             return Err(DbError::NotFound);
         }
-        // The sessions `keep` started for its extensions stay signed in with it. They are told
-        // apart by their parent, never by the device id, which any session can claim. When
-        // `keep` is an extension's session its app session stays too, since ending that would
-        // end `keep` with it.
-        sqlx::query(
-            "DELETE FROM sessions s WHERE s.user_id = $1 AND s.id <> $2 \
-             AND s.parent_session_id IS DISTINCT FROM $2 \
-             AND s.id IS DISTINCT FROM (SELECT parent_session_id FROM sessions WHERE id = $2)",
-        )
-        .bind(id)
-        .bind(keep)
-        .execute(&mut *tx)
-        .await?;
+        sessions::end_others(&mut *tx, id, keep).await?;
         sqlx::query("UPDATE sessions SET authenticated_at = now() WHERE id = $1 AND user_id = $2")
             .bind(keep)
             .bind(id)
@@ -257,6 +270,31 @@ mod tests {
         assert!(matches!(result, Err(DbError::NotFound)));
         let found = db.find_user(user.id).await.expect("db").expect("user");
         assert!(found.password_hash.is_none());
+        assert!(user.external && found.external);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_password_makes_a_linked_user_local(pool: PgPool) {
+        let db = Db::from_pool(pool);
+        let issuer = "https://idp.example";
+        let user = db
+            .create_user_with_identity(TenantId::DEFAULT, "maria", issuer, "sub", None)
+            .await
+            .expect("user");
+
+        let set = db.set_password_hash(user.id, "hash").await.expect("set");
+
+        assert_eq!(set, PasswordSet::MadeLocal);
+        let found = db.find_user(user.id).await.expect("db").expect("user");
+        assert!(!found.external);
+        assert_eq!(found.password_hash.as_deref(), Some("hash"));
+        let linked = db
+            .find_user_by_identity(TenantId::DEFAULT, issuer, "sub")
+            .await
+            .expect("db");
+        assert!(linked.is_none());
+        let again = db.set_password_hash(user.id, "other").await.expect("set");
+        assert_eq!(again, PasswordSet::Replaced);
     }
 
     #[sqlx::test(migrations = "../../migrations")]

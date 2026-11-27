@@ -4,7 +4,7 @@
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{DEVICE_SETTING, DbError, NewContent, Node, NodeId, Tx};
+use crate::{DEVICE_SETTING, DbError, FOLDER_MIME, NewContent, Node, NodeId, Tx};
 
 /// What a file holds after another one was folded into it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -18,6 +18,30 @@ pub struct FileState {
 }
 
 impl Tx {
+    /// Inserts an empty folder named `name` in `parent`, which must be a live folder of the
+    /// owner (or the root).
+    pub async fn insert_folder(
+        &mut self,
+        parent: Option<NodeId>,
+        name: &str,
+    ) -> Result<Node, DbError> {
+        self.require_folder(parent).await?;
+        let node = sqlx::query_as::<_, Node>(concat!(
+            "INSERT INTO nodes (id, owner_id, parent_id, kind, name, size, mime) \
+             VALUES ($1, $2, $3, 'folder', $4, 0, $5) RETURNING ",
+            node_columns!(),
+            ""
+        ))
+        .bind(NodeId::new())
+        .bind(self.owner)
+        .bind(parent)
+        .bind(name)
+        .bind(FOLDER_MIME)
+        .fetch_one(&mut *self.conn)
+        .await?;
+        Ok(node)
+    }
+
     /// Inserts a file named `name` in `parent` holding `content`, last changed at its
     /// `modified_at` (now when `None`).
     pub async fn insert_file(

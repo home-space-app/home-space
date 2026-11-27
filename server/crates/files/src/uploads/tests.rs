@@ -73,11 +73,13 @@ async fn start(fx: &Fixture, size: u64) -> Uuid {
         .create_upload(
             fx.alice,
             None,
-            new_file("a.txt"),
-            &Names::Plain,
-            size,
-            None,
-            None,
+            crate::UploadRequest {
+                target: new_file("a.txt"),
+                names: &Names::Plain,
+                size,
+                content_type: None,
+                modified_at: None,
+            },
         )
         .await
         .expect("create")
@@ -197,11 +199,13 @@ async fn sizes_over_the_limit_are_rejected(pool: PgPool) {
         .create_upload(
             fx.alice,
             None,
-            new_file("a.txt"),
-            &Names::Plain,
-            1025,
-            None,
-            None,
+            crate::UploadRequest {
+                target: new_file("a.txt"),
+                names: &Names::Plain,
+                size: 1025,
+                content_type: None,
+                modified_at: None,
+            },
         )
         .await;
     assert!(matches!(result, Err(FilesError::TooLarge { limit: 1024 })));
@@ -243,11 +247,13 @@ async fn a_replace_upload_versions_the_existing_file(pool: PgPool) {
         .nodes
         .upload(
             Actor::user(fx.alice),
-            None,
-            "a.txt",
-            &Names::Plain,
-            None,
-            None,
+            crate::NewFile {
+                parent: None,
+                name: "a.txt",
+                names: &Names::Plain,
+                content_type: None,
+                modified_at: None,
+            },
             chunk("old"),
         )
         .await
@@ -259,11 +265,13 @@ async fn a_replace_upload_versions_the_existing_file(pool: PgPool) {
         .create_upload(
             fx.alice,
             None,
-            UploadTarget::Replace(file.id),
-            &Names::Plain,
-            5,
-            None,
-            None,
+            crate::UploadRequest {
+                target: UploadTarget::Replace(file.id),
+                names: &Names::Plain,
+                size: 5,
+                content_type: None,
+                modified_at: None,
+            },
         )
         .await
         .expect("create")
@@ -283,11 +291,13 @@ async fn invalid_names_are_rejected_up_front(pool: PgPool) {
         .create_upload(
             fx.alice,
             None,
-            new_file("a/b"),
-            &Names::Plain,
-            1,
-            None,
-            None,
+            crate::UploadRequest {
+                target: new_file("a/b"),
+                names: &Names::Plain,
+                size: 1,
+                content_type: None,
+                modified_at: None,
+            },
         )
         .await;
     assert!(matches!(result, Err(FilesError::InvalidName)));
@@ -303,11 +313,13 @@ async fn cancelling_a_devices_uploads_leaves_the_others(pool: PgPool) {
         .create_upload(
             fx.alice,
             Some(laptop),
-            new_file("a.txt"),
-            &Names::Plain,
-            4,
-            None,
-            None,
+            crate::UploadRequest {
+                target: new_file("a.txt"),
+                names: &Names::Plain,
+                size: 4,
+                content_type: None,
+                modified_at: None,
+            },
         )
         .await
         .expect("laptop")

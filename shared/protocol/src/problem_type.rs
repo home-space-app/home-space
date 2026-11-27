@@ -61,6 +61,9 @@ pub enum ProblemType {
     ReauthenticationRequired,
     /// The account signs in through single sign-on and has no password.
     NoPassword,
+    /// The account is linked to the identity provider, which signs it in and keeps its second
+    /// factors and passkeys, so it can't sign in or add them here.
+    ExternalAccount,
     /// The password was right, and the account also needs a second factor. With `two_step`
     /// the problem carries a `login_token` for `POST /auth/login/verify` and the `methods`.
     SecondFactorRequired,
@@ -124,7 +127,7 @@ pub enum ProblemType {
 
 impl ProblemType {
     /// Every problem type, for documentation and tests.
-    pub const ALL: [Self; 51] = [
+    pub const ALL: [Self; 52] = [
         Self::BadRequest,
         Self::BodyInterrupted,
         Self::UnsupportedMediaType,
@@ -150,6 +153,7 @@ impl ProblemType {
         Self::WrongPassword,
         Self::ReauthenticationRequired,
         Self::NoPassword,
+        Self::ExternalAccount,
         Self::SecondFactorRequired,
         Self::InvalidCode,
         Self::TotpExists,
@@ -306,6 +310,12 @@ impl ProblemType {
                 "no-password",
                 C::BadRequest,
                 "The account has no password",
+            ),
+            Self::ExternalAccount => (
+                409,
+                "external-account",
+                C::Conflict,
+                "The account signs in through the identity provider",
             ),
             Self::SecondFactorRequired => (
                 403,

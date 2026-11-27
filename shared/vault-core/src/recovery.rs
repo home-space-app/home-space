@@ -13,21 +13,31 @@ secret32! {
     pub struct RecoveryKey;
 }
 
+/// Characters per group of the printed key.
 const GROUP: usize = 5;
+const KEY_LEN: usize = 32;
+const CHECKSUM_LEN: usize = 2;
+const CHECKSUM_DOMAIN: &[u8] = b"home-space recovery key v1\0";
 
-fn checksum(bytes: &[u8; 32]) -> [u8; 2] {
-    let hash = Sha256::digest([b"home-space recovery key v1\0".as_slice(), bytes].concat());
-    [hash[0], hash[1]]
+fn checksum(bytes: &[u8; KEY_LEN]) -> [u8; CHECKSUM_LEN] {
+    let hash: [u8; 32] = Sha256::new()
+        .chain_update(CHECKSUM_DOMAIN)
+        .chain_update(bytes)
+        .finalize()
+        .into();
+    let [first, second, ..] = hash;
+    [first, second]
 }
 
 impl RecoveryKey {
+    /// A new random recovery key.
     pub fn generate() -> Self {
         Self::random()
     }
 
     /// The text to print, e.g. `ABCDE-FGHIJ-…` (55 characters in 11 groups).
     pub fn to_display(&self) -> Zeroizing<String> {
-        let mut raw = Zeroizing::new(Vec::with_capacity(34));
+        let mut raw = Zeroizing::new(Vec::with_capacity(KEY_LEN + CHECKSUM_LEN));
         raw.extend_from_slice(self.expose());
         raw.extend_from_slice(&checksum(self.expose()));
         let encoded = Zeroizing::new(BASE32_NOPAD.encode(&raw));
@@ -60,17 +70,16 @@ impl RecoveryKey {
                 .decode(cleaned.as_bytes())
                 .map_err(|_| Error::RecoveryKey)?,
         );
-        if raw.len() != 34 {
+        if raw.len() != KEY_LEN + CHECKSUM_LEN {
             return Err(Error::RecoveryKey);
         }
-        let mut bytes = [0u8; 32];
-        bytes.copy_from_slice(&raw[..32]);
-        let key = Self::from_bytes(bytes);
-        zeroize::Zeroize::zeroize(&mut bytes);
-        if checksum(key.expose()) != raw[32..] {
+        let Some((bytes, typed_checksum)) = raw.split_first_chunk::<KEY_LEN>() else {
+            return Err(Error::RecoveryKey);
+        };
+        if typed_checksum != checksum(bytes) {
             return Err(Error::RecoveryKey);
         }
-        Ok(key)
+        Ok(Self::from_bytes(*bytes))
     }
 }
 

@@ -8,7 +8,7 @@ use zeroize::Zeroize;
 
 use crate::Result;
 use crate::authenticator::{Authenticator, CredentialRef};
-use crate::folder::{FolderKeys, FolderSecret};
+use crate::folder::{FolderKeys, FolderSecret, FolderWrappingKey};
 use crate::kdf::Kek;
 use crate::recovery::RecoveryKey;
 use crate::secret::secret32;
@@ -27,10 +27,11 @@ impl VaultKey {
     }
 
     /// Wraps the vault key for an unlocker of `user`.
-    pub fn wrap(&self, kek: &Kek, user: &uuid::Uuid) -> Vec<u8> {
+    pub fn wrap(&self, kek: &Kek, user: &uuid::Uuid) -> Result<Vec<u8>> {
         wrap::wrap(kek.expose(), self.expose(), Purpose::VaultKey, user)
     }
 
+    /// Opens a vault key [`VaultKey::wrap`] wrapped for `user`.
     pub fn unwrap(kek: &Kek, user: &uuid::Uuid, wrapped: &[u8]) -> Result<Self> {
         let mut bytes = wrap::unwrap(kek.expose(), wrapped, Purpose::VaultKey, user)?;
         let key = Self::from_bytes(bytes);
@@ -42,13 +43,20 @@ impl VaultKey {
 /// One way to open the vault, as the server stores it (`vault_unlockers`).
 #[derive(Clone, Copy, Debug)]
 pub enum Unlocker<'a> {
+    /// An enabled security key.
     SecurityKey {
+        /// The key's credential.
         credential: CredentialRef<'a>,
+        /// The PRF input the vault key was wrapped with.
         prf_salt: &'a [u8; 32],
+        /// The vault key, wrapped by the KEK of the key's PRF output.
         wrapped_vault_key: &'a [u8],
     },
+    /// The recovery key the user typed.
     Recovery {
+        /// The parsed recovery key.
         key: &'a RecoveryKey,
+        /// The vault key, wrapped by the recovery key's KEK.
         wrapped_vault_key: &'a [u8],
     },
 }
@@ -56,7 +64,9 @@ pub enum Unlocker<'a> {
 /// What the server stores for a newly enabled security key.
 #[derive(Debug)]
 pub struct EnabledKey {
+    /// The random PRF input, stored with the unlocker.
     pub prf_salt: [u8; 32],
+    /// The vault key, wrapped by the KEK of the key's PRF output.
     pub wrapped_vault_key: Vec<u8>,
 }
 
@@ -70,10 +80,10 @@ pub fn enable_security_key(
 ) -> Result<EnabledKey> {
     let mut prf_salt = [0u8; 32];
     rand::fill(&mut prf_salt);
-    let kek = Kek::from_prf(&auth.prf(credential, &prf_salt)?);
+    let kek = Kek::from_prf(&auth.prf(credential, &prf_salt)?)?;
     Ok(EnabledKey {
         prf_salt,
-        wrapped_vault_key: vault_key.wrap(&kek, user),
+        wrapped_vault_key: vault_key.wrap(&kek, user)?,
     })
 }
 
@@ -94,8 +104,8 @@ pub fn wrap_for_recovery(
     recovery: &RecoveryKey,
     user: &uuid::Uuid,
     vault_key: &VaultKey,
-) -> Vec<u8> {
-    vault_key.wrap(&Kek::from_recovery(recovery), user)
+) -> Result<Vec<u8>> {
+    vault_key.wrap(&Kek::from_recovery(recovery)?, user)
 }
 
 /// Opens the vault with one unlocker (one touch for a security key) and runs `action` with the
@@ -120,13 +130,13 @@ fn open_vault(
             prf_salt,
             wrapped_vault_key,
         } => (
-            Kek::from_prf(&auth.prf(credential, prf_salt)?),
+            Kek::from_prf(&auth.prf(credential, prf_salt)?)?,
             wrapped_vault_key,
         ),
         Unlocker::Recovery {
             key,
             wrapped_vault_key,
-        } => (Kek::from_recovery(key), wrapped_vault_key),
+        } => (Kek::from_recovery(key)?, wrapped_vault_key),
     };
     VaultKey::unwrap(&kek, user, wrapped)
 }
@@ -134,7 +144,9 @@ fn open_vault(
 /// A protected folder as the server lists it (`GET /protected`).
 #[derive(Clone, Copy, Debug)]
 pub struct ProtectedFolder<'a> {
+    /// The protected folder's node id.
     pub node_id: &'a uuid::Uuid,
+    /// The folder secret, wrapped by the vault key.
     pub wrapped_secret: &'a [u8],
     /// The age recipient the server lists; checked against the secret.
     pub recipient: &'a str,
@@ -150,7 +162,8 @@ pub fn with_folder_keys<T>(
     action: impl FnOnce(&FolderKeys) -> Result<T>,
 ) -> Result<T> {
     with_vault_key(auth, user, unlocker, |vault_key| {
-        let keys = FolderSecret::unwrap(vault_key, folder.node_id, folder.wrapped_secret)?.keys();
+        let keys =
+            FolderSecret::unwrap(vault_key, folder.node_id, folder.wrapped_secret)?.keys()?;
         keys.check_recipient(folder.recipient)?;
         action(&keys)
     })
@@ -159,6 +172,7 @@ pub fn with_folder_keys<T>(
 /// What `POST /protected` takes for a new protected folder.
 #[derive(Debug)]
 pub struct NewFolder {
+    /// The new folder secret, wrapped by the vault key.
     pub wrapped_secret: Vec<u8>,
     /// The folder's age recipient (`age1…`).
     pub recipient: String,
@@ -172,9 +186,9 @@ pub fn protect_with_vault_key<T>(
     action: impl FnOnce(&FolderKeys) -> Result<T>,
 ) -> Result<(NewFolder, T)> {
     let secret = FolderSecret::generate();
-    let keys = secret.keys();
+    let keys = secret.keys()?;
     let new = NewFolder {
-        wrapped_secret: secret.wrap(vault_key, folder),
+        wrapped_secret: secret.wrap(vault_key, folder)?,
         recipient: keys.recipient().to_string(),
     };
     drop(secret);
@@ -185,12 +199,12 @@ pub fn protect_with_vault_key<T>(
 /// Re-wraps a folder secret from one vault key to another, for a vault key rotation. No file is
 /// re-encrypted.
 pub fn rewrap_folder_secret(
-    from: &impl crate::folder::FolderWrappingKey,
-    to: &impl crate::folder::FolderWrappingKey,
+    from: &impl FolderWrappingKey,
+    to: &impl FolderWrappingKey,
     folder: &uuid::Uuid,
     wrapped: &[u8],
 ) -> Result<Vec<u8>> {
-    Ok(FolderSecret::unwrap(from, folder, wrapped)?.wrap(to, folder))
+    FolderSecret::unwrap(from, folder, wrapped)?.wrap(to, folder)
 }
 
 #[cfg(test)]
@@ -224,7 +238,7 @@ mod tests {
         })
         .unwrap();
         let recovery = RecoveryKey::generate();
-        let wrapped_recovery = wrap_for_recovery(&recovery, &USER, &vault_key);
+        let wrapped_recovery = wrap_for_recovery(&recovery, &USER, &vault_key).unwrap();
         drop(vault_key);
         let unlocker_a = Unlocker::SecurityKey {
             credential: a,
@@ -273,7 +287,7 @@ mod tests {
         }
 
         // A server that swaps the recipient is caught.
-        let other = FolderSecret::generate().recipient().to_string();
+        let other = FolderSecret::generate().recipient().unwrap().to_string();
         let swapped = ProtectedFolder {
             recipient: &other,
             ..listed
@@ -288,7 +302,7 @@ mod tests {
         let new = VaultKey::generate();
         let rewrapped = rewrap_folder_secret(&old, &new, &FOLDER, &folder.wrapped_secret).unwrap();
         let secret = FolderSecret::unwrap(&new, &FOLDER, &rewrapped).unwrap();
-        assert_eq!(secret.recipient().to_string(), folder.recipient);
+        assert_eq!(secret.recipient().unwrap().to_string(), folder.recipient);
         assert!(FolderSecret::unwrap(&old, &FOLDER, &rewrapped).is_err());
     }
 }

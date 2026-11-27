@@ -1,5 +1,6 @@
-//! Two-factor sign-in in the user's settings: the authenticator app, passkeys and security
-//! keys (in `keys`), and the recovery codes.
+//! Two-factor sign-in in the user's settings: the authenticator app, sign-in and folder keys
+//! (in `keys`), and the recovery codes. A user linked to the identity provider has only their
+//! folder keys here: the provider keeps the rest.
 
 use leptos::{ev::SubmitEvent, prelude::*, task::spawn_local};
 use qrcode::{QrCode, render::svg};
@@ -14,10 +15,12 @@ use crate::{
 
 mod keys;
 
-use keys::KeysSection;
+use keys::{FolderKeysSection, KeysSection};
 
 /// Few enough recovery codes left to suggest making new ones.
 pub const FEW_RECOVERY_CODES: u32 = 3;
+/// What the provider is called until the server names it.
+const SOME_PROVIDER: &str = "your identity provider";
 
 /// Where the card is.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,10 +33,18 @@ enum Step {
     Codes(Vec<String>),
 }
 
-/// Whether the server offers two-factor sign-in and the user signs in with a password.
+/// Whether the server offers two-factor sign-in. A user linked to the identity provider is
+/// shown that the provider keeps theirs, beside their folder keys.
 pub fn offered(auth: Auth) -> bool {
-    session::client().supports(features::TWO_FACTOR)
-        && auth.user.get().is_some_and(|me| !me.external)
+    auth.user.get().is_some() && session::client().supports(features::TWO_FACTOR)
+}
+
+/// Where a user linked to the identity provider manages how they sign in.
+fn managed_by(provider: Option<&str>) -> String {
+    format!(
+        "Signed in through {}. Your sign-in, two-factor and passkeys are managed there.",
+        provider.unwrap_or(SOME_PROVIDER)
+    )
 }
 
 #[component]
@@ -71,13 +82,32 @@ pub fn SecurityCard(auth: Auth) -> impl IntoView {
     };
 
     let passkeys = move || session::client().supports(features::PASSKEYS);
+    let folders = move || session::client().supports(features::PROTECTED_FOLDERS);
     let show_codes = Callback::new(move |codes: Vec<String>| step.set(Step::Codes(codes)));
+    let external = move || auth.user.get().is_some_and(|me| me.external);
+    let provider = RwSignal::new(None::<String>);
+    if auth.user.get_untracked().is_some_and(|me| me.external) {
+        spawn_local(async move {
+            if let Ok(found) = session::client().providers().await {
+                provider.set(found.identity_provider().map(|oidc| oidc.name.clone()));
+            }
+        });
+    }
 
     view! {
         <section class="card settings-grid__wide">
             <h2 class="card__title">"Two-factor sign-in and passkeys"</h2>
             <ErrorAlert message=error />
             {move || match step.get() {
+                Step::Overview if external() => {
+                    view! {
+                        <p class="card__text">{move || managed_by(provider.get().as_deref())}</p>
+                        <Show when=folders>
+                            <FolderKeysSection auth error />
+                        </Show>
+                    }
+                        .into_any()
+                }
                 Step::Overview => {
                     view! {
                         <p class="card__text">
@@ -98,6 +128,9 @@ pub fn SecurityCard(auth: Auth) -> impl IntoView {
                         />
                         <Show when=passkeys>
                             <KeysSection auth error on_codes=show_codes />
+                        </Show>
+                        <Show when=folders>
+                            <FolderKeysSection auth error />
                         </Show>
                         <Show when=move || factors().enabled()>
                             <h3 class="card__heading">"Recovery codes"</h3>
@@ -365,6 +398,15 @@ fn qr_svg(uri: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_provider_user_is_told_where_they_sign_in() {
+        assert_eq!(
+            managed_by(Some("Keycloak")),
+            "Signed in through Keycloak. Your sign-in, two-factor and passkeys are managed there."
+        );
+        assert!(managed_by(None).starts_with("Signed in through your identity provider."));
+    }
 
     #[test]
     fn the_key_reads_in_groups_of_four() {

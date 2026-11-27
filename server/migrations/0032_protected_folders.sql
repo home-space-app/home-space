@@ -11,25 +11,29 @@ CREATE TABLE vaults (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- What opens the vault: the user's security keys (sign-in credentials with PRF) and at most one
--- recovery key.
+-- What opens the vault: the user's folder keys and at most one recovery key.
 CREATE TABLE vault_unlockers (
     id                UUID PRIMARY KEY,
     user_id           UUID NOT NULL REFERENCES vaults (user_id) ON DELETE CASCADE,
     kind              TEXT NOT NULL CHECK (kind IN ('security_key', 'recovery')),
-    -- security_key only: the sign-in credential, which names the key and the RP id. No
-    -- ON DELETE: removing a credential that is an unlocker removes the unlocker first, or is
-    -- refused when it is the last one.
-    credential        UUID UNIQUE REFERENCES user_webauthn (id),
+    -- security_key only: a folder key, a WebAuthn credential the client made for the vault
+    -- alone. It never signs in, so it is not in user_webauthn, even when it is on the same
+    -- physical key as one that does. Its name, its credential id and the RP id it was made
+    -- for, which a client needs to ask the key.
+    name              TEXT CHECK (char_length(name) BETWEEN 1 AND 64),
+    credential_id     BYTEA CHECK (length(credential_id) BETWEEN 1 AND 1023),
+    rp_id             TEXT CHECK (char_length(rp_id) BETWEEN 1 AND 253),
     -- security_key only: the PRF input the key answers for this vault.
     prf_salt          BYTEA CHECK (length(prf_salt) = 32),
     wrapped_vault_key BYTEA NOT NULL CHECK (length(wrapped_vault_key) = 73),
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CHECK ((kind = 'security_key') = (credential IS NOT NULL AND prf_salt IS NOT NULL)),
-    CHECK (kind = 'security_key' OR (credential IS NULL AND prf_salt IS NULL))
+    UNIQUE (user_id, credential_id),
+    CHECK ((kind = 'security_key') = (name IS NOT NULL AND credential_id IS NOT NULL
+                                      AND rp_id IS NOT NULL AND prf_salt IS NOT NULL)),
+    CHECK (kind = 'security_key'
+           OR (name IS NULL AND credential_id IS NULL AND rp_id IS NULL AND prf_salt IS NULL))
 );
 
-CREATE INDEX vault_unlockers_user ON vault_unlockers (user_id);
 CREATE UNIQUE INDEX vault_unlockers_one_recovery ON vault_unlockers (user_id)
     WHERE kind = 'recovery';
 

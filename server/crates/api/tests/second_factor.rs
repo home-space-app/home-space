@@ -224,20 +224,33 @@ async fn adding_an_app_needs_a_recent_sign_in_and_the_servers_key(pool: PgPool) 
     let step = fresh_step().await;
     let (secret, _) = add_app(&app, &token, step).await;
 
-    // With an app, a code from it confirms too.
+    // With an app, a code from it confirms too; for new recovery codes only it does.
     sqlx::query("UPDATE sessions SET authenticated_at = now() - interval '11 minutes'")
         .execute(&pool)
         .await
         .expect("age");
-    let refused = app
-        .json(
+    let new_codes = || {
+        app.json(
             Method::POST,
             "/api/v1/me/recovery-codes",
             Some(&token),
             json!({}),
         )
+    };
+    let refused = new_codes().await;
+    assert_eq!(refused.json()["methods"], json!(["totp"]));
+    let by_password = app
+        .json(
+            Method::POST,
+            "/api/v1/me/reauthenticate",
+            Some(&token),
+            json!({ "password": PASSWORD }),
+        )
         .await;
-    assert_eq!(refused.json()["methods"], json!(["password", "totp"]));
+    assert_eq!(by_password.status, StatusCode::NO_CONTENT);
+    let refused = new_codes().await;
+    assert_eq!(problem(&refused), "reauthentication-required");
+    assert_eq!(refused.json()["methods"], json!(["totp"]));
     let by_code = app
         .json(
             Method::POST,
@@ -258,6 +271,134 @@ async fn adding_an_app_needs_a_recent_sign_in_and_the_servers_key(pool: PgPool) 
     assert_eq!(codes.json()["codes"].as_array().expect("codes").len(), 10);
 }
 
+/// Confirms it is the user of `token` with a code from their authenticator app.
+async fn confirm_with_code(app: &TestApp, token: &str, code: &str) {
+    let confirmed = app
+        .json(
+            Method::POST,
+            "/api/v1/me/reauthenticate",
+            Some(token),
+            json!({ "code": code }),
+        )
+        .await;
+    assert_eq!(
+        confirmed.status,
+        StatusCode::NO_CONTENT,
+        "{}",
+        confirmed.json()
+    );
+}
+
+async fn change_password(app: &TestApp, token: &str) -> common::Response {
+    app.json(
+        Method::POST,
+        "/api/v1/me/password",
+        Some(token),
+        json!({ "current_password": PASSWORD, "new_password": "a-new-password-1" }),
+    )
+    .await
+}
+
+async fn remove_app(app: &TestApp, token: &str) -> common::Response {
+    app.send(
+        Method::DELETE,
+        "/api/v1/me/totp",
+        Some(token),
+        axum::body::Body::empty(),
+        None,
+    )
+    .await
+}
+
+/// Security: a stolen session and password cannot take the second factor away. Removing it
+/// needs a recent proof with a second factor, which a password confirmation is not, and then
+/// ends the other sessions, so none signed in with it outlives it.
+#[sqlx::test(migrations = "../../migrations")]
+async fn removing_the_app_needs_a_second_factor_and_ends_the_other_sessions(pool: PgPool) {
+    let app = setup(pool).await;
+    let token = app.user_token("alice").await;
+    let step = fresh_step().await;
+    let (secret, recovery) = add_app(&app, &token, step).await;
+    let login_token = first_step(&app, "alice").await;
+    let other = verify(&app, &login_token, json!({ "recovery_code": recovery[0] })).await;
+    let other = other.json()["access_token"]
+        .as_str()
+        .expect("token")
+        .to_owned();
+
+    // This session signed in with the password alone, before the app was added.
+    let refused = remove_app(&app, &token).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert_eq!(problem(&refused), "reauthentication-required");
+    assert_eq!(refused.json()["methods"], json!(["totp"]));
+    let by_password = app
+        .json(
+            Method::POST,
+            "/api/v1/me/reauthenticate",
+            Some(&token),
+            json!({ "password": PASSWORD }),
+        )
+        .await;
+    assert_eq!(by_password.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        problem(&remove_app(&app, &token).await),
+        "reauthentication-required"
+    );
+
+    confirm_with_code(&app, &token, &code(&secret, step)).await;
+    assert_eq!(
+        remove_app(&app, &token).await.status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(app.get("/api/v1/me", &token).await.status, StatusCode::OK);
+    assert_eq!(
+        app.get("/api/v1/me", &other).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+/// A session that signed in with its second factor may change sign-in factors for a while
+/// without confirming again, and so may one that confirmed with it; the account password
+/// changes only with one of them too.
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_sign_in_with_the_second_factor_counts_for_changing_the_password(pool: PgPool) {
+    let app = setup(pool.clone()).await;
+    let token = app.user_token("alice").await;
+    let step = fresh_step().await;
+    let (secret, recovery) = add_app(&app, &token, step).await;
+    let refused = change_password(&app, &token).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.json());
+    assert_eq!(refused.json()["methods"], json!(["totp"]));
+
+    let login_token = first_step(&app, "alice").await;
+    let signed_in = verify(&app, &login_token, json!({ "recovery_code": recovery[0] })).await;
+    let fresh = signed_in.json()["access_token"]
+        .as_str()
+        .expect("token")
+        .to_owned();
+    let new_codes = app
+        .json(
+            Method::POST,
+            "/api/v1/me/recovery-codes",
+            Some(&fresh),
+            json!({}),
+        )
+        .await;
+    assert_eq!(new_codes.status, StatusCode::OK, "{}", new_codes.json());
+
+    sqlx::query("UPDATE sessions SET second_factor_at = now() - interval '11 minutes'")
+        .execute(&pool)
+        .await
+        .expect("age");
+    assert_eq!(
+        problem(&change_password(&app, &fresh).await),
+        "reauthentication-required"
+    );
+    confirm_with_code(&app, &fresh, &code(&secret, step)).await;
+    let changed = change_password(&app, &fresh).await;
+    assert_eq!(changed.status, StatusCode::NO_CONTENT, "{}", changed.json());
+}
+
 #[sqlx::test(migrations = "../../migrations")]
 async fn without_the_key_no_app_can_be_added(pool: PgPool) {
     let app = setup_with(pool, |auth| auth.with_secrets_key(None)).await;
@@ -275,7 +416,9 @@ async fn removing_the_app_or_an_administrators_reset_signs_in_with_the_password_
 ) {
     let app = setup(pool).await;
     let token = app.user_token("alice").await;
-    add_app(&app, &token, fresh_step().await).await;
+    let step = fresh_step().await;
+    let (secret, _) = add_app(&app, &token, step).await;
+    confirm_with_code(&app, &token, &code(&secret, step)).await;
     let again = app
         .json(Method::POST, "/api/v1/me/totp", Some(&token), json!({}))
         .await;

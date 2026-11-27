@@ -12,7 +12,7 @@ pub struct Account {
     pub id: UserId,
     pub username: String,
     pub is_admin: bool,
-    /// Has no password, so signs in only through an identity provider.
+    /// Linked to an identity provider account, which signs them in.
     pub external: bool,
     /// Has a confirmed authenticator app.
     pub authenticator_app: bool,
@@ -42,7 +42,8 @@ pub struct DeletedAccount {
 /// The columns of [`Account`] for the user aliased `u`.
 macro_rules! account_select {
     () => {
-        "SELECT u.id, u.username, u.is_admin, u.password_hash IS NULL AS external, \
+        "SELECT u.id, u.username, u.is_admin, \
+         EXISTS (SELECT 1 FROM user_identities i WHERE i.user_id = u.id) AS external, \
          EXISTS (SELECT 1 FROM user_totp t \
             WHERE t.user_id = u.id AND t.confirmed_at IS NOT NULL) AS authenticator_app, \
          EXISTS (SELECT 1 FROM user_webauthn w WHERE w.user_id = u.id) AS webauthn, \

@@ -1,7 +1,9 @@
 use time::{Duration, OffsetDateTime};
 
-use auth::{AuthError, AuthService};
-use db::{Account, DatabaseInfo, Db, DbError, Device, TenantId, User, UserId, UserStorage};
+use auth::AuthService;
+use db::{
+    Account, DatabaseInfo, Db, DbError, Device, PasswordSet, TenantId, User, UserId, UserStorage,
+};
 use protocol::{CreateAccount, Me, SecondFactors, UpdateAccount, UserRef};
 
 use crate::AccountError;
@@ -65,7 +67,7 @@ impl AccountService {
             username: found.username,
             lost_and_found_id: folders.lost_and_found_id,
             is_admin: found.is_admin,
-            external: found.password_hash.is_none(),
+            external: found.external,
             second_factors: SecondFactors {
                 totp: factors.totp,
                 webauthn: u32::try_from(factors.webauthn).unwrap_or(0),
@@ -156,11 +158,15 @@ impl AccountService {
         self.account(id).await
     }
 
-    /// Sets a new password for an account that has one, ending all its sessions.
-    pub async fn set_password(&self, id: UserId, password: &str) -> Result<(), AccountError> {
-        if self.account(id).await?.external {
-            return Err(AuthError::NoPassword.into());
-        }
+    /// Sets a new password for an account, ending all its sessions. An account linked to the
+    /// identity provider becomes a local one, which this says.
+    pub async fn set_password(
+        &self,
+        id: UserId,
+        password: &str,
+    ) -> Result<PasswordSet, AccountError> {
+        // Fails for an account of another tenant before anything is changed.
+        self.account(id).await?;
         Ok(self.auth.set_password(id, password).await?)
     }
 

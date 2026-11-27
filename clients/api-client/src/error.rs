@@ -1,4 +1,4 @@
-use protocol::ErrorCode;
+use protocol::{AuthMethod, ErrorCode};
 
 /// Code of a failure that never reached a response, for [`ApiError::code`].
 const NETWORK_CODE: &str = "network";
@@ -26,12 +26,12 @@ pub enum ApiError {
     #[error("unexpected response: {0}")]
     Decode(String),
     /// A sensitive change needs the user to confirm it is them first, with one of `methods`
-    /// (`password`, `totp`) through [`Client::reauthenticate`](crate::Client::reauthenticate);
+    /// through [`Client::reauthenticate`](crate::Client::reauthenticate);
     /// then the change can be sent again. With no methods, they sign in again.
     #[error("{message}")]
     ReauthenticationRequired {
         message: String,
-        methods: Vec<String>,
+        methods: Vec<AuthMethod>,
     },
     /// The server is older than the feature asked for; the message says what to do.
     #[error("{0}")]

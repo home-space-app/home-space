@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use db::{NodeId, NodeKind, UserId};
 use files::Names;
+use protocol::ProtectionState;
 
 use super::{FOLDER_UNLOCK_TTL, VaultService};
 use crate::AccountError;
@@ -66,7 +67,7 @@ impl VaultService {
             return Err(AccountError::Locked);
         }
         let keys = self.folder_keys(user, folder.node_id).await?;
-        Ok(if folder.state == "unprotecting" {
+        Ok(if folder.state == ProtectionState::Unprotecting {
             Names::unsealing(folder.node_id, keys)
         } else {
             Names::sealed(folder.node_id, keys)

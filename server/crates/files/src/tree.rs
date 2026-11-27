@@ -6,6 +6,7 @@
 
 mod bin;
 mod conflicts;
+pub(crate) mod guard;
 mod moves;
 pub(crate) mod rules;
 mod store;
