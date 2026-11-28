@@ -567,29 +567,29 @@ fn transfers_icon(name: &str) -> Icon {
 
 /// Asks for files, or for a folder, and reads what was picked.
 fn pick(folder: bool) -> Task<Message> {
-    Task::perform(
-        async move {
-            let dialog = rfd::AsyncFileDialog::new();
-            let paths: Vec<PathBuf> = if folder {
-                dialog
-                    .pick_folder()
-                    .await
-                    .map(|handle| handle.path().to_path_buf())
-                    .into_iter()
-                    .collect()
-            } else {
-                dialog
-                    .pick_files()
-                    .await
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|handle| handle.path().to_path_buf())
-                    .collect()
-            };
-            read_picked(paths).await
-        },
-        Message::Picked,
-    )
+    crate::file_dialog::over_window(|dialog| dialog)
+        .then(move |dialog| Task::perform(pick_from(dialog, folder), Message::Picked))
+}
+
+/// Reads what was picked in `dialog`: a folder, or files.
+async fn pick_from(dialog: rfd::AsyncFileDialog, folder: bool) -> Result<Vec<Picked>, String> {
+    let paths: Vec<PathBuf> = if folder {
+        dialog
+            .pick_folder()
+            .await
+            .map(|handle| handle.path().to_path_buf())
+            .into_iter()
+            .collect()
+    } else {
+        dialog
+            .pick_files()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .map(|handle| handle.path().to_path_buf())
+            .collect()
+    };
+    read_picked(paths).await
 }
 
 /// Walks each of `paths` into what sending it takes.

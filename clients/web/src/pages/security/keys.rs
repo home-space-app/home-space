@@ -262,12 +262,12 @@ pub fn FolderKeysSection(auth: Auth, error: RwSignal<Option<String>>) -> impl In
     load();
 
     view! {
-        <h3 class="card__heading">"Folder keys"</h3>
+        <h3 class="card__heading">"Encryption keys"</h3>
         <p class="card__text">
-            "Security keys that unlock your protected folders. They never sign you in, even when they are on the same key as a sign-in key."
+            "Security keys that encrypt your protected folders and open them again, each with its PIN. They never sign you in, even when they are on the same key as a sign-in key."
         </p>
         <Show when=move || keys.with(Vec::is_empty)>
-            <p class="card__text">"No folder keys yet."</p>
+            <p class="card__text">"No encryption keys yet."</p>
         </Show>
         <ul class="key-list">
             <For each=move || keys.get() key=|key| key.id let(key)>
@@ -319,7 +319,7 @@ fn FolderKeyRow(
         <li class="key-list__item">
             <span class="key-list__name">{key.name.unwrap_or_default()}</span>
             <span class="key-list__details">
-                {format!("Folder key · added {}", locale::short_date(key.created_at))}
+                {format!("Encryption key · added {}", locale::short_date(key.created_at))}
             </span>
             {elsewhere.map(|site| view! { <span class="card__text--warning">{site}</span> })}
             <span class="card__actions">

@@ -337,21 +337,21 @@ fn load(client: &Client, id: NodeId) -> Task {
 }
 
 fn download(client: Client, node: Node, version: i32) -> Task {
-    Task::perform(
-        async move {
-            let Some(handle) = rfd::AsyncFileDialog::new()
-                .set_file_name(node.name.as_str())
-                .save_file()
-                .await
-            else {
-                return Ok(());
-            };
-            save(&client, node.id, version, handle.path())
-                .await
-                .map_err(|err| err.to_string())
-        },
-        Message::Downloaded,
-    )
+    let name = node.name.clone();
+    crate::file_dialog::over_window(move |dialog| dialog.set_file_name(name)).then(move |dialog| {
+        let (client, id) = (client.clone(), node.id);
+        Task::perform(
+            async move {
+                let Some(handle) = dialog.save_file().await else {
+                    return Ok(());
+                };
+                save(&client, id, version, handle.path())
+                    .await
+                    .map_err(|err| err.to_string())
+            },
+            Message::Downloaded,
+        )
+    })
 }
 
 async fn save(

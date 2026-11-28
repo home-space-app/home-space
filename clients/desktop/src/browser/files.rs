@@ -21,21 +21,23 @@ const TEMP_FOLDER: &str = "home-space";
 
 /// Asks for files to upload into `parent` and plans their transfer.
 pub fn pick_upload(parent: Option<NodeId>) -> Task<Message> {
-    Task::perform(
-        async move {
-            match rfd::AsyncFileDialog::new().pick_files().await {
-                Some(handles) => {
-                    let paths = handles
-                        .iter()
-                        .map(|handle| handle.path().to_path_buf())
-                        .collect();
-                    transfers::plan_upload(paths).await
+    crate::file_dialog::over_window(|dialog| dialog).then(move |dialog| {
+        Task::perform(
+            async move {
+                match dialog.pick_files().await {
+                    Some(handles) => {
+                        let paths = handles
+                            .iter()
+                            .map(|handle| handle.path().to_path_buf())
+                            .collect();
+                        transfers::plan_upload(paths).await
+                    }
+                    None => Ok(UploadPlan::default()),
                 }
-                None => Ok(UploadPlan::default()),
-            }
-        },
-        move |result| Message::UploadPlanned(parent, result),
-    )
+            },
+            move |result| Message::UploadPlanned(parent, result),
+        )
+    })
 }
 
 /// Plans the upload of dropped `paths` into `parent`.
@@ -51,43 +53,49 @@ pub fn download(client: &Client, nodes: Vec<Node>, inside: Option<Inside>) -> Ta
     match nodes.as_slice() {
         [node] if node.kind == NodeKind::File => {
             let node = node.clone();
-            Task::perform(
-                async move {
-                    let handle = rfd::AsyncFileDialog::new()
-                        .set_file_name(&node.name)
-                        .save_file()
-                        .await;
-                    Ok(handle
-                        .map(|handle| {
-                            vec![
-                                DownloadFile::replacing(&node, handle.path().to_path_buf())
-                                    .decrypting(inside),
-                            ]
-                        })
-                        .unwrap_or_default())
+            let name = node.name.clone();
+            crate::file_dialog::over_window(move |dialog| dialog.set_file_name(name)).then(
+                move |dialog| {
+                    let (node, inside) = (node.clone(), inside.clone());
+                    Task::perform(
+                        async move {
+                            let handle = dialog.save_file().await;
+                            Ok(handle
+                                .map(|handle| {
+                                    vec![
+                                        DownloadFile::replacing(&node, handle.path().to_path_buf())
+                                            .decrypting(inside),
+                                    ]
+                                })
+                                .unwrap_or_default())
+                        },
+                        Message::DownloadPlanned,
+                    )
                 },
-                Message::DownloadPlanned,
             )
         }
         _ => {
             let client = client.clone();
-            Task::perform(
-                async move {
-                    match rfd::AsyncFileDialog::new().pick_folder().await {
-                        Some(folder) => {
-                            transfers::plan_download(
-                                client,
-                                nodes,
-                                folder.path().to_path_buf(),
-                                inside,
-                            )
-                            .await
+            crate::file_dialog::over_window(|dialog| dialog).then(move |dialog| {
+                let (client, nodes, inside) = (client.clone(), nodes.clone(), inside.clone());
+                Task::perform(
+                    async move {
+                        match dialog.pick_folder().await {
+                            Some(folder) => {
+                                transfers::plan_download(
+                                    client,
+                                    nodes,
+                                    folder.path().to_path_buf(),
+                                    inside,
+                                )
+                                .await
+                            }
+                            None => Ok(Vec::new()),
                         }
-                        None => Ok(Vec::new()),
-                    }
-                },
-                Message::DownloadPlanned,
-            )
+                    },
+                    Message::DownloadPlanned,
+                )
+            })
         }
     }
 }

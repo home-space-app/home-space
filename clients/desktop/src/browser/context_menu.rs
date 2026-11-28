@@ -25,6 +25,8 @@ const MENU_PADDING: f32 = 4.0;
 const SEPARATOR_PADDING: [f32; 2] = [4.0, 0.0];
 const EDGE_MARGIN: f32 = 8.0;
 const LABEL_SPACING: f32 = 12.0;
+const SECOND_LINE: f32 = 12.0;
+const HEADER_PADDING: [f32; 2] = [8.0, 12.0];
 
 /// An extra entry of the context menu, below the actions.
 pub struct Entry {
@@ -98,8 +100,33 @@ fn entry<'a>(entry: Entry) -> Element<'a, Message> {
     )
 }
 
-/// The menu of the account in the sidebar; with Lock all while protected folders are unlocked.
-pub fn account<'a>(unlocked: bool, folder_keys: bool) -> Element<'a, Message> {
+/// The menu of the account in the sidebar, as on the web: who is signed in, Settings, Lock all
+/// while protected folders are unlocked, Log out, and the app's version.
+pub fn account<'a>(me: &'a protocol::Me, unlocked: bool) -> Element<'a, Message> {
+    let kind = if me.external {
+        "Single sign-on"
+    } else {
+        "Local account"
+    };
+    let role = if me.is_admin { " · administrator" } else { "" };
+    let who = container(
+        iced::widget::column![
+            text(me.username.as_str()).font(theme::SEMIBOLD),
+            text(format!("{kind}{role}"))
+                .size(SECOND_LINE)
+                .style(theme::muted_text),
+        ]
+        .spacing(2.0),
+    )
+    .padding(HEADER_PADDING);
+    let settings = menu_row(
+        Icon::Settings,
+        Tint::Muted,
+        "Settings",
+        "",
+        theme::tool,
+        Some(Message::OpenSettings),
+    );
     let lock_all = unlocked.then(|| {
         menu_row(
             Icon::Lock,
@@ -110,24 +137,26 @@ pub fn account<'a>(unlocked: bool, folder_keys: bool) -> Element<'a, Message> {
             Some(Message::LockAll),
         )
     });
-    let keys = folder_keys.then(|| {
-        menu_row(
-            Icon::Key,
-            Tint::Muted,
-            "Security keys for folders…",
-            "",
-            theme::tool,
-            Some(Message::FolderKeys),
-        )
-    });
-    panel(lock_all.into_iter().chain(keys).chain([menu_row(
+    let log_out = menu_row(
         Icon::SignOut,
-        Tint::Muted,
-        "Sign out",
+        Tint::Danger,
+        "Log out",
         "",
-        theme::tool,
+        theme::danger_tool,
         Some(Message::SignOut),
-    )]))
+    );
+    let version = container(
+        text(format!("Home Space {}", crate::device::VERSION))
+            .size(SECOND_LINE)
+            .style(theme::muted_text),
+    )
+    .padding(HEADER_PADDING);
+    panel(
+        [who.into(), separator(), settings]
+            .into_iter()
+            .chain(lock_all)
+            .chain([separator(), log_out, separator(), version.into()]),
+    )
 }
 
 /// The menu of a device: renaming it, signing it out, which `can_sign_out` allows, and

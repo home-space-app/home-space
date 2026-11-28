@@ -490,7 +490,7 @@ fn Explorer(auth: Auth) -> impl IntoView {
                                         <Icon name="lock" />
                                         <p>
                                             {move || if security_key.get() {
-                                                "This folder is protected with a security key, which only the desktop and mobile apps can use."
+                                                "This folder is protected with an encryption key, which only the desktop and mobile apps can use."
                                             } else {
                                                 "This folder is protected. Unlock it to see what it holds."
                                             }}
