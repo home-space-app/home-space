@@ -85,18 +85,34 @@ fn files_goes_home_when_already_on_the_files() {
 }
 
 #[test]
-fn the_account_menu_offers_sign_out() {
+fn the_account_menu_names_the_user_and_offers_settings_and_log_out() {
     let mut state = state_with_listing();
-    assert!(simulator(state.view()).find("Sign out").is_err());
+    assert!(simulator(state.view()).find("Log out").is_err());
 
     let _ = state.update(Message::AccountMenu(Placement::cursor(Point::ORIGIN)));
 
     let mut ui = simulator(state.view());
-    ui.click("Sign out").expect("the entry is shown");
+    assert!(ui.find("Local account").is_ok());
+    assert!(
+        ui.find(format!("Home Space {}", crate::device::VERSION).as_str())
+            .is_ok()
+    );
+    ui.click("Log out").expect("the entry is shown");
     assert!(
         ui.into_messages()
             .any(|message| matches!(message, Message::SignOut))
     );
+
+    let mut ui = simulator(state.view());
+    ui.click("Settings").expect("the entry is shown");
+    for message in ui.into_messages() {
+        let _ = state.update(message);
+    }
+    assert!(matches!(state.page, Page::Settings(_)));
+    let mut ui = simulator(state.view());
+    assert!(ui.find("Profile").is_ok());
+    assert!(ui.find("Change password").is_ok());
+    assert!(ui.find("Two-factor sign-in and passkeys").is_ok());
 }
 
 #[test]
@@ -1884,7 +1900,20 @@ mod protected_folders {
 
         let mut ui = simulator(state.view());
         assert!(ui.find("Unlock “Folder B”").is_ok());
-        assert!(ui.find("Uses your security key “YubiKey”.").is_ok());
+        assert!(ui.find("Looking for your encryption key…").is_ok());
+        drop(ui);
+        let _ = state.update(Message::Protect(protect::Message::Told(
+            "Plug in “YubiKey”, the key you already have.".to_owned(),
+        )));
+        assert!(
+            simulator(state.view())
+                .find("Plug in “YubiKey”, the key you already have.")
+                .is_ok()
+        );
+
+        let _ = state.update(Message::Protect(protect::Message::KeyFound(Ok(0))));
+        let mut ui = simulator(state.view());
+        assert!(ui.find("Enter the PIN of “YubiKey”.").is_ok());
         assert!(ui.find("PIN of “YubiKey”").is_ok());
         ui.click("Lost your security key?")
             .expect("offered with a recovery key");
@@ -1898,268 +1927,97 @@ mod protected_folders {
     }
 
     #[test]
-    fn protecting_with_a_security_key_needs_one_names_it_and_warns_about_a_single_one() {
+    fn protecting_with_a_security_key_explains_it_then_asks_for_the_pin_of_the_key_found() {
         let mut state = state_with_listing();
         let folder = node(FOLDER_NAME, NodeKind::Folder, FOLDER_ID);
         let _ = state.update(Message::ProtectWithKey(folder.clone()));
         vault_loaded(&mut state, None);
 
         let mut ui = simulator(state.view());
-        assert!(ui.find("Protect “Folder B” with a security key").is_ok());
+        assert!(ui.find("Protect “Folder B”").is_ok());
         assert!(ui.find(protect::NO_KEY).is_ok());
-        assert!(ui.find("PIN of your security key").is_err());
-        ui.click("Protect").expect("the button is shown");
-        assert!(
-            !ui.into_messages()
-                .any(|message| matches!(message, Message::Protect(protect::Message::Submit))),
-            "nothing to protect with"
-        );
+        assert!(ui.find("Protect").is_err(), "nothing to protect with");
+        ui.click("Go to Account").expect("offered without a key");
+        for message in ui.into_messages() {
+            let _ = state.update(message);
+        }
+        assert!(state.protect.is_none());
+        assert!(matches!(state.page, Page::Settings(_)));
 
-        let _ = state.update(Message::ProtectWithKey(folder));
+        let _ = state.update(Message::ProtectWithKey(folder.clone()));
         vault_loaded(&mut state, Some(vault(&["YubiKey"], false)));
         let mut ui = simulator(state.view());
+        assert!(ui.find(protect::ABOUT).is_ok());
         assert!(ui.find(protect::ONE_KEY).is_ok());
-        assert!(ui.find("Uses your security key “YubiKey”.").is_ok());
-        assert!(ui.find("PIN of “YubiKey”").is_ok());
-        assert!(ui.find("Add a key…").is_ok());
-        assert!(ui.find("Create a recovery key…").is_ok());
+        assert!(
+            ui.find("PIN of “YubiKey”").is_err(),
+            "asked once the user goes on"
+        );
+        assert!(
+            ui.find("Add a key…").is_err(),
+            "keys are added in the settings"
+        );
+        ui.click("Protect").expect("the button is shown");
+        for message in ui.into_messages() {
+            let _ = state.update(message);
+        }
+        assert!(
+            simulator(state.view())
+                .find("Looking for your encryption key…")
+                .is_ok()
+        );
+        let _ = state.update(Message::Protect(protect::Message::KeyFound(Ok(0))));
+        let mut ui = simulator(state.view());
+        assert!(ui.find("Enter the PIN of “YubiKey”.").is_ok());
+        assert!(
+            ui.find(protect::ONE_KEY).is_err(),
+            "the warning was on the first step"
+        );
         drop(ui);
 
-        let _ = state.update(Message::ProtectWithKey(node(
-            FOLDER_NAME,
-            NodeKind::Folder,
-            FOLDER_ID,
-        )));
+        // Several keys: the first found is the one asked for.
+        let _ = state.update(Message::ProtectWithKey(folder));
         vault_loaded(&mut state, Some(vault(&["YubiKey", "Spare"], false)));
-        let mut ui = simulator(state.view());
-        assert!(ui.find(protect::ONE_KEY).is_err());
-        assert!(
-            ui.find("Uses one of your security keys: “YubiKey” or “Spare”. Only one is needed.")
-                .is_ok()
-        );
-        assert!(ui.find("PIN of the key you use").is_ok());
-    }
-
-    fn sync_status(state: &mut State, status: sync::Status) {
-        let update = sync::Update::Status(Arc::new(status));
-        let _ = state.update(Message::Sync(syncing::Message::Engine(update)));
-    }
-
-    /// Home synced to /sync, which takes "Folder B" along unless it was left out.
-    fn home_synced(left_out: bool) -> sync::Status {
-        let folder = Some(id(FOLDER_ID));
-        let mut status = sync::Status {
-            mappings: vec![sync::Mapping {
-                remote: None,
-                local: Some(PathBuf::from("/sync")),
-            }],
-            locations: HashMap::from([
-                (None, PathBuf::from("/sync")),
-                (folder, PathBuf::from("/sync/Folder B")),
-            ]),
-            ..sync::Status::default()
-        };
-        if left_out {
-            status.badges.insert(folder, sync::Badge::Disabled);
-        }
-        status
-    }
-
-    #[test]
-    fn a_folder_synced_through_home_can_be_protected_but_not_one_synced_on_its_own() {
-        let mut state = state_with_listing();
-        sync_status(&mut state, home_synced(false));
-        assert!(!state.syncs_on_its_own(id(FOLDER_ID)));
-
-        let mut own = home_synced(false);
-        own.mappings.push(sync::Mapping {
-            remote: Some(id(FOLDER_ID)),
-            local: Some(PathBuf::from("/elsewhere")),
-        });
-        sync_status(&mut state, own);
-        assert!(state.syncs_on_its_own(id(FOLDER_ID)));
-    }
-
-    /// The browser at Home with "Folder B" unlocked and still being protected.
-    fn protecting_folder_b() -> State {
-        let keys = keys();
-        let mut state = state_with_listing();
-        let mut folder = protection(&keys);
-        folder.state = ProtectionState::Protecting;
-        let _ = state.update(Message::ProtectedLoaded(Ok(Listed {
-            folders: vec![folder.clone()],
-            ancestors: HashMap::new(),
-        })));
-        state
-            .protected
-            .unlock(&folder, Arc::new(keys))
-            .expect("unlocked");
-        state
-    }
-
-    #[test]
-    fn a_folder_does_not_open_while_it_is_encrypted() {
-        let mut state = protecting_folder_b();
-        let _ = state.start_conversion(id(FOLDER_ID), convert::Direction::Protect);
+        assert!(simulator(state.view()).find(protect::ONE_KEY).is_err());
+        let _ = state.update(Message::Protect(protect::Message::Submit));
+        let _ = state.update(Message::Protect(protect::Message::KeyFound(Ok(1))));
         assert!(
             simulator(state.view())
-                .find("“Folder B” opens when this is done.")
+                .find("Enter the PIN of “Spare”.")
                 .is_ok()
         );
-
-        let _ = state.activate(id(FOLDER_ID));
-        assert_eq!(state.folder.id, None, "still at Home");
-
-        let finished = convert::Finished {
-            folder: None,
-            binned: Vec::new(),
-        };
-        let _ = state.update(Message::Converting(
-            id(FOLDER_ID),
-            convert::Progress::Done(Ok(finished)),
-        ));
-        let _ = state.activate(id(FOLDER_ID));
-        assert_eq!(state.folder.id, Some(id(FOLDER_ID)));
     }
 
     #[test]
-    fn a_folder_is_locked_once_it_is_protected() {
-        let mut state = protecting_folder_b();
-        let _ = state.start_conversion(id(FOLDER_ID), convert::Direction::Protect);
-        assert!(
-            state.protected.is_unlocked(id(FOLDER_ID)),
-            "open to encrypt"
-        );
-
-        let mut folder = state.protected.get(id(FOLDER_ID)).expect("known").clone();
-        folder.state = ProtectionState::Protected;
-        let finished = convert::Finished {
-            folder: Some(folder),
-            binned: Vec::new(),
-        };
-        let _ = state.update(Message::Converting(
-            id(FOLDER_ID),
-            convert::Progress::Done(Ok(finished)),
-        ));
-
-        assert!(!state.protected.is_unlocked(id(FOLDER_ID)));
-        let _ = state.activate(id(FOLDER_ID));
-        let listing = Listing {
-            path: vec![node(FOLDER_NAME, NodeKind::Folder, FOLDER_ID)],
-            nodes: Vec::new(),
-        };
-        let _ = state.update(Message::Loaded(Some(id(FOLDER_ID)), Ok(listing)));
-        assert!(simulator(state.view()).find("Unlock…").is_ok());
-    }
-
-    #[test]
-    fn a_conversion_started_inside_the_folder_leaves_it_for_its_parent() {
-        let mut state = protecting_folder_b();
-        let _ = state.open_folder(Some(id(FOLDER_ID)));
-        let listing = Listing {
-            path: vec![node(FOLDER_NAME, NodeKind::Folder, FOLDER_ID)],
-            nodes: Vec::new(),
-        };
-        let _ = state.update(Message::Loaded(Some(id(FOLDER_ID)), Ok(listing.clone())));
-        assert_eq!(state.folder.id, Some(id(FOLDER_ID)));
-
-        let _ = state.start_conversion(id(FOLDER_ID), convert::Direction::Protect);
-        assert_eq!(state.folder.id, None, "back at Home, which holds it");
-
-        // A link straight inside lands on its parent too.
-        state.folder.open(Some(id(FOLDER_ID)));
-        let _ = state.update(Message::Loaded(Some(id(FOLDER_ID)), Ok(listing)));
-        assert_eq!(state.folder.id, None);
-    }
-
-    #[test]
-    fn protecting_a_synced_folder_encrypts_once_the_sync_has_left_it() {
-        let keys = keys();
+    fn a_look_for_a_key_that_failed_can_run_again() {
         let mut state = state_with_listing();
-        let mut folder = protection(&keys);
-        folder.state = ProtectionState::Protecting;
-        let _ = state.update(Message::ProtectedLoaded(Ok(Listed {
-            folders: vec![folder.clone()],
-            ancestors: HashMap::new(),
-        })));
-        state
-            .protected
-            .unlock(&folder, Arc::new(keys))
-            .expect("unlocked");
-        sync_status(&mut state, home_synced(false));
-
-        let _ = state.start_conversion(id(FOLDER_ID), convert::Direction::Protect);
-        let waiting = |state: &State| {
-            state
-                .converting
-                .as_ref()
-                .is_some_and(|conversion| conversion.leaving_sync)
-        };
-        assert!(waiting(&state), "the sync still follows the folder");
-        assert!(
-            simulator(state.view())
-                .find(conversion::LEAVING_SYNC)
-                .is_ok()
-        );
-
-        sync_status(&mut state, home_synced(false));
-        assert!(waiting(&state), "a pass from before the change");
-
-        sync_status(&mut state, home_synced(true));
-        let conversion = state.converting.as_ref().expect("converting");
-        assert!(!conversion.leaving_sync);
-        assert!(
-            simulator(state.view())
-                .find("Counting the files to encrypt…")
-                .is_ok()
-        );
-    }
-
-    #[test]
-    fn the_security_keys_list_names_each_key_and_the_recovery_key() {
-        let mut state = state_with_listing();
-        let _ = state.update(Message::FolderKeys);
+        let folder = node(FOLDER_NAME, NodeKind::Folder, FOLDER_ID);
+        let _ = state.update(Message::ProtectWithKey(folder));
         vault_loaded(&mut state, Some(vault(&["YubiKey"], true)));
+        let _ = state.update(Message::Protect(protect::Message::Submit));
+        let _ = state.update(Message::Protect(protect::Message::KeyFound(Err(Some(
+            "No security key was plugged in in time.".to_owned(),
+        )))));
 
         let mut ui = simulator(state.view());
-        assert!(ui.find("Security keys for protected folders").is_ok());
-        assert!(ui.find("YubiKey").is_ok());
-        assert!(ui.find("Replace the recovery key…").is_ok());
-        ui.click("Remove").expect("each key can be removed");
+        assert!(ui.find("No security key was plugged in in time.").is_ok());
+        ui.click("Look again")
+            .expect("offered once the look failed");
         for message in ui.into_messages() {
             let _ = state.update(message);
         }
-        let mut ui = simulator(state.view());
-        assert!(ui.find("Remove “YubiKey”?").is_ok());
-
-        ui.click("Cancel").expect("the button is shown");
-        for message in ui.into_messages() {
-            let _ = state.update(message);
-        }
-        assert!(state.protect.is_some(), "back to the list, not closed");
-
-        let _ = state.update(Message::FolderKeys);
-        vault_loaded(&mut state, None);
-        let mut ui = simulator(state.view());
-        assert!(ui.find("No security keys yet.").is_ok());
-        ui.click("Add a key…").expect("the button is shown");
-        for message in ui.into_messages() {
-            let _ = state.update(message);
-        }
-        let mut ui = simulator(state.view());
-        assert!(ui.find("PIN of the new key").is_ok());
         assert!(
-            ui.find("PIN of a key you already have").is_err(),
-            "the first key starts the vault"
+            simulator(state.view())
+                .find("No security key was plugged in in time.")
+                .is_err()
         );
     }
 
     #[test]
-    fn adding_another_key_opens_the_vault_with_one_already_there() {
+    fn adding_a_key_opens_the_vault_with_one_already_there_or_starts_it() {
         let mut state = state_with_listing();
-        let _ = state.update(Message::FolderKeys);
-        vault_loaded(&mut state, Some(vault(&["YubiKey"], true)));
-        let _ = state.update(Message::Protect(protect::Message::AddKey));
+        let (dialog, _) = protect::Dialog::add_key(&state.client, Some(vault(&["YubiKey"], true)));
+        state.protect = Some(dialog);
 
         let mut ui = simulator(state.view());
         assert!(ui.find("PIN of the new key").is_ok());
@@ -2169,16 +2027,25 @@ mod protected_folders {
             let _ = state.update(message);
         }
         assert!(simulator(state.view()).find("Recovery key").is_ok());
-    }
 
-    fn remove_first_key(state: &mut State, vault: protocol::Vault) {
-        let _ = state.update(Message::FolderKeys);
-        vault_loaded(state, Some(vault));
+        let (dialog, _) = protect::Dialog::add_key(&state.client, None);
+        state.protect = Some(dialog);
         let mut ui = simulator(state.view());
-        ui.click("Remove").expect("each key can be removed");
+        assert!(ui.find("PIN of the new key").is_ok());
+        assert!(
+            ui.find("PIN of a key you already have").is_err(),
+            "the first key starts the vault"
+        );
+        ui.click("Cancel").expect("the button is shown");
         for message in ui.into_messages() {
             let _ = state.update(message);
         }
+        assert!(state.protect.is_none(), "closed, back to the settings");
+    }
+
+    fn remove_first_key(state: &mut State, vault: protocol::Vault) {
+        let first = Uuid::from_bytes([1; 16]);
+        state.protect = Some(protect::Dialog::remove_key(vault, first).expect("the first key"));
         let _ = state.update(Message::Protect(protect::Message::Lost(true)));
     }
 

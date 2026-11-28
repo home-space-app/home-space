@@ -121,6 +121,8 @@ pub enum Icon {
     Event,
     ZoomIn,
     ZoomOut,
+    /// The settings page.
+    Settings,
 }
 
 /// How an icon is tinted.
@@ -198,6 +200,7 @@ impl Icon {
             Self::Public => include_bytes!("../assets/icons/public.svg"),
             Self::Group => include_bytes!("../assets/icons/group.svg"),
             Self::PersonAdd => include_bytes!("../assets/icons/person_add.svg"),
+            Self::Settings => include_bytes!("../assets/icons/settings.svg"),
             Self::SwapVert => include_bytes!("../assets/icons/swap_vert.svg"),
             Self::SaveToServer => include_bytes!("../assets/icons/drive_folder_upload.svg"),
             Self::Send => include_bytes!("../assets/icons/send.svg"),

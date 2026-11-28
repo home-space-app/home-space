@@ -10,7 +10,7 @@
 mod keys;
 
 #[cfg(test)]
-pub(crate) use keys::{NO_KEY, ONE_KEY};
+pub(crate) use keys::{ABOUT, NO_KEY, ONE_KEY};
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -85,14 +85,11 @@ pub enum Message {
     VaultLoaded(Result<Option<Vault>, ApiError>),
     /// Opens the vault with its recovery key instead of a security key, or back.
     UseRecovery(bool),
-    /// Lists the user's folder keys.
-    ShowKeys,
-    /// Adds a security key as a folder key.
-    AddKey,
-    /// Creates or replaces the recovery key of the folder keys.
-    CreateRecovery,
-    /// Asks to remove this folder key.
-    RemoveKey(Uuid),
+    /// Which of the user's encryption keys is plugged in; `Err(None)` when the look was
+    /// cancelled.
+    KeyFound(Result<usize, Option<String>>),
+    /// Goes to the account settings, where encryption keys are registered.
+    GoToAccount,
     /// The key to remove is lost: replace the vault key too.
     Lost(bool),
     /// What the server answered a change of the folder keys.
@@ -158,6 +155,8 @@ pub enum Outcome {
     Unprotecting(ProtectedFolder),
     /// The folder is no longer protected; the dialog closed.
     Removed(NodeId),
+    /// The user goes to the account settings to register an encryption key; the dialog closed.
+    OpenAccount,
 }
 
 enum Step {
@@ -245,8 +244,6 @@ pub struct Dialog {
     busy: bool,
     error: Option<String>,
     pending: Option<Pending>,
-    /// The folder to protect once a security key is added for it.
-    return_to: Option<Node>,
     /// What the work under way last asked of the user, shown instead of the step's own note.
     told: Option<String>,
 }
@@ -258,7 +255,6 @@ impl Dialog {
             busy: false,
             error: None,
             pending: None,
-            return_to: None,
             told: None,
         }
     }
@@ -351,19 +347,21 @@ impl Dialog {
                 Outcome::Task(Task::none())
             }
             Message::Cancel => {
-                if self.busy {
+                // Ends a touch or a look for a key that may still run.
+                if matches!(self.step, Step::Key(_)) {
                     crate::protected::security_key::cancel();
                 }
                 Outcome::Closed
             }
             Message::Submit if self.busy => Outcome::Task(Task::none()),
             Message::Told(line) => {
-                if self.busy {
-                    self.told = Some(line);
-                }
+                self.told = Some(line);
                 Outcome::Task(Task::none())
             }
+            Message::Submit if self.looks_on_submit() => self.look(),
             Message::Submit => self.submit(client, user),
+            Message::KeyFound(found) => self.key_found(found),
+            Message::GoToAccount => Outcome::OpenAccount,
             // What the user cancelled while it ran.
             Message::Derived(_) if !self.busy => Outcome::Task(Task::none()),
             Message::Derived(Ok(derived)) => self.derived(client, derived),
@@ -394,10 +392,6 @@ impl Dialog {
             Message::VaultSent(Ok(())) => self.vault_sent(client),
             Message::VaultLoaded(loaded) => self.vault_loaded(loaded),
             Message::UseRecovery(recovering) => self.use_recovery(recovering),
-            Message::ShowKeys => self.show_keys(client),
-            Message::AddKey => self.add_key(client),
-            Message::CreateRecovery => self.create_recovery(),
-            Message::RemoveKey(id) => self.remove_key(id),
             Message::Lost(lost) => self.lost(lost),
             Message::Confirmed(Ok(())) => {
                 if let Step::Confirm { back, .. } = &mut self.step
@@ -565,11 +559,6 @@ impl Dialog {
                     Message::Confirmed,
                 )
             }
-            Step::RecoveryKey {
-                kept: true,
-                vault: true,
-                ..
-            } => return self.back(client),
             Step::RecoveryKey { kept: true, .. } => return Outcome::Closed,
             Step::RecoveryKey { .. } => return Outcome::Task(Task::none()),
             Step::Binned { items, .. } => {
@@ -871,7 +860,7 @@ impl Dialog {
                         parts::dialog_head(
                             "Save the recovery key",
                             if *vault {
-                                "If you lose your security keys, this key is the only way to \
+                                "If you lose your encryption keys, this key is the only way to \
                                  open the folders they protect. Keep it somewhere safe, away \
                                  from this computer. It is shown only now, and replaces any \
                                  recovery key from before."
@@ -1053,32 +1042,35 @@ fn send(client: &Client, pending: Pending) -> Task<Message> {
 /// Asks where to save a recovery key, of the password folder `name` or, without one, of the
 /// user's security keys, and writes it there.
 fn save_key(name: Option<String>, key: String) -> Task<Message> {
-    Task::perform(
-        async move {
-            let file_name = if name.is_some() {
-                KEY_FILE
-            } else {
-                VAULT_KEY_FILE
-            };
-            let Some(handle) = rfd::AsyncFileDialog::new()
-                .set_file_name(file_name)
-                .save_file()
-                .await
-            else {
-                return Ok(None);
-            };
-            let path = handle.path().to_path_buf();
-            let content = match name {
-                Some(name) => format!("Home Space recovery key for the folder “{name}”\n\n{key}\n"),
-                None => format!(
-                    "Home Space recovery key for the folders protected with your security keys\n\n{key}\n"
-                ),
-            };
-            tokio::fs::write(&path, content)
-                .await
-                .map_err(|err| format!("{}: {err}", path.display()))?;
-            Ok(Some(path))
-        },
-        Message::KeySaved,
-    )
+    let file_name = if name.is_some() {
+        KEY_FILE
+    } else {
+        VAULT_KEY_FILE
+    };
+    let ask = crate::file_dialog::over_window(move |dialog| dialog.set_file_name(file_name));
+    ask.then(move |dialog| {
+        let (name, key) = (name.clone(), key.clone());
+        Task::perform(save_key_to(dialog, name, key), Message::KeySaved)
+    })
+}
+
+async fn save_key_to(
+    dialog: rfd::AsyncFileDialog,
+    name: Option<String>,
+    key: String,
+) -> Result<Option<PathBuf>, String> {
+    let Some(handle) = dialog.save_file().await else {
+        return Ok(None);
+    };
+    let path = handle.path().to_path_buf();
+    let content = match name {
+        Some(name) => format!("Home Space recovery key for the folder “{name}”\n\n{key}\n"),
+        None => format!(
+            "Home Space recovery key for the folders protected with your encryption keys\n\n{key}\n"
+        ),
+    };
+    tokio::fs::write(&path, content)
+        .await
+        .map_err(|err| format!("{}: {err}", path.display()))?;
+    Ok(Some(path))
 }

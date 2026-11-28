@@ -17,6 +17,7 @@ mod protect;
 mod search;
 mod selection;
 mod send;
+mod settings;
 mod share;
 mod shared;
 mod sidebar;
@@ -130,6 +131,11 @@ pub enum Message {
     OpenSyncSettings,
     OpenDevices,
     Devices(devices::Message),
+    /// Opens the settings, on the Account tab.
+    OpenSettings,
+    Settings(settings::Message),
+    /// The signed-in user, read again after the settings changed it.
+    MeLoaded(Result<Me, ApiError>),
     OpenTransfers,
     Transfers(transfer_list::Message),
     /// The version chip, banner and "New version available" toast.
@@ -154,8 +160,6 @@ pub enum Message {
     ProtectFolder(Node),
     /// Opens the dialog protecting this folder with a security key.
     ProtectWithKey(Node),
-    /// Opens the list of the user's security keys for protected folders.
-    FolderKeys,
     /// Looks whether the security keys that unlocked folders are still plugged in.
     CheckKeys,
     /// Where security keys are plugged in now.
@@ -217,6 +221,8 @@ enum Page {
     SyncSettings,
     /// The user's devices.
     Devices(Box<devices::State>),
+    /// The settings: the account, its sign-in and its encryption keys.
+    Settings(Box<settings::State>),
     /// What was sent to this device and what the user sent.
     Transfers,
     /// A file in a built-in viewer.
@@ -762,12 +768,13 @@ impl State {
                 self.protect = Some(dialog);
                 task.map(Message::Protect)
             }
-            Message::FolderKeys => {
-                self.menu = None;
-                let (dialog, task) = protect::Dialog::folder_keys(&self.client);
-                self.protect = Some(dialog);
-                task.map(Message::Protect)
+            Message::OpenSettings => self.open_settings(),
+            Message::Settings(message) => self.settings_update(message),
+            Message::MeLoaded(Ok(me)) => {
+                self.me = me;
+                Task::none()
             }
+            Message::MeLoaded(Err(_)) => Task::none(),
             Message::CheckKeys => Task::perform(
                 async {
                     tokio::task::spawn_blocking(protected::security_key::plugged)
@@ -1175,7 +1182,17 @@ impl State {
             protect::Outcome::Closed => {
                 self.protect = None;
                 self.offer_binned();
-                Task::none()
+                // A dialog about the encryption keys may have changed them.
+                match &mut self.page {
+                    Page::Settings(settings) => {
+                        settings.reload_vault(&self.client).map(Message::Settings)
+                    }
+                    _ => Task::none(),
+                }
+            }
+            protect::Outcome::OpenAccount => {
+                self.protect = None;
+                self.open_settings()
             }
             protect::Outcome::Opened {
                 folder,
@@ -1324,6 +1341,42 @@ impl State {
         Task::none()
     }
 
+    fn open_settings(&mut self) -> Task<Message> {
+        self.search.clear();
+        self.folder.error = None;
+        self.details = None;
+        self.menu = None;
+        self.folder.selection.clear();
+        let (settings, task) = settings::State::open(&self.client);
+        self.page = Page::Settings(Box::new(settings));
+        task.map(Message::Settings)
+    }
+
+    fn settings_update(&mut self, message: settings::Message) -> Task<Message> {
+        let Page::Settings(settings) = &mut self.page else {
+            return Task::none();
+        };
+        match settings.update(&self.client, message) {
+            settings::Outcome::Task(task) => task.map(Message::Settings),
+            settings::Outcome::MeChanged(task) => {
+                let client = self.client.clone();
+                let me = Task::perform(async move { client.me().await }, Message::MeLoaded);
+                Task::batch([task.map(Message::Settings), me])
+            }
+            settings::Outcome::KeyDialog(dialog, task) => {
+                self.protect = Some(*dialog);
+                task.map(Message::Protect)
+            }
+            settings::Outcome::OpenWeb => {
+                let url = self.client.url(paths::WEB_SETTINGS);
+                if let Err(err) = syncing::open_url(&url) {
+                    self.folder.error = Some(err);
+                }
+                Task::none()
+            }
+        }
+    }
+
     fn open_devices(&mut self) -> Task<Message> {
         self.search.clear();
         self.folder.error = None;
@@ -1382,6 +1435,7 @@ impl State {
                 .update(&self.client, shared::Message::Refresh)
                 .map(Message::Shared),
             Page::Devices(devices) => devices.load(&self.client).map(Message::Devices),
+            Page::Settings(settings) => settings.reload_vault(&self.client).map(Message::Settings),
             Page::Transfers => self
                 .transfer_list
                 .load(&self.client)
@@ -1875,6 +1929,16 @@ impl State {
                 }
                 _ => Task::none(),
             }
+        } else if let Page::Settings(settings) = &mut self.page {
+            match shortcut {
+                Shortcut::Escape if settings.is_asking() => {
+                    self.settings_update(settings::Message::Cancel)
+                }
+                Shortcut::Escape | Shortcut::Back | Shortcut::Parent => {
+                    self.open_folder(self.folder.id)
+                }
+                _ => Task::none(),
+            }
         } else if let Page::Devices(devices) = &mut self.page {
             match shortcut {
                 Shortcut::Escape if devices.is_asking() => {
@@ -2058,6 +2122,7 @@ fn leaves_page(message: &Message) -> bool {
             | Message::OpenSyncQueue
             | Message::OpenSyncSettings
             | Message::OpenDevices
+            | Message::OpenSettings
             | Message::OpenTransfers
             | Message::Transfers(transfer_list::Message::Save(_))
             | Message::SignOut

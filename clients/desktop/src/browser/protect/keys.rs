@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use iced::{
     Element, Task,
-    widget::{Column, checkbox, column, operation, row, text, text_input},
+    widget::{Column, checkbox, column, operation, text, text_input},
 };
 use zeroize::Zeroizing;
 
@@ -29,17 +29,23 @@ use super::{
 use crate::{
     browser::parts,
     icons::Icon,
-    locale::short_date,
     protected::security_key::{KeyError, KeyRing, SecurityKey},
     theme,
 };
 
-pub(crate) const NO_KEY: &str =
-    "This folder cannot be protected securely without a security key. Add one first.";
-pub(crate) const ONE_KEY: &str =
-    "Only this key opens the folder: if you lose it, the files are lost.";
-const LOADING: &str = "Loading your security keys…";
+pub(crate) const NO_KEY: &str = "You have no encryption key registered yet. Register one in \
+     Settings → Account, then protect the folder with it.";
+pub(crate) const ONE_KEY: &str = "You have only one encryption key registered. If you lose it, you \
+     lose access to the files in this folder. You can register more keys in Settings → Account.";
+pub(crate) const ABOUT: &str = "End-to-end encryption: the files in this folder and their names \
+     are encrypted on this computer before they are uploaded. Only you can open them again, with \
+     one of your encryption keys and its PIN; the server cannot read them.";
+const PREVIOUS_VERSIONS: &str = "The previous versions of the files in this folder will be \
+     deleted. Deleting something inside a protected folder deletes it for good.";
+const LOADING: &str = "Loading your encryption keys…";
+const LOOKING: &str = "Looking for your encryption key…";
 const TOUCH: &str = "Touch your security key…";
+const LOOK_AGAIN: &str = "Look again";
 
 /// The vault, once the server listed it: `None` before the user's first folder key.
 pub(super) enum Loaded {
@@ -61,19 +67,15 @@ pub(super) enum KeyStep {
     Protect {
         node: Node,
         vault: Loaded,
-        pin: String,
+        stage: Stage,
     },
-    /// Unlocking `folder` with a folder key, or with the vault's recovery key.
+    /// Unlocking `folder` with an encryption key, or with the vault's recovery key.
     Unlock {
         folder: ProtectedFolder,
         name: String,
         vault: Loaded,
-        pin: String,
-        recovering: bool,
-        recovery: String,
+        stage: Stage,
     },
-    /// The user's folder keys and recovery key.
-    List { vault: Loaded },
     /// A new recovery key, made after opening the vault with a key the user has or with the
     /// recovery key from before.
     NewRecovery {
@@ -103,16 +105,39 @@ pub(super) enum KeyStep {
     },
 }
 
+/// Where a step that opens the vault with one of the user's keys is.
+pub(super) enum Stage {
+    /// What protecting does, before any key is asked for.
+    Intro,
+    /// Looking for one of the user's keys among those plugged in, waiting for one when none is.
+    Finding,
+    /// The key holding the encryption key at `index` is plugged in; its PIN is asked.
+    Pin { index: usize, pin: String },
+    /// Opening the vault with its recovery key instead, when unlocking.
+    Recovery { recovery: String },
+}
+
 impl KeyStep {
     pub(super) fn field(&mut self, field: Field) -> Option<&mut String> {
         match (self, field) {
             (
-                Self::Protect { pin, .. } | Self::Unlock { pin, .. } | Self::Add { pin, .. },
+                Self::Protect {
+                    stage: Stage::Pin { pin, .. },
+                    ..
+                }
+                | Self::Unlock {
+                    stage: Stage::Pin { pin, .. },
+                    ..
+                }
+                | Self::Add { pin, .. },
                 Field::Pin,
             ) => Some(pin),
             (Self::NewRecovery { pin, .. }, Field::ExistingPin) => Some(pin),
             (
-                Self::Unlock { recovery, .. }
+                Self::Unlock {
+                    stage: Stage::Recovery { recovery },
+                    ..
+                }
                 | Self::NewRecovery { recovery, .. }
                 | Self::Add { recovery, .. }
                 | Self::Remove { recovery, .. },
@@ -168,6 +193,48 @@ fn staying(vault: &Vault, removed: &FolderKey) -> Vec<FolderKey> {
         .into_iter()
         .filter(|key| key.id != removed.id)
         .collect()
+}
+
+/// The plugged-in key that holds `key`, the one found before its PIN was asked: by what it
+/// holds rather than where it was, so that plugging it in again elsewhere does not matter.
+fn the_key(key: &FolderKey, pin: Zeroizing<String>) -> Result<SecurityKey, String> {
+    let keys = std::slice::from_ref(key);
+    SecurityKey::holding(keys, pin)
+        .map(|(found, _)| found)
+        .map_err(|err| not_yours(err, keys))
+}
+
+/// Looks for the first of `keys` plugged in, asking for one while none is.
+fn look_for_key(keys: Vec<FolderKey>) -> Task<Message> {
+    Task::run(
+        iced::stream::channel(
+            super::TOLD_LINES,
+            async move |mut output: iced::futures::channel::mpsc::Sender<Message>| {
+                use iced::futures::SinkExt;
+                let tell = Tell(output.clone());
+                let found = tokio::task::spawn_blocking(move || {
+                    SecurityKey::which_plugged(&keys, || tell.say(plug_one_of(&keys))).map_err(
+                        |err| match err {
+                            KeyError::Refused => None,
+                            err => Some(not_yours(err, &keys)),
+                        },
+                    )
+                })
+                .await
+                .unwrap_or_else(|err| Err(Some(err.to_string())));
+                let _ = output.send(Message::KeyFound(found)).await;
+            },
+        ),
+        std::convert::identity,
+    )
+}
+
+/// A line under the fields, made for this view.
+fn said<'a>(line: String) -> Element<'a, Message> {
+    text(line)
+        .size(parts::SECOND_LINE_SIZE)
+        .style(theme::muted_text)
+        .into()
 }
 
 /// The names of `keys` as a choice: “A” or “B”, or “A”, “B” or “C”.
@@ -260,20 +327,19 @@ impl Dialog {
         Self::with(Step::Key(step))
     }
 
-    /// Asks for the PIN of a folder key to protect `node` with.
+    /// Explains protecting `node` with an encryption key; the key's PIN is asked once the user
+    /// goes on.
     pub fn protect_with_key(client: &Client, node: Node) -> (Self, Task<Message>) {
         let dialog = Self::key(KeyStep::Protect {
             node,
             vault: Loaded::Waiting,
-            pin: String::new(),
+            stage: Stage::Intro,
         });
-        (
-            dialog,
-            Task::batch([load_vault(client), operation::focus(FIRST_INPUT)]),
-        )
+        (dialog, load_vault(client))
     }
 
-    /// Asks for the PIN of a folder key to unlock `folder`, named `name`, with.
+    /// Unlocks `folder`, named `name`, with the first of the user's keys found plugged in,
+    /// asking for its PIN.
     pub(super) fn unlock_with_key(
         client: &Client,
         folder: ProtectedFolder,
@@ -283,143 +349,162 @@ impl Dialog {
             folder,
             name,
             vault: Loaded::Waiting,
-            pin: String::new(),
-            recovering: false,
-            recovery: String::new(),
+            stage: Stage::Finding,
         });
-        (
-            dialog,
-            Task::batch([load_vault(client), operation::focus(FIRST_INPUT)]),
-        )
+        (dialog, load_vault(client))
     }
 
-    /// Lists the user's folder keys.
-    pub fn folder_keys(client: &Client) -> (Self, Task<Message>) {
-        (
-            Self::key(KeyStep::List {
-                vault: Loaded::Waiting,
-            }),
-            load_vault(client),
-        )
-    }
-
-    pub(super) fn vault_loaded(&mut self, loaded: Result<Option<Vault>, ApiError>) -> Outcome {
-        match loaded {
-            Ok(found) => {
-                if let Step::Key(
-                    KeyStep::Protect { vault, .. }
-                    | KeyStep::Unlock { vault, .. }
-                    | KeyStep::List { vault },
-                ) = &mut self.step
-                {
-                    *vault = Loaded::Vault(found);
-                }
-                Outcome::Task(Task::none())
-            }
-            Err(err) => self.fail(err.to_string()),
-        }
-    }
-
-    pub(super) fn use_recovery(&mut self, use_it: bool) -> Outcome {
-        if let Step::Key(
-            KeyStep::Unlock { recovering, .. }
-            | KeyStep::NewRecovery { recovering, .. }
-            | KeyStep::Add { recovering, .. },
-        ) = &mut self.step
-        {
-            *recovering = use_it;
-            self.error = None;
-        }
-        Outcome::Task(operation::focus(FIRST_INPUT))
-    }
-
-    pub(super) fn show_keys(&mut self, client: &Client) -> Outcome {
-        if self.busy {
-            crate::protected::security_key::cancel();
-        }
-        self.error = None;
-        self.busy = false;
-        self.step = Step::Key(KeyStep::List {
-            vault: Loaded::Waiting,
-        });
-        Outcome::Task(load_vault(client))
-    }
-
-    /// Goes on to add a security key: opening the vault first when there is one.
-    pub(super) fn add_key(&mut self, client: &Client) -> Outcome {
-        let vault = match &self.step {
-            Step::Key(KeyStep::Protect { node, vault, .. }) => {
-                self.return_to = Some(node.clone());
-                vault
-            }
-            Step::Key(KeyStep::List { vault }) => vault,
-            _ => return Outcome::Task(Task::none()),
-        };
-        let Loaded::Vault(vault) = vault else {
-            return Outcome::Task(Task::none());
-        };
-        if let Err(err) = rp_id(client) {
-            return self.fail(err);
-        }
-        self.error = None;
+    /// Registers a security key as an encryption key; `vault` is `None` before the first,
+    /// which starts it.
+    pub fn add_key(client: &Client, vault: Option<Vault>) -> (Self, Task<Message>) {
         let recovering = vault
             .as_ref()
             .is_some_and(|vault| folder_keys(vault).is_empty());
-        self.step = Step::Key(KeyStep::Add {
-            vault: vault.clone(),
+        let mut dialog = Self::key(KeyStep::Add {
+            vault,
             name: String::new(),
             pin: String::new(),
             existing: String::new(),
             recovering,
             recovery: String::new(),
         });
-        Outcome::Task(operation::focus(FIRST_INPUT))
+        dialog.error = rp_id(client).err();
+        (dialog, operation::focus(FIRST_INPUT))
     }
 
-    /// Goes on to create the recovery key, opening the vault first.
-    pub(super) fn create_recovery(&mut self) -> Outcome {
-        let vault = match &self.step {
-            Step::Key(KeyStep::Protect { vault, node, .. }) => {
-                self.return_to = Some(node.clone());
-                vault
-            }
-            Step::Key(KeyStep::List { vault }) => vault,
-            _ => return Outcome::Task(Task::none()),
-        };
-        let Some(vault) = vault.vault().cloned() else {
-            return Outcome::Task(Task::none());
-        };
-        self.error = None;
+    /// Creates or replaces the recovery key of the encryption keys, opening the vault first.
+    pub fn create_recovery(vault: Vault) -> (Self, Task<Message>) {
         let recovering = folder_keys(&vault).is_empty();
-        self.step = Step::Key(KeyStep::NewRecovery {
+        let dialog = Self::key(KeyStep::NewRecovery {
             vault,
             pin: String::new(),
             recovering,
             recovery: String::new(),
         });
-        Outcome::Task(operation::focus(FIRST_INPUT))
+        (dialog, operation::focus(FIRST_INPUT))
     }
 
-    pub(super) fn remove_key(&mut self, id: Uuid) -> Outcome {
-        let Step::Key(KeyStep::List { vault }) = &self.step else {
-            return Outcome::Task(Task::none());
-        };
-        let Some(vault) = vault.vault() else {
-            return Outcome::Task(Task::none());
-        };
-        let Some(key) = folder_keys(vault).into_iter().find(|key| key.id == id) else {
-            return Outcome::Task(Task::none());
-        };
-        self.error = None;
-        let pins = vec![String::new(); staying(vault, &key).len()];
-        self.step = Step::Key(KeyStep::Remove {
+    /// Asks to remove the encryption key `id`; `None` when the vault has no such key.
+    pub fn remove_key(vault: Vault, id: Uuid) -> Option<Self> {
+        let key = folder_keys(&vault).into_iter().find(|key| key.id == id)?;
+        let pins = vec![String::new(); staying(&vault, &key).len()];
+        Some(Self::key(KeyStep::Remove {
             key,
-            vault: vault.clone(),
+            vault,
             lost: false,
             pins,
             recovery: String::new(),
-        });
-        Outcome::Task(Task::none())
+        }))
+    }
+
+    pub(super) fn vault_loaded(&mut self, loaded: Result<Option<Vault>, ApiError>) -> Outcome {
+        let found = match loaded {
+            Ok(found) => found,
+            Err(err) => return self.fail(err.to_string()),
+        };
+        let Step::Key(KeyStep::Protect { vault, .. } | KeyStep::Unlock { vault, .. }) =
+            &mut self.step
+        else {
+            return Outcome::Task(Task::none());
+        };
+        *vault = Loaded::Vault(found);
+        // Unlocking looks for a key at once; protecting once the user goes on.
+        match &self.step {
+            Step::Key(KeyStep::Unlock { .. }) => self.look(),
+            _ => Outcome::Task(Task::none()),
+        }
+    }
+
+    /// Whether going on starts looking for a key: protecting goes on from what it does, and a
+    /// look that failed can run again.
+    pub(super) fn looks_on_submit(&self) -> bool {
+        match &self.step {
+            Step::Key(KeyStep::Protect {
+                stage: Stage::Intro,
+                ..
+            }) => true,
+            Step::Key(
+                KeyStep::Protect {
+                    stage: Stage::Finding,
+                    ..
+                }
+                | KeyStep::Unlock {
+                    stage: Stage::Finding,
+                    ..
+                },
+            ) => self.error.is_some(),
+            _ => false,
+        }
+    }
+
+    /// Starts looking for one of the user's keys among those plugged in.
+    pub(super) fn look(&mut self) -> Outcome {
+        let Step::Key(KeyStep::Protect { vault, stage, .. } | KeyStep::Unlock { vault, stage, .. }) =
+            &mut self.step
+        else {
+            return Outcome::Task(Task::none());
+        };
+        let keys = vault.vault().map(folder_keys).unwrap_or_default();
+        if keys.is_empty() {
+            return Outcome::Task(Task::none());
+        }
+        *stage = Stage::Finding;
+        self.error = None;
+        self.told = None;
+        Outcome::Task(look_for_key(keys))
+    }
+
+    /// Takes in which of the user's keys is plugged in: its PIN is asked next.
+    pub(super) fn key_found(&mut self, found: Result<usize, Option<String>>) -> Outcome {
+        let Step::Key(KeyStep::Protect { stage, .. } | KeyStep::Unlock { stage, .. }) =
+            &mut self.step
+        else {
+            return Outcome::Task(Task::none());
+        };
+        // What a look from before found, which the user moved on from.
+        if !matches!(stage, Stage::Finding) {
+            return Outcome::Task(Task::none());
+        }
+        self.told = None;
+        match found {
+            Ok(index) => {
+                *stage = Stage::Pin {
+                    index,
+                    pin: String::new(),
+                };
+                self.error = None;
+                Outcome::Task(operation::focus(FIRST_INPUT))
+            }
+            Err(Some(err)) => {
+                self.error = Some(err);
+                Outcome::Task(Task::none())
+            }
+            // Cancelled.
+            Err(None) => Outcome::Task(Task::none()),
+        }
+    }
+
+    pub(super) fn use_recovery(&mut self, use_it: bool) -> Outcome {
+        match &mut self.step {
+            Step::Key(KeyStep::Unlock { stage, .. }) if use_it => {
+                crate::protected::security_key::cancel();
+                *stage = Stage::Recovery {
+                    recovery: String::new(),
+                };
+                self.error = None;
+                self.told = None;
+                Outcome::Task(operation::focus(FIRST_INPUT))
+            }
+            Step::Key(KeyStep::Unlock { .. }) => self.look(),
+            Step::Key(
+                KeyStep::NewRecovery { recovering, .. } | KeyStep::Add { recovering, .. },
+            ) => {
+                *recovering = use_it;
+                self.error = None;
+                Outcome::Task(operation::focus(FIRST_INPUT))
+            }
+            _ => Outcome::Task(Task::none()),
+        }
     }
 
     /// Whether the key to remove is lost, so that the vault key is replaced too.
@@ -443,20 +528,19 @@ impl Dialog {
             KeyStep::Protect {
                 node,
                 vault,
-                pin: typed,
+                stage: Stage::Pin { index, pin: typed },
             } => {
                 let vault = vault.vault()?.clone();
-                let keys = folder_keys(&vault);
-                if keys.is_empty() || typed.is_empty() {
+                let key = folder_keys(&vault).get(*index)?.clone();
+                if typed.is_empty() {
                     return None;
                 }
                 let (id, pin) = (node.id, pin(typed));
                 Some(derive(move || {
-                    let (mut key, index) =
-                        SecurityKey::holding(&keys, pin).map_err(|err| not_yours(err, &keys))?;
+                    let mut auth = the_key(&key, pin)?;
                     let proof = VaultProof::Key {
-                        auth: &mut key,
-                        key: &keys[index],
+                        auth: &mut auth,
+                        key: &key,
                     };
                     let (request, keys) = with_vault(&vault, user, proof, |vault_key| {
                         protect_with_vault(&vault, vault_key, id)
@@ -472,39 +556,46 @@ impl Dialog {
             KeyStep::Unlock {
                 folder,
                 vault,
-                pin: typed,
-                recovering,
-                recovery,
+                stage: Stage::Recovery { recovery },
                 ..
             } => {
                 let vault = vault.vault()?.clone();
                 let folder = folder.clone();
-                if *recovering {
-                    let typed = Zeroizing::new(recovery.clone());
-                    return Some(derive(move || {
-                        let proof = VaultProof::<SecurityKey>::RecoveryKey(&typed);
-                        let keys = with_vault(&vault, user, proof, |vault_key| {
-                            open_with_vault(&vault, vault_key, &folder)
-                        })
-                        .map_err(message)?;
-                        Ok(Derived::Unlock {
-                            keys: Arc::new(keys),
-                            key: None,
-                        })
-                    }));
+                if recovery.is_empty() {
+                    return None;
                 }
+                let typed = Zeroizing::new(recovery.clone());
+                Some(derive(move || {
+                    let proof = VaultProof::<SecurityKey>::RecoveryKey(&typed);
+                    let keys = with_vault(&vault, user, proof, |vault_key| {
+                        open_with_vault(&vault, vault_key, &folder)
+                    })
+                    .map_err(message)?;
+                    Ok(Derived::Unlock {
+                        keys: Arc::new(keys),
+                        key: None,
+                    })
+                }))
+            }
+            KeyStep::Unlock {
+                folder,
+                vault,
+                stage: Stage::Pin { index, pin: typed },
+                ..
+            } => {
+                let vault = vault.vault()?.clone();
+                let key = folder_keys(&vault).get(*index)?.clone();
+                let folder = folder.clone();
                 if typed.is_empty() {
                     return None;
                 }
                 let pin = pin(typed);
                 Some(derive(move || {
-                    let keys = folder_keys(&vault);
-                    let (mut key, index) =
-                        SecurityKey::holding(&keys, pin).map_err(|err| not_yours(err, &keys))?;
-                    let path = key.path().to_owned();
+                    let mut auth = the_key(&key, pin)?;
+                    let path = auth.path().to_owned();
                     let proof = VaultProof::Key {
-                        auth: &mut key,
-                        key: &keys[index],
+                        auth: &mut auth,
+                        key: &key,
                     };
                     let opened = with_vault(&vault, user, proof, |vault_key| {
                         open_with_vault(&vault, vault_key, &folder)
@@ -516,7 +607,7 @@ impl Dialog {
                     })
                 }))
             }
-            KeyStep::List { .. } => None,
+            KeyStep::Protect { .. } | KeyStep::Unlock { .. } => None,
             KeyStep::NewRecovery {
                 vault,
                 pin: typed,
@@ -680,7 +771,7 @@ impl Dialog {
                 };
                 Outcome::Task(Task::none())
             }
-            Some(Pending::AddUnlocker { recovery: None, .. }) => self.back(client),
+            Some(Pending::AddUnlocker { recovery: None, .. }) => Outcome::Closed,
             // The vault key is replaced; the recovery key that replaces the old one goes next.
             Some(Pending::Rotate {
                 recovery: Some((request, key)),
@@ -694,22 +785,44 @@ impl Dialog {
                 self.busy = true;
                 Outcome::Task(send(client, pending))
             }
-            _ => self.show_keys(client),
+            _ => Outcome::Closed,
         }
     }
 
-    /// Goes back to where the change of the folder keys started: protecting a folder, or the
-    /// list of keys.
-    pub(super) fn back(&mut self, client: &Client) -> Outcome {
-        match self.return_to.take() {
-            Some(node) => {
-                let (dialog, task) = Self::protect_with_key(client, node);
-                self.step = dialog.step;
-                self.error = None;
-                self.busy = false;
-                Outcome::Task(task)
+    /// The lines of a step that opens the vault with one of `keys`: looking for it, then its
+    /// PIN, to `doing`; whether the step can go on.
+    fn key_lines<'a>(
+        &'a self,
+        lines: Column<'a, Message>,
+        keys: &[FolderKey],
+        stage: &'a Stage,
+        doing: &str,
+    ) -> (Column<'a, Message>, bool) {
+        match stage {
+            Stage::Intro | Stage::Recovery { .. } => (lines, true),
+            // Looking again is offered once a look failed.
+            Stage::Finding => (
+                lines.push(note(self.told.as_deref().unwrap_or(LOOKING))),
+                self.error.is_some(),
+            ),
+            Stage::Pin { index, pin } => {
+                let name = keys
+                    .get(*index)
+                    .map_or("your security key", |key| key.name.as_str());
+                let lines = lines
+                    .push(text(format!("Enter the PIN of “{name}”.")))
+                    .push(secret_field(
+                        format!("PIN of “{name}”"),
+                        pin,
+                        Field::Pin,
+                        true,
+                    ))
+                    .push(
+                        self.busy
+                            .then(|| said(format!("Touch “{name}” to {doing}."))),
+                    );
+                (lines, true)
             }
-            None => self.show_keys(client),
         }
     }
 
@@ -721,224 +834,113 @@ impl Dialog {
         let touching = |label: &'static str| if self.busy { TOUCH } else { label };
         let submit = (!self.busy).then_some(Message::Submit);
         let cancel = parts::outlined(None, CANCEL, Some(Message::Cancel));
-        // A change of the keys goes back to the list it started from.
-        let back = || {
-            let to = if self.return_to.is_some() {
-                Message::Cancel
-            } else {
-                Message::ShowKeys
-            };
-            parts::outlined(None, CANCEL, Some(to))
-        };
+        let back = || parts::outlined(None, CANCEL, Some(Message::Cancel));
         match step {
-            KeyStep::Protect { node, vault, pin } => {
+            KeyStep::Protect { node, vault, stage } => {
                 let mut lines = column![parts::dialog_head(
-                    format!("Protect “{}” with a security key", node.name),
-                    "Its files and names are encrypted on this computer before they are \
-                     uploaded. Only your security keys open them, each with its PIN.",
+                    format!("Protect “{}”", node.name),
+                    "With end-to-end encryption",
                 )];
-                let ready = match vault {
-                    Loaded::Waiting => {
-                        lines = lines.push(note(LOADING));
-                        false
-                    }
-                    Loaded::Vault(vault) => {
-                        let keys = vault.as_ref().map(folder_keys).unwrap_or_default();
-                        let recovery = vault.as_ref().and_then(recovery_unlocker).is_some();
-                        if keys.is_empty() {
-                            lines = lines.push(parts::alert_info(
-                                Icon::Info,
-                                NO_KEY,
-                                Some(parts::small_outlined("Add a key…", Some(Message::AddKey))),
-                            ));
-                        } else {
-                            lines = lines
-                                .push(uses_keys(&keys))
-                                .push(secret_field(pin_label(&keys), pin, Field::Pin, true))
-                                .push(parts::alert_info(
-                                    Icon::Info,
-                                    "The previous versions of the files in this folder will be \
-                                     deleted. Deleting something inside a protected folder deletes \
-                                     it for good.",
-                                    None,
-                                ));
-                            if keys.len() == 1 && !recovery {
-                                lines = lines.push(
-                                    column![
-                                        note(ONE_KEY),
-                                        row![
-                                            parts::ghost(
-                                                Some(Icon::Key),
-                                                "Add a key…",
-                                                Some(Message::AddKey)
-                                            ),
-                                            parts::ghost(
-                                                None,
-                                                "Create a recovery key…",
-                                                Some(Message::CreateRecovery)
-                                            ),
-                                        ]
-                                        .spacing(8),
-                                    ]
-                                    .spacing(4),
-                                );
-                            }
-                        }
-                        !keys.is_empty()
-                    }
+                let Loaded::Vault(found) = vault else {
+                    return (lines.push(note(LOADING)), vec![cancel]);
                 };
-                let lines = lines.push(
-                    self.busy
-                        .then(|| note("Touch your security key to protect the folder.")),
-                );
-                let protect = parts::primary(
-                    Some(Icon::Lock),
-                    touching("Protect"),
-                    submit.filter(|_| ready),
-                );
+                let keys = found.as_ref().map(folder_keys).unwrap_or_default();
+                if keys.is_empty() {
+                    lines =
+                        lines
+                            .push(text(ABOUT))
+                            .push(parts::alert_info(Icon::Info, NO_KEY, None));
+                    let account = parts::primary(None, "Go to Account", Some(Message::GoToAccount));
+                    return (lines, vec![cancel, account]);
+                }
+                if matches!(stage, Stage::Intro) {
+                    let recovery = found.as_ref().and_then(recovery_unlocker).is_some();
+                    lines = lines
+                        .push(text(ABOUT))
+                        .push(parts::alert_info(Icon::Info, PREVIOUS_VERSIONS, None))
+                        .push(
+                            (keys.len() == 1 && !recovery)
+                                .then(|| parts::alert_error(Icon::Key, ONE_KEY, None)),
+                        );
+                }
+                let (lines, ready) = self.key_lines(lines, &keys, stage, "protect the folder");
+                let label = match stage {
+                    Stage::Finding if self.error.is_some() => LOOK_AGAIN,
+                    _ => touching("Protect"),
+                };
+                let protect = parts::primary(Some(Icon::Lock), label, submit.filter(|_| ready));
                 (lines, vec![cancel, protect])
             }
             KeyStep::Unlock {
-                name,
-                vault,
-                pin,
-                recovering,
-                recovery,
-                ..
+                name, vault, stage, ..
             } => {
                 let mut lines = column![parts::dialog_title(format!("Unlock “{name}”"))];
+                let keys = vault.vault().map(folder_keys).unwrap_or_default();
                 let has_recovery = vault.vault().and_then(recovery_unlocker).is_some();
-                lines = match (vault, *recovering) {
-                    (Loaded::Waiting, _) => lines.push(note(LOADING)),
-                    (Loaded::Vault(None), _) => lines.push(note(
-                        "You have no security keys for protected folders any more, so nothing \
-                         opens this folder.",
-                    )),
-                    (Loaded::Vault(Some(vault)), false) => {
-                        let keys = folder_keys(vault);
-                        lines
-                            .push((!keys.is_empty()).then(|| uses_keys(&keys)))
-                            .push(secret_field(pin_label(&keys), pin, Field::Pin, true))
-                            .push(has_recovery.then(|| {
-                                parts::ghost(
-                                    None,
-                                    "Lost your security key?",
-                                    Some(Message::UseRecovery(true)),
-                                )
-                            }))
+                let lost = has_recovery.then(|| {
+                    parts::ghost(
+                        None,
+                        "Lost your security key?",
+                        Some(Message::UseRecovery(true)),
+                    )
+                });
+                let ready = match (vault, stage) {
+                    (Loaded::Waiting, _) => {
+                        lines = lines.push(note(LOADING));
+                        false
                     }
-                    (Loaded::Vault(Some(_)), true) => lines
-                        .push(note(
-                            "Type the recovery key of your security keys. It opens every folder \
-                             you protected with them.",
-                        ))
-                        .push(secret_field(
-                            "Recovery key",
-                            recovery,
-                            Field::Recovery,
-                            true,
-                        ))
-                        .push(parts::ghost(
-                            None,
-                            "Use a security key",
-                            Some(Message::UseRecovery(false)),
-                        )),
+                    (Loaded::Vault(None), _) => {
+                        lines = lines.push(note(
+                            "You have no encryption keys any more, so nothing opens this folder.",
+                        ));
+                        false
+                    }
+                    (_, Stage::Recovery { recovery }) => {
+                        lines = lines
+                            .push(note(
+                                "Type the recovery key of your encryption keys. It opens every \
+                                 folder you protected with them.",
+                            ))
+                            .push(secret_field(
+                                "Recovery key",
+                                recovery,
+                                Field::Recovery,
+                                true,
+                            ))
+                            .push(parts::ghost(
+                                None,
+                                "Use a security key",
+                                Some(Message::UseRecovery(false)),
+                            ));
+                        true
+                    }
+                    (_, _) if keys.is_empty() => {
+                        lines = lines
+                            .push(note(
+                                "None of your encryption keys is left; the recovery key opens \
+                                 this folder.",
+                            ))
+                            .push(lost);
+                        false
+                    }
+                    (_, stage) => {
+                        let (with_key, ready) =
+                            self.key_lines(lines, &keys, stage, "unlock the folder");
+                        lines = with_key.push(lost);
+                        ready
+                    }
                 };
-                let lines = lines.push(
-                    (self.busy && !*recovering)
-                        .then(|| note("Touch your security key to unlock the folder.")),
-                );
-                let label = if *recovering {
-                    working("Unlock")
-                } else {
-                    touching("Unlock")
+                let label = match stage {
+                    Stage::Recovery { .. } => working("Unlock"),
+                    Stage::Finding if self.error.is_some() => LOOK_AGAIN,
+                    _ => touching("Unlock"),
                 };
-                let ready = vault.vault().is_some();
                 (
                     lines,
                     vec![
                         cancel,
                         parts::primary(None, label, submit.filter(|_| ready)),
                     ],
-                )
-            }
-            KeyStep::List { vault } => {
-                let mut lines = column![parts::dialog_head(
-                    "Security keys for protected folders",
-                    "These keys open the folders you protect with a security key, each with its \
-                     PIN and a touch. They are not the keys you sign in with.",
-                )];
-                let (keys, recovery) = match vault {
-                    Loaded::Waiting => {
-                        lines = lines.push(note(LOADING));
-                        (Vec::new(), None)
-                    }
-                    Loaded::Vault(vault) => (
-                        vault.as_ref().map(folder_keys).unwrap_or_default(),
-                        vault.as_ref().and_then(recovery_unlocker),
-                    ),
-                };
-                let loaded = matches!(vault, Loaded::Vault(_));
-                if loaded && keys.is_empty() {
-                    lines = lines.push(note("No security keys yet."));
-                }
-                for key in keys {
-                    let added = vault
-                        .vault()
-                        .and_then(|vault| {
-                            vault
-                                .unlockers
-                                .iter()
-                                .find(|unlocker| unlocker.id == key.id)
-                        })
-                        .map(|unlocker| format!("Added {}", short_date(unlocker.created_at)))
-                        .unwrap_or_default();
-                    lines = lines.push(
-                        row![
-                            Icon::Key.view(crate::icons::ICON_SIZE, crate::icons::Tint::Muted),
-                            column![
-                                text(key.name.clone()).font(theme::MEDIUM),
-                                text(added)
-                                    .size(parts::SECOND_LINE_SIZE)
-                                    .style(theme::muted_text),
-                            ]
-                            .width(iced::Length::Fill),
-                            parts::small_outlined(
-                                "Remove",
-                                (!self.busy).then_some(Message::RemoveKey(key.id))
-                            ),
-                        ]
-                        .spacing(12)
-                        .align_y(iced::Alignment::Center),
-                    );
-                }
-                if vault.vault().is_some() {
-                    let (line, action) = match recovery {
-                        Some(unlocker) => (
-                            format!("Recovery key created {}.", short_date(unlocker.created_at)),
-                            "Replace the recovery key…",
-                        ),
-                        None => (
-                            "No recovery key: if you lose your security keys, the folders they \
-                             protect are lost."
-                                .to_owned(),
-                            "Create a recovery key…",
-                        ),
-                    };
-                    lines = lines.push(parts::alert_info(
-                        Icon::Info,
-                        line,
-                        Some(parts::small_outlined(action, Some(Message::CreateRecovery))),
-                    ));
-                }
-                let add = parts::primary(
-                    Some(Icon::Key),
-                    "Add a key…",
-                    loaded.then_some(Message::AddKey),
-                );
-                (
-                    lines,
-                    vec![parts::outlined(None, "Close", Some(Message::Cancel)), add],
                 )
             }
             KeyStep::NewRecovery {
@@ -949,7 +951,7 @@ impl Dialog {
             } => {
                 let lines = column![parts::dialog_head(
                     "Create a recovery key",
-                    "It opens the folders you protect with your security keys when you lose \
+                    "It opens the folders you protect with your encryption keys when you lose \
                      them. A new one replaces the one from before.",
                 )];
                 let (lines, by_key) = proof_fields(lines, vault, pin, recovering, recovery, true);
@@ -985,7 +987,7 @@ impl Dialog {
                      make its folder key, once to check it."
                 };
                 let mut lines = column![
-                    parts::dialog_head("Add a security key", explain),
+                    parts::dialog_head("Add an encryption key", explain),
                     parts::field("Name", name_input, None),
                     secret_field("PIN of the new key", pin, Field::Pin, false),
                 ];
@@ -1090,33 +1092,6 @@ impl Dialog {
                 )
             }
         }
-    }
-}
-
-/// Names the keys a dialog asks for: the user's only one, or any of theirs.
-fn uses_keys<'a>(keys: &[FolderKey]) -> Element<'a, Message> {
-    let line = match keys {
-        [key] => format!("Uses your security key “{}”.", key.name),
-        _ => format!(
-            "Uses one of your security keys: {}. Only one is needed.",
-            either(keys)
-        ),
-    };
-    row![
-        Icon::Key.view(crate::icons::ICON_SIZE, crate::icons::Tint::Muted),
-        text(line).font(theme::MEDIUM),
-    ]
-    .spacing(12)
-    .align_y(iced::Alignment::Center)
-    .into()
-}
-
-/// The label of the PIN field for `keys`: the PIN of the only one, or of whichever is plugged in.
-fn pin_label(keys: &[FolderKey]) -> String {
-    match keys {
-        [key] => format!("PIN of “{}”", key.name),
-        [] => "PIN of your security key".to_owned(),
-        _ => "PIN of the key you use".to_owned(),
     }
 }
 
@@ -1229,8 +1204,8 @@ mod tests {
         let yours = keys(&["YubiKey"]);
         assert_eq!(
             not_yours(KeyError::NotEnabled, &yours),
-            "This security key is not one of your folder keys. Plug in “YubiKey”, the key you \
-             already have."
+            "This security key is not one of your encryption keys. Plug in “YubiKey”, the key \
+             you already have."
         );
         assert_eq!(not_yours(KeyError::WrongPin, &yours), "Wrong PIN.");
     }

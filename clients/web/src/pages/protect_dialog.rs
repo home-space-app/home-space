@@ -24,7 +24,7 @@ use crate::{
 const PAINT_MS: u32 = 30;
 const WEB_CAVEAT: &str = "The browser runs code from your server. Someone who controls the server could change it to read the password; the desktop and mobile apps do not have this risk.";
 const SECURITY_KEY_ON_WEB: &str =
-    "This folder is protected with a security key. Open it in the desktop app.";
+    "This folder is protected with an encryption key. Open it in the desktop app.";
 
 /// Asks for a new folder password, protects `node` with it and shows its recovery key.
 /// `on_protected` gets the protection as soon as the server has it.

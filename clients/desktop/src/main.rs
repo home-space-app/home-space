@@ -7,6 +7,7 @@ mod device;
 mod ellipsis;
 mod events;
 mod executor;
+mod file_dialog;
 mod icons;
 mod locale;
 mod login;

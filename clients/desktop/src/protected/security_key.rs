@@ -19,9 +19,9 @@ pub enum KeyError {
     NoKey,
     #[error("Several security keys are plugged in. Leave only the one to add.")]
     SeveralKeys,
-    #[error("This security key is not one of your folder keys.")]
+    #[error("This security key is not one of your encryption keys.")]
     NotEnabled,
-    #[error("This security key is one of your folder keys already.")]
+    #[error("This security key is one of your encryption keys already.")]
     AlreadyEnabled,
     #[error(
         "This security key has no PIN. Set one first, for example with Yubico Authenticator, then try again."
@@ -32,7 +32,7 @@ pub enum KeyError {
     #[error("Wrong PIN. {0} tries left before the key blocks its PIN.")]
     WrongPinTriesLeft(u8),
     #[error(
-        "The PIN of this security key is blocked after too many wrong tries. Only resetting the key unblocks it, which deletes its folder keys."
+        "The PIN of this security key is blocked after too many wrong tries. Only resetting the key unblocks it, which deletes its encryption keys."
     )]
     PinBlocked,
     #[error("Too many wrong PINs in a row. Unplug the key, plug it in again and retry.")]
@@ -229,18 +229,25 @@ mod hid {
             keys: &[FolderKey],
             pin: Zeroizing<String>,
         ) -> Result<(Self, usize), KeyError> {
-            let mut failed = None;
-            for path in paths()? {
-                let Some(device) = connect(&path) else {
-                    continue;
-                };
-                match find(&device, keys) {
-                    Ok(Some(index)) => return Ok((Self::open(device, path, pin)?, index)),
-                    Ok(None) => {}
-                    Err(err) => failed = Some(err),
-                }
-            }
-            Err(failed.unwrap_or(KeyError::NotEnabled))
+            let (device, path, index) = first_holding(keys)?;
+            Ok((Self::open(device, path, pin)?, index))
+        }
+
+        /// Which of `keys` the first plugged-in key that holds one holds, waiting for one to be
+        /// plugged in when none is: `waiting` is called once then, to ask the user for it.
+        /// Asking costs no touch and no PIN.
+        pub fn which_plugged(
+            keys: &[FolderKey],
+            waiting: impl FnOnce(),
+        ) -> Result<usize, KeyError> {
+            wait_for(
+                || match first_holding(keys) {
+                    Ok((_, _, index)) => Ok(Some(index)),
+                    Err(KeyError::NotEnabled | KeyError::NoKey) => Ok(None),
+                    Err(err) => Err(err),
+                },
+                waiting,
+            )
         }
 
         /// Like [`Self::holding`], waiting for such a key to be plugged in when none is: `waiting`
@@ -399,6 +406,22 @@ mod hid {
         }
     }
 
+    /// The first plugged-in key that holds one of `keys`, where it is, and which of them it holds.
+    fn first_holding(keys: &[FolderKey]) -> Result<(FidoKeyHid, String, usize), KeyError> {
+        let mut failed = None;
+        for path in paths()? {
+            let Some(device) = connect(&path) else {
+                continue;
+            };
+            match find(&device, keys) {
+                Ok(Some(index)) => return Ok((device, path, index)),
+                Ok(None) => {}
+                Err(err) => failed = Some(err),
+            }
+        }
+        Err(failed.unwrap_or(KeyError::NotEnabled))
+    }
+
     /// Looks until `look` finds what it looks for, calling `waiting` once when it first does not;
     /// gives up at [`cancel`] or after [`PLUG_IN_TIME`].
     fn wait_for<T>(
@@ -540,6 +563,10 @@ mod unsupported {
             _: Zeroizing<String>,
             _: impl FnOnce(),
         ) -> Result<(Self, usize), KeyError> {
+            Err(KeyError::Unsupported)
+        }
+
+        pub fn which_plugged(_: &[FolderKey], _: impl FnOnce()) -> Result<usize, KeyError> {
             Err(KeyError::Unsupported)
         }
 

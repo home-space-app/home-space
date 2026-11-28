@@ -13,7 +13,7 @@ path = "src/main.rs"
 [dependencies]
 api-client.workspace = true
 client-core.workspace = true
-iced = { version = "0.14.0", features = ["advanced", "image-without-codecs", "svg", "tokio"] }
+iced = { version = "0.14.0", features = ["advanced", "image-without-codecs", "qr_code", "svg", "tokio"] }
 keyring = { version = "4.2.0", optional = true }
 # Returns freed memory to the OS, which glibc's per-thread arenas keep for the life of the process.
 mimalloc = "0.1.52"

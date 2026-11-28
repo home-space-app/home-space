@@ -125,8 +125,13 @@ impl Syncing {
                 }
             },
             Message::Pick(remote) => {
-                return Outcome::Task(Task::perform(pick_folder(), move |local| {
-                    Message::Picked(remote, local)
+                let ask = crate::file_dialog::over_window(|dialog| {
+                    dialog.set_title("Choose the local folder to sync with")
+                });
+                return Outcome::Task(ask.then(move |dialog| {
+                    Task::perform(pick_folder(dialog), move |local| {
+                        Message::Picked(remote, local)
+                    })
                 }));
             }
             Message::Picked(remote, Some(local)) => {
@@ -745,11 +750,10 @@ fn open_external(target: &OsStr, name: &str) -> Result<(), String> {
 }
 
 /// Asks for the local folder to sync with.
-pub async fn pick_folder() -> Option<PathBuf> {
+pub async fn pick_folder(dialog: rfd::AsyncFileDialog) -> Option<PathBuf> {
     // A single pick reads the panel's URL, which on macOS can be the parent of a folder that
     // was just created in the panel; the list of selected folders is reliable.
-    rfd::AsyncFileDialog::new()
-        .set_title("Choose the local folder to sync with")
+    dialog
         .pick_folders()
         .await?
         .into_iter()

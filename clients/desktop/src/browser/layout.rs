@@ -11,9 +11,8 @@ use client_core::{labels::HOME, listing::collapsed_crumbs, received::SHARED_WITH
 use protocol::{FolderLock, Node, NodeKind, ProtectionState};
 
 use super::{
-    Menu, Message, Page, State, anchor::Anchor, context_menu, context_menu::Placement, devices,
-    dialogs, grid, parts, protect, search, send, share, shared, sidebar, sync_queue, syncing,
-    toolbar, toolbar::SyncChip, transfer_list, transfer_save, viewer,
+    Menu, Message, Page, State, anchor::Anchor, context_menu, context_menu::Placement, grid, parts,
+    search, shared, sidebar, sync_queue, syncing, toolbar, toolbar::SyncChip, viewer,
 };
 use crate::{
     icons::{ICON_SIZE, Icon, Tint},
@@ -59,6 +58,7 @@ const TRASH: &str = "Recycle bin";
 const SYNC_QUEUE: &str = "Sync queue";
 const SYNC_SETTINGS: &str = "Sync settings";
 const DEVICES: &str = "Devices";
+const SETTINGS: &str = "Settings";
 const TRANSFERS: &str = "Transfers";
 const LOCKED_ICON: f32 = 48.0;
 const LOCKED_GAP: f32 = 12.0;
@@ -119,34 +119,19 @@ impl State {
             layers.extend(self.menu_layers(menu, &selected));
         }
         if let Some(confirm) = &self.syncing.confirm {
-            layers.push(modal(
-                syncing::confirm(confirm, self.syncing.status()),
-                Message::Sync(syncing::Message::Confirm(false)),
-            ));
+            layers.push(modal(syncing::confirm(confirm, self.syncing.status())));
         }
         if let Some(dialog) = &self.dialog {
-            layers.push(modal(
-                dialog.view().map(Message::Dialog),
-                Message::Dialog(dialogs::Message::Cancel),
-            ));
+            layers.push(modal(dialog.view().map(Message::Dialog)));
         }
         if let Some(dialog) = &self.protect {
-            layers.push(modal(
-                dialog.view().map(Message::Protect),
-                Message::Protect(protect::Message::Cancel),
-            ));
+            layers.push(modal(dialog.view().map(Message::Protect)));
         }
         if let Some(send) = &self.send {
-            layers.push(modal(
-                send.view().map(Message::Send),
-                Message::Send(send::Message::Cancel),
-            ));
+            layers.push(modal(send.view().map(Message::Send)));
         }
         if let Some(share) = &self.share {
-            layers.push(modal(
-                share.view(&self.client).map(Message::Share),
-                Message::Share(share::Message::Cancel),
-            ));
+            layers.push(modal(share.view(&self.client).map(Message::Share)));
             if let Some(Menu::SharePeople(placement)) = self.menu {
                 layers.extend(menu_layers(share.picker().map(Message::Share), placement));
             }
@@ -154,44 +139,33 @@ impl State {
         match &self.page {
             Page::Devices(devices) => {
                 if let Some(dialog) = devices.dialog() {
-                    layers.push(modal(
-                        dialog.map(Message::Devices),
-                        Message::Devices(devices::Message::Cancel),
-                    ));
+                    layers.push(modal(dialog.map(Message::Devices)));
                 }
                 if let (Some(Menu::Users(placement)), Some(picker)) = (self.menu, devices.picker())
                 {
                     layers.extend(menu_layers(picker.map(Message::Devices), placement));
                 }
             }
+            Page::Settings(settings) => {
+                if let Some(dialog) = settings.dialog() {
+                    layers.push(modal(dialog.map(Message::Settings)));
+                }
+            }
             Page::Shared(shared) => {
                 if let Some(dialog) = shared.dialog() {
-                    layers.push(modal(
-                        dialog.map(Message::Shared),
-                        Message::Shared(shared::Message::SaveDialog(
-                            transfer_save::Message::Cancel,
-                        )),
-                    ));
+                    layers.push(modal(dialog.map(Message::Shared)));
                 }
             }
             Page::Transfers => {
                 if let Some(dialog) = self.transfer_list.dialog() {
-                    layers.push(modal(
-                        dialog.map(Message::Transfers),
-                        Message::Transfers(transfer_list::Message::SaveDialog(
-                            transfer_save::Message::Cancel,
-                        )),
-                    ));
+                    layers.push(modal(dialog.map(Message::Transfers)));
                 }
             }
             _ => {}
         }
         // Over every page: Open starts from the toast as well as from the list.
         if let Some(confirm) = self.transfer_list.link_dialog() {
-            layers.push(modal(
-                confirm.map(Message::Transfers),
-                Message::Transfers(transfer_list::Message::CancelOpen),
-            ));
+            layers.push(modal(confirm.map(Message::Transfers)));
         }
         stack(layers).into()
     }
@@ -286,6 +260,11 @@ impl State {
                     DEVICES,
                     devices.action().map(Message::Devices),
                     devices.view().map(Message::Devices),
+                ),
+                Page::Settings(settings) => (
+                    SETTINGS,
+                    space().into(),
+                    settings.view(&self.me).map(Message::Settings),
                 ),
                 Page::Transfers => (
                     TRANSFERS,
@@ -382,11 +361,7 @@ impl State {
             ),
             Menu::Account(placement) => (
                 placement,
-                context_menu::account(
-                    self.protected.any_unlocked(),
-                    crate::protected::security_key::SUPPORTED
-                        && self.client.supports(protocol::features::PROTECTED_FOLDERS),
-                ),
+                context_menu::account(&self.me, self.protected.any_unlocked()),
             ),
             Menu::Device(id, placement) => {
                 let (can_sign_out, can_remove) = match &self.page {
@@ -559,7 +534,7 @@ impl State {
                 )),
             ),
             FolderLock::SecurityKey => (
-                "Its files and names are encrypted. Unlock it with one of your security keys \
+                "Its files and names are encrypted. Unlock it with one of your encryption keys \
                  and its PIN to see them."
                     .to_owned(),
                 Some(parts::primary(
@@ -723,8 +698,10 @@ fn menu_layers(panel: Element<'_, Message>, placement: Placement) -> [Element<'_
     ]
 }
 
-fn modal(content: Element<'_, Message>, on_dismiss: Message) -> Element<'_, Message> {
-    opaque(mouse_area(center(opaque(content)).style(theme::backdrop)).on_press(on_dismiss))
+/// A dialog over the page. Clicking beside it does nothing: it closes only by its own buttons
+/// or Escape, so a stray click cannot lose what was typed in it.
+fn modal(content: Element<'_, Message>) -> Element<'_, Message> {
+    opaque(center(opaque(content)).style(theme::backdrop))
 }
 
 /// `title` on the left, what the page offers on the right.
