@@ -382,7 +382,11 @@ impl State {
             ),
             Menu::Account(placement) => (
                 placement,
-                context_menu::account(self.protected.any_unlocked()),
+                context_menu::account(
+                    self.protected.any_unlocked(),
+                    crate::protected::security_key::SUPPORTED
+                        && self.client.supports(protocol::features::PROTECTED_FOLDERS),
+                ),
             ),
             Menu::Device(id, placement) => {
                 let (can_sign_out, can_remove) = match &self.page {
@@ -425,21 +429,28 @@ impl State {
         };
         let id = node.id;
         let Some(folder) = self.protected.get(id) else {
-            // A synced folder would sync its sealed names and encrypted files to this computer.
             let protectable = self.folder.protection.folder().is_none()
                 && id != self.me.lost_and_found_id
                 && !self.protected.is_or_holds(id)
-                && self.syncing.status().location(Some(id)).is_none()
+                && !self.syncs_on_its_own(id)
                 && self.client.supports(protocol::features::PROTECTED_FOLDERS);
-            return protectable
-                .then(|| {
-                    entry(
-                        Icon::Lock,
-                        "Protect with password…",
-                        Message::ProtectFolder((*node).clone()),
-                    )
-                })
+            if !protectable {
+                return Vec::new();
+            }
+            let with_key = crate::protected::security_key::SUPPORTED.then(|| {
+                entry(
+                    Icon::Key,
+                    "Protect with security key…",
+                    Message::ProtectWithKey((*node).clone()),
+                )
+            });
+            return with_key
                 .into_iter()
+                .chain([entry(
+                    Icon::Lock,
+                    "Protect with password…",
+                    Message::ProtectFolder((*node).clone()),
+                )])
                 .collect();
         };
         if !self.protected.is_unlocked(id) {
@@ -479,19 +490,7 @@ impl State {
     /// stopped, or that it is unlocked, with Lock.
     fn conversion_banner(&self) -> Option<Element<'_, Message>> {
         if let Some(conversion) = &self.converting {
-            let finish = conversion.failed.then(|| {
-                parts::small_outlined("Finish", Some(Message::FinishConversion(conversion.folder)))
-            });
-            let icon = if conversion.failed {
-                Icon::Error
-            } else {
-                Icon::Sync
-            };
-            return Some(if conversion.failed {
-                parts::alert_error(icon, conversion.message.as_str(), finish)
-            } else {
-                parts::alert_info(icon, conversion.message.as_str(), finish)
-            });
+            return Some(conversion.view());
         }
         let Protection::Unlocked(folder) = &self.folder.protection else {
             return None;
@@ -560,10 +559,14 @@ impl State {
                 )),
             ),
             FolderLock::SecurityKey => (
-                "It is protected with a security key. Security keys come to the desktop app in \
-                 a later version; until then this folder cannot be opened here."
+                "Its files and names are encrypted. Unlock it with one of your security keys \
+                 and its PIN to see them."
                     .to_owned(),
-                None,
+                Some(parts::primary(
+                    Some(Icon::LockOpen),
+                    "Unlock…",
+                    Some(Message::UnlockFolder(folder.node_id)),
+                )),
             ),
         };
         center(

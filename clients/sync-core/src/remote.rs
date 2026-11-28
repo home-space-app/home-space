@@ -165,7 +165,8 @@ impl Mirror {
             Event::TrashChanged
             | Event::DevicesChanged
             | Event::TransferReceived { .. }
-            | Event::TransferChanged { .. } => true,
+            | Event::TransferChanged { .. }
+            | Event::ProtectionChanged { .. } => true,
             Event::Resync => false,
         }
     }

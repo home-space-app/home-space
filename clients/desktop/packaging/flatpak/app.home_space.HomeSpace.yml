@@ -22,6 +22,8 @@ finish-args:
   - --filesystem=home
   # The session is kept in the Secret Service keyring (the build enables `keyring`).
   - --talk-name=org.freedesktop.secrets
+  # Security keys for protected folders are reached over hidraw, which only `all` exposes.
+  - --device=all
 modules:
   - name: home-space
     buildsystem: simple

@@ -170,6 +170,15 @@ pub(super) fn alert_info<'a, M: 'a>(
     alert(icon, Tint::Accent, message, action, theme::alert_info)
 }
 
+/// A notice over the page with more in it than a line, such as how a long job goes.
+pub(super) fn notice_info<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    container(content)
+        .padding(ALERT_PADDING)
+        .width(Length::Fill)
+        .style(theme::alert_info)
+        .into()
+}
+
 fn alert<'a, M: 'a>(
     icon: Icon,
     tint: Tint,
@@ -410,7 +419,7 @@ pub(super) fn dialog_with_aside<'a, M: 'a>(
 
 /// `input` with the `label` above it and, if any, a `hint` below.
 pub(crate) fn field<'a, M: 'a>(
-    label: &'a str,
+    label: impl text::IntoFragment<'a>,
     input: impl Into<Element<'a, M>>,
     hint: Option<String>,
 ) -> Element<'a, M> {

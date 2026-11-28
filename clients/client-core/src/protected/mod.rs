@@ -5,6 +5,7 @@
 mod content;
 mod names;
 mod password;
+mod security_key;
 mod unlocked;
 
 use protocol::{NodeId, ProtectedFolder};
@@ -14,6 +15,11 @@ pub use names::{UNREADABLE_NAME, open_listing, open_name, open_path, seal_name};
 pub use password::{
     NewFolderPassword, NewPasswordFolder, PasswordProof, change_folder_password,
     protect_with_password, unlock_password_folder,
+};
+pub use security_key::{
+    FolderKey, Rotation, RotationProof, VaultProof, enable_folder_key, folder_keys,
+    new_vault_recovery_key, open_with_vault, protect_with_vault, recovery_unlocker, rotate_vault,
+    with_vault,
 };
 pub use unlocked::{AUTO_LOCK_AFTER, UnlockedFolders};
 
@@ -30,6 +36,21 @@ pub enum ProtectedError {
     /// parameters.
     #[error("This folder is not protected with a password.")]
     NotPassword,
+    /// A security-key action on a password folder.
+    #[error("This folder is not protected with a security key.")]
+    NotSecurityKey,
+    /// The security key answered, but what it gave does not open the vault.
+    #[error("This security key does not open your folders.")]
+    KeyDoesNotOpen,
+    /// The vault has no recovery key to open it with.
+    #[error("There is no recovery key for your folder keys.")]
+    NoRecoveryKey,
+    /// The folder's secret is wrapped under another vault key than the one listed.
+    #[error("Your folder keys changed meanwhile. Try again.")]
+    VaultChanged,
+    /// The security key could not be asked; the text is the platform's, for the user.
+    #[error("{0}")]
+    SecurityKey(String),
     /// The server lists password parameters this app would not have made.
     #[error("The server lists password settings for this folder that this app does not accept.")]
     UnacceptedParameters,
@@ -59,6 +80,7 @@ impl From<vault_core::Error> for ProtectedError {
             vault_core::Error::Name(vault_core::NameProblem::Empty) => {
                 Self::Name("The name is empty.".to_owned())
             }
+            vault_core::Error::Authenticator(source) => Self::SecurityKey(source.to_string()),
             other => Self::Vault(other),
         }
     }

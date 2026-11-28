@@ -7,7 +7,14 @@
 //! source deleted. Inside the protected folder the sources are deleted for good. The copies
 //! pass through the private folder ([`super::files`]) and are deleted from it at once.
 
-use std::{collections::HashSet, path::PathBuf};
+use std::{
+    collections::HashSet,
+    path::PathBuf,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use iced::futures::{SinkExt, Stream, channel::mpsc};
 
@@ -15,7 +22,7 @@ use api_client::{ApiError, Client};
 use protocol::{Node, NodeId, NodeKind, ProtectedFolder, TrashItem};
 
 use super::{Inside, files};
-use crate::transfers::store_file;
+use crate::transfers::{Meter, Uploaded, store_file};
 
 const CHANNEL_SIZE: usize = 16;
 
@@ -31,9 +38,29 @@ pub enum Direction {
 /// How a conversion goes.
 #[derive(Debug, Clone)]
 pub enum Progress {
-    /// It works on the file of this name.
-    File(String),
+    /// What is left to copy, counted before the first file: `files` files of `bytes` in all.
+    Planned {
+        files: usize,
+        bytes: u64,
+    },
+    /// It works on the file `name` (its plain name), the `index`th of the planned ones from 1.
+    File {
+        name: String,
+        index: usize,
+        step: Step,
+    },
+    /// The bytes downloaded and uploaded so far: each file counts twice, down and then up.
+    Moved(u64),
     Done(Result<Finished, Stopped>),
+}
+
+/// What is being done with a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    Downloading,
+    /// Encrypting or decrypting it on this computer.
+    Converting,
+    Uploading,
 }
 
 /// What a finished conversion leaves.
@@ -86,96 +113,155 @@ pub fn run(client: Client, inside: Inside, direction: Direction) -> impl Stream<
     iced::stream::channel(
         CHANNEL_SIZE,
         async move |mut output: mpsc::Sender<Progress>| {
-            let progress = output.clone();
-            let report = move |name: &str| {
-                let _ = progress.clone().try_send(Progress::File(name.to_owned()));
-            };
-            let result = match direction {
-                Direction::Protect => protect(&client, &inside, &report).await,
-                Direction::Unprotect => unprotect(&client, &inside, &report).await,
-            };
+            let reporter = Reporter::new(output.clone());
+            let result = convert(&client, &inside, direction, &reporter).await;
             let _ = output.send(Progress::Done(result)).await;
         },
     )
 }
 
-async fn protect(
+/// Tells the interface how the conversion goes; the bytes moved only as often as a transfer
+/// reports them.
+#[derive(Clone)]
+struct Reporter {
+    output: mpsc::Sender<Progress>,
+    meter: Arc<Mutex<Meter>>,
+}
+
+impl Reporter {
+    fn new(output: mpsc::Sender<Progress>) -> Self {
+        Self {
+            output,
+            meter: Arc::default(),
+        }
+    }
+
+    async fn send(&self, progress: Progress) {
+        let _ = self.output.clone().send(progress).await;
+    }
+
+    async fn file(&self, name: &str, index: usize, step: Step) {
+        self.send(Progress::File {
+            name: name.to_owned(),
+            index,
+            step,
+        })
+        .await;
+    }
+
+    /// Adds `bytes` to what was moved; a count missed for a full channel is made up by the next.
+    fn moved(&self, bytes: u64) {
+        let due = self
+            .meter
+            .lock()
+            .ok()
+            .and_then(|mut meter| meter.advance(usize::try_from(bytes).unwrap_or(usize::MAX)));
+        if let Some(done) = due {
+            let _ = self.output.clone().try_send(Progress::Moved(done));
+        }
+    }
+
+    /// Hears how far an upload got, adding what it gained since it last told.
+    fn uploads(&self) -> Uploaded {
+        let reporter = self.clone();
+        let told = AtomicU64::new(0);
+        Arc::new(move |done| {
+            let before = told.swap(done, Ordering::Relaxed);
+            reporter.moved(done.saturating_sub(before));
+        })
+    }
+}
+
+async fn convert(
     client: &Client,
     inside: &Inside,
-    report: &impl Fn(&str),
+    direction: Direction,
+    reporter: &Reporter,
 ) -> Result<Finished, Stopped> {
-    encrypt_content(client, inside, report).await?;
-    let folder = client.finish_protection(inside.root).await?;
-    // Only an offer: the folder is protected whether or not the bin can be listed.
-    let binned = binned_from(client, inside.root).await.unwrap_or_default();
-    Ok(Finished {
-        folder: Some(folder),
-        binned,
+    let (files, bytes) = plan(client, inside, direction).await?;
+    reporter.send(Progress::Planned { files, bytes }).await;
+    convert_content(client, inside, direction, reporter).await?;
+    match direction {
+        Direction::Protect => {
+            let folder = client.finish_protection(inside.root).await?;
+            // Only an offer: the folder is protected whether or not the bin can be listed.
+            let binned = binned_from(client, inside.root).await.unwrap_or_default();
+            Ok(Finished {
+                folder: Some(folder),
+                binned,
+            })
+        }
+        Direction::Unprotect => {
+            client.remove_protection(inside.root).await?;
+            Ok(Finished {
+                folder: None,
+                binned: Vec::new(),
+            })
+        }
+    }
+}
+
+/// The name `child` of `folder` gets: sealed when protecting a plain name, opened when
+/// unprotecting a sealed one; `None` when it has it already.
+fn converted_name(
+    inside: &Inside,
+    direction: Direction,
+    folder: NodeId,
+    child: &Node,
+) -> Result<Option<String>, Stopped> {
+    Ok(match (direction, inside.name_of(child)) {
+        (Direction::Protect, Some(_)) | (Direction::Unprotect, None) => None,
+        (Direction::Protect, None) => Some(inside.seal(Some(folder), child.kind, &child.name)?),
+        (Direction::Unprotect, Some(name)) => Some(name),
     })
 }
 
-async fn unprotect(
+/// Counts the files left to copy and their bytes: those whose converted copy is not there yet.
+async fn plan(
     client: &Client,
     inside: &Inside,
-    report: &impl Fn(&str),
-) -> Result<Finished, Stopped> {
-    decrypt_content(client, inside, report).await?;
-    client.remove_protection(inside.root).await?;
-    Ok(Finished {
-        folder: None,
-        binned: Vec::new(),
-    })
-}
-
-/// Seals every plain name below the folder and replaces every plain file with its encrypted
-/// copy.
-async fn encrypt_content(
-    client: &Client,
-    inside: &Inside,
-    report: &impl Fn(&str),
-) -> Result<(), Stopped> {
+    direction: Direction,
+) -> Result<(usize, u64), Stopped> {
+    let (mut files, mut bytes) = (0, 0);
     let mut pending = vec![inside.root];
     while let Some(folder) = pending.pop() {
         let children = client.list(Some(folder)).await?;
         let names = taken(&children);
-        for child in children {
-            let sealed = match inside.name_of(&child) {
-                Some(_) => None,
-                None => Some(inside.seal(Some(folder), child.kind, &child.name)?),
-            };
-            match (child.kind, sealed) {
-                (NodeKind::Folder, Some(sealed)) => {
-                    client.rename(child.id, &sealed).await?;
-                    pending.push(child.id);
-                }
-                (NodeKind::Folder, None) => pending.push(child.id),
-                (NodeKind::File, Some(sealed)) => {
-                    if !names.contains(&(NodeKind::File, sealed.clone())) {
-                        report(&child.name);
-                        copy_encrypted(client, inside, &child, folder, sealed).await?;
+        for child in &children {
+            match child.kind {
+                NodeKind::Folder => pending.push(child.id),
+                NodeKind::File => {
+                    if let Some(name) = converted_name(inside, direction, folder, child)?
+                        && !names.contains(&(NodeKind::File, name))
+                    {
+                        files += 1;
+                        bytes += u64::try_from(child.size).unwrap_or(0);
                     }
-                    client.delete(child.id).await?;
                 }
-                (NodeKind::File, None) => {}
             }
         }
     }
-    Ok(())
+    Ok((files, bytes))
 }
 
-/// Opens every sealed name below the folder and replaces every encrypted file with its plain
-/// copy, the reverse of [`encrypt_content`].
-async fn decrypt_content(
+/// Gives every name below the folder its converted form and replaces every file with its
+/// converted copy: encrypted when protecting, plain when unprotecting.
+async fn convert_content(
     client: &Client,
     inside: &Inside,
-    report: &impl Fn(&str),
+    direction: Direction,
+    reporter: &Reporter,
 ) -> Result<(), Stopped> {
+    let mut index = 0;
     let mut pending = vec![inside.root];
     while let Some(folder) = pending.pop() {
         let children = client.list(Some(folder)).await?;
         let names = taken(&children);
         for child in children {
-            match (child.kind, inside.name_of(&child)) {
+            match (
+                child.kind,
+                converted_name(inside, direction, folder, &child)?,
+            ) {
                 (NodeKind::Folder, Some(name)) => {
                     client.rename(child.id, &name).await?;
                     pending.push(child.id);
@@ -183,8 +269,14 @@ async fn decrypt_content(
                 (NodeKind::Folder, None) => pending.push(child.id),
                 (NodeKind::File, Some(name)) => {
                     if !names.contains(&(NodeKind::File, name.clone())) {
-                        report(&name);
-                        copy_decrypted(client, inside, &child, folder, name).await?;
+                        index += 1;
+                        let copy = Copy {
+                            node: &child,
+                            folder,
+                            name,
+                            index,
+                        };
+                        copy.run(client, inside, direction, reporter).await?;
                     }
                     client.delete(child.id).await?;
                 }
@@ -195,48 +287,56 @@ async fn decrypt_content(
     Ok(())
 }
 
-/// Uploads the encrypted copy of the plain file `node` into `folder` as `sealed`.
-async fn copy_encrypted(
-    client: &Client,
-    inside: &Inside,
-    node: &Node,
-    folder: NodeId,
-    sealed: String,
-) -> Result<(), Stopped> {
-    let plain = files::work_path()?;
-    let encrypted = files::work_path()?;
-    let result = async {
-        files::save_response(client.download(node.id).await?, &plain).await?;
-        let size =
-            files::encrypt_file(inside.recipient(), plain.clone(), encrypted.clone()).await?;
-        store_file(client, Some(folder), sealed, &encrypted, size, None).await?;
-        Ok(())
-    }
-    .await;
-    remove(&[plain, encrypted]).await;
-    result
-}
-
-/// Uploads the plain copy of the encrypted file `node` into `folder` as `name`.
-async fn copy_decrypted(
-    client: &Client,
-    inside: &Inside,
-    node: &Node,
+/// The converted copy of the file `node`, uploaded into `folder` as `name`.
+struct Copy<'a> {
+    node: &'a Node,
     folder: NodeId,
     name: String,
-) -> Result<(), Stopped> {
-    let encrypted = files::work_path()?;
-    let plain = files::work_path()?;
-    let result = async {
-        files::save_response(client.download(node.id).await?, &encrypted).await?;
-        files::decrypt_file(inside.clone(), encrypted.clone(), plain.clone()).await?;
-        let size = tokio::fs::metadata(&plain).await?.len();
-        store_file(client, Some(folder), name, &plain, size, None).await?;
-        Ok(())
+    /// Which of the planned files it is, from 1.
+    index: usize,
+}
+
+impl Copy<'_> {
+    /// Downloads the file, converts it in the private folder and uploads the result.
+    async fn run(
+        self,
+        client: &Client,
+        inside: &Inside,
+        direction: Direction,
+        reporter: &Reporter,
+    ) -> Result<(), Stopped> {
+        let shown = match direction {
+            Direction::Protect => self.node.name.clone(),
+            Direction::Unprotect => self.name.clone(),
+        };
+        let source = files::work_path()?;
+        let target = files::work_path()?;
+        let result = async {
+            reporter.file(&shown, self.index, Step::Downloading).await;
+            let response = client.download(self.node.id).await?;
+            files::save_response(response, &source, |bytes| {
+                reporter.moved(u64::try_from(bytes).unwrap_or(u64::MAX));
+            })
+            .await?;
+            reporter.file(&shown, self.index, Step::Converting).await;
+            let size = match direction {
+                Direction::Protect => {
+                    files::encrypt_file(inside.recipient(), source.clone(), target.clone()).await?
+                }
+                Direction::Unprotect => {
+                    files::decrypt_file(inside.clone(), source.clone(), target.clone()).await?;
+                    tokio::fs::metadata(&target).await?.len()
+                }
+            };
+            reporter.file(&shown, self.index, Step::Uploading).await;
+            let uploads = Some(reporter.uploads());
+            store_file(client, Some(self.folder), self.name, &target, size, uploads).await?;
+            Ok(())
+        }
+        .await;
+        remove(&[source, target]).await;
+        result
     }
-    .await;
-    remove(&[encrypted, plain]).await;
-    result
 }
 
 async fn remove(paths: &[PathBuf]) {

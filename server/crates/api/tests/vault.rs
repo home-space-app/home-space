@@ -454,6 +454,42 @@ async fn a_folder_with_content_is_protecting_until_the_client_has_replaced_it(po
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn protection_changes_are_announced_to_the_owner(pool: PgPool) {
+    use protocol::{Event, ProtectionState};
+
+    let app = setup(pool).await;
+    let token = app.user_token("alice").await;
+    let mut events = app.state.hub.subscribe(app.user_id("alice").await);
+    recovery_vault(&app, &token).await;
+    let papers = folder(&app, &token, "Papers").await;
+    let uploaded = app
+        .upload(&token, &format!("parent_id={papers}&name=tax.pdf"), "plain")
+        .await;
+    assert_eq!(uploaded.status, StatusCode::CREATED, "{}", uploaded.json());
+    let mut changes = || {
+        let mut seen = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let Event::ProtectionChanged { node_id, state } = event {
+                assert_eq!(node_id.to_string(), papers);
+                seen.push(state);
+            }
+        }
+        seen
+    };
+    assert!(changes().is_empty());
+
+    protect(&app, &token, &papers, 1).await;
+    assert_eq!(changes(), [Some(ProtectionState::Protecting)]);
+    let id = |action: &str| format!("/api/v1/protected/{papers}{action}");
+    send(&app, Method::POST, &id("/finish"), &token, json!({})).await;
+    assert_eq!(changes(), [Some(ProtectionState::Protected)]);
+    send(&app, Method::POST, &id("/unprotect"), &token, json!({})).await;
+    assert_eq!(changes(), [Some(ProtectionState::Unprotecting)]);
+    delete(&app, &id(""), &token).await;
+    assert_eq!(changes(), [None]);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn changing_what_unlocks_needs_a_recent_sign_in(pool: PgPool) {
     let app = setup(pool.clone()).await;
     let token = app.user_token("alice").await;

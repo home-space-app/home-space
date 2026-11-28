@@ -97,8 +97,8 @@ impl TenantContext {
             domains,
             public_url,
             accounts: AccountService::new(db.clone(), auth.clone(), deletion_delay),
-            devices: DeviceService::new(db.clone(), auth.clone(), uploads, hub, events),
-            vault: VaultService::new(db.clone(), auth.clone()),
+            devices: DeviceService::new(db.clone(), auth.clone(), uploads, hub, events.clone()),
+            vault: VaultService::new(db.clone(), auth.clone(), events),
             shares: ShareService::new(db, id, auth.share_passwords(), nodes),
             auth,
         }

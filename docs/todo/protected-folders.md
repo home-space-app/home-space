@@ -491,12 +491,21 @@ does not use it:
 
 Desktop `Authenticator`:
 
-- **Linux and macOS:** CTAP2 over USB HID with `hmac-secret`. Candidates: `ctap-hid-fido2` and
-  `ctap-fido2` (both MIT; the latter documents `hmac-secret` and was tested on a YubiKey 5C), or
-  `libfido2` through FFI. **Spike:** pick one; verify the PRF value matches Chrome's for the same
-  credential and salt, that a folder key made in the browser works, and that the PIN token
-  can be reused for several assertions. Linux needs the usual udev rule for FIDO devices (shipped
-  by `libfido2` and most distributions). The Flatpak build needs `--device=all` for hidraw access.
+- **Linux and macOS** (decided 2026-11-28): `ctap-hid-fido2` (MIT), CTAP2 over USB HID with
+  `hmac-secret`, in `desktop/src/protected/security_key.rs`. Chosen over `ctap-fido2` (too
+  new and little used) and 1Password's `passkey-rs` (its USB client sends neither the PIN nor
+  extensions). Every request sends the PIN, so user verification is always on and the output is
+  the one a browser's PRF with `userVerification: required` gets. The PIN protocol is the first
+  one the key lists (1 or 2). The library reports CTAP statuses only inside its error texts
+  (`response_status err = 0x31 …`), which the app reads to tell a wrong PIN from a timeout; a
+  change of wording there turns those messages into "did not answer". Tried on a YubiKey 5
+  (FIDO_2_0 firmware, PIN protocol 1 only): it lists the key, and a probe without user presence
+  answers `no credentials` without a touch. Linux needs the usual udev rule for FIDO devices
+  (shipped by `libfido2` and most distributions); building needs libudev's headers
+  (`libudev-dev`, `systemd-devel`), since hidapi compiles against them. The Flatpak has
+  `--device=all` for hidraw. Not checked: that the output matches Chrome's PRF for the same
+  credential, now that no client uses security keys in a browser; PIN protocol 2 on a real key;
+  macOS.
 - **Windows:** apps without admin rights cannot open FIDO devices directly, so the client must go
   through the Windows WebAuthn API (`webauthn.dll`, `windows` crate,
   `Win32::Networking::WindowsWebServices`), which shows the system PIN and touch prompt and
@@ -538,32 +547,86 @@ dialogs):
 - **Delete** inside a protected folder, or of a folder that is or holds one, says "Delete for
   good".
 - Send, share and details are off for what is in, is or holds a protected folder.
-- **Sync:** Protect is not offered for a synced folder. A protected folder that a synced folder
-  holds is set to not sync (`Command::Map` with no local folder), which stops following it and
-  leaves the local copy as it is.
+- **Sync:** Protect is not offered for a folder synced on its own (its own mapping to a local
+  folder), since protecting would end that sync. A folder synced through a folder above it can be
+  protected: before encrypting, the desktop sets it to not sync and waits until the sync reports
+  it left out, so the sealed names and deleted plain files never reach this computer. A protected
+  folder that a synced folder holds is set to not sync (`Command::Map` with no local folder),
+  which stops following it and leaves the local copy as it is.
+- **Which key:** the protect and unlock dialogs name the key they use ("Uses your security key
+  “YubiKey”.", "PIN of “YubiKey”"), or with several say one is enough ("Uses one of your security
+  keys: “A” or “B”. Only one is needed.", "PIN of the key you use"); the advice to add a second key
+  or a recovery key comes after, as a note. A key that is none of the user's is answered with
+  the names of those that would do.
+- **Adding a key with one USB port:** the key that opens the vault and the new key can be plugged
+  in together or one after the other. Each step waits up to two minutes for its key to be plugged
+  in and the dialog says which ("Plug in “YubiKey”, the key you already have.", then "Unplug
+  “YubiKey” and plug in the new key."); Cancel ends the wait.
 - **Conversion** (`protected/convert.rs`): the same resumable copy-then-delete as the web's,
-  streaming through the private folder, so it has no size limit. Progress shows in a banner;
-  after protecting, it offers to delete for good the folder's files that were in the recycle bin
-  from before.
+  streaming through the private folder, so it has no size limit. It first counts the files left
+  to copy and their bytes, then reports each file's step (downloading, encrypting or decrypting,
+  uploading) and the bytes moved. A card over the page (`browser/conversion.rs`) shows the
+  folder, "File 3 of 12 · 42%", a bar, the step with the bytes and the time left, or why it
+  stopped with Finish. The folder does not open while it runs: the folder shown leaves it for
+  its parent, and a link or a search into it lands on the parent too. A folder that finishes
+  protecting is locked at once, since its keys were only kept open to encrypt. After protecting, it
+  offers to delete for good the folder's files that were in the recycle bin from before.
+
+**Security-key folders on the desktop (done 2026-11-28, Linux and macOS)**, in
+`protected/security_key.rs` (the key) and `browser/protect/keys.rs` (the dialogs), with the
+shared requests in `client_core::protected` (`with_vault`, `enable_folder_key`,
+`new_vault_recovery_key`, `protect_with_vault`, `open_with_vault`):
+
+- **Security keys for folders…** in the account menu lists the folder keys with when each was
+  added, removes one (`409 last-unlocker` shows the server's text), and creates or replaces the
+  vault recovery key (shown once, with Copy and Save to a file).
+- **Add a key:** the first key starts the vault (two touches: make the credential, then its
+  PRF). Another opens the vault in the same step, so the vault key never outlives one action:
+  with a key the user has, plugged in beside the new one (its PIN, one touch, then two on the new
+  key), or with the recovery key. The new key is the only plugged-in key that holds none of the
+  folder keys; several fresh keys, a key that is already one, a key without a PIN and a passkey
+  that syncs (`BE` flag) are refused, each with its own text.
+- **Protect with security key…** in a folder's menu, beside Protect with password…: with no
+  folder key the choice says the folder cannot be protected securely without one and offers
+  Add a key… (which comes back to protecting); with exactly one and no recovery key it warns
+  that losing it loses the files, with Add a key… and Create a recovery key…. The PIN, one touch,
+  then the same conversion as a password folder.
+- **Unlock…**: the PIN and one touch; the app finds which plugged-in key holds a folder key with
+  a probe that needs no touch, so any of the user's keys works. "Lost your security key?" opens
+  the folder with the vault recovery key instead. The locked placeholder offers Unlock… too.
+- **Unplugging** the key that unlocked a folder locks it: while one is unlocked that way the app
+  lists the FIDO devices every 2 s (`KEY_CHECK`), without opening them.
+- Every wait for a touch says so in the dialog ("Touch your security key to unlock the
+  folder."); the PIN is the app's own field and is kept only for the one action.
+- **Windows:** not offered (`security_key::SUPPORTED`); unlocking says that security keys work
+  on Linux and macOS for now.
+
+- **Removing a lost key** (done 2026-11-28): Remove asks whether the key is lost or someone
+  else may have it; then the vault key is replaced in the same step (`POST /vault/rotate`,
+  `client_core::protected::rotate_vault`), so a copy of the vault from before opens nothing,
+  even with that key and its PIN. Every key that stays is plugged in at once, each with its PIN
+  (`security_key::KeyRing`): the first opens the vault and is touched twice, every other key
+  once. Each security-key folder's secret is wrapped anew; no file is re-encrypted. The recovery
+  key is replaced too and the new one shown once, except when it opened the vault (no key
+  stays), when it is kept.
+- **Cancel while waiting for a touch** (done 2026-11-28) tells the key to stop
+  (`CTAPHID_CANCEL`, `security_key::cancel`), so it is free at once; an answer that comes
+  after the user cancelled is dropped.
+- **Plain copies** (done 2026-11-28): "Open with" and Download inside an unlocked protected folder
+  say first that the copy is not protected; agreeing holds until the folder locks or is unlocked
+  again.
+- **A folder protected elsewhere** (done 2026-11-28): the server announces every change of a
+  folder's protection as the `protection_changed` event (protecting, finishing, unprotecting,
+  removing, a new password, a vault rotation). The app sets a folder protected elsewhere to not
+  sync as soon as the event comes, before the other client's conversion seals its names, then
+  reads `GET /protected` again; the web client reloads its list too.
 
 Still to do on the desktop:
 
-- **Security keys:** the `Authenticator` (CTAP2 `hmac-secret`; Windows WebAuthn API), enabling
-  folder keys, the vault recovery key, Protect with security key, and unlocking one. Until then a
-  security-key folder shows locked, saying security keys come in a later version.
-- **Warnings** before "Open with" and Download, that the copy is not protected.
-- **A folder protected elsewhere** (in the browser) while this app syncs it: the app sets it to
-  not sync only once it lists the protected folders again (at start and on resync), so the sync
-  may first follow some of its sealed renames. A server event when a folder's protection changes
-  would close the gap.
+- **Windows:** the WebAuthn API (`webauthn.dll`) for security keys.
+- **macOS:** not tried; the `home-space://` link to a running app needs the Apple Event.
 - The on-demand files (`clients/vfs-core`) do not exist yet; they must leave out the folders
   `GET /protected` lists.
-
-The security-key parts of the interface, for later:
-
-- PIN entry is the app's own dialog on Linux and macOS, the system's on Windows. Every action
-  that needs a touch says "Touch your security key" with the action's name, so a touch is never
-  asked without a reason the user can see.
 
 **Opened from the browser** (decided 2026-11-27; done 2026-11-28 except macOS): the app registers
 the `home-space` URL scheme with the operating system: `MimeType=x-scheme-handler/home-space` and
@@ -624,12 +687,14 @@ dialog says so.
 
 1. **Foundation** (server + `vault-core`): `vault-core` with fixed test vectors (done); schema,
    vault and protected folder API, folder keys apart from sign-in keys, `409 last-unlocker`, the
-   protecting states (done); the web client's folder key list (done); Authenticator spikes for
-   Linux, macOS and Windows.
+   protecting states (done); the web client's folder key list (done); the Authenticator for
+   Linux (done 2026-11-28, `ctap-hid-fido2`), macOS and Windows.
 2. **Desktop, security keys**: enabling keys, recovery key, the Protect dialog, protecting new and
    existing folders, Unlock / Lock / Lock all, auto-lock, browse, open, upload, download, move and
    rename inside, deleting for good, hiding from on-demand files and sync, the `home-space://`
-   scheme for folders handed over from the browser.
+   scheme for folders handed over from the browser, replacing the vault key after losing a key
+   (done 2026-11-28 on Linux, see [Desktop client](#desktop-client-phase-2); macOS and Windows
+   still to do).
 3. **Password folders, end to end** (2026-11-27): Argon2id-wrapped folder secrets and per-folder
    recovery keys in `vault-core`, the server storing them (done); the shared groundwork in
    `api-client` and `client-core` (`client_core::protected`: unlocked keys with the

@@ -3,6 +3,7 @@ use std::{
     convert::identity,
     io,
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -1030,7 +1031,10 @@ async fn upload_file(
     output: &mpsc::Sender<Message>,
 ) -> Result<(), String> {
     let name = target.stored_name(parent, NodeKind::File, &display_name(&file.path))?;
-    let progress = Some((id, output.clone()));
+    let output = output.clone();
+    let progress: Option<Uploaded> = Some(Arc::new(move |done| {
+        let _ = output.clone().try_send(Message::Progress(id, done));
+    }));
     let Some(inside) = &target.inside else {
         return store_file(client, parent, name, &file.path, file.size, progress)
             .await
@@ -1053,6 +1057,9 @@ async fn upload_file(
     stored
 }
 
+/// Hears how many bytes of an upload went so far.
+pub(crate) type Uploaded = Arc<dyn Fn(u64) + Send + Sync>;
+
 /// Uploads the file at `path`, of `size` bytes, into `parent` as `name`, in chunks when it
 /// is large; `progress` hears how far it got.
 pub(crate) async fn store_file(
@@ -1061,7 +1068,7 @@ pub(crate) async fn store_file(
     name: String,
     path: &Path,
     size: u64,
-    progress: Option<(TransferId, mpsc::Sender<Message>)>,
+    progress: Option<Uploaded>,
 ) -> Result<Node, ApiError> {
     if size > client.upload_chunk_bytes() {
         let request = CreateUpload {
@@ -1081,8 +1088,8 @@ pub(crate) async fn store_file(
                 &request,
                 |offset, len| read_range(path, offset, len),
                 |done| {
-                    if let Some((id, output)) = &progress {
-                        let _ = output.clone().try_send(Message::Progress(*id, done));
+                    if let Some(progress) = &progress {
+                        progress(done);
                     }
                 },
             )
@@ -1095,19 +1102,16 @@ pub(crate) async fn store_file(
 }
 
 /// The whole file at `path` as a request body, telling `progress` how far it got.
-fn upload_body(
-    path: &Path,
-    progress: Option<(TransferId, mpsc::Sender<Message>)>,
-) -> reqwest::Body {
+fn upload_body(path: &Path, progress: Option<Uploaded>) -> reqwest::Body {
     match std::fs::File::open(path) {
         Ok(file) => {
-            let mut meter = progress.map(|(id, output)| (Meter::new(id), output));
+            let mut meter = progress.map(|progress| (Meter::default(), progress));
             let chunks = ReaderStream::new(fs::File::from_std(file)).inspect(move |chunk| {
                 if let Ok(bytes) = chunk
-                    && let Some((meter, output)) = meter.as_mut()
-                    && let Some(message) = meter.advance(bytes.len())
+                    && let Some((meter, progress)) = meter.as_mut()
+                    && let Some(done) = meter.advance(bytes.len())
                 {
-                    let _ = output.try_send(message);
+                    progress(done);
                 }
             });
             reqwest::Body::wrap_stream(chunks)
@@ -1246,33 +1250,28 @@ async fn write_part(
 ) -> io::Result<()> {
     let mut out = fs::File::create(part).await?;
     let mut body = response.bytes_stream();
-    let mut meter = Meter::new(id);
+    let mut meter = Meter::default();
     while let Some(chunk) = body.next().await {
         let chunk = chunk.map_err(io::Error::other)?;
         out.write_all(&chunk).await?;
-        if let Some(message) = meter.advance(chunk.len()) {
-            let _ = output.try_send(message);
+        if let Some(done) = meter.advance(chunk.len()) {
+            let _ = output.try_send(Message::Progress(id, done));
         }
     }
     out.flush().await
 }
 
-struct Meter {
-    id: TransferId,
+/// Counts the bytes of a transfer, saying when the count is due to be reported: at most every
+/// `PROGRESS_INTERVAL`, so that a fast transfer does not flood the interface.
+#[derive(Debug, Default)]
+pub(crate) struct Meter {
     done: u64,
     reported: Option<Instant>,
 }
 
 impl Meter {
-    fn new(id: TransferId) -> Self {
-        Self {
-            id,
-            done: 0,
-            reported: None,
-        }
-    }
-
-    fn advance(&mut self, bytes: usize) -> Option<Message> {
+    /// Adds `bytes`; the count so far when it is due.
+    pub(crate) fn advance(&mut self, bytes: usize) -> Option<u64> {
         self.done = self
             .done
             .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
@@ -1282,7 +1281,7 @@ impl Meter {
             .is_none_or(|at| now.duration_since(at) >= PROGRESS_INTERVAL);
         if due {
             self.reported = Some(now);
-            Some(Message::Progress(self.id, self.done))
+            Some(self.done)
         } else {
             None
         }

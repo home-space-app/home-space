@@ -29,8 +29,17 @@ pub fn App() -> impl IntoView {
     incoming::provide_incoming();
     leave_guard::provide();
     reconfirm::provide();
-    protected::provide(auth);
+    let vault = protected::provide(auth);
     let hub = events::provide_hub();
+    // A folder protected, changed or unprotected in another client.
+    events::use_events(move |event| {
+        if matches!(
+            event,
+            protocol::Event::ProtectionChanged { .. } | protocol::Event::Resync
+        ) {
+            vault.reload();
+        }
+    });
     Effect::new(move |_| {
         if auth.user.read().is_some() {
             hub.with_value(events::Hub::start);

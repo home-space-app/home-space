@@ -52,7 +52,8 @@ impl LostAndFound {
             Event::TrashChanged
             | Event::DevicesChanged
             | Event::TransferReceived { .. }
-            | Event::TransferChanged { .. } => false,
+            | Event::TransferChanged { .. }
+            | Event::ProtectionChanged { .. } => false,
         }
     }
 }

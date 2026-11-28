@@ -8,8 +8,9 @@
 //! an attacker's unlocker or take the user's away.
 
 use auth::AuthService;
-use db::{Db, StoredKdf};
-use protocol::{PasswordKdf, WRAPPED_LEN, encoding::Base64Url};
+use db::{Db, NodeId, StoredKdf, UserId};
+use events::{DomainEvent, Events};
+use protocol::{PasswordKdf, ProtectionState, WRAPPED_LEN, encoding::Base64Url};
 
 use crate::AccountError;
 
@@ -22,11 +23,24 @@ mod unlockers;
 pub struct VaultService {
     db: Db,
     auth: AuthService,
+    events: Events,
 }
 
 impl VaultService {
-    pub fn new(db: Db, auth: AuthService) -> Self {
-        Self { db, auth }
+    pub fn new(db: Db, auth: AuthService, events: Events) -> Self {
+        Self { db, auth, events }
+    }
+
+    /// Tells the user's devices that the protection of `node` changed to `state` (none: it is
+    /// no longer protected).
+    async fn changed(&self, user: UserId, node: NodeId, state: Option<ProtectionState>) {
+        self.events
+            .publish_one(DomainEvent::ProtectionChanged {
+                owner: user,
+                node,
+                state,
+            })
+            .await;
     }
 }
 

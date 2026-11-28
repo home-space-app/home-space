@@ -1,9 +1,16 @@
-//! The dialogs of protected folders: protecting a folder with a password, unlocking it,
-//! changing or recovering its password, unprotecting it, the recovery key shown once,
-//! confirming it is the user before such a change, and deleting from the recycle bin what was
-//! there before the folder was protected.
+//! The dialogs of protected folders: protecting a folder with a password or a security key,
+//! unlocking it, changing or recovering its password, unprotecting it, the recovery key shown
+//! once, confirming it is the user before such a change, and deleting from the recycle bin what
+//! was there before the folder was protected. The security-key steps, and the user's folder keys
+//! and vault recovery key, are in [`keys`].
 //!
-//! Deriving a key from a password takes about a second, so it runs in the background.
+//! Deriving a key from a password takes about a second and a security key waits for a touch, so
+//! both run in the background.
+
+mod keys;
+
+#[cfg(test)]
+pub(crate) use keys::{NO_KEY, ONE_KEY};
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -20,9 +27,10 @@ use client_core::{
     },
 };
 use protocol::{
-    AuthMethod, ChangeFolderPassword, FolderLock, Node, NodeId, ProtectFolder, ProtectedFolder,
-    TrashItem,
+    AddUnlocker, AuthMethod, ChangeFolderPassword, FolderLock, Node, NodeId, ProtectFolder,
+    ProtectedFolder, RotateVault, TrashItem, UserId, Vault,
 };
+use uuid::Uuid;
 
 use super::parts;
 use crate::{icons::Icon, protected::Keys, theme};
@@ -30,8 +38,10 @@ use crate::{icons::Icon, protected::Keys, theme};
 const FIRST_INPUT: &str = "protect-first";
 const WORKING: &str = "Working…";
 const CANCEL: &str = "Cancel";
+/// How many lines a key's work can say before the dialog takes them in.
+const TOLD_LINES: usize = 4;
 const KEY_FILE: &str = "home-space-folder-recovery-key.txt";
-const SECURITY_KEY_LATER: &str = "Security keys come to the desktop app in a later version; until then this folder cannot be opened here.";
+const VAULT_KEY_FILE: &str = "home-space-security-keys-recovery-key.txt";
 const NO_WAY_TO_CONFIRM: &str = "This account confirms it is you with a passkey or the identity provider, which the desktop app cannot use yet. Sign out and sign in again, then try once more.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +52,17 @@ pub enum Field {
     NewRepeat,
     /// The account password or code that confirms it is the user.
     Confirmation,
+    /// A security key's PIN.
+    Pin,
+    /// The PIN of a security key the user already has, to open the vault with.
+    ExistingPin,
+    /// What the user calls a new security key.
+    KeyName,
+    /// The recovery key of the user's folder keys.
+    Recovery,
+    /// The PIN of the folder key at this place among those that stay, when replacing the
+    /// vault key.
+    KeyPin(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -60,23 +81,51 @@ pub enum Message {
     KeySaved(Result<Option<PathBuf>, String>),
     Kept(bool),
     Purged(Result<(), ApiError>),
+    /// The user's folder keys, `None` before the first.
+    VaultLoaded(Result<Option<Vault>, ApiError>),
+    /// Opens the vault with its recovery key instead of a security key, or back.
+    UseRecovery(bool),
+    /// Lists the user's folder keys.
+    ShowKeys,
+    /// Adds a security key as a folder key.
+    AddKey,
+    /// Creates or replaces the recovery key of the folder keys.
+    CreateRecovery,
+    /// Asks to remove this folder key.
+    RemoveKey(Uuid),
+    /// The key to remove is lost: replace the vault key too.
+    Lost(bool),
+    /// What the server answered a change of the folder keys.
+    VaultSent(Result<(), ApiError>),
+    /// What the user is to do now, said by key work midway, such as which key to plug in.
+    Told(String),
 }
 
 /// What a password opened or made, worked out in the background.
 #[derive(Clone)]
 pub enum Derived {
+    /// A new folder's request and keys, with its recovery key for a password folder.
     Protect {
         request: ProtectFolder,
         keys: Keys,
-        recovery: String,
+        recovery: Option<String>,
     },
-    Unlock {
-        keys: Keys,
-    },
+    /// The keys of a folder unlocked, with where the security key that unlocked it is plugged.
+    Unlock { keys: Keys, key: Option<String> },
     Change {
         request: ChangeFolderPassword,
         keys: Keys,
         recovery: Option<String>,
+    },
+    /// A new folder key or vault recovery key, with the recovery key to show once.
+    Unlocker {
+        request: AddUnlocker,
+        recovery: Option<String>,
+    },
+    /// A new vault key, with the recovery key that replaces the one before, to add and show.
+    Rotation {
+        request: RotateVault,
+        recovery: Option<(AddUnlocker, String)>,
     },
 }
 
@@ -86,6 +135,8 @@ impl std::fmt::Debug for Derived {
             Self::Protect { .. } => "Derived::Protect",
             Self::Unlock { .. } => "Derived::Unlock",
             Self::Change { .. } => "Derived::Change",
+            Self::Unlocker { .. } => "Derived::Unlocker",
+            Self::Rotation { .. } => "Derived::Rotation",
         })
     }
 }
@@ -100,6 +151,8 @@ pub enum Outcome {
         folder: ProtectedFolder,
         keys: Keys,
         close: bool,
+        /// Where the security key that unlocked it is plugged in.
+        key: Option<String>,
     },
     /// The folder is being unprotected now; the dialog closed.
     Unprotecting(ProtectedFolder),
@@ -138,19 +191,21 @@ enum Step {
         secret: String,
         back: Option<Box<Step>>,
     },
+    /// A recovery key shown once: a password folder's, named `name`, or with `vault` the
+    /// one of the user's security keys.
     RecoveryKey {
         name: String,
         key: String,
         kept: bool,
         saved_to: Option<PathBuf>,
+        vault: bool,
     },
     Binned {
         name: String,
         items: Vec<TrashItem>,
     },
-    SecurityKey {
-        name: String,
-    },
+    /// The steps of security keys, in [`keys`].
+    Key(keys::KeyStep),
 }
 
 /// What is sent to the server, kept to send again once the user confirmed it is them.
@@ -159,7 +214,7 @@ enum Pending {
     Protect {
         request: ProtectFolder,
         keys: Keys,
-        recovery: String,
+        recovery: Option<String>,
         name: String,
     },
     Change {
@@ -171,14 +226,29 @@ enum Pending {
     },
     Unprotect(NodeId),
     Remove(NodeId),
+    /// A new folder key or vault recovery key, with the recovery key to show once sent.
+    AddUnlocker {
+        request: AddUnlocker,
+        recovery: Option<String>,
+    },
+    RemoveUnlocker(Uuid),
+    /// A new vault key, then the recovery key that replaces the one before.
+    Rotate {
+        request: RotateVault,
+        recovery: Option<(AddUnlocker, String)>,
+    },
 }
 
-/// A dialog about a protected folder.
+/// A dialog about a protected folder, or about the user's folder keys.
 pub struct Dialog {
     step: Step,
     busy: bool,
     error: Option<String>,
     pending: Option<Pending>,
+    /// The folder to protect once a security key is added for it.
+    return_to: Option<Node>,
+    /// What the work under way last asked of the user, shown instead of the step's own note.
+    told: Option<String>,
 }
 
 impl Dialog {
@@ -188,6 +258,8 @@ impl Dialog {
             busy: false,
             error: None,
             pending: None,
+            return_to: None,
+            told: None,
         }
     }
 
@@ -202,9 +274,9 @@ impl Dialog {
     }
 
     /// Asks for the password of `folder`, named `name`.
-    pub fn unlock(folder: ProtectedFolder, name: String) -> (Self, Task<Message>) {
+    pub fn unlock(client: &Client, folder: ProtectedFolder, name: String) -> (Self, Task<Message>) {
         if folder.lock == FolderLock::SecurityKey {
-            return (Self::with(Step::SecurityKey { name }), Task::none());
+            return Self::unlock_with_key(client, folder, name);
         }
         let dialog = Self::with(Step::Unlock {
             folder,
@@ -257,7 +329,7 @@ impl Dialog {
         Self::with(Step::Binned { name, items })
     }
 
-    pub fn update(&mut self, client: &Client, message: Message) -> Outcome {
+    pub fn update(&mut self, client: &Client, user: UserId, message: Message) -> Outcome {
         match message {
             Message::Input(field, value) => {
                 self.input(field, value);
@@ -278,13 +350,27 @@ impl Dialog {
                 }
                 Outcome::Task(Task::none())
             }
-            Message::Cancel => Outcome::Closed,
+            Message::Cancel => {
+                if self.busy {
+                    crate::protected::security_key::cancel();
+                }
+                Outcome::Closed
+            }
             Message::Submit if self.busy => Outcome::Task(Task::none()),
-            Message::Submit => self.submit(client),
+            Message::Told(line) => {
+                if self.busy {
+                    self.told = Some(line);
+                }
+                Outcome::Task(Task::none())
+            }
+            Message::Submit => self.submit(client, user),
+            // What the user cancelled while it ran.
+            Message::Derived(_) if !self.busy => Outcome::Task(Task::none()),
             Message::Derived(Ok(derived)) => self.derived(client, derived),
             Message::Derived(Err(err)) => self.fail(err),
             Message::Sent(Ok(folder)) => self.sent(folder),
-            Message::Sent(Err(ApiError::ReauthenticationRequired { message, methods })) => {
+            Message::Sent(Err(ApiError::ReauthenticationRequired { message, methods }))
+            | Message::VaultSent(Err(ApiError::ReauthenticationRequired { message, methods })) => {
                 self.busy = false;
                 let back = std::mem::replace(
                     &mut self.step,
@@ -301,10 +387,18 @@ impl Dialog {
                 };
                 Outcome::Task(operation::focus(FIRST_INPUT))
             }
-            Message::Sent(Err(err)) => {
+            Message::Sent(Err(err)) | Message::VaultSent(Err(err)) => {
                 self.pending = None;
                 self.fail(err.to_string())
             }
+            Message::VaultSent(Ok(())) => self.vault_sent(client),
+            Message::VaultLoaded(loaded) => self.vault_loaded(loaded),
+            Message::UseRecovery(recovering) => self.use_recovery(recovering),
+            Message::ShowKeys => self.show_keys(client),
+            Message::AddKey => self.add_key(client),
+            Message::CreateRecovery => self.create_recovery(),
+            Message::RemoveKey(id) => self.remove_key(id),
+            Message::Lost(lost) => self.lost(lost),
             Message::Confirmed(Ok(())) => {
                 if let Step::Confirm { back, .. } = &mut self.step
                     && let Some(back) = back.take()
@@ -322,9 +416,9 @@ impl Dialog {
                 _ => Outcome::Task(Task::none()),
             },
             Message::SaveKey => match &self.step {
-                Step::RecoveryKey { name, key, .. } => {
-                    Outcome::Task(save_key(name.clone(), key.clone()))
-                }
+                Step::RecoveryKey {
+                    name, key, vault, ..
+                } => Outcome::Task(save_key((!vault).then(|| name.clone()), key.clone())),
                 _ => Outcome::Task(Task::none()),
             },
             Message::KeySaved(result) => {
@@ -362,6 +456,10 @@ impl Dialog {
             (Step::Protect { repeat, .. }, Field::Repeat)
             | (Step::Change { repeat, .. }, Field::NewRepeat) => repeat,
             (Step::Confirm { secret, .. }, Field::Confirmation) => secret,
+            (Step::Key(step), field) => match step.field(field) {
+                Some(target) => target,
+                None => return,
+            },
             _ => return,
         };
         *target = value;
@@ -373,7 +471,7 @@ impl Dialog {
         Outcome::Task(Task::none())
     }
 
-    fn submit(&mut self, client: &Client) -> Outcome {
+    fn submit(&mut self, client: &Client, user: UserId) -> Outcome {
         let task = match &self.step {
             Step::Protect {
                 node,
@@ -390,7 +488,7 @@ impl Dialog {
                     Ok(Derived::Protect {
                         request: new.request,
                         keys: Arc::new(new.keys),
-                        recovery: new.recovery_key.to_display().to_string(),
+                        recovery: Some(new.recovery_key.to_display().to_string()),
                     })
                 })
             }
@@ -402,6 +500,7 @@ impl Dialog {
                     unlock_password_folder(&folder, PasswordProof::Password(&password))
                         .map(|keys| Derived::Unlock {
                             keys: Arc::new(keys),
+                            key: None,
                         })
                         .map_err(|err| err.to_string())
                 })
@@ -466,6 +565,11 @@ impl Dialog {
                     Message::Confirmed,
                 )
             }
+            Step::RecoveryKey {
+                kept: true,
+                vault: true,
+                ..
+            } => return self.back(client),
             Step::RecoveryKey { kept: true, .. } => return Outcome::Closed,
             Step::RecoveryKey { .. } => return Outcome::Task(Task::none()),
             Step::Binned { items, .. } => {
@@ -481,10 +585,14 @@ impl Dialog {
                     Message::Purged,
                 )
             }
-            Step::SecurityKey { .. } => return Outcome::Closed,
+            Step::Key(_) => match self.key_submit(client, user) {
+                Some(task) => task,
+                None => return Outcome::Task(Task::none()),
+            },
         };
         self.busy = true;
         self.error = None;
+        self.told = None;
         Outcome::Task(task)
     }
 
@@ -492,16 +600,19 @@ impl Dialog {
     fn derived(&mut self, client: &Client, derived: Derived) -> Outcome {
         let name = self.name().to_owned();
         let pending = match derived {
-            Derived::Unlock { keys } => {
-                let Step::Unlock { folder, .. } = &self.step else {
+            Derived::Unlock { keys, key } => {
+                let Some(folder) = self.folder() else {
                     return Outcome::Task(Task::none());
                 };
                 return Outcome::Opened {
                     folder: folder.clone(),
                     keys,
                     close: true,
+                    key,
                 };
             }
+            Derived::Unlocker { request, recovery } => Pending::AddUnlocker { request, recovery },
+            Derived::Rotation { request, recovery } => Pending::Rotate { request, recovery },
             Derived::Protect {
                 request,
                 keys,
@@ -549,11 +660,15 @@ impl Dialog {
                 },
                 Some(folder),
             ) => {
-                self.show_key(name, recovery);
+                let close = recovery.is_none();
+                if let Some(recovery) = recovery {
+                    self.show_key(name, recovery);
+                }
                 Outcome::Opened {
                     folder,
                     keys,
-                    close: false,
+                    close,
+                    key: None,
                 }
             }
             (
@@ -573,11 +688,16 @@ impl Dialog {
                     folder,
                     keys,
                     close,
+                    key: None,
                 }
             }
             (Pending::Unprotect(_), Some(folder)) => Outcome::Unprotecting(folder),
             (Pending::Remove(id), _) => Outcome::Removed(id),
-            (_, None) => Outcome::Closed,
+            (
+                Pending::AddUnlocker { .. } | Pending::RemoveUnlocker(_) | Pending::Rotate { .. },
+                _,
+            )
+            | (_, None) => Outcome::Closed,
         }
     }
 
@@ -588,7 +708,17 @@ impl Dialog {
             key,
             kept: false,
             saved_to: None,
+            vault: false,
         };
+    }
+
+    /// The protected folder the dialog is about, when it is about one that exists.
+    fn folder(&self) -> Option<&ProtectedFolder> {
+        match &self.step {
+            Step::Unlock { folder, .. } | Step::Change { folder, .. } => Some(folder),
+            Step::Key(step) => step.folder(),
+            _ => None,
+        }
     }
 
     /// The name of the folder the dialog is about.
@@ -599,8 +729,8 @@ impl Dialog {
             | Step::Change { name, .. }
             | Step::Unprotect { name, .. }
             | Step::RecoveryKey { name, .. }
-            | Step::Binned { name, .. }
-            | Step::SecurityKey { name } => name,
+            | Step::Binned { name, .. } => name,
+            Step::Key(step) => step.name(),
             Step::Confirm { .. } => "",
         }
     }
@@ -729,6 +859,7 @@ impl Dialog {
                 key,
                 kept,
                 saved_to,
+                vault,
             } => {
                 let saved = saved_to.as_ref().map(|path| {
                     text(format!("Saved to {}", path.display()))
@@ -739,11 +870,19 @@ impl Dialog {
                     column![
                         parts::dialog_head(
                             "Save the recovery key",
-                            format!(
-                                "If you forget the password, this key is the only way to open \
-                                 “{name}”. Keep it somewhere safe, away from this computer. It \
-                                 is shown only now."
-                            ),
+                            if *vault {
+                                "If you lose your security keys, this key is the only way to \
+                                 open the folders they protect. Keep it somewhere safe, away \
+                                 from this computer. It is shown only now, and replaces any \
+                                 recovery key from before."
+                                    .to_owned()
+                            } else {
+                                format!(
+                                    "If you forget the password, this key is the only way to \
+                                     open “{name}”. Keep it somewhere safe, away from this \
+                                     computer. It is shown only now."
+                                )
+                            },
                         ),
                         text(key.as_str()).font(theme::MONO).size(16),
                         iced::widget::row![
@@ -802,13 +941,7 @@ impl Dialog {
                     ],
                 )
             }
-            Step::SecurityKey { name } => (
-                column![parts::dialog_head(
-                    format!("“{name}” is protected with a security key"),
-                    SECURITY_KEY_LATER,
-                )],
-                vec![parts::primary(None, "Close", Some(Message::Cancel))],
-            ),
+            Step::Key(step) => self.key_view(step),
         };
         let lines = match &self.error {
             Some(error) => lines.push(parts::alert_error(Icon::Error, error.as_str(), None)),
@@ -835,7 +968,7 @@ fn note(line: &str) -> Element<'_, Message> {
 
 /// A field that hides what is typed; `first` takes the focus when the dialog opens.
 fn secret_field<'a>(
-    label: &'a str,
+    label: impl text::IntoFragment<'a>,
     value: &'a str,
     field: Field,
     first: bool,
@@ -862,37 +995,85 @@ fn derive(work: impl FnOnce() -> Result<Derived, String> + Send + 'static) -> Ta
     )
 }
 
-/// Sends `pending` to the server.
-fn send(client: &Client, pending: Pending) -> Task<Message> {
-    let client = client.clone();
-    Task::perform(
-        async move {
-            match pending {
-                Pending::Protect { request, .. } => client.protect_folder(&request).await.map(Some),
-                Pending::Change { id, request, .. } => {
-                    client.change_folder_password(id, &request).await.map(Some)
-                }
-                Pending::Unprotect(id) => client.unprotect_folder(id).await.map(Some),
-                Pending::Remove(id) => client.remove_protection(id).await.map(|()| None),
-            }
-        },
-        Message::Sent,
+/// Lets work off the interface's thread ask the user for something midway.
+#[derive(Clone)]
+struct Tell(iced::futures::channel::mpsc::Sender<Message>);
+
+impl Tell {
+    fn say(&self, line: impl Into<String>) {
+        let _ = self.0.clone().try_send(Message::Told(line.into()));
+    }
+}
+
+/// Like [`derive`], for work that tells the user what to do as it goes, with [`Tell`].
+fn derive_telling(
+    work: impl FnOnce(Tell) -> Result<Derived, String> + Send + 'static,
+) -> Task<Message> {
+    Task::run(
+        iced::stream::channel(
+            TOLD_LINES,
+            async move |mut output: iced::futures::channel::mpsc::Sender<Message>| {
+                use iced::futures::SinkExt;
+                let tell = Tell(output.clone());
+                let result = tokio::task::spawn_blocking(move || work(tell))
+                    .await
+                    .map_err(|err| err.to_string())
+                    .and_then(std::convert::identity);
+                let _ = output.send(Message::Derived(result)).await;
+            },
+        ),
+        std::convert::identity,
     )
 }
 
-/// Asks where to save the recovery key of folder `name` and writes it there.
-fn save_key(name: String, key: String) -> Task<Message> {
+/// Sends `pending` to the server.
+fn send(client: &Client, pending: Pending) -> Task<Message> {
+    let client = client.clone();
+    Task::future(async move {
+        match pending {
+            Pending::Protect { request, .. } => {
+                Message::Sent(client.protect_folder(&request).await.map(Some))
+            }
+            Pending::Change { id, request, .. } => {
+                Message::Sent(client.change_folder_password(id, &request).await.map(Some))
+            }
+            Pending::Unprotect(id) => Message::Sent(client.unprotect_folder(id).await.map(Some)),
+            Pending::Remove(id) => Message::Sent(client.remove_protection(id).await.map(|()| None)),
+            Pending::AddUnlocker { request, .. } => {
+                Message::VaultSent(client.add_unlocker(&request).await.map(|_| ()))
+            }
+            Pending::RemoveUnlocker(id) => Message::VaultSent(client.remove_unlocker(id).await),
+            Pending::Rotate { request, .. } => {
+                Message::VaultSent(client.rotate_vault(&request).await.map(|_| ()))
+            }
+        }
+    })
+}
+
+/// Asks where to save a recovery key, of the password folder `name` or, without one, of the
+/// user's security keys, and writes it there.
+fn save_key(name: Option<String>, key: String) -> Task<Message> {
     Task::perform(
         async move {
+            let file_name = if name.is_some() {
+                KEY_FILE
+            } else {
+                VAULT_KEY_FILE
+            };
             let Some(handle) = rfd::AsyncFileDialog::new()
-                .set_file_name(KEY_FILE)
+                .set_file_name(file_name)
                 .save_file()
                 .await
             else {
                 return Ok(None);
             };
             let path = handle.path().to_path_buf();
-            let content = format!("Home Space recovery key for the folder “{name}”\n\n{key}\n");
+            let content = match name {
+                Some(name) => format!("Home Space recovery key for the folder “{name}”\n\n{key}\n"),
+                None => format!(
+                    "Home Space recovery key for the folders protected with your security keys\n\n{key}\n"
+                ),
+            };
             tokio::fs::write(&path, content)
                 .await
                 .map_err(|err| format!("{}: {err}", path.display()))?;

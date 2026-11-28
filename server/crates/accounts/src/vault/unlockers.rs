@@ -147,6 +147,16 @@ impl VaultService {
             other => other?,
         };
         tracing::info!(user = %user, "vault key rotated");
+        // Each security-key folder's secret is wrapped anew, under the next epoch.
+        for folder in self.db.protected_folders(user).await? {
+            if request
+                .folders
+                .iter()
+                .any(|new| new.node_id == folder.node_id)
+            {
+                self.changed(user, folder.node_id, Some(folder.state)).await;
+            }
+        }
         self.vault(user).await
     }
 }

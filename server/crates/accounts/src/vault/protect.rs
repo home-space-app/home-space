@@ -102,6 +102,7 @@ impl VaultService {
                 ProtectError::Db(err) => err.into(),
             })?;
         tracing::info!(user = %user, folder = %node, lock = stored.lock.as_str(), "folder protected");
+        self.changed(user, node, Some(stored.state)).await;
         Ok(folder_of(stored))
     }
 
@@ -160,6 +161,7 @@ impl VaultService {
             other => other?,
         }
         tracing::info!(user = %user, folder = %node, "folder protection removed");
+        self.changed(user, node, None).await;
         Ok(())
     }
 
@@ -195,6 +197,7 @@ impl VaultService {
             other => other?,
         };
         tracing::info!(user = %user, folder = %node, state = to.as_str(), "folder protection changed");
+        self.changed(user, node, Some(stored.state)).await;
         Ok(folder_of(stored))
     }
 }

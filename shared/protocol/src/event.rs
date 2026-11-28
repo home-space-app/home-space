@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use uuid::Uuid;
 
-use crate::{DeviceInfo, Node, NodeId, TransferState, TransferSummary};
+use crate::{DeviceInfo, Node, NodeId, ProtectionState, TransferState, TransferSummary};
 
 /// A change to a user's tree, pushed over the websocket.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +31,15 @@ pub enum Event {
     TransferChanged {
         id: Uuid,
         state: TransferState,
+    },
+    /// The protection of folder `node_id` changed: it was protected, its conversion finished or
+    /// started back, its password or the vault key changed, or, with no `state`, it is no
+    /// longer protected. Clients read `GET /protected` again; one that syncs stops following a
+    /// folder that is protected now, before its names change to sealed ones.
+    ProtectionChanged {
+        node_id: NodeId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state: Option<ProtectionState>,
     },
     /// Events were missed; the client should refetch what it displays.
     Resync,
