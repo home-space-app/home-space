@@ -129,9 +129,12 @@ Sign-in ceremonies never ask for PRF, so a PRF value never reaches the server, a
 Decided 2026-11-27: security keys are for the desktop and mobile apps only; the web client never
 holds the vault key (see [Web client](#web-client)).
 
-- **Web:** the security page lists **Sign-in keys** and **Folder keys** apart (done), and removes
-  a folder key (done), which needs no key material. It never adds one: enabling is in the apps.
-- **Desktop:** "Security keys for protected folders" lists the folder keys (`GET /vault`).
+Users see folder keys as **encryption keys** (renamed 2026-11-28 in both clients), beside their
+**sign-in keys**; the code keeps calling them folder keys.
+
+- **Web:** the security page lists **Sign-in keys** and **Encryption keys** apart (done), and
+  removes one (done), which needs no key material. It never adds one: enabling is in the apps.
+- **Desktop:** Settings → Account → "Encryption keys" lists them (`GET /vault`).
   **Enable** makes a new credential with CTAP2 `makeCredential` for the server's host, with
   `hmac-secret`, and wraps the vault key for it. The vault key is new for the first key; for
   another, an existing folder key or the recovery key opens the vault first.
@@ -553,11 +556,11 @@ dialogs):
   it left out, so the sealed names and deleted plain files never reach this computer. A protected
   folder that a synced folder holds is set to not sync (`Command::Map` with no local folder),
   which stops following it and leaves the local copy as it is.
-- **Which key:** the protect and unlock dialogs name the key they use ("Uses your security key
-  “YubiKey”.", "PIN of “YubiKey”"), or with several say one is enough ("Uses one of your security
-  keys: “A” or “B”. Only one is needed.", "PIN of the key you use"); the advice to add a second key
-  or a recovery key comes after, as a note. A key that is none of the user's is answered with
-  the names of those that would do.
+- **Which key:** protecting and unlocking look for the user's keys among those plugged in, with
+  the probe that needs no touch, waiting up to two minutes for one ("Plug in one of the keys you
+  already have: “A” or “B”."). The first found is the one used: "Enter the PIN of “A”." To use a
+  particular key, the user plugs in only that one. A failed look offers Look again. A key that is
+  none of the user's is answered with the names of those that would do.
 - **Adding a key with one USB port:** the key that opens the vault and the new key can be plugged
   in together or one after the other. Each step waits up to two minutes for its key to be plugged
   in and the dialog says which ("Plug in “YubiKey”, the key you already have.", then "Unplug
@@ -577,23 +580,31 @@ dialogs):
 shared requests in `client_core::protected` (`with_vault`, `enable_folder_key`,
 `new_vault_recovery_key`, `protect_with_vault`, `open_with_vault`):
 
-- **Security keys for folders…** in the account menu lists the folder keys with when each was
-  added, removes one (`409 last-unlocker` shows the server's text), and creates or replaces the
-  vault recovery key (shown once, with Copy and Save to a file).
+- **Settings → Account** (opened from the account menu, as on the web: the user, Settings, Lock
+  all, Log out, the version) has Profile, Change password and "Two-factor sign-in and passkeys":
+  the authenticator app (set up with its QR code, removed), the recovery codes, the sign-in keys
+  (listed, renamed, removed; added in the web app, since the desktop has no WebAuthn) and the
+  **Encryption keys**: listed with when each was added, Add an encryption key…, Remove (`409
+  last-unlocker` shows the server's text), and Create or Replace the recovery key (shown once,
+  with Copy and Save to a file). Keys are registered only here. A change the server wants
+  confirmed asks for the password or a code in a dialog and runs again.
 - **Add a key:** the first key starts the vault (two touches: make the credential, then its
   PRF). Another opens the vault in the same step, so the vault key never outlives one action:
   with a key the user has, plugged in beside the new one (its PIN, one touch, then two on the new
   key), or with the recovery key. The new key is the only plugged-in key that holds none of the
   folder keys; several fresh keys, a key that is already one, a key without a PIN and a passkey
   that syncs (`BE` flag) are refused, each with its own text.
-- **Protect with security key…** in a folder's menu, beside Protect with password…: with no
-  folder key the choice says the folder cannot be protected securely without one and offers
-  Add a key… (which comes back to protecting); with exactly one and no recovery key it warns
-  that losing it loses the files, with Add a key… and Create a recovery key…. The PIN, one touch,
-  then the same conversion as a password folder.
-- **Unlock…**: the PIN and one touch; the app finds which plugged-in key holds a folder key with
-  a probe that needs no touch, so any of the user's keys works. "Lost your security key?" opens
-  the folder with the vault recovery key instead. The locked placeholder offers Unlock… too.
+- **Protect with security key…** in a folder's menu, beside Protect with password…, in two steps.
+  First what it does (end-to-end encryption) and that the previous versions go; with exactly one
+  key and no recovery key a warning that losing it loses the files, and that more keys are
+  registered in Settings → Account. With no key it says so, and offers **Go to Account** instead
+  of Protect. Protect then looks for a key and asks for its PIN; one touch, then the same
+  conversion as a password folder.
+- **Unlock…**: looks for a key at once, then its PIN and one touch. "Lost your security key?"
+  opens the folder with the vault recovery key instead. The locked placeholder offers Unlock… too.
+- **Dialogs** close only by their buttons or Escape, not by a click beside them, so nothing typed
+  is lost by a stray click. The system's file dialogs open over the app's window
+  (`file_dialog.rs`), so none opens behind it.
 - **Unplugging** the key that unlocked a folder locks it: while one is unlocked that way the app
   lists the FIDO devices every 2 s (`KEY_CHECK`), without opening them.
 - Every wait for a touch says so in the dialog ("Touch your security key to unlock the

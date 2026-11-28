@@ -90,6 +90,8 @@ pub const SHARE_ACCESS_PARAM: &str = "access";
 pub const SHARE_FOLDER_PARAM: &str = "folder_id";
 /// Where the web client opens a share link.
 pub const WEB_SHARE: &str = "/s";
+/// Where the web client shows the user's settings.
+pub const WEB_SETTINGS: &str = "/settings";
 /// Header of `PATCH /uploads/{id}` naming where the chunk starts, and of upload responses
 /// naming how many bytes the server has.
 pub const UPLOAD_OFFSET: &str = "Upload-Offset";
