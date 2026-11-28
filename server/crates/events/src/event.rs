@@ -1,7 +1,7 @@
 use uuid::Uuid;
 
 use db::{Node, NodeId, Transfer, UserId};
-use protocol::TransferState;
+use protocol::{ProtectionState, TransferState};
 
 /// One change a service made.
 #[derive(Clone, Debug, PartialEq)]
@@ -20,6 +20,12 @@ pub enum DomainEvent {
     TrashChanged { owner: UserId },
     /// The devices `user` sees changed: one was renamed, signed out or shown to them.
     DevicesChanged { user: UserId },
+    /// The protection of folder `node` changed; `state` is none once it is no longer protected.
+    ProtectionChanged {
+        owner: UserId,
+        node: NodeId,
+        state: Option<ProtectionState>,
+    },
     /// A transfer's files are all uploaded and it can be received.
     TransferReady(Transfer),
     /// A transfer was received, declined, cancelled, saved or expired.

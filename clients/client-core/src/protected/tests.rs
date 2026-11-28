@@ -298,3 +298,473 @@ fn a_path_opens_only_the_names_below_the_protected_folder() {
         .collect();
     assert_eq!(names, ["Home stuff", "Private", "Taxes"]);
 }
+
+mod security_keys {
+    use protocol::{AddUnlocker, UserId, Vault, VaultUnlocker};
+    use time::macros::datetime;
+    use uuid::Uuid;
+    use vault_core::{RecoveryKey, SoftAuthenticator};
+
+    use super::*;
+
+    const USER: UserId = UserId(Uuid::from_bytes([7; 16]));
+    const RP: &str = "files.example.org";
+
+    fn listed(request: AddUnlocker, id: u8) -> VaultUnlocker {
+        VaultUnlocker {
+            id: Uuid::from_bytes([id; 16]),
+            kind: request.kind,
+            name: request.name,
+            credential_id: request.credential_id,
+            rp_id: request.rp_id,
+            prf_salt: request.prf_salt,
+            wrapped_vault_key: request.wrapped_vault_key,
+            created_at: datetime!(2026-11-28 10:00 UTC),
+        }
+    }
+
+    /// A vault with one folder key on `auth`.
+    fn vault_with_key(auth: &mut SoftAuthenticator) -> Vault {
+        let credential = auth.register(RP);
+        let request =
+            enable_folder_key(auth, None, USER, " YubiKey ", &credential, RP).expect("enabled");
+        assert_eq!(request.epoch, 1);
+        assert_eq!(request.name.as_deref(), Some("YubiKey"));
+        Vault {
+            epoch: 1,
+            unlockers: vec![listed(request, 1)],
+        }
+    }
+
+    fn folder(request: &protocol::ProtectFolder) -> ProtectedFolder {
+        ProtectedFolder {
+            node_id: request.node_id,
+            lock: FolderLock::SecurityKey,
+            wrapped_secret: request.wrapped_secret.clone(),
+            epoch: request.epoch,
+            kdf: None,
+            recovery_wrapped_secret: None,
+            recipient: request.recipient.clone(),
+            format: 1,
+            state: ProtectionState::Protected,
+            created_at: datetime!(2026-11-28 10:00 UTC),
+        }
+    }
+
+    #[test]
+    fn a_folder_protected_with_the_vault_opens_with_one_touch() {
+        let mut auth = SoftAuthenticator::new();
+        let vault = vault_with_key(&mut auth);
+        let [key] = folder_keys(&vault).try_into().expect("one key");
+        let touches = auth.touches;
+        let (request, keys) = with_vault(
+            &vault,
+            USER,
+            VaultProof::Key {
+                auth: &mut auth,
+                key: &key,
+            },
+            |vault_key| protect_with_vault(&vault, vault_key, FOLDER),
+        )
+        .expect("protected");
+        assert_eq!(auth.touches, touches + 1);
+        assert_eq!(request.lock, FolderLock::SecurityKey);
+        assert_eq!(request.epoch, Some(1));
+        let sealed = keys
+            .seal_name(&FOLDER.0, vault_core::NodeKind::File, "tax.pdf")
+            .expect("sealed");
+
+        let listed = folder(&request);
+        let opened = with_vault(
+            &vault,
+            USER,
+            VaultProof::Key {
+                auth: &mut auth,
+                key: &key,
+            },
+            |vault_key| open_with_vault(&vault, vault_key, &listed),
+        )
+        .expect("opened");
+        assert_eq!(
+            opened
+                .open_name(&FOLDER.0, vault_core::NodeKind::File, &sealed)
+                .expect("name"),
+            "tax.pdf"
+        );
+        assert_eq!(auth.touches, touches + 2);
+    }
+
+    #[test]
+    fn another_users_vault_and_a_password_folder_do_not_open() {
+        let mut auth = SoftAuthenticator::new();
+        let vault = vault_with_key(&mut auth);
+        let [key] = folder_keys(&vault).try_into().expect("one key");
+        let other = UserId(Uuid::from_bytes([8; 16]));
+        let refused = with_vault(
+            &vault,
+            other,
+            VaultProof::Key {
+                auth: &mut auth,
+                key: &key,
+            },
+            |_| Ok(()),
+        );
+        assert!(matches!(refused, Err(ProtectedError::KeyDoesNotOpen)));
+
+        let new = protect_with_password(FOLDER, "correct horse").expect("protected");
+        let password_folder = super::listed(&new);
+        let refused = with_vault(
+            &vault,
+            USER,
+            VaultProof::Key {
+                auth: &mut auth,
+                key: &key,
+            },
+            |vault_key| open_with_vault(&vault, vault_key, &password_folder),
+        );
+        assert!(matches!(refused, Err(ProtectedError::NotSecurityKey)));
+    }
+
+    #[test]
+    fn the_vault_recovery_key_opens_it_and_enables_another_key() {
+        let mut auth = SoftAuthenticator::new();
+        let mut vault = vault_with_key(&mut auth);
+        let [key] = folder_keys(&vault).try_into().expect("one key");
+        assert!(recovery_unlocker(&vault).is_none());
+        let refused = with_vault(
+            &vault,
+            USER,
+            VaultProof::<SoftAuthenticator>::RecoveryKey("AAAAA"),
+            |_| Ok(()),
+        );
+        assert!(matches!(refused, Err(ProtectedError::NoRecoveryKey)));
+
+        let (request, recovery) = with_vault(
+            &vault,
+            USER,
+            VaultProof::Key {
+                auth: &mut auth,
+                key: &key,
+            },
+            |vault_key| new_vault_recovery_key(&vault, vault_key, USER),
+        )
+        .expect("recovery key");
+        assert_eq!(request.epoch, 1);
+        vault.unlockers.push(listed(request, 2));
+        let typed = recovery.to_display().to_lowercase();
+
+        let mut second = SoftAuthenticator::new();
+        let credential = second.register(RP);
+        let added = with_vault(
+            &vault,
+            USER,
+            VaultProof::<SoftAuthenticator>::RecoveryKey(&typed),
+            |vault_key| {
+                enable_folder_key(
+                    &mut second,
+                    Some((&vault, vault_key)),
+                    USER,
+                    "Spare",
+                    &credential,
+                    RP,
+                )
+            },
+        )
+        .expect("added");
+        vault.unlockers.push(listed(added, 3));
+        let keys = folder_keys(&vault);
+        assert_eq!(keys.len(), 2);
+        let spare = &keys[1];
+        assert_eq!(spare.name, "Spare");
+        with_vault(
+            &vault,
+            USER,
+            VaultProof::Key {
+                auth: &mut second,
+                key: spare,
+            },
+            |_| Ok(()),
+        )
+        .expect("the spare opens the same vault");
+
+        let wrong = RecoveryKey::generate().to_display();
+        let refused = with_vault(
+            &vault,
+            USER,
+            VaultProof::<SoftAuthenticator>::RecoveryKey(&wrong),
+            |_| Ok(()),
+        );
+        assert!(matches!(refused, Err(ProtectedError::WrongRecoveryKey)));
+    }
+
+    #[test]
+    fn a_key_that_does_not_hold_the_credential_says_so() {
+        let mut auth = SoftAuthenticator::new();
+        let vault = vault_with_key(&mut auth);
+        let [key] = folder_keys(&vault).try_into().expect("one key");
+        let mut other = SoftAuthenticator::new();
+        let refused = with_vault(
+            &vault,
+            USER,
+            VaultProof::Key {
+                auth: &mut other,
+                key: &key,
+            },
+            |_| Ok(()),
+        );
+        assert!(
+            matches!(refused, Err(ProtectedError::SecurityKey(text)) if text == "unknown credential")
+        );
+    }
+
+    #[test]
+    fn a_folder_wrapped_under_another_epoch_is_refused() {
+        let mut auth = SoftAuthenticator::new();
+        let vault = vault_with_key(&mut auth);
+        let [key] = folder_keys(&vault).try_into().expect("one key");
+        let (request, _) = with_vault(
+            &vault,
+            USER,
+            VaultProof::Key {
+                auth: &mut auth,
+                key: &key,
+            },
+            |vault_key| protect_with_vault(&vault, vault_key, FOLDER),
+        )
+        .expect("protected");
+        let mut listed = folder(&request);
+        listed.epoch = Some(2);
+        let refused = with_vault(
+            &vault,
+            USER,
+            VaultProof::Key {
+                auth: &mut auth,
+                key: &key,
+            },
+            |vault_key| open_with_vault(&vault, vault_key, &listed),
+        );
+        assert!(matches!(refused, Err(ProtectedError::VaultChanged)));
+    }
+
+    /// Answers for the credentials of either key.
+    struct Both<'a>(&'a mut SoftAuthenticator, &'a mut SoftAuthenticator);
+
+    impl vault_core::Authenticator for Both<'_> {
+        fn prf(
+            &mut self,
+            credential: vault_core::CredentialRef<'_>,
+            input: &[u8; 32],
+        ) -> vault_core::Result<vault_core::PrfOutput> {
+            self.0
+                .prf(credential, input)
+                .or_else(|_| self.1.prf(credential, input))
+        }
+    }
+
+    /// The vault as the server keeps it after `rotation`.
+    fn rotated(vault: &Vault, rotation: &Rotation) -> Vault {
+        let mut unlockers: Vec<VaultUnlocker> = vault
+            .unlockers
+            .iter()
+            .filter(|unlocker| !rotation.request.remove.contains(&unlocker.id))
+            .map(|unlocker| {
+                let new = rotation
+                    .request
+                    .unlockers
+                    .iter()
+                    .find(|new| new.id == unlocker.id)
+                    .expect("every unlocker that stays is wrapped anew");
+                VaultUnlocker {
+                    prf_salt: new.prf_salt.clone().or_else(|| unlocker.prf_salt.clone()),
+                    wrapped_vault_key: new.wrapped_vault_key.clone(),
+                    ..unlocker.clone()
+                }
+            })
+            .collect();
+        if let Some((request, _)) = &rotation.recovery {
+            assert_eq!(request.epoch, vault.epoch + 1);
+            unlockers.push(listed(request.clone(), 9));
+        }
+        Vault {
+            epoch: vault.epoch + 1,
+            unlockers,
+        }
+    }
+
+    /// The folder as `GET /protected` lists it after `rotation`.
+    fn rotated_folder(folder: &ProtectedFolder, rotation: &Rotation) -> ProtectedFolder {
+        let [new] = rotation.request.folders.as_slice() else {
+            panic!("one folder");
+        };
+        assert_eq!(new.node_id, folder.node_id);
+        ProtectedFolder {
+            wrapped_secret: new.wrapped_secret.clone(),
+            epoch: folder.epoch.map(|epoch| epoch + 1),
+            ..folder.clone()
+        }
+    }
+
+    /// A vault with key A on `a`, key B on `b` and a recovery key, and a folder protected
+    /// with it whose name "tax.pdf" was sealed.
+    fn two_keys_and_a_folder(
+        a: &mut SoftAuthenticator,
+        b: &mut SoftAuthenticator,
+    ) -> (Vault, RecoveryKey, ProtectedFolder, String) {
+        let mut vault = vault_with_key(a);
+        let [first] = folder_keys(&vault).try_into().expect("one key");
+        let credential = b.register(RP);
+        let (added, recovery, (request, keys)) = with_vault(
+            &vault,
+            USER,
+            VaultProof::Key {
+                auth: &mut *a,
+                key: &first,
+            },
+            |vault_key| {
+                let added = enable_folder_key(
+                    &mut *b,
+                    Some((&vault, vault_key)),
+                    USER,
+                    "B",
+                    &credential,
+                    RP,
+                )?;
+                let recovery = new_vault_recovery_key(&vault, vault_key, USER)?;
+                Ok((
+                    added,
+                    recovery,
+                    protect_with_vault(&vault, vault_key, FOLDER)?,
+                ))
+            },
+        )
+        .expect("set up");
+        vault.unlockers.push(listed(added, 2));
+        vault.unlockers.push(listed(recovery.0, 3));
+        let sealed = keys
+            .seal_name(&FOLDER.0, vault_core::NodeKind::File, "tax.pdf")
+            .expect("sealed");
+        (vault, recovery.1, folder(&request), sealed)
+    }
+
+    fn opens_tax_pdf(
+        vault: &Vault,
+        proof: VaultProof<'_, SoftAuthenticator>,
+        folder: &ProtectedFolder,
+        sealed: &str,
+    ) -> bool {
+        with_vault(vault, USER, proof, |vault_key| {
+            open_with_vault(vault, vault_key, folder)
+        })
+        .and_then(|keys| Ok(keys.open_name(&FOLDER.0, vault_core::NodeKind::File, sealed)?))
+        .is_ok_and(|name| name == "tax.pdf")
+    }
+
+    #[test]
+    fn rotating_after_losing_a_key_leaves_it_out_and_replaces_the_recovery_key() {
+        let (mut a, mut b) = (SoftAuthenticator::new(), SoftAuthenticator::new());
+        let (vault, old_recovery, folder, sealed) = two_keys_and_a_folder(&mut a, &mut b);
+        let keys = folder_keys(&vault);
+        let (key_a, key_b) = (&keys[0], &keys[1]);
+        let touches = a.touches;
+
+        let rotation = rotate_vault(
+            &mut a,
+            &vault,
+            USER,
+            RotationProof::Key(key_a),
+            std::slice::from_ref(&folder),
+            &[key_b.id],
+        )
+        .expect("rotated");
+        // One touch to open the vault, one to wrap it anew for A.
+        assert_eq!(a.touches, touches + 2);
+        assert_eq!(rotation.request.epoch, 1);
+        let old_recovery_id = recovery_unlocker(&vault).expect("recovery").id;
+        assert_eq!(rotation.request.remove, [key_b.id, old_recovery_id]);
+
+        let new_vault = rotated(&vault, &rotation);
+        let new_folder = rotated_folder(&folder, &rotation);
+        let new_keys = folder_keys(&new_vault);
+        assert_eq!(new_keys.len(), 1);
+        let proof = VaultProof::Key {
+            auth: &mut a,
+            key: &new_keys[0],
+        };
+        assert!(opens_tax_pdf(&new_vault, proof, &new_folder, &sealed));
+
+        let (_, new_recovery) = rotation.recovery.as_ref().expect("a new recovery key");
+        let typed = new_recovery.to_display();
+        let proof = VaultProof::<SoftAuthenticator>::RecoveryKey(&typed);
+        assert!(opens_tax_pdf(&new_vault, proof, &new_folder, &sealed));
+        let old = old_recovery.to_display();
+        let proof = VaultProof::<SoftAuthenticator>::RecoveryKey(&old);
+        assert!(!opens_tax_pdf(&new_vault, proof, &new_folder, &sealed));
+    }
+
+    #[test]
+    fn rotating_with_the_recovery_key_keeps_it_and_asks_every_key_that_stays() {
+        let (mut a, mut b) = (SoftAuthenticator::new(), SoftAuthenticator::new());
+        let (vault, recovery, folder, sealed) = two_keys_and_a_folder(&mut a, &mut b);
+        let typed = recovery.to_display();
+
+        let rotation = rotate_vault(
+            &mut Both(&mut a, &mut b),
+            &vault,
+            USER,
+            RotationProof::RecoveryKey(&typed),
+            std::slice::from_ref(&folder),
+            &[],
+        )
+        .expect("rotated");
+        assert!(rotation.recovery.is_none());
+        assert!(rotation.request.remove.is_empty());
+        assert_eq!(rotation.request.unlockers.len(), 3);
+
+        let new_vault = rotated(&vault, &rotation);
+        let new_folder = rotated_folder(&folder, &rotation);
+        let keys = folder_keys(&new_vault);
+        let proof = VaultProof::Key {
+            auth: &mut b,
+            key: &keys[1],
+        };
+        assert!(opens_tax_pdf(&new_vault, proof, &new_folder, &sealed));
+        let proof = VaultProof::<SoftAuthenticator>::RecoveryKey(&typed);
+        assert!(opens_tax_pdf(&new_vault, proof, &new_folder, &sealed));
+        // The old wrapping no longer matters: the old vault key does not open the new folder.
+        let old_keys = folder_keys(&vault);
+        let proof = VaultProof::Key {
+            auth: &mut a,
+            key: &old_keys[0],
+        };
+        assert!(!opens_tax_pdf(&vault, proof, &new_folder, &sealed));
+    }
+
+    #[test]
+    fn rotating_refuses_a_folder_of_another_epoch_and_a_key_that_is_not_plugged_in() {
+        let (mut a, mut b) = (SoftAuthenticator::new(), SoftAuthenticator::new());
+        let (vault, _, folder, _) = two_keys_and_a_folder(&mut a, &mut b);
+        let keys = folder_keys(&vault);
+        let mut stale = folder.clone();
+        stale.epoch = Some(0);
+        let refused = rotate_vault(
+            &mut a,
+            &vault,
+            USER,
+            RotationProof::Key(&keys[0]),
+            &[stale],
+            &[keys[1].id],
+        );
+        assert!(matches!(refused, Err(ProtectedError::VaultChanged)));
+
+        // B stays but only A answers.
+        let refused = rotate_vault(
+            &mut a,
+            &vault,
+            USER,
+            RotationProof::Key(&keys[0]),
+            std::slice::from_ref(&folder),
+            &[],
+        );
+        assert!(matches!(refused, Err(ProtectedError::SecurityKey(_))));
+    }
+}

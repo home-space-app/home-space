@@ -99,7 +99,7 @@ fn entry<'a>(entry: Entry) -> Element<'a, Message> {
 }
 
 /// The menu of the account in the sidebar; with Lock all while protected folders are unlocked.
-pub fn account<'a>(unlocked: bool) -> Element<'a, Message> {
+pub fn account<'a>(unlocked: bool, folder_keys: bool) -> Element<'a, Message> {
     let lock_all = unlocked.then(|| {
         menu_row(
             Icon::Lock,
@@ -110,7 +110,17 @@ pub fn account<'a>(unlocked: bool) -> Element<'a, Message> {
             Some(Message::LockAll),
         )
     });
-    panel(lock_all.into_iter().chain([menu_row(
+    let keys = folder_keys.then(|| {
+        menu_row(
+            Icon::Key,
+            Tint::Muted,
+            "Security keys for folders…",
+            "",
+            theme::tool,
+            Some(Message::FolderKeys),
+        )
+    });
+    panel(lock_all.into_iter().chain(keys).chain([menu_row(
         Icon::SignOut,
         Tint::Muted,
         "Sign out",

@@ -8,9 +8,10 @@
 
 pub mod convert;
 pub mod files;
+pub mod security_key;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -25,6 +26,8 @@ use vault_core::{FolderKeys, Recipient};
 
 /// How often the app looks for folders to lock after their time without activity.
 pub const LOCK_CHECK: Duration = Duration::from_secs(15);
+/// How often the app looks whether the security key that unlocked a folder is still plugged in.
+pub const KEY_CHECK: Duration = Duration::from_secs(2);
 /// Said of a folder that locked while something needed its keys.
 pub const LOCKED_MEANWHILE: &str = "The folder locked meanwhile; unlock it again.";
 
@@ -61,6 +64,12 @@ pub async fn fetch(client: Client) -> Result<Listed, ApiError> {
 pub struct Protected {
     listed: Listed,
     unlocked: UnlockedFolders,
+    /// Where the security key that unlocked a folder is plugged in: the folder locks when it is
+    /// unplugged.
+    unlocked_with: HashMap<NodeId, String>,
+    /// The unlocked folders the user agreed to take plain copies out of (opening with another
+    /// app, downloading), until they lock.
+    plain_copies: HashSet<NodeId>,
     started: Instant,
 }
 
@@ -69,6 +78,8 @@ impl Default for Protected {
         Self {
             listed: Listed::default(),
             unlocked: UnlockedFolders::default(),
+            unlocked_with: HashMap::new(),
+            plain_copies: HashSet::new(),
             started: Instant::now(),
         }
     }
@@ -156,20 +167,58 @@ impl Protected {
 
     /// Keeps the keys of `folder`, once they match the public key the server lists for it.
     pub fn unlock(&mut self, folder: &ProtectedFolder, keys: Keys) -> Result<(), ProtectedError> {
+        self.plain_copies.remove(&folder.node_id);
         let now = self.now();
         self.unlocked
             .unlock(folder.node_id, keys, &folder.recipient, now)
+    }
+
+    /// Remembers that the security key plugged in at `path` unlocked `id`, so that unplugging
+    /// it locks the folder.
+    pub fn unlocked_with_key(&mut self, id: NodeId, path: String) {
+        self.unlocked_with.insert(id, path);
+    }
+
+    /// Remembers that the user agreed to take plain copies out of `id` until it locks.
+    pub fn allow_plain_copies(&mut self, id: NodeId) {
+        self.plain_copies.insert(id);
+    }
+
+    /// Whether the user agreed to take plain copies out of `id`, unlocked since.
+    pub fn plain_copies_allowed(&self, id: NodeId) -> bool {
+        self.plain_copies.contains(&id) && self.is_unlocked(id)
+    }
+
+    /// Whether a folder is unlocked that locks when its security key is unplugged.
+    pub fn any_unlocked_with_key(&self) -> bool {
+        self.unlocked_with.keys().any(|id| self.is_unlocked(*id))
+    }
+
+    /// Locks the folders whose security key is no longer plugged in, `plugged` listing where
+    /// keys are; the ones it locked.
+    pub fn lock_unplugged(&mut self, plugged: &[String]) -> Vec<NodeId> {
+        let unplugged: Vec<NodeId> = self
+            .unlocked_with
+            .iter()
+            .filter(|(_, path)| !plugged.contains(path))
+            .map(|(id, _)| *id)
+            .collect();
+        unplugged.into_iter().filter(|id| self.lock(*id)).collect()
     }
 
     /// Locks `id`, wiping its keys and the decrypted copies opened from it; whether it was
     /// unlocked.
     pub fn lock(&mut self, id: NodeId) -> bool {
         files::forget_opened(id);
+        self.unlocked_with.remove(&id);
+        self.plain_copies.remove(&id);
         self.unlocked.lock(id)
     }
 
     /// Locks every folder; the ones that were unlocked.
     pub fn lock_all(&mut self) -> Vec<NodeId> {
+        self.unlocked_with.clear();
+        self.plain_copies.clear();
         let locked = self.unlocked.lock_all();
         locked.iter().copied().for_each(files::forget_opened);
         locked
@@ -180,6 +229,10 @@ impl Protected {
         let now = self.now();
         let locked = self.unlocked.lock_idle(now);
         locked.iter().copied().for_each(files::forget_opened);
+        for id in &locked {
+            self.unlocked_with.remove(id);
+            self.plain_copies.remove(id);
+        }
         locked
     }
 

@@ -142,8 +142,13 @@ pub fn encrypt_bytes(inside: &Inside, plain: &[u8]) -> Result<Vec<u8>, String> {
     content::encrypt_bytes(&inside.recipient(), plain).map_err(|err| err.to_string())
 }
 
-/// Writes the body of `response` to a new file at `path`.
-pub async fn save_response(response: reqwest::Response, path: &Path) -> Result<(), String> {
+/// Writes the body of `response` to a new file at `path`, telling `received` the size of each
+/// chunk as it is written.
+pub async fn save_response(
+    response: reqwest::Response,
+    path: &Path,
+    mut received: impl FnMut(usize),
+) -> Result<(), String> {
     let mut out = tokio::fs::File::create(path)
         .await
         .map_err(|err| describe(path, &err))?;
@@ -153,6 +158,7 @@ pub async fn save_response(response: reqwest::Response, path: &Path) -> Result<(
         out.write_all(&chunk)
             .await
             .map_err(|err| describe(path, &err))?;
+        received(chunk.len());
     }
     out.flush().await.map_err(|err| describe(path, &err))
 }

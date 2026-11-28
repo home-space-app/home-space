@@ -31,6 +31,7 @@ rfd = "0.18.0"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sync-core.workspace = true
+thiserror.workspace = true
 time = { workspace = true, features = ["local-offset"] }
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt", "rt-multi-thread", "time"] }
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
@@ -39,6 +40,7 @@ trash = "5.2.9"
 url = "2.5.8"
 uuid = { version = "1.29.0", features = ["v4"] }
 vault-core.workspace = true
+zeroize = "1.8.2"
 
 [features]
 # Keep the session in the system keyring (macOS Keychain, Secret Service, ...). Without it the
@@ -50,6 +52,13 @@ keyring = ["dep:keyring"]
 #   cargo install --git https://github.com/iced-rs/comet --tag 0.14.0 && comet
 #   cargo run -p desktop --features debug
 debug = ["iced/debug"]
+
+# Security keys over USB HID (src/protected/security_key.rs). Windows lets only administrators
+# open FIDO devices, so it would need the WebAuthn API instead. On Linux, hidapi builds against
+# libudev: systemd-devel (Fedora) or libudev-dev (Debian, Ubuntu).
+[target.'cfg(not(windows))'.dependencies]
+ctap-hid-fido2 = "3.6.1"
+hidapi = "2.6.7"
 
 # macOS formats dates through Foundation instead (see src/locale.rs).
 [target.'cfg(not(target_os = "macos"))'.dependencies]

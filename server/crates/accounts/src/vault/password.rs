@@ -37,6 +37,7 @@ impl VaultService {
         };
         let stored = self.db.set_folder_password(user, node, password).await?;
         tracing::info!(user = %user, folder = %node, recovered = request.recovery_wrapped_secret.is_some(), "password folder's password changed");
+        self.changed(user, node, Some(stored.state)).await;
         Ok(folder_of(stored))
     }
 }

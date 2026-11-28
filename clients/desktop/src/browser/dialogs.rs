@@ -29,6 +29,12 @@ const CANCEL: &str = "Cancel";
 const KEEP_EDITING: &str = "Keep editing";
 const DISCARD: &str = "Discard";
 const DISCARD_TITLE: &str = "Discard changes?";
+pub(crate) const OPEN_COPY: &str = "The app gets a decrypted copy, which is not protected: other \
+     apps and anyone using this account on this computer can read it. Home Space deletes it when \
+     the folder locks, but the app may keep copies of its own.";
+pub(crate) const SAVED_COPY: &str = "What you save is decrypted and not protected: anyone who can \
+     read the place you save it to can read it, and it stays there after the folder locks.";
+const ASKED_ONCE: &str = "You are not asked again until the folder locks.";
 const MOVE_WIDTH: f32 = 520.0;
 /// What the destination's name may take on the move button, which leaves room for Cancel.
 const MOVE_ACTION_WIDTH: f32 = 280.0;
@@ -85,6 +91,17 @@ pub enum Outcome {
     Failed,
     /// The user chose to drop the viewer's unsaved edits.
     Discarded,
+    /// The user accepted that what leaves the protected folder is a copy that is not protected.
+    PlainCopy(PlainCopy),
+}
+
+/// A decrypted copy of files of an unlocked protected folder, leaving it.
+#[derive(Debug, Clone)]
+pub enum PlainCopy {
+    /// Opening the file with another app, from a copy in the app's private folder.
+    Open(Node),
+    /// Saving the files where the user picks.
+    Download(Vec<Node>),
 }
 
 #[derive(Clone)]
@@ -120,6 +137,10 @@ enum Kind {
     /// Asks before leaving the viewer's unsaved edits to file `name`.
     DiscardEdits {
         name: String,
+    },
+    /// Says that `copy` is not protected, before making it.
+    PlainCopy {
+        copy: PlainCopy,
     },
     /// Files that clash at a destination; the user decides how to go on.
     Conflicts {
@@ -266,6 +287,11 @@ impl Dialog {
         Self::with(Kind::DiscardEdits { name })
     }
 
+    /// Says that `copy`, decrypted out of a protected folder, is not protected.
+    pub fn plain_copy(copy: PlainCopy) -> Self {
+        Self::with(Kind::PlainCopy { copy })
+    }
+
     /// Lists the files that a restore of `ids` could not put back, as `response` reports.
     pub fn restore_conflicts(ids: Vec<NodeId>, response: MoveResponse) -> Self {
         let title = conflicts_title(response.conflicts.len(), LOST_AND_FOUND);
@@ -287,6 +313,7 @@ impl Dialog {
                     | Kind::Delete { .. }
                     | Kind::EmptyTrash { .. }
                     | Kind::DiscardEdits { .. }
+                    | Kind::PlainCopy { .. }
                     | Kind::Conflicts { .. } => {}
                 }
                 Outcome::Task(Task::none())
@@ -313,6 +340,10 @@ impl Dialog {
                 _ => Outcome::Task(Task::none()),
             },
             Message::Submit if matches!(self.kind, Kind::DiscardEdits { .. }) => Outcome::Discarded,
+            Message::Submit if matches!(self.kind, Kind::PlainCopy { .. }) => match &self.kind {
+                Kind::PlainCopy { copy } => Outcome::PlainCopy(copy.clone()),
+                _ => Outcome::Closed,
+            },
             Message::Submit if self.saving || self.in_place() => Outcome::Task(Task::none()),
             Message::Submit => self.submit(client, folder),
             Message::Enter(target) => self.navigate(client, |trail| trail.push(target)),
@@ -485,7 +516,7 @@ impl Dialog {
                     }
                 }
             }
-            Kind::Conflicts { .. } | Kind::DiscardEdits { .. } => None,
+            Kind::Conflicts { .. } | Kind::DiscardEdits { .. } | Kind::PlainCopy { .. } => None,
             Kind::EmptyTrash { .. } => Some(perform(async move { client.empty_trash().await })),
             Kind::Delete { nodes, .. } => {
                 let ids = ids_of(nodes);
@@ -621,6 +652,26 @@ impl Dialog {
                     format!("Your edits to “{name}” will be lost."),
                 )],
                 self.danger(DISCARD),
+            ),
+            Kind::PlainCopy {
+                copy: PlainCopy::Open(node),
+            } => (
+                parts::DIALOG_WIDTH,
+                column![warning(
+                    format!("Open “{}” with another app?", node.name),
+                    format!("{OPEN_COPY} {ASKED_ONCE}"),
+                )],
+                self.primary(None, "Open"),
+            ),
+            Kind::PlainCopy {
+                copy: PlainCopy::Download(nodes),
+            } => (
+                parts::DIALOG_WIDTH,
+                column![warning(
+                    format!("{} without protection?", titled("Save", nodes)),
+                    format!("{SAVED_COPY} {ASKED_ONCE}"),
+                )],
+                self.primary(Some(Icon::Download), "Save a copy"),
             ),
             Kind::Conflicts {
                 title, conflicts, ..

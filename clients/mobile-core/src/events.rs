@@ -79,7 +79,8 @@ impl LiveEvent {
             },
             Event::TrashChanged => Self::TrashChanged,
             Event::DevicesChanged => Self::DevicesChanged,
-            Event::Resync => Self::Resync,
+            // What a protected folder shows changes as a whole: the apps fetch it all again.
+            Event::Resync | Event::ProtectionChanged { .. } => Self::Resync,
             Event::TransferReceived { .. } | Event::TransferChanged { .. } => {
                 Self::TransfersChanged
             }

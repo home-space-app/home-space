@@ -128,3 +128,28 @@ async fn a_file_encrypted_on_disk_decrypts_to_the_same_bytes() {
     assert_eq!(std::fs::read(&back).expect("read"), vec![7u8; 200_000]);
     std::fs::remove_dir_all(dir).expect("cleaned");
 }
+
+#[test]
+fn unplugging_the_security_key_locks_what_it_unlocked() {
+    let keys = keys();
+    let folder = listed(&keys);
+    let mut protected = Protected::default();
+    protected.remember(folder.clone());
+    protected.unlock(&folder, Arc::new(keys)).expect("unlocked");
+    assert!(!protected.any_unlocked_with_key());
+    protected.unlocked_with_key(ROOT, "/dev/hidraw2".to_owned());
+    assert!(protected.any_unlocked_with_key());
+
+    assert!(
+        protected
+            .lock_unplugged(&["/dev/hidraw2".to_owned()])
+            .is_empty()
+    );
+    assert!(protected.is_unlocked(ROOT));
+    assert_eq!(
+        protected.lock_unplugged(&["/dev/hidraw5".to_owned()]),
+        [ROOT]
+    );
+    assert!(!protected.is_unlocked(ROOT));
+    assert!(!protected.any_unlocked_with_key());
+}

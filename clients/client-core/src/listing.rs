@@ -61,6 +61,7 @@ pub fn apply_event(nodes: &mut Vec<Node>, folder: Option<NodeId>, event: &Event,
         | Event::DevicesChanged
         | Event::TransferReceived { .. }
         | Event::TransferChanged { .. }
+        | Event::ProtectionChanged { .. }
         | Event::Resync => {}
     }
 }
@@ -75,6 +76,7 @@ pub fn affects_path(path: &[Node], event: &Event) -> bool {
         | Event::DevicesChanged
         | Event::TransferReceived { .. }
         | Event::TransferChanged { .. }
+        | Event::ProtectionChanged { .. }
         | Event::Resync => false,
     }
 }
@@ -96,6 +98,7 @@ pub fn reveals_lost_and_found(
             | Event::DevicesChanged
             | Event::TransferReceived { .. }
             | Event::TransferChanged { .. }
+            | Event::ProtectionChanged { .. }
             | Event::Resync => false,
         }
 }

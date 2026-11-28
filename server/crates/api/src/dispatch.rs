@@ -55,6 +55,13 @@ impl EventDispatcher {
             }
             DomainEvent::TrashChanged { owner } => self.hub.publish(owner, Event::TrashChanged),
             DomainEvent::DevicesChanged { user } => self.hub.publish(user, Event::DevicesChanged),
+            DomainEvent::ProtectionChanged { owner, node, state } => self.hub.publish(
+                owner,
+                Event::ProtectionChanged {
+                    node_id: node,
+                    state,
+                },
+            ),
             DomainEvent::TransferReady(transfer) => self.transfer_ready(transfer),
             DomainEvent::TransferChanged {
                 id,
